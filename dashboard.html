@@ -217,7 +217,7 @@
 <!-- Cost bar -->
 <div id="cost-bar">
   <span><span class="cost-label">Est. cost </span><span class="cost-usd" id="cost-usd">$0.000000</span></span>
-  <span><span class="cost-label">Tool output tokens </span><strong id="cost-tokens">0</strong></span>
+  <span><span class="cost-label">Weighted tokens </span><strong id="cost-tokens">0</strong></span>
   <span><span class="cost-label">Tool calls </span><strong id="cost-calls">0</strong></span>
   <details>
     <summary></summary>
@@ -226,7 +226,7 @@
       <tbody id="cost-breakdown-body"></tbody>
     </table>
   </details>
-  <span class="cost-note">lower bound · tool outputs compound per turn</span>
+  <span class="cost-note">compounded · each output re-read on every subsequent turn</span>
 </div>
 
 <div id="stats"></div>
@@ -469,7 +469,7 @@
 
       _costSummary = data;
       document.getElementById('cost-usd').textContent    = '$' + (data.est_cost_usd ?? 0).toFixed(6);
-      document.getElementById('cost-tokens').textContent = (data.total_output_tokens ?? 0).toLocaleString();
+      document.getElementById('cost-tokens').textContent = (data.total_weighted_tokens ?? data.total_output_tokens ?? 0).toLocaleString();
       document.getElementById('cost-calls').textContent  =
         (data.tool_calls_done ?? 0) + (running > 0 ? ` (+${running} running…)` : '');
 

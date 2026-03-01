@@ -84,8 +84,13 @@ def finish(call_id: str, output: str) -> None:
 def get_summary() -> dict:
     done_calls   = [c for c in _calls if c["status"] == "done"]
     running      = [c for c in _calls if c["status"] == "running"]
-    total_tokens = sum(c["tokens"] for c in done_calls)
-    est_usd      = round(total_tokens / 1_000_000 * INPUT_PRICE_PER_M, 6)
+    n            = len(done_calls)
+    raw_tokens   = sum(c["tokens"] for c in done_calls)
+    # Each call's output stays in context and is re-read as input on every
+    # subsequent turn.  Call at index i (0-based) out of n total has been
+    # included in (n - i) API requests, so it contributes tokens * (n - i).
+    weighted_tokens = sum(c["tokens"] * (n - i) for i, c in enumerate(done_calls))
+    est_usd      = round(weighted_tokens / 1_000_000 * INPUT_PRICE_PER_M, 6)
     return {
         "model":               MODEL,
         "input_price_per_M":   INPUT_PRICE_PER_M,
@@ -93,11 +98,12 @@ def get_summary() -> dict:
         "tool_calls_total":    len(_calls),
         "tool_calls_running":  len(running),
         "tool_calls_done":     len(done_calls),
-        "total_output_tokens": total_tokens,
+        "total_output_tokens": raw_tokens,
+        "total_weighted_tokens": weighted_tokens,
         "est_cost_usd":        est_usd,
         "note": (
-            "Lower bound. Tool outputs are re-read as input tokens on every "
-            "subsequent turn — actual cost scales with session length."
+            "Cost accounts for compounding: each tool output is re-read as "
+            "input tokens on every subsequent turn."
         ),
         "breakdown": _calls,
     }
