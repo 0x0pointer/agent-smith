@@ -73,6 +73,8 @@ async def ensure_running() -> tuple[bool, str]:
             "--name", KALI_CONTAINER,
             "-p", f"{KALI_PORT}:5000",
             "--rm",
+            "--cap-add=NET_RAW",
+            "--cap-add=NET_ADMIN",
             KALI_IMAGE,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,

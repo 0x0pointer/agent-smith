@@ -35,15 +35,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Layer 7: SMB / Windows / AD
+# rpcclient is bundled inside smbclient; ldapdomaindump is pip-only
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    smbmap smbclient samba-common-bin rpcclient impacket-scripts \
-    enum4linux-ng netexec ldap-utils ldapdomaindump \
-    && rm -rf /var/lib/apt/lists/*
+    smbmap smbclient samba-common-bin impacket-scripts \
+    enum4linux-ng netexec ldap-utils python3-pip \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip3 install --no-cache-dir ldapdomaindump --break-system-packages
 
 # Layer 8: service enumeration
+# snmpwalk is bundled in the snmp package; snmp-check not available on arm64
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ssh-audit redis-tools snmp snmpwalk onesixtyone swaks \
-    smtp-user-enum ike-scan snmp-check finger rpcbind \
+    ssh-audit redis-tools snmp onesixtyone swaks \
+    smtp-user-enum ike-scan finger rpcbind \
     && rm -rf /var/lib/apt/lists/*
 
 # Layer 9: OSINT / recon
@@ -57,10 +60,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     seclists wordlists \
     && rm -rf /var/lib/apt/lists/*
 
-# ProjectDiscovery tools (naabu, httpx, subfinder, amass, dnsx, nuclei, katana, arjun, gospider, hakrawler)
+# ProjectDiscovery tools via apt (katana not in arm64 repo — installed via Go below)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    naabu httpx-toolkit subfinder amass dnsx nuclei katana \
-    && rm -rf /var/lib/apt/lists/*
+    naabu httpx-toolkit subfinder amass dnsx nuclei golang-go \
+    && rm -rf /var/lib/apt/lists/* \
+    && go install github.com/projectdiscovery/katana/cmd/katana@latest \
+    && mv /root/go/bin/katana /usr/local/bin/katana 2>/dev/null || true
 
 # Official Kali MCP server — provides POST /api/command (and per-tool endpoints)
 # on port 5000. Replaces our hand-rolled server.py.
@@ -75,4 +80,4 @@ EXPOSE 5000
 
 # kali-server-mcp is the Flask API component of mcp-kali-server.
 # The MCP client bridge (mcp-server) is not needed — we call the HTTP API directly.
-CMD ["kali-server-mcp"]
+CMD ["kali-server-mcp", "--ip", "0.0.0.0"]

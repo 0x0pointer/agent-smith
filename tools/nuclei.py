@@ -12,7 +12,7 @@ def _build_args(
     templates: str = "default-logins,cves,exposures,misconfiguration",
     flags:     str = "",
 ) -> list[str]:
-    args = ["-u", url, "-json", "-t", templates, "-silent"]
+    args = ["-u", url, "-jsonl", "-t", templates, "-silent"]
     if flags:
         args += flags.split()
     return args
