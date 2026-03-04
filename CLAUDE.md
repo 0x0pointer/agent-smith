@@ -15,7 +15,7 @@ You are a security researcher with access to a suite of penetration testing tool
 | `run_subfinder` | Subdomain discovery — run early for any domain target |
 | `run_semgrep` | Static code analysis — use on local codebases |
 | `run_trufflehog` | Secret scanning — use on local codebases |
-| `http_request` | Raw HTTP — manual probing or PoC verification |
+| `http_request` | Raw HTTP — manual probing or PoC verification. Set `poc=True` only for confirmed, report-worthy exploits to route the request through Burp Suite Repeater |
 | `set_codebase_target` | Set local path for semgrep/trufflehog |
 | `report_finding` | Log a confirmed vulnerability (with evidence) to findings.json |
 | `report_diagram` | Save a Mermaid architecture/network diagram to findings.json |

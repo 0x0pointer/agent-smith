@@ -204,11 +204,19 @@ async def http_request(
     method: str = "GET",
     headers: dict | None = None,
     body: str | None = None,
+    poc: bool = False,
+    burp_proxy: str = "http://127.0.0.1:8080",
 ) -> str:
-    """Raw HTTP request for manual probing or PoC verification."""
+    """Raw HTTP request for manual probing or PoC verification.
+
+    Set poc=True only for confirmed, report-worthy exploits — the request will
+    be routed through Burp Suite (burp_proxy) so it lands in HTTP History ready
+    for Repeater. Do NOT set poc=True for recon or speculative probes.
+    """
     import aiohttp
-    log.tool_call("http_request", {"url": url, "method": method})
+    log.tool_call("http_request", {"url": url, "method": method, "poc": poc})
     call_id = cost_tracker.start("http_request")
+    proxy = burp_proxy if poc else None
     try:
         async with aiohttp.ClientSession() as session:
             async with session.request(
@@ -217,14 +225,20 @@ async def http_request(
                 data=body,
                 timeout=aiohttp.ClientTimeout(total=30),
                 ssl=False,
+                proxy=proxy,
             ) as resp:
                 text   = await resp.text()
                 result = json.dumps(
-                    {"status": resp.status, "headers": dict(resp.headers), "body": text[:8_000]},
+                    {
+                        "status":    resp.status,
+                        "headers":   dict(resp.headers),
+                        "body":      text[:8_000],
+                        "burp":      f"request sent through {burp_proxy}" if poc else "not routed through Burp",
+                    },
                     indent=2,
                 )
     except Exception as exc:
-        result = json.dumps({"error": str(exc)})
+        result = json.dumps({"error": str(exc), "hint": "If poc=True, make sure Burp Suite is open with proxy listener on " + burp_proxy})
     cost_tracker.finish(call_id, result)
     log.tool_result("http_request", result)
     return result
