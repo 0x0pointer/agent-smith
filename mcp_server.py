@@ -245,6 +245,60 @@ async def http_request(
 
 
 @mcp.tool()
+async def save_poc(
+    url: str,
+    method: str = "GET",
+    headers: dict | None = None,
+    body: str | None = None,
+    title: str = "poc",
+    notes: str = "",
+) -> str:
+    """Save a confirmed PoC as a raw HTTP request file that can be imported into Burp Repeater.
+
+    Only call this for confirmed, report-worthy exploits. The file is written to
+    the pocs/ directory next to mcp_server.py and named with a timestamp + title.
+    Open Burp Repeater → Paste from file (or copy-paste the content) to load it.
+    """
+    from urllib.parse import urlparse
+    import datetime
+
+    parsed   = urlparse(url)
+    host     = parsed.netloc
+    path     = parsed.path or "/"
+    if parsed.query:
+        path += "?" + parsed.query
+
+    # Build raw HTTP request
+    lines = [f"{method.upper()} {path} HTTP/1.1", f"Host: {host}"]
+    for k, v in (headers or {}).items():
+        lines.append(f"{k}: {v}")
+    if body:
+        lines.append(f"Content-Length: {len(body.encode())}")
+    lines.append("")
+    if body:
+        lines.append(body)
+
+    raw = "\r\n".join(lines)
+
+    # Write to pocs/
+    pocs_dir = os.path.join(os.path.dirname(__file__), "pocs")
+    os.makedirs(pocs_dir, exist_ok=True)
+    safe_title = "".join(c if c.isalnum() or c in "-_" else "_" for c in title)
+    timestamp  = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename   = f"{timestamp}_{safe_title}.http"
+    filepath   = os.path.join(pocs_dir, filename)
+
+    with open(filepath, "w") as f:
+        if notes:
+            f.write(f"# {notes}\n\n")
+        f.write(raw)
+
+    result = json.dumps({"saved": filepath, "hint": "Open Burp Repeater → click the Paste icon (or Edit > Paste) to load this request"})
+    log.tool_result("save_poc", result)
+    return result
+
+
+@mcp.tool()
 async def set_codebase_target(path: str) -> str:
     """Set the local codebase path that run_semgrep and run_trufflehog will mount."""
     abs_path = os.path.abspath(path)
