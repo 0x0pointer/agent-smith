@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable
 
 
@@ -15,3 +15,5 @@ class Tool:
     needs_mount:     bool = False
     description:     str  = ""
     max_output:      int  = 12_000   # chars clipped before returning to Claude
+    # Extra volume mounts: list of (host_path, container_path) tuples
+    extra_volumes:   list[tuple[str, str]] = field(default_factory=list)

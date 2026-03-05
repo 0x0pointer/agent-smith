@@ -55,11 +55,8 @@ def tool_call(name: str, kwargs: dict) -> None:
 
 
 def tool_result(name: str, result: str) -> None:
-    """Log a truncated preview of the tool output."""
-    preview = result[:400].replace("\n", " ")
-    if len(result) > 400:
-        preview += "…"
-    _log.info("TOOL_RESULT  %-20s  %s", name, preview)
+    """Log the full tool output — exactly what Claude receives."""
+    _log.info("TOOL_RESULT  %-20s\n%s\n%s", name, result, "─" * 80)
 
 
 def finding(severity: str, title: str, target: str) -> None:

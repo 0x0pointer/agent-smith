@@ -61,7 +61,8 @@ async def _run(name: str, **kwargs) -> str:
     args  = tool.build_args(**kwargs)
     mount = os.environ.get("PENTEST_TARGET_PATH", os.getcwd()) if tool.needs_mount else None
     stdout, stderr, _ = await run_container(
-        tool.image, args, timeout=tool.default_timeout, mount_path=mount
+        tool.image, args, timeout=tool.default_timeout,
+        mount_path=mount, extra_volumes=tool.extra_volumes or None,
     )
     if tool.parser is None:
         result = _clip(stdout or stderr, tool.max_output)
@@ -98,10 +99,13 @@ async def run_httpx(url: str, flags: str = "") -> str:
 @mcp.tool()
 async def run_nuclei(
     url: str,
-    templates: str = "default-logins,cves,exposures,misconfiguration",
+    templates: str = "cve,exposure,misconfig,default-login",
     flags: str = "",
 ) -> str:
-    """Template-based vulnerability scanner. Args: url, templates, flags."""
+    """Template-based vulnerability scanner.
+    templates: comma-separated tag names (cve, exposure, misconfig, default-login, takeover, tech).
+    First run downloads templates (~1-2 min); subsequent runs use the cached copy.
+    """
     return await _run("nuclei", url=url, templates=templates, flags=flags)
 
 
@@ -112,8 +116,30 @@ async def run_ffuf(
     extensions: str = "",
     flags: str = "",
 ) -> str:
-    """Web directory/file fuzzer. Args: url, wordlist, extensions, flags."""
-    return await _run("ffuf", url=url, wordlist=wordlist, extensions=extensions, flags=flags)
+    """Web directory/file fuzzer. Runs ffuf inside the Kali container.
+    url: base URL without FUZZ (e.g. http://target.com) — /FUZZ is appended automatically.
+    wordlist: path inside the Kali container (seclists are pre-installed).
+    extensions: comma-separated (e.g. .php,.html,.bak).
+    flags: extra ffuf flags (e.g. '-mc 200,301 -fc 404 -t 50').
+    """
+    stop = scan_session.check_limits(cost_tracker.get_summary())
+    if stop:
+        return stop
+
+    fuzz_url = f"{url.rstrip('/')}/FUZZ"
+    cmd_parts = ["ffuf", "-u", fuzz_url, "-w", wordlist, "-of", "json", "-s"]
+    if extensions:
+        cmd_parts += ["-e", extensions]
+    if flags:
+        cmd_parts += flags.split()
+    cmd = " ".join(cmd_parts)
+
+    log.tool_call("ffuf", {"url": url, "wordlist": wordlist, "extensions": extensions, "flags": flags})
+    call_id = cost_tracker.start("ffuf")
+    result = _clip(await kali_runner.exec_command(cmd, timeout=300), 8_000)
+    cost_tracker.finish(call_id, result)
+    log.tool_result("ffuf", result)
+    return result
 
 
 @mcp.tool()
