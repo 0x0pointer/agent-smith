@@ -28,6 +28,9 @@ build/
 .LSOverride
 ._*
 
+# ── Claude Code local settings ────────────────────────────────────────────────
+.claude/settings.local.json
+
 # ── Editors ───────────────────────────────────────────────────────────────────
 .idea/
 .vscode/
