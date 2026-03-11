@@ -57,7 +57,7 @@ cp "$REPO_DIR/skills/threat-model.md" "$HOME/.claude/skills/threat-modeling/SKIL
 ok "/threat-model skill installed"
 
 mkdir -p "$HOME/.claude/skills/aikido-triage"
-cp "$REPO_DIR/skills/aikido-triage/SKILL.md" "$HOME/.claude/skills/aikido-triage/SKILL.md"
+cp "$REPO_DIR/skills/aikido-triage.md" "$HOME/.claude/skills/aikido-triage/SKILL.md"
 ok "/aikido-triage skill installed"
 
 # ── Auto-approve pentest-agent MCP tools ──────────────────────────────────────
