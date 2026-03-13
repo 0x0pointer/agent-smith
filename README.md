@@ -59,20 +59,9 @@ flowchart TD
         Logger["logger.py\n(structured session log)"]
     end
 
-    subgraph LightweightDocker["Lightweight Docker Tools (ephemeral, --rm)"]
-        nmap["nmap\ninstrumentisto/nmap"]
-        naabu["naabu\nprojectdiscovery/naabu"]
-        httpx["httpx\nprojectdiscovery/httpx"]
-        nuclei["nuclei\nprojectdiscovery/nuclei"]
-        ffuf["ffuf\nghcr.io/ffuf/ffuf"]
-        subfinder["subfinder\nprojectdiscovery/subfinder"]
-        semgrep["semgrep\nsemgrep/semgrep"]
-        trufflehog["trufflehog\ntrufflesecurity/trufflehog"]
-    end
-
-    subgraph KaliContainer["Kali Container (persistent)"]
-        KaliMCP["kali-mcp HTTP API\n(port 5001)"]
-        KaliTools["nikto · sqlmap · gobuster\ntestssl · hydra · enum4linux-ng\ntheHarvester · amass · …"]
+    subgraph OffensiveContainers["Offensive Tools"]
+        OffensiveImages["Docker images (ephemeral, --rm)"]
+        KaliContainer["pentest-agent/kali-mcp (persistent, port 5001)"]
     end
 
     subgraph Outputs["Session Outputs"]
@@ -95,22 +84,22 @@ flowchart TD
     MCPTools --> Session
     MCPTools --> Cost
     MCPTools --> Logger
-    MCPTools -->|"docker_runner.py"| LightweightDocker
-    MCPTools -->|"kali_runner.py"| KaliMCP
-    KaliMCP --> KaliTools
-    LightweightDocker -->|"scan"| Target
-    KaliTools -->|"scan"| Target
-    LightweightDocker -->|"stdout / parsed results"| Claude
-    KaliMCP -->|"stdout / parsed results"| Claude
+    MCPTools -->|"docker_runner.py"| OffensiveImages
+    MCPTools -->|"kali_runner.py"| KaliContainer
+    OffensiveImages -->|"scan"| Target
+    KaliContainer -->|"scan"| Target
+    OffensiveImages -->|"stdout / results"| Claude
+    KaliContainer -->|"stdout / results"| Claude
     MCPTools -->|"report_finding / report_diagram"| FindingsJSON
     MCPTools -->|"save_poc"| POCs
     Session --> SessionJSON
     Cost --> CostJSON
     Logger --> Logs
+    Logs -->|"resume session history"| Claude
     FindingsJSON --> DashHTML
     DashServer --> DashHTML
     Claude -->|"start_dashboard"| DashServer
-    DashHTML -->|"http://localhost:5000"| User
+    DashHTML -->|"http://localhost:5000"| Browser(["Browser"])
 ```
 
 ---
