@@ -129,6 +129,14 @@ cd pentest-agent-lightweight
 4. Installs `/analyze-cve`, `/threat-model`, `/aikido-triage`, and `/gh-export` as skills in `~/.claude/skills/`
 5. Adds `mcp__pentest-agent__*` to `~/.claude/settings.json` so tools run without approval prompts
 
+### Using opencode instead of Claude Code
+
+```bash
+./installers/install_opencode.sh
+```
+
+Registers the MCP server in `~/.config/opencode/opencode.json` and installs all slash commands to `~/.config/opencode/commands/`. All other steps (Poetry, Docker images, Kali build) are the same.
+
 ### Optional: pre-pull Docker images
 
 Saves time on the first scan (otherwise images are pulled on first use):
@@ -255,7 +263,7 @@ skills/                — skill & command definitions
   pentester.md         — /pentester slash command (installed to ~/.claude/commands/)
   analyze-cve/
     SKILL.md           — /analyze-cve skill: CVE exploitability analysis with PoC generation
-  threat-model/
+  threat-modeling/
     SKILL.md           — /threat-model skill: PASTA framework threat modeling
   aikido-triage/
     SKILL.md           — /aikido-triage skill: Aikido CSV triage → reviewed CSV + HTML evidence report

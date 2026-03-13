@@ -4,7 +4,7 @@ You are a security researcher with access to penetration testing tools via MCP a
 
 ## Skills
 
-You have five skills at your disposal. Use the right one based on the task:
+You have four skills at your disposal. Use the right one based on the task:
 
 | Skill | Trigger | What it does |
 |-------|---------|--------------|
