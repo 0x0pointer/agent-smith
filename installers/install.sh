@@ -89,12 +89,16 @@ _ask_key() {
     IFS= read -r -s value
     echo ""
     if [[ -n "$value" ]]; then
-        # Replace or append
-        if grep -qE "^${key}=" "$ENV_FILE" 2>/dev/null; then
-            sed -i.bak "s|^${key}=.*|${key}=${value}|" "$ENV_FILE" && rm -f "${ENV_FILE}.bak"
-        else
-            echo "${key}=${value}" >> "$ENV_FILE"
-        fi
+        # Use Python to safely write the key=value pair — avoids sed injection
+        # when the value contains shell metacharacters or regex special chars.
+        python3 - "$ENV_FILE" "$key" "$value" <<'PYEOF'
+import sys, pathlib
+env_file, key, value = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+lines = env_file.read_text().splitlines() if env_file.exists() else []
+lines = [l for l in lines if not l.startswith(f"{key}=")]
+lines.append(f"{key}={value}")
+env_file.write_text("\n".join(lines) + "\n")
+PYEOF
         ok "$key saved"
     elif [[ -n "$existing" ]]; then
         ok "$key unchanged"

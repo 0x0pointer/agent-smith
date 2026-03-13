@@ -1,6 +1,13 @@
 # pentest-agent
 
-A penetration testing agent that uses **Claude as the orchestrator** and spins up Docker containers on demand for each security tool. Includes security analysis skills for CVE analysis and threat modeling. Results stream into a live HTML dashboard.
+> **For authorized security testing only.**
+> Only use this tool against systems you own or have explicit written permission to test.
+> Unauthorized access to computer systems is illegal and unethical.
+> The authors accept no liability for misuse.
+
+A penetration testing agent that uses **Claude or opencode as the AI orchestrator** and spins up Docker containers on demand for each security tool. Includes security analysis skills for CVE analysis and threat modeling. Results stream into a live HTML dashboard.
+
+Licensed under the [Apache License 2.0](LICENSE).
 
 ---
 
@@ -8,7 +15,7 @@ A penetration testing agent that uses **Claude as the orchestrator** and spins u
 
 ```
 You (/pentester scan target.com)
-  └── Claude Code
+  └── Claude Code  or  opencode
         └── MCP server (mcp_server.py) — runs locally via Poetry
               ├── docker run --rm instrumentisto/nmap …
               ├── docker run --rm projectdiscovery/nuclei …
@@ -110,7 +117,8 @@ flowchart TD
 |------------|---------|
 | [Docker Desktop](https://www.docker.com/products/docker-desktop/) | must be running |
 | [Poetry](https://python-poetry.org) | `curl -sSL https://install.python-poetry.org \| python3 -` |
-| [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | `npm install -g @anthropic-ai/claude-code` |
+| **Claude Code** _(recommended)_ | `npm install -g @anthropic-ai/claude-code` |
+| **opencode** _(alternative)_ | see [opencode docs](https://opencode.ai) |
 
 ---
 
@@ -122,12 +130,13 @@ cd pentest-agent-lightweight
 ./installers/install.sh
 ```
 
-`install.sh` does five things:
+`install.sh` does the following:
 1. Runs `poetry install` to set up Python dependencies
-2. Registers the MCP server with Claude Code (`--scope user` — applies to all sessions)
-3. Installs `/pentester` as a global slash command in `~/.claude/commands/`
-4. Installs `/analyze-cve`, `/threat-model`, `/aikido-triage`, and `/gh-export` as skills in `~/.claude/skills/`
-5. Adds `mcp__pentest-agent__*` to `~/.claude/settings.json` so tools run without approval prompts
+2. Prompts for AI testing API keys (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `AZURE_OPENAI_API_KEY`) and saves them to `.env`
+3. Registers the MCP server with Claude Code (`--scope user` — applies to all sessions)
+4. Installs `/pentester` as a global slash command in `~/.claude/commands/`
+5. Installs `/analyze-cve`, `/threat-model`, `/aikido-triage`, and `/gh-export` as skills in `~/.claude/skills/`
+6. Adds `mcp__pentest-agent__*` to `~/.claude/settings.json` so tools run without approval prompts
 
 ### Using opencode instead of Claude Code
 
@@ -135,7 +144,7 @@ cd pentest-agent-lightweight
 ./installers/install_opencode.sh
 ```
 
-Registers the MCP server in `~/.config/opencode/opencode.json` and installs all slash commands to `~/.config/opencode/commands/`. All other steps (Poetry, Docker images, Kali build) are the same.
+Registers the MCP server in `~/.config/opencode/opencode.json` and installs all slash commands to `~/.config/opencode/commands/`. All other steps (Poetry, API key prompts, Docker images, Kali build) are the same.
 
 ### Optional: pre-pull Docker images
 
@@ -234,7 +243,7 @@ run_pyrit("http://app.com/v1/chat", attack="prompt_injection")
 
 ## Usage
 
-Open any Claude Code session and run:
+Open any Claude Code or opencode session and run:
 
 ```
 /pentester scan https://example.com
