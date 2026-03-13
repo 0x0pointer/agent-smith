@@ -100,6 +100,8 @@ flowchart TD
     KaliMCP --> KaliTools
     LightweightDocker -->|"scan"| Target
     KaliTools -->|"scan"| Target
+    LightweightDocker -->|"stdout / parsed results"| Claude
+    KaliMCP -->|"stdout / parsed results"| Claude
     MCPTools -->|"report_finding / report_diagram"| FindingsJSON
     MCPTools -->|"save_poc"| POCs
     Session --> SessionJSON
@@ -109,7 +111,6 @@ flowchart TD
     DashServer --> DashHTML
     Claude -->|"start_dashboard"| DashServer
     DashHTML -->|"http://localhost:5000"| User
-    FindingsJSON -->|"aggregated findings → pick next scans"| Claude
 ```
 
 ---
