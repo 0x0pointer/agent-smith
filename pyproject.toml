@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "pentest-agent"
-version = "0.1.0"
+version = "0.2.0"
 description = "Claude-orchestrated lightweight penetration testing agent"
 authors = []
 package-mode = false
@@ -9,6 +9,7 @@ package-mode = false
 python = "^3.11"
 aiohttp = ">=3.9.0"
 mcp = ">=1.0.0"
+fastapi = {extras = ["standard"], version = ">=0.100.0"}
 
 [build-system]
 requires = ["poetry-core"]

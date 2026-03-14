@@ -80,6 +80,19 @@ async def add_finding(
     return entry
 
 
+async def update_finding(finding_id: str, gh_issue: str) -> bool:
+    """Attach a GitHub issue markdown block to an existing finding by id.
+    Returns True if the finding was found and updated, False otherwise."""
+    async with _lock:
+        data = _load()
+        for entry in data["findings"]:
+            if entry.get("id") == finding_id:
+                entry["gh_issue"] = gh_issue
+                _save(data)
+                return True
+    return False
+
+
 async def add_diagram(title: str, mermaid: str) -> dict:
     """Append a Mermaid diagram. Returns the stored entry."""
     entry = {

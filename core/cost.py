@@ -22,7 +22,7 @@ Two-phase recording
 
 Output file
 -----------
-  session_cost.json  (written on every start/finish, polled by dashboard.html)
+  session_cost.json  (written on every start/finish, served by core/api_server.py at GET /api/cost)
 """
 from __future__ import annotations
 

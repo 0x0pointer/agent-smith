@@ -1,0 +1,25 @@
+{
+  "theme": "dark",
+  "themeVariables": {
+    "background":                  "#0d1117",
+    "mainBkg":                     "#161b22",
+    "nodeBorder":                  "#58a6ff",
+    "clusterBkg":                  "#161b22",
+    "clusterBorder":               "#30363d",
+    "titleColor":                  "#f0f6fc",
+    "primaryColor":                "#1f2d3d",
+    "primaryTextColor":            "#e6edf3",
+    "primaryBorderColor":          "#58a6ff",
+    "secondaryColor":              "#21262d",
+    "secondaryTextColor":          "#e6edf3",
+    "secondaryBorderColor":        "#30363d",
+    "tertiaryColor":               "#161b22",
+    "tertiaryTextColor":           "#e6edf3",
+    "tertiaryBorderColor":         "#30363d",
+    "lineColor":                   "#8b949e",
+    "edgeLabelBackground":         "#161b22",
+    "nodeTextColor":               "#e6edf3",
+    "fontFamily":                  "ui-monospace, SFMono-Regular, Consolas, monospace",
+    "fontSize":                    "13px"
+  }
+}

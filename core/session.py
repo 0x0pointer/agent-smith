@@ -28,11 +28,12 @@ causes it to stop invoking further tools and write the final report.
 
 Output file
 -----------
-  session.json  (polled by dashboard.html)
+  session.json  (served by core/api_server.py at GET /api/session)
 """
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -92,6 +93,7 @@ def start(
     }
 
     _current = {
+        "id":           str(uuid.uuid4()),
         "target":       target,
         "depth":        depth,
         "depth_label":  preset["label"],

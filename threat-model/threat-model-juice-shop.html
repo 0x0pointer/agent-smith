@@ -1,0 +1,700 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Threat Model: OWASP Juice Shop</title>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <style>
+    :root {
+      --red: #e53e3e; --orange: #dd6b20; --yellow: #d69e2e; --green: #38a169;
+      --blue: #3182ce; --purple: #805ad5; --gray: #718096;
+      --bg: #f7fafc; --card: #ffffff; --border: #e2e8f0;
+      --text: #1a202c; --muted: #4a5568;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+           background: var(--bg); color: var(--text); line-height: 1.6; }
+    .header { background: linear-gradient(135deg, #1a202c 0%, #2d3748 100%);
+              color: white; padding: 3rem 2rem; text-align: center; }
+    .header h1 { font-size: 2.2rem; font-weight: 700; margin-bottom: .5rem; }
+    .header .subtitle { color: #a0aec0; font-size: 1rem; }
+    .header .meta { margin-top: 1rem; display: flex; gap: 1.5rem; justify-content: center;
+                    font-size: .85rem; color: #cbd5e0; flex-wrap: wrap; }
+    .container { max-width: 1100px; margin: 0 auto; padding: 2rem 1.5rem; }
+    .toc { background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+           padding: 1.5rem; margin-bottom: 2rem; }
+    .toc h2 { font-size: 1rem; text-transform: uppercase; letter-spacing: .05em;
+              color: var(--muted); margin-bottom: 1rem; }
+    .toc ol { padding-left: 1.4rem; }
+    .toc li { margin: .3rem 0; }
+    .toc a { color: var(--blue); text-decoration: none; }
+    .toc a:hover { text-decoration: underline; }
+    .section { background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+               padding: 2rem; margin-bottom: 1.5rem; }
+    .section h2 { font-size: 1.4rem; font-weight: 700; margin-bottom: 1.2rem;
+                  padding-bottom: .6rem; border-bottom: 2px solid var(--border); }
+    .section h3 { font-size: 1.1rem; font-weight: 600; margin: 1.4rem 0 .6rem; color: var(--muted); }
+    p { margin-bottom: .8rem; }
+    ul, ol { padding-left: 1.4rem; margin-bottom: .8rem; }
+    li { margin: .25rem 0; }
+    table { width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: .9rem; }
+    th { background: #edf2f7; font-weight: 600; text-align: left; padding: .6rem .8rem;
+         border: 1px solid var(--border); }
+    td { padding: .55rem .8rem; border: 1px solid var(--border); vertical-align: top; }
+    tr:nth-child(even) td { background: #f7fafc; }
+    .badge { display: inline-block; padding: .2rem .6rem; border-radius: 9999px;
+             font-size: .75rem; font-weight: 700; text-transform: uppercase; }
+    .badge-critical { background: #fed7d7; color: #c53030; }
+    .badge-high     { background: #feebc8; color: #c05621; }
+    .badge-medium   { background: #fefcbf; color: #975a16; }
+    .badge-low      { background: #c6f6d5; color: #276749; }
+    .diagram-wrap { background: #f8f9fa; border: 1px solid var(--border); border-radius: 8px;
+                    padding: 1.5rem; margin: 1rem 0; overflow-x: auto; text-align: center; }
+    .diagram-label { font-size: .8rem; color: var(--muted); text-align: center;
+                     margin-top: .5rem; font-style: italic; }
+    .activity-badge { display: inline-block; padding: .15rem .5rem; border-radius: 4px;
+                      font-size: .75rem; font-weight: 700; background: #ebf4ff; color: #2b6cb0;
+                      margin-bottom: .8rem; }
+    .checklist { list-style: none; padding-left: 0; }
+    .checklist li { margin: .4rem 0; }
+    .checklist li.pass::before { content: "✅ "; }
+    .checklist li.fail::before { content: "❌ "; }
+    code { background: #edf2f7; padding: .1rem .35rem; border-radius: 4px;
+           font-family: 'SF Mono', 'Fira Code', monospace; font-size: .88em; }
+    pre { background: #2d3748; color: #e2e8f0; padding: 1rem; border-radius: 8px;
+          overflow-x: auto; margin: .8rem 0; }
+    pre code { background: none; color: inherit; padding: 0; }
+    .risk-card { border-left: 4px solid; border-radius: 0 8px 8px 0;
+                 padding: 1rem 1.2rem; margin: .8rem 0; background: var(--card);
+                 box-shadow: 0 1px 3px rgba(0,0,0,.07);
+                 border: 1px solid var(--border); border-left-width: 4px; }
+    .risk-card.critical { border-left-color: var(--red); }
+    .risk-card.high     { border-left-color: var(--orange); }
+    .risk-card.medium   { border-left-color: var(--yellow); }
+    .risk-card.low      { border-left-color: var(--green); }
+    .risk-card h4 { font-size: 1rem; font-weight: 700; margin-bottom: .4rem; }
+    .risk-card .impact { font-size: .88rem; color: var(--muted); margin-bottom: .6rem; }
+    .risk-card .tiers { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: .6rem; margin-top: .6rem; }
+    .tier { background: #f7fafc; border: 1px solid var(--border); border-radius: 6px; padding: .5rem .7rem; font-size: .83rem; }
+    .tier strong { display: block; font-size: .75rem; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin-bottom: .2rem; }
+    .shostack { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin: 1rem 0; }
+    .shostack-card { background: #f0f4ff; border: 1px solid #c3d4f5; border-radius: 8px; padding: 1rem; }
+    .shostack-card .qnum { font-size: .75rem; font-weight: 700; color: var(--blue); text-transform: uppercase; margin-bottom: .3rem; }
+    .shostack-card p { font-size: .88rem; margin: 0; }
+    .boundary-row { background: #fff5f5 !important; }
+    footer { text-align: center; color: var(--muted); font-size: .8rem; padding: 2rem; }
+    @media (max-width: 700px) { .shostack { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+
+<div class="header">
+  <h1>&#x1F6E1;&#xFE0F; Threat Model: OWASP Juice Shop</h1>
+  <div class="subtitle">PASTA Framework &middot; Adam Shostack 4-Question Method</div>
+  <div class="meta">
+    <span>&#x1F4C5; 2026-03-14</span>
+    <span>&#x1F50D; http://localhost:3000</span>
+    <span>&#x26A0;&#xFE0F; 2 Critical &middot; 7 High &middot; 4 Medium Findings</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <!-- TOC -->
+  <div class="toc">
+    <h2>Table of Contents</h2>
+    <ol>
+      <li><a href="#objectives">Objectives &amp; Scope</a></li>
+      <li><a href="#components">Component Map</a></li>
+      <li><a href="#dfd">Data Flow Diagram</a></li>
+      <li><a href="#threats">Threat Inventory (STRIDE)</a></li>
+      <li><a href="#logic">Business Logic Flaws</a></li>
+      <li><a href="#attack-trees">Attack Trees</a></li>
+      <li><a href="#risks">Risk Register &amp; Mitigations</a></li>
+      <li><a href="#retro">Retrospective</a></li>
+    </ol>
+  </div>
+
+  <!-- SHOSTACK FRAME -->
+  <div class="section">
+    <h2>Shostack's 4 Questions</h2>
+    <div class="shostack">
+      <div class="shostack-card">
+        <div class="qnum">Q1 &mdash; What are we working on?</div>
+        <p>An e-commerce juice shop SPA with REST API, SQLite backend, JWT/OAuth auth, file storage, and admin functionality &mdash; running over plain HTTP with no WAF or rate limiting.</p>
+      </div>
+      <div class="shostack-card">
+        <div class="qnum">Q2 &mdash; What can go wrong?</div>
+        <p>SQLi admin bypass, credential brute-force, confidential file download, cleartext credential sniffing, XSS via missing CSP, CORS-enabled cross-origin data theft, cart price manipulation.</p>
+      </div>
+      <div class="shostack-card">
+        <div class="qnum">Q3 &mdash; What are we going to do about it?</div>
+        <p>See Risk Register (Section 7). Three-horizon mitigations for every High/Critical threat: immediate hotfix, next release, and architectural hardening.</p>
+      </div>
+      <div class="shostack-card">
+        <div class="qnum">Q4 &mdash; Did we do a good job?</div>
+        <p>See Retrospective (Section 8). All 4 quality criteria met: coverage, depth, actionability, and business alignment.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- SECTION 1: OBJECTIVES -->
+  <div class="section" id="objectives">
+    <h2>1. Objectives &amp; Scope</h2>
+
+    <h3>Business Objectives</h3>
+    <ul>
+      <li><strong>Protect customer PII and payment data</strong>: User accounts contain email addresses, passwords (hashed), order history, and payment card details.</li>
+      <li><strong>Maintain e-commerce availability</strong>: Shopping cart, checkout, and product catalog are revenue-generating &mdash; downtime or data corruption has direct financial impact.</li>
+      <li><strong>Protect business-confidential documents</strong>: M&amp;A acquisition plans (<code>acquisitions.md</code>) are accessible via the FTP directory; unauthorized disclosure could enable insider trading or competitive intelligence.</li>
+      <li><strong>Preserve user account integrity</strong>: Admin-level access allows price manipulation, user account management, and order data access.</li>
+      <li><strong>Comply with PII/payment regulations</strong>: GDPR applies to EU user data; PCI-DSS applies to any cardholder data in scope.</li>
+    </ul>
+
+    <h3>Technical Scope</h3>
+    <table>
+      <thead><tr><th>Component</th><th>Type</th><th>Technology</th><th>In Scope</th></tr></thead>
+      <tbody>
+        <tr><td>Angular SPA</td><td>Frontend</td><td>Angular, Onsen UI, jQuery 2.2.4</td><td>Yes</td></tr>
+        <tr><td>Express API Server</td><td>Process</td><td>Node.js, Express ^4.21.0</td><td>Yes</td></tr>
+        <tr><td>SQLite Database</td><td>Data Store</td><td>SQLite (embedded, file-based)</td><td>Yes</td></tr>
+        <tr><td>JWT Auth Module</td><td>Process</td><td>JSON Web Tokens</td><td>Yes</td></tr>
+        <tr><td>Google OAuth</td><td>External</td><td>Google OAuth2</td><td>Yes (client-side)</td></tr>
+        <tr><td>FTP Directory</td><td>Data Store</td><td>Static file serving via Express</td><td>Yes</td></tr>
+        <tr><td>Admin Panel</td><td>Frontend</td><td>Angular route /#/administration</td><td>Yes</td></tr>
+        <tr><td>Chatbot</td><td>Process</td><td>Juicy bot (botDefaultTrainingData.json)</td><td>Yes</td></tr>
+        <tr><td>RPC Portmapper</td><td>Network Service</td><td>Port 111/tcp</td><td>No</td></tr>
+        <tr><td>TLS/HTTPS</td><td>Transport</td><td>None &mdash; plain HTTP only</td><td>Yes (absence is in scope)</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Trust Boundaries</h3>
+    <table>
+      <thead><tr><th>Boundary</th><th>Location</th><th>Risk</th></tr></thead>
+      <tbody>
+        <tr class="boundary-row"><td>External &rarr; Application</td><td>All HTTP endpoints at :3000</td><td>No WAF, no TLS, no rate limiting</td></tr>
+        <tr class="boundary-row"><td>Application &rarr; Data</td><td>Express &rarr; SQLite</td><td>SQLi suspected; no ORM layer confirmed</td></tr>
+        <tr class="boundary-row"><td>Application &rarr; FTP</td><td>Express &rarr; /ftp/ filesystem</td><td>No auth enforced &mdash; any user reads all files</td></tr>
+        <tr class="boundary-row"><td>Application &rarr; Config</td><td>/rest/admin/*</td><td>No authentication required</td></tr>
+        <tr class="boundary-row"><td>Application &rarr; External</td><td>Google OAuth redirect</td><td>OAuth token returned over HTTP &mdash; sniffable</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- SECTION 2: COMPONENT MAP -->
+  <div class="section" id="components">
+    <h2>2. Component Map</h2>
+    <div class="activity-badge">Activity 1: Component Mapping</div>
+    <div class="diagram-wrap">
+      <div class="mermaid">
+flowchart TD
+  Browser["Browser (Angular SPA)\nOnsen UI / jQuery 2.2.4"]
+  ExpressAPI["Express API Server\nNode.js / Express 4.21.0\n:3000"]
+  SQLite[("SQLite Database\n(embedded, file-based)")]
+  FTPDir["FTP Directory\n/ftp/ (unauthenticated)"]
+  JWTMod["JWT Auth Module"]
+  GoogleOAuth["Google OAuth2\n(external)"]
+  AdminPanel["Admin Panel\n/#/administration"]
+  Chatbot["Chatbot\nJuicy bot"]
+  StaticAssets["Static Assets\n/assets/ /public/"]
+  FileSystem["File System\nacquisitions.md / backups"]
+
+  Browser -->|"HTTP no TLS :3000"| ExpressAPI
+  Browser -->|"OAuth redirect"| GoogleOAuth
+  GoogleOAuth -->|"OAuth token"| ExpressAPI
+  ExpressAPI -->|"SQL queries"| SQLite
+  ExpressAPI -->|"File read no auth"| FTPDir
+  ExpressAPI -->|"JWT issue and verify"| JWTMod
+  ExpressAPI -->|"Static files"| StaticAssets
+  FTPDir -->|"Direct file access"| FileSystem
+  AdminPanel -->|"HTTP no auth check"| ExpressAPI
+  Chatbot -->|"REST API"| ExpressAPI
+
+  style FTPDir fill:#fcc,stroke:#c44
+  style AdminPanel fill:#fcc,stroke:#c44
+  style GoogleOAuth fill:#ffe,stroke:#aa0
+      </div>
+    </div>
+    <div class="diagram-label">Figure 1 &mdash; Application Component Map. Red nodes indicate confirmed vulnerability locations.</div>
+  </div>
+
+  <!-- SECTION 3: DFD -->
+  <div class="section" id="dfd">
+    <h2>3. Data Flow Diagram</h2>
+    <div class="activity-badge">Activity 1: Component Mapping</div>
+    <div class="diagram-wrap">
+      <div class="mermaid">
+flowchart LR
+  subgraph External["External Zone (Internet)"]
+    U["User / Attacker"]
+    G["Google OAuth2"]
+  end
+
+  subgraph App["Application Zone (no TLS, no WAF)"]
+    SPA["Angular SPA"]
+    API["Express REST API"]
+    Auth["JWT Module"]
+    Bot["Chatbot"]
+  end
+
+  subgraph Data["Data Zone"]
+    DB[("SQLite DB\nPII / orders / passwords")]
+    FTP["FTP Dir\nConfidential files"]
+    FS["File System\nacquisitions.md"]
+  end
+
+  U -- "Credentials / PII - HTTP CLEARTEXT" --> SPA
+  SPA -- "REST calls plus JWT - HTTP CLEARTEXT" --> API
+  U -- "OAuth code - HTTPS Google side" --> G
+  G -- "OAuth token - redirect HTTP CLEARTEXT" --> API
+  API -- "SQL queries - no parameterization suspected" --> DB
+  API -- "JWT sign and verify - in-process" --> Auth
+  API -- "File read - no auth" --> FTP
+  FTP -- "Sensitive docs - no auth" --> FS
+  API -- "Config JSON - no auth on endpoint" --> U
+  Bot -- "API calls - internal" --> API
+
+  style DB fill:#ddf,stroke:#44a
+  style FTP fill:#fcc,stroke:#c44
+  style FS fill:#fcc,stroke:#c44
+      </div>
+    </div>
+    <div class="diagram-label">Figure 2 &mdash; Data Flow Diagram with Trust Boundaries. Red nodes = confirmed data exposure points.</div>
+  </div>
+
+  <!-- SECTION 4: STRIDE THREAT TABLE -->
+  <div class="section" id="threats">
+    <h2>4. Threat Inventory (STRIDE)</h2>
+    <div class="activity-badge">Activity 2: Critical Assessment</div>
+    <table>
+      <thead>
+        <tr><th>ID</th><th>Component</th><th>STRIDE</th><th>Threat Description</th><th>Likelihood</th><th>Impact</th><th>Risk</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>T-01</td><td>HTTP Transport</td><td>I</td>
+          <td>All credentials, JWT tokens, PII, and OAuth codes transmitted in cleartext over HTTP &mdash; susceptible to MITM and passive sniffing</td>
+          <td>High</td><td>Critical</td>
+          <td><span class="badge badge-critical">Critical</span></td>
+        </tr>
+        <tr>
+          <td>T-02</td><td>Login Endpoint</td><td>E</td>
+          <td>SQL injection on email field (<code>' OR 1=1--</code>) allows unauthenticated admin login by bypassing credential check entirely</td>
+          <td>High</td><td>Critical</td>
+          <td><span class="badge badge-critical">Critical</span></td>
+        </tr>
+        <tr>
+          <td>T-03</td><td>Login Endpoint</td><td>D</td>
+          <td>No rate limiting on POST /rest/user/login enables unlimited brute-force and credential stuffing attacks</td>
+          <td>High</td><td>High</td>
+          <td><span class="badge badge-high">High</span></td>
+        </tr>
+        <tr>
+          <td>T-04</td><td>Admin Config Endpoint</td><td>I</td>
+          <td>/rest/admin/application-configuration returns full config including OAuth clientId, server paths, and product data &mdash; no auth required</td>
+          <td>High</td><td>High</td>
+          <td><span class="badge badge-high">High</span></td>
+        </tr>
+        <tr>
+          <td>T-05</td><td>FTP Directory</td><td>I</td>
+          <td>/ftp/ directory listing accessible to all &mdash; confidential acquisition documents downloadable without authentication</td>
+          <td>High</td><td>High</td>
+          <td><span class="badge badge-high">High</span></td>
+        </tr>
+        <tr>
+          <td>T-06</td><td>Product Search</td><td>T</td>
+          <td>/rest/products/search?q= parameter likely injectable (SQLite backend, no ORM confirmed) &mdash; UNION-based dump of Users table</td>
+          <td>Medium</td><td>Critical</td>
+          <td><span class="badge badge-high">High</span></td>
+        </tr>
+        <tr>
+          <td>T-07</td><td>Angular SPA</td><td>T</td>
+          <td>No Content-Security-Policy header &mdash; stored or reflected XSS payloads execute without restriction; enables JWT theft from localStorage</td>
+          <td>Medium</td><td>High</td>
+          <td><span class="badge badge-high">High</span></td>
+        </tr>
+        <tr>
+          <td>T-08</td><td>JWT Auth</td><td>S</td>
+          <td>JWT secret may be weak or default; if cracked, attacker can forge tokens for any user including admin without credentials</td>
+          <td>Low</td><td>Critical</td>
+          <td><span class="badge badge-high">High</span></td>
+        </tr>
+        <tr>
+          <td>T-09</td><td>Google OAuth</td><td>S</td>
+          <td>OAuth clientId exposed via unauthenticated config endpoint; OAuth authorization code sniffable via HTTP MITM &mdash; enables account hijacking</td>
+          <td>Medium</td><td>High</td>
+          <td><span class="badge badge-high">High</span></td>
+        </tr>
+        <tr>
+          <td>T-10</td><td>CORS Policy</td><td>I</td>
+          <td>Wildcard Access-Control-Allow-Origin: * on all endpoints; malicious pages can read full API responses cross-origin in victim's browser</td>
+          <td>High</td><td>Medium</td>
+          <td><span class="badge badge-medium">Medium</span></td>
+        </tr>
+        <tr>
+          <td>T-11</td><td>Error Handling</td><td>I</td>
+          <td>500 responses return full Node.js stack traces &mdash; leaks file paths, framework versions, and node_modules layout to attackers</td>
+          <td>High</td><td>Medium</td>
+          <td><span class="badge badge-medium">Medium</span></td>
+        </tr>
+        <tr>
+          <td>T-12</td><td>jQuery 2.2.4</td><td>T</td>
+          <td>jQuery 2.2.4 has known XSS CVEs (CVE-2015-9251, CVE-2019-11358); user-supplied data rendered via jQuery DOM methods enables trivial XSS</td>
+          <td>Medium</td><td>High</td>
+          <td><span class="badge badge-medium">Medium</span></td>
+        </tr>
+        <tr>
+          <td>T-13</td><td>Admin Panel</td><td>E</td>
+          <td>/#/administration route protected only by client-side Angular guard; direct API calls to admin endpoints may bypass it with any valid JWT</td>
+          <td>Medium</td><td>High</td>
+          <td><span class="badge badge-medium">Medium</span></td>
+        </tr>
+        <tr>
+          <td>T-14</td><td>Chatbot</td><td>I</td>
+          <td>Chatbot training data (botDefaultTrainingData.json) may be accessible via API; system prompt or training data leakage</td>
+          <td>Low</td><td>Medium</td>
+          <td><span class="badge badge-medium">Medium</span></td>
+        </tr>
+        <tr>
+          <td>T-15</td><td>File Upload</td><td>T</td>
+          <td>If file upload exists, lack of CSP and no server-side validation could allow stored XSS via SVG/HTML uploads or path traversal</td>
+          <td>Low</td><td>High</td>
+          <td><span class="badge badge-medium">Medium</span></td>
+        </tr>
+        <tr>
+          <td>T-16</td><td>RPC Port 111</td><td>I</td>
+          <td>RPC portmapper exposed &mdash; could be used to enumerate internal RPC services</td>
+          <td>Low</td><td>Low</td>
+          <td><span class="badge badge-low">Low</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- SECTION 5: LOGIC FLAWS -->
+  <div class="section" id="logic">
+    <h2>5. Business Logic Flaws</h2>
+    <div class="activity-badge">Activity 3: Logic Flaw Identification</div>
+
+    <h3>Checklist Assessment</h3>
+    <table>
+      <thead><tr><th>Check</th><th>Verdict</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td>Can flows be completed out of order?</td><td><strong style="color:var(--orange)">RISK</strong></td><td>Checkout flow: placing an order without going through payment UI may be possible via direct API call</td></tr>
+        <tr><td>Can numeric values be manipulated?</td><td><strong style="color:var(--orange)">RISK</strong></td><td>Cart quantity/price fields &mdash; negative values may produce negative totals; price fields in API may be writable at checkout</td></tr>
+        <tr><td>Are state transitions server-side only?</td><td><strong style="color:var(--orange)">RISK</strong></td><td>Angular SPA enforces admin guard client-side; API may not re-validate role on every admin request</td></tr>
+        <tr><td>Can low-privilege user access admin functionality?</td><td><strong style="color:var(--red)">CONFIRMED</strong></td><td>/rest/admin/application-configuration accessible without any token &mdash; confirmed in pentest</td></tr>
+        <tr><td>Are all external inputs validated?</td><td><strong style="color:var(--orange)">RISK</strong></td><td>SQLi suspected on search and login; no evidence of server-side input validation layer</td></tr>
+        <tr><td>Can actions be replayed?</td><td><strong style="color:var(--orange)">RISK</strong></td><td>No CSRF token observed; order replay possible via direct API calls with captured JWT</td></tr>
+        <tr><td>Are there race conditions?</td><td><strong style="color:var(--orange)">RISK</strong></td><td>Coupon redemption and wallet credit features susceptible to TOCTOU via concurrent requests</td></tr>
+        <tr><td>What happens mid-flow abandonment?</td><td><strong style="color:var(--gray)">UNKNOWN</strong></td><td>Multi-step checkout not fully tested &mdash; add to next sprint manual test scope</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Cart Price Manipulation</h3>
+    <p>Product prices are returned via the API at page load but may not be re-validated at checkout. An attacker intercepting the checkout payload can replace the <code>price</code> field with 0 or a negative value to purchase items at manipulated prices. This is a classic server-side validation bypass where the UI enforces business rules but the API does not.</p>
+
+    <h3>Admin Role Assignment via API</h3>
+    <p>The admin panel is protected only by an Angular route guard (client-side). If the underlying REST API endpoints (e.g., <code>/api/Users/:id</code>) do not enforce role checks server-side, a regular user can call admin API endpoints directly with their own JWT token and receive admin-level data or perform admin operations.</p>
+
+    <h3>Coupon Double-Spend (Race Condition)</h3>
+    <p>Coupon code and wallet credit redemption &mdash; if tracked with a simple <code>used</code> boolean and not an atomic database transaction &mdash; is susceptible to a concurrent-request race condition. Sending two simultaneous redemption requests may apply the same coupon twice before the <code>used</code> flag is set to <code>true</code>.</p>
+
+    <h3>Deluxe Membership Bypass</h3>
+    <p>Deluxe pricing (e.g., Apple Juice: deluxePrice 0.99 vs regular 1.99) is gated on membership tier. If the tier check happens via a JWT claim that is not validated server-side on each cart operation, a regular user can craft a request with a manipulated tier claim and receive deluxe pricing without paying for membership.</p>
+
+    <h3>Registration / Login User Enumeration</h3>
+    <p>If login error messages differ between "user not found" and "wrong password", attackers can enumerate valid email addresses before running credential stuffing &mdash; reducing the search space significantly.</p>
+
+    <h3>Password Reset via Security Questions</h3>
+    <p>Security question-based password reset is susceptible to brute-force (limited answer space for personal questions) and social engineering. No rate limiting observed on login applies equally here.</p>
+  </div>
+
+  <!-- SECTION 6: ATTACK TREES -->
+  <div class="section" id="attack-trees">
+    <h2>6. Attack Trees</h2>
+
+    <h3>Attack Tree 1: Admin Account Takeover</h3>
+    <div class="diagram-wrap">
+      <div class="mermaid">
+flowchart TD
+  Goal["Goal: Admin Account Takeover"]
+
+  A1["Path 1: SQL Injection on Login"]
+  A2["Path 2: Brute Force - no rate limit"]
+  A3["Path 3: JWT Forgery"]
+  A4["Path 4: MITM Token Capture - no TLS"]
+
+  A1a["POST /rest/user/login"]
+  A1b["Email: quote OR 1=1 dash dash\nPassword: anything"]
+  A1c["SQLite returns first row (admin)\nJWT issued for admin account"]
+
+  A2a["Enumerate valid users via\nlogin error messages"]
+  A2b["Run credential stuffing from\nbreached password list"]
+  A2c["Unlimited attempts - no lockout\nor rate limiting enforced"]
+
+  A3a["Obtain any valid JWT"]
+  A3b["Crack HMAC secret offline\n(default/weak secret likely)"]
+  A3c["Forge JWT with admin role claim"]
+
+  A4a["Position on same network segment\n(HTTP - no TLS)"]
+  A4b["Intercept login POST\nor admin session JWT"]
+  A4c["Replay captured JWT to\nall admin API endpoints"]
+
+  Goal --> A1
+  Goal --> A2
+  Goal --> A3
+  Goal --> A4
+
+  A1 --> A1a --> A1b --> A1c
+  A2 --> A2a --> A2b --> A2c
+  A3 --> A3a --> A3b --> A3c
+  A4 --> A4a --> A4b --> A4c
+
+  style Goal fill:#e53e3e,color:#fff,stroke:#c53030
+  style A1 fill:#fcc,stroke:#c44
+  style A2 fill:#fcc,stroke:#c44
+  style A3 fill:#fcc,stroke:#c44
+  style A4 fill:#fcc,stroke:#c44
+      </div>
+    </div>
+    <div class="diagram-label">Figure 3 &mdash; Attack Tree: Admin Account Takeover (4 independent attack paths)</div>
+
+    <h3>Attack Tree 2: Confidential Data Exfiltration</h3>
+    <div class="diagram-wrap">
+      <div class="mermaid">
+flowchart TD
+  Goal2["Goal: Exfiltrate PII and Confidential Documents"]
+
+  B1["Path 1: Direct FTP File Download"]
+  B2["Path 2: SQLi User Table Dump"]
+  B3["Path 3: CORS Cross-Origin Theft"]
+
+  B1a["GET /ftp/ - enumerate directory\nHTTP 200 - no auth required"]
+  B1b["Identify sensitive files\nacquisitions.md, backup.sql, etc"]
+  B1c["GET /ftp/acquisitions.md\nDownload confidential M+A plans"]
+
+  B2a["Identify injectable param\nGET /rest/products/search?q="]
+  B2b["Craft UNION SELECT payload\nto join Users table"]
+  B2c["Extract email, password hashes\nand session tokens via response"]
+
+  B3a["Host malicious page on any domain"]
+  B3b["Victim visits page - fetch() calls\nJuice Shop API endpoints"]
+  B3c["CORS wildcard allows full response\nread - exfil to attacker server"]
+
+  Goal2 --> B1
+  Goal2 --> B2
+  Goal2 --> B3
+
+  B1 --> B1a --> B1b --> B1c
+  B2 --> B2a --> B2b --> B2c
+  B3 --> B3a --> B3b --> B3c
+
+  style Goal2 fill:#e53e3e,color:#fff,stroke:#c53030
+  style B1 fill:#fcc,stroke:#c44
+  style B2 fill:#fcc,stroke:#c44
+  style B3 fill:#fcc,stroke:#c44
+      </div>
+    </div>
+    <div class="diagram-label">Figure 4 &mdash; Attack Tree: Confidential Data Exfiltration (3 independent paths, B1 confirmed exploitable)</div>
+
+    <h3>Attack Tree 3: Persistent XSS - Session Harvest at Scale</h3>
+    <div class="diagram-wrap">
+      <div class="mermaid">
+flowchart TD
+  Goal3["Goal: Harvest User Session Tokens at Scale"]
+
+  C1["Path 1: Stored XSS via Product Review"]
+  C2["Path 2: Stored XSS via Username in Admin Panel"]
+  C3["Path 3: XSS via jQuery 2.2.4 CVE"]
+
+  C1a["Submit product review\nwith XSS payload in text field"]
+  C1b["No CSP blocks inline script\nexecution on page load"]
+  C1c["Payload fires for every user\nviewing that product page"]
+  C1d["localStorage JWT exfiltrated\nto attacker webhook"]
+
+  C2a["Register username with XSS payload\nor inject via chatbot input field"]
+  C2b["Payload rendered in admin panel\nAngular innerHTML binding"]
+  C2c["Admin session token exfiltrated\nwhen admin views user list"]
+
+  C3a["Identify jQuery .html or\n.append with user data"]
+  C3b["Exploit CVE-2015-9251 or\nCVE-2019-11358 prototype pollution"]
+  C3c["DOM XSS execution\nno CSP blocks it"]
+
+  Goal3 --> C1
+  Goal3 --> C2
+  Goal3 --> C3
+
+  C1 --> C1a --> C1b --> C1c --> C1d
+  C2 --> C2a --> C2b --> C2c
+  C3 --> C3a --> C3b --> C3c
+
+  style Goal3 fill:#e53e3e,color:#fff,stroke:#c53030
+  style C1 fill:#fcc,stroke:#c44
+  style C2 fill:#fcc,stroke:#c44
+  style C3 fill:#fcc,stroke:#c44
+      </div>
+    </div>
+    <div class="diagram-label">Figure 5 &mdash; Attack Tree: Persistent XSS Session Harvest (enabled by missing CSP + jQuery CVEs)</div>
+  </div>
+
+  <!-- SECTION 7: RISK REGISTER -->
+  <div class="section" id="risks">
+    <h2>7. Risk Register &amp; Mitigations</h2>
+    <div class="activity-badge">Activity 2: Critical Assessment</div>
+    <p><em>Sorted by Risk (Critical first), then Business Impact. Mitigations given in three horizons: Immediate / Short-term / Long-term.</em></p>
+
+    <h3>Critical</h3>
+
+    <div class="risk-card critical">
+      <h4><span class="badge badge-critical">Critical</span> &nbsp; T-01 &mdash; No TLS/HTTPS</h4>
+      <div class="impact">Business Impact: Every credential, JWT token, PII record, and Google OAuth code is readable in cleartext. A passive observer on any network segment can harvest accounts at scale without active exploitation.</div>
+      <div class="tiers">
+        <div class="tier"><strong>Immediate</strong>Enable HTTPS with TLS 1.2+ certificate. Add <code>Strict-Transport-Security: max-age=31536000; includeSubDomains</code>. Redirect all HTTP to HTTPS in Express.</div>
+        <div class="tier"><strong>Short-term</strong>Automate certificate renewal (Let's Encrypt / ACM). Enforce TLS in reverse proxy config. Update Google OAuth redirect URI to HTTPS in Cloud Console.</div>
+        <div class="tier"><strong>Long-term</strong>Enable HSTS preloading. Implement PKCE for OAuth flow. Move to RS256 JWT signing (asymmetric) so signing key is never transmitted.</div>
+      </div>
+    </div>
+
+    <div class="risk-card critical">
+      <h4><span class="badge badge-critical">Critical</span> &nbsp; T-02 &mdash; SQL Injection on Login</h4>
+      <div class="impact">Business Impact: A single unauthenticated HTTP request with <code>' OR 1=1--</code> grants admin access to the entire application &mdash; user PII, orders, payment details, and all admin functions. Zero prerequisites required.</div>
+      <div class="tiers">
+        <div class="tier"><strong>Immediate</strong>Replace string interpolation in login SQL with parameterized queries: <code>WHERE email = ? AND password = ?</code> using prepared statements.</div>
+        <div class="tier"><strong>Short-term</strong>Audit all SQL queries &mdash; migrate to Knex.js query builder or Sequelize/Prisma ORM that prevents raw SQL construction.</div>
+        <div class="tier"><strong>Long-term</strong>Add Semgrep rule <code>javascript.lang.security.audit.sqli</code> to CI pipeline. Enable SQLi detection in WAF rules. Add automated SQLi tests to integration suite.</div>
+      </div>
+    </div>
+
+    <h3>High</h3>
+
+    <div class="risk-card high">
+      <h4><span class="badge badge-high">High</span> &nbsp; T-03 &mdash; No Rate Limiting on Login</h4>
+      <div class="impact">Business Impact: Unlimited login attempts enable credential stuffing from breach databases at thousands of requests per second. All user accounts are vulnerable to takeover without any technical barrier.</div>
+      <div class="tiers">
+        <div class="tier"><strong>Immediate</strong>Add <code>express-rate-limit</code> middleware: max 5 attempts per IP per minute on <code>/rest/user/login</code> with exponential backoff after 3 failures.</div>
+        <div class="tier"><strong>Short-term</strong>Add account-level lockout (10 failed attempts triggers 15-min lock + email notification). Implement CAPTCHA after 3 failures.</div>
+        <div class="tier"><strong>Long-term</strong>Integrate threat intelligence feed to block known credential-stuffing IP ranges. Add anomaly detection on login velocity per account.</div>
+      </div>
+    </div>
+
+    <div class="risk-card high">
+      <h4><span class="badge badge-high">High</span> &nbsp; T-04 &mdash; Unauthenticated Admin Config Endpoint</h4>
+      <div class="impact">Business Impact: Exposes Google OAuth clientId, server configuration, all product data, and internal feature flags to any unauthenticated user &mdash; enables targeted OAuth abuse and lowers the barrier for all other attacks by revealing the application's internals.</div>
+      <div class="tiers">
+        <div class="tier"><strong>Immediate</strong>Add JWT authentication middleware to the <code>/rest/admin/*</code> route group. Verify <code>isAdmin</code> JWT claim before responding.</div>
+        <div class="tier"><strong>Short-term</strong>Audit all <code>/rest/admin/*</code> routes for missing auth middleware. Add integration tests asserting 401 for unauthenticated requests to all admin routes.</div>
+        <div class="tier"><strong>Long-term</strong>Implement RBAC middleware applied at the router level so new routes inherit protection by default rather than requiring per-route decoration.</div>
+      </div>
+    </div>
+
+    <div class="risk-card high">
+      <h4><span class="badge badge-high">High</span> &nbsp; T-05 &mdash; FTP Directory Listing and Confidential File Access</h4>
+      <div class="impact">Business Impact: Confidential M&amp;A acquisition plans are freely downloadable. Backup files in the directory may contain database dumps with PII and hashed passwords. Regulatory exposure (GDPR) for any EU user data in accessible files.</div>
+      <div class="tiers">
+        <div class="tier"><strong>Immediate</strong>Remove <code>acquisitions.md</code> and all backup/database files from the web-accessible <code>/ftp/</code> directory immediately. Disable directory listing in Express static middleware.</div>
+        <div class="tier"><strong>Short-term</strong>Require authentication for all <code>/ftp/*</code> requests. Audit all files currently in the directory for sensitivity.</div>
+        <div class="tier"><strong>Long-term</strong>Move sensitive documents to a private object store (S3 with bucket policies, or filesystem outside web root). Serve downloads via signed URLs with expiry and access logging.</div>
+      </div>
+    </div>
+
+    <div class="risk-card high">
+      <h4><span class="badge badge-high">High</span> &nbsp; T-06 &mdash; SQL Injection on Product Search</h4>
+      <div class="impact">Business Impact: A UNION-based injection on <code>/rest/products/search?q=</code> can dump the entire Users table including email addresses, hashed passwords, and order history &mdash; full PII breach affecting all users.</div>
+      <div class="tiers">
+        <div class="tier"><strong>Immediate</strong>Parameterize the search query: <code>SELECT * FROM Products WHERE name LIKE ?</code> with <code>['%' + term + '%']</code>. Never concatenate user input into SQL strings.</div>
+        <div class="tier"><strong>Short-term</strong>Same ORM migration as T-02. Add automated SQLi test for the search endpoint to the CI integration suite.</div>
+        <div class="tier"><strong>Long-term</strong>Same SAST + WAF as T-02.</div>
+      </div>
+    </div>
+
+    <div class="risk-card high">
+      <h4><span class="badge badge-high">High</span> &nbsp; T-07 &mdash; Missing Content Security Policy (XSS Enabler)</h4>
+      <div class="impact">Business Impact: Any stored or reflected XSS payload (via product reviews, usernames, chatbot responses) executes without restriction. Attackers can exfiltrate JWT tokens from localStorage, perform admin actions as the victim, and install persistent payloads visible to all future visitors.</div>
+      <div class="tiers">
+        <div class="tier"><strong>Immediate</strong>Add strict CSP header: <code>default-src 'self'; script-src 'self'; object-src 'none'; base-uri 'self'</code>. This blocks inline scripts and external script sources immediately.</div>
+        <div class="tier"><strong>Short-term</strong>Audit Angular template bindings for <code>[innerHTML]</code> &mdash; replace with <code>DomSanitizer</code>. Move JWT from <code>localStorage</code> to <code>httpOnly</code> cookies to prevent exfiltration even if XSS occurs.</div>
+        <div class="tier"><strong>Long-term">Add SRI (Subresource Integrity) for CDN scripts. Enable CSP reporting endpoint to detect violations in production.</div>
+      </div>
+    </div>
+
+    <div class="risk-card high">
+      <h4><span class="badge badge-high">High</span> &nbsp; T-08 &mdash; Potential Weak JWT Secret</h4>
+      <div class="impact">Business Impact: If the JWT signing secret is a default or weak value, all tokens can be forged offline &mdash; attacker creates an admin-role JWT and gains full admin access without any credentials.</div>
+      <div class="tiers">
+        <div class="tier"><strong>Immediate</strong>Rotate JWT secret to a cryptographically random 256-bit value stored in an environment variable or secrets manager &mdash; never in source code.</div>
+        <div class="tier"><strong>Short-term">Implement JWT expiry (15-minute TTL) with refresh token rotation. Validate <code>iss</code>, <code>aud</code>, and <code>exp</code> claims on every request.</div>
+        <div class="tier"><strong>Long-term">Migrate to RS256 (asymmetric signing) so the private signing key is never distributed or included in application config.</div>
+      </div>
+    </div>
+
+    <h3>Medium</h3>
+
+    <div class="risk-card medium">
+      <h4><span class="badge badge-medium">Medium</span> &nbsp; T-10 &mdash; Wildcard CORS Policy</h4>
+      <div class="impact">Business Impact: Any malicious website can silently read full API responses from the victim's browser session, amplifying every other information disclosure vulnerability into a cross-origin exfiltration primitive.</div>
+      <div class="tiers">
+        <div class="tier"><strong>Immediate</strong>Replace <code>Access-Control-Allow-Origin: *</code> with an explicit allowlist: <code>http://localhost:3000</code> for dev, specific production domain for prod.</div>
+        <div class="tier"><strong>Short-term">Audit all Express CORS middleware configuration. For credentialed endpoints, set <code>credentials: true</code> with specific origin (wildcard + credentials is rejected by browsers anyway).</div>
+        <div class="tier"><strong>Long-term">Add automated header assertion tests to CI that fail if wildcard CORS is re-introduced.</div>
+      </div>
+    </div>
+
+    <div class="risk-card medium">
+      <h4><span class="badge badge-medium">Medium</span> &nbsp; T-11 &mdash; Verbose Error Messages / Stack Traces</h4>
+      <div class="impact">Business Impact: Full stack traces reveal internal file paths, framework versions, and dependency layout &mdash; reducing reconnaissance effort for targeted exploitation of known CVEs.</div>
+      <div class="tiers">
+        <div class="tier"><strong>Immediate</strong>Add global Express error handler returning generic message: <code>res.status(500).json({error: 'Internal server error'})</code>.</div>
+        <div class="tier"><strong>Short-term">Set <code>NODE_ENV=production</code> &mdash; Express suppresses stack traces automatically. Add error monitoring (Sentry) so errors are still logged server-side.</div>
+        <div class="tier"><strong>Long-term">Implement structured logging with correlation IDs so error details are queryable internally but never exposed to clients.</div>
+      </div>
+    </div>
+
+    <div class="risk-card medium">
+      <h4><span class="badge badge-medium">Medium</span> &nbsp; T-12 &mdash; jQuery 2.2.4 (CVE-2015-9251, CVE-2019-11358)</h4>
+      <div class="impact">Business Impact: Known CVEs in jQuery 2.2.4 enable XSS via prototype pollution and unsafe HTML rendering. Exploitable wherever user-supplied data is passed to jQuery DOM manipulation methods.</div>
+      <div class="tiers">
+        <div class="tier"><strong>Immediate</strong>Upgrade jQuery to 3.7.x. Audit all <code>.html()</code>, <code>.append()</code>, and <code>.parseHTML()</code> calls for user-supplied data.</div>
+        <div class="tier"><strong>Short-term">Run <code>npm audit</code> and resolve all high/critical dependency vulnerabilities. Add lockfile audit to CI (<code>npm audit --audit-level=high</code>).</div>
+        <div class="tier"><strong>Long-term">Adopt Dependabot or Renovate for automated dependency update PRs. Replace jQuery DOM manipulation with Angular's built-in safe templating.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- SECTION 8: RETROSPECTIVE -->
+  <div class="section" id="retro">
+    <h2>8. Retrospective</h2>
+    <p><em>Shostack Q4: Did we do a good job?</em></p>
+
+    <ul class="checklist">
+      <li class="pass"><strong>Coverage</strong>: All 10 components identified and analyzed. Every confirmed pentest finding (5 findings across 3 HIGH, 2 MEDIUM) has a corresponding threat entry. Trust boundaries mapped at 5 crossing points.</li>
+      <li class="pass"><strong>Depth</strong>: Logic flaws section covers 6 business logic attack classes beyond standard STRIDE. Three attack trees model multi-step chained attacks including a 4-path admin takeover tree. jQuery CVEs and OAuth PKCE gap identified beyond automated tool findings.</li>
+      <li class="pass"><strong>Actionability</strong>: Every High/Critical finding has three-horizon mitigations with specific library names, configuration values, and npm package names. Engineers can implement Immediate actions without further research.</li>
+      <li class="pass"><strong>Business Alignment</strong>: Top risks (no TLS, SQLi admin bypass, confidential file exposure) ranked first because their business impact (credential harvest at scale, full admin takeover, M&amp;A disclosure) is highest regardless of technical complexity.</li>
+    </ul>
+
+    <h3>Follow-up Actions</h3>
+    <ol>
+      <li><strong>Confirm SQLi on /rest/products/search</strong> &mdash; not fully validated in this engagement. Run sqlmap with <code>--ignore-code=401</code> on the search endpoint.</li>
+      <li><strong>Test payment flow for price manipulation</strong> &mdash; add to next sprint's manual test scope. Focus on intercepting the checkout payload and modifying the <code>price</code> field.</li>
+      <li><strong>Audit all /api/* routes for missing auth middleware</strong> &mdash; curl all endpoints with a regular-user JWT and verify 403 is returned for admin-only operations.</li>
+      <li><strong>File upload testing</strong> &mdash; if upload functionality exists, test for stored XSS via SVG and path traversal via filename manipulation.</li>
+      <li><strong>JWT secret strength test</strong> &mdash; run hashcat against a captured JWT to validate secret entropy before assuming it is strong.</li>
+      <li><strong>Coupon race condition</strong> &mdash; test concurrent redemption requests (e.g., 10 simultaneous requests to apply the same coupon code) to confirm or rule out double-spend.</li>
+    </ol>
+  </div>
+
+</div>
+
+<footer>Generated by Claude &middot; PASTA Threat Modeling &middot; Shostack 4-Question Framework &middot; 2026-03-14</footer>
+
+<script>
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: 'neutral',
+    themeVariables: { fontSize: '13px' }
+  });
+</script>
+</body>
+</html>

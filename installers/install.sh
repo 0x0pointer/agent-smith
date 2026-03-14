@@ -19,8 +19,10 @@ echo ""
 command -v docker  >/dev/null 2>&1 || die "docker not found — install Docker Desktop first."
 command -v poetry  >/dev/null 2>&1 || die "poetry not found — install with: curl -sSL https://install.python-poetry.org | python3 -"
 command -v claude  >/dev/null 2>&1 || die "claude not found — install Claude Code first: https://docs.anthropic.com/en/docs/claude-code"
+command -v node    >/dev/null 2>&1 || die "node not found — install Node.js v18+ from https://nodejs.org (required for Mermaid diagram rendering)"
+command -v npx     >/dev/null 2>&1 || die "npx not found — comes with Node.js, check your Node installation"
 
-ok "Prerequisites satisfied (docker, poetry, claude)"
+ok "Prerequisites satisfied (docker, poetry, claude, node)"
 
 # ── Python dependencies ───────────────────────────────────────────────────────
 echo ""
@@ -34,7 +36,7 @@ echo "Registering pentest-agent MCP server..."
 # Remove stale registration if it exists (ignore errors)
 claude mcp remove --scope user pentest-agent 2>/dev/null || true
 claude mcp add --scope user pentest-agent \
-    -- poetry -C "$REPO_DIR" run python mcp_server.py
+    -- poetry -C "$REPO_DIR" run python -m mcp_server
 ok "MCP server registered (scope: user)"
 
 # ── Install /pentester slash command ──────────────────────────────────────────

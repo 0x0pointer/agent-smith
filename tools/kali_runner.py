@@ -84,6 +84,7 @@ async def ensure_running() -> tuple[bool, str]:
             "--rm",
             "--cap-add=NET_RAW",
             "--cap-add=NET_ADMIN",
+            "--add-host=host.docker.internal:host-gateway",
             *env_flags,
             KALI_IMAGE,
             stdout=asyncio.subprocess.DEVNULL,
@@ -126,11 +127,20 @@ async def stop() -> str:
 # Command execution
 # ---------------------------------------------------------------------------
 
+def _host_rewrite(command: str) -> str:
+    """Rewrite localhost/127.0.0.1 → host.docker.internal so tools reach the host."""
+    command = command.replace("localhost", "host.docker.internal")
+    command = command.replace("127.0.0.1", "host.docker.internal")
+    return command
+
+
 async def exec_command(command: str, timeout: int = 120) -> str:
     """
     Run a shell command via the kali-server-mcp HTTP API.
     Auto-starts the container if it isn't already running.
+    localhost/127.0.0.1 are transparently rewritten to host.docker.internal.
     """
+    command = _host_rewrite(command)
     import aiohttp
 
     ok, msg = await ensure_running()

@@ -1,0 +1,718 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Pentest Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked@9/marked.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #0d1117;
+      color: #c9d1d9;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      padding: 1.5rem 2rem;
+    }
+
+    /* ── Header ── */
+    h1 { font-size: 1.2rem; color: #f0f6fc; margin-bottom: 0.25rem; }
+
+    #status { font-size: 0.8rem; color: #6e7681; margin-bottom: 0.75rem; }
+    #status .dot {
+      display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+      background: #3fb950; margin-right: 5px; animation: blink 2s infinite;
+    }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+    /* ── Session strip ── */
+    #session-strip {
+      background: #161b22; border: 1px solid #30363d; border-radius: 6px;
+      padding: 0.55rem 1rem; margin-bottom: 1rem;
+      display: none; gap: 2rem; flex-wrap: wrap; align-items: center;
+      font-size: 0.82rem;
+    }
+    #session-strip.visible { display: flex; }
+    #session-strip .s-label { color: #6e7681; }
+    #session-strip strong   { color: #f0f6fc; }
+    .session-status-running       { color: #3fb950; font-weight: 700; }
+    .session-status-complete      { color: #58a6ff; font-weight: 700; }
+    .session-status-limit_reached { color: #ff4d4f; font-weight: 700; }
+
+    /* ── Tab nav ── */
+    .tab-nav { display: flex; gap: 0; margin-bottom: 1.25rem; border-bottom: 1px solid #30363d; }
+    .tab-btn {
+      background: none; border: none; border-bottom: 2px solid transparent;
+      color: #8b949e; padding: 0.5rem 1.2rem; font-size: 0.85rem; cursor: pointer;
+      transition: color .15s; margin-bottom: -1px;
+    }
+    .tab-btn:hover { color: #c9d1d9; }
+    .tab-btn.active { color: #f0f6fc; border-bottom-color: #58a6ff; font-weight: 600; }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+
+    /* ── Stats bar ── */
+    #stats { display: flex; gap: 0.6rem; flex-wrap: wrap; margin-bottom: 1.25rem; }
+    .stat {
+      padding: 0.25rem 0.75rem; border-radius: 4px; font-size: 0.8rem;
+      font-weight: 600; border: 1px solid; cursor: pointer; transition: opacity .15s;
+    }
+    .stat:hover { opacity: .7; }
+    .stat.active { outline: 2px solid white; }
+    .stat-all      { background: #21262d;              border-color: #6e7681; color: #c9d1d9; }
+    .stat-critical { background: rgba(255,77,79,.15);  border-color: #ff4d4f; color: #ff4d4f; }
+    .stat-high     { background: rgba(250,140,22,.15); border-color: #fa8c16; color: #fa8c16; }
+    .stat-medium   { background: rgba(250,173,20,.15); border-color: #faad14; color: #faad14; }
+    .stat-low      { background: rgba(82,196,26,.15);  border-color: #52c41a; color: #52c41a; }
+    .stat-info     { background: rgba(24,144,255,.15); border-color: #1890ff; color: #1890ff; }
+
+    /* ── Findings table ── */
+    table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+    thead tr { background: #161b22; }
+    th { text-align: left; padding: 0.5rem 0.75rem; color: #8b949e; font-weight: 500;
+         border-bottom: 1px solid #30363d; }
+    tbody tr { border-bottom: 1px solid #21262d; }
+    tbody tr:hover { background: #161b22; }
+    td { padding: 0.5rem 0.75rem; vertical-align: top; }
+
+    .badge {
+      display: inline-block; padding: 0.15rem 0.5rem; border-radius: 3px;
+      font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
+    }
+    .badge-critical { background: rgba(255,77,79,.2);  color: #ff4d4f; }
+    .badge-high     { background: rgba(250,140,22,.2); color: #fa8c16; }
+    .badge-medium   { background: rgba(250,173,20,.2); color: #faad14; }
+    .badge-low      { background: rgba(82,196,26,.2);  color: #52c41a; }
+    .badge-info     { background: rgba(24,144,255,.2); color: #1890ff; }
+
+    .new-badge {
+      display: inline-block; padding: .1rem .4rem; border-radius: 3px; font-size: .65rem;
+      font-weight: 700; background: #3fb950; color: #000; margin-left: .4rem;
+      animation: fadeout 4s forwards;
+    }
+    @keyframes fadeout { 0%,70%{opacity:1} 100%{opacity:0} }
+
+    .target { font-family: monospace; font-size: 0.8rem; color: #58a6ff; }
+    .tool   { font-size: 0.75rem; color: #6e7681; }
+    .ts     { font-size: 0.75rem; color: #6e7681; white-space: nowrap; }
+    .desc   { color: #c9d1d9; }
+    .cve    { font-size: 0.75rem; color: #e3b341; }
+
+    details { margin-top: 0.4rem; }
+    summary { font-size: 0.75rem; color: #6e7681; cursor: pointer; user-select: none; list-style: none; }
+    summary::before { content: "▶ evidence"; }
+    details[open] summary::before { content: "▼ evidence"; }
+    pre.evidence {
+      margin-top: 0.4rem; padding: 0.6rem; background: #010409;
+      border: 1px solid #21262d; border-radius: 4px;
+      font-family: "SFMono-Regular", Consolas, monospace; font-size: 0.75rem;
+      color: #7ee787; white-space: pre-wrap; word-break: break-all;
+      max-height: 260px; overflow-y: auto;
+    }
+
+    .copy-gh-btn {
+      display: inline-flex; align-items: center; gap: 0.3rem;
+      background: none; border: 1px solid #30363d; border-radius: 4px;
+      color: #6e7681; padding: 0.15rem 0.45rem; font-size: 0.72rem;
+      cursor: pointer; transition: color .15s, border-color .15s; vertical-align: middle;
+      margin-left: 0.5rem; white-space: nowrap;
+    }
+    .copy-gh-btn:hover { color: #58a6ff; border-color: #58a6ff; }
+    .copy-gh-btn.copied { color: #3fb950; border-color: #3fb950; }
+
+    #empty {
+      padding: 3rem; text-align: center; color: #6e7681;
+      border: 1px dashed #30363d; border-radius: 6px;
+    }
+
+    /* ── Topology (diagrams) ── */
+    .diagram-card {
+      background: #161b22; border: 1px solid #30363d; border-radius: 6px;
+      padding: 1rem; margin-bottom: 1rem;
+    }
+    .diagram-card h3 { font-size: 0.9rem; color: #f0f6fc; margin-bottom: 0.75rem; }
+    .diagram-card .ts { display: block; margin-bottom: 0.5rem; }
+    .mermaid { background: #161b22; }
+    .mermaid svg { max-width: 100%; }
+
+    /* ── Component map ── */
+    .comp-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 0.75rem;
+    }
+    .comp-card {
+      background: #161b22; border: 1px solid #30363d; border-radius: 6px;
+      padding: 0.85rem 1rem;
+    }
+    .comp-header {
+      display: flex; align-items: center; gap: 0.6rem;
+      margin-bottom: 0.6rem;
+    }
+    .comp-icon { font-size: 1rem; }
+    .comp-name { font-size: 0.88rem; font-weight: 600; color: #f0f6fc; }
+    .comp-count { font-size: 0.72rem; color: #6e7681; margin-left: auto; }
+    .comp-vuln {
+      display: flex; align-items: flex-start; gap: 0.5rem;
+      padding: 0.3rem 0; border-top: 1px solid #21262d;
+      font-size: 0.8rem; color: #c9d1d9;
+    }
+    .comp-vuln-title { flex: 1; line-height: 1.4; }
+
+    /* ── Threat Model tab ── */
+    #threat-model-wrap {
+      background: #161b22; border: 1px solid #30363d; border-radius: 6px;
+      padding: 1.5rem 2rem;
+    }
+    #threat-model-wrap.empty { text-align: center; color: #6e7681; padding: 3rem; }
+    #tm-meta { font-size: 0.78rem; color: #6e7681; margin-bottom: 1.25rem; }
+    #tm-meta strong { color: #f0f6fc; }
+    #tm-content h1 { font-size: 1.3rem; color: #f0f6fc; margin: 1.2rem 0 0.6rem; }
+    #tm-content h2 { font-size: 1.1rem; color: #e6edf3; margin: 1rem 0 0.5rem;
+                     border-bottom: 1px solid #30363d; padding-bottom: .3rem; }
+    #tm-content h3 { font-size: 0.95rem; color: #c9d1d9; margin: 0.8rem 0 0.4rem; }
+    #tm-content p  { color: #c9d1d9; font-size: 0.87rem; line-height: 1.65; margin-bottom: .6rem; }
+    #tm-content ul, #tm-content ol { padding-left: 1.4rem; color: #c9d1d9; font-size: 0.87rem; margin-bottom: .6rem; }
+    #tm-content li { margin: .2rem 0; }
+    #tm-content table { width: 100%; border-collapse: collapse; font-size: 0.82rem; margin: .8rem 0; }
+    #tm-content th { background: #21262d; color: #8b949e; font-weight: 500; padding: .4rem .65rem;
+                     border: 1px solid #30363d; text-align: left; }
+    #tm-content td { padding: .4rem .65rem; border: 1px solid #21262d; color: #c9d1d9; vertical-align: top; }
+    #tm-content tr:nth-child(even) td { background: #0d1117; }
+    #tm-content code { background: #21262d; padding: .1rem .3rem; border-radius: 3px;
+                       font-family: "SFMono-Regular", Consolas, monospace; font-size: .82em; color: #7ee787; }
+    #tm-content pre { background: #010409; border: 1px solid #21262d; border-radius: 4px;
+                      padding: .75rem; overflow-x: auto; margin: .6rem 0; }
+    #tm-content pre code { background: none; color: #7ee787; }
+    #tm-content blockquote { border-left: 3px solid #30363d; padding-left: .8rem;
+                              color: #8b949e; margin: .6rem 0; font-style: italic; }
+    #tm-content hr { border: none; border-top: 1px solid #30363d; margin: 1.2rem 0; }
+    .tm-mermaid-wrap { background: #0d1117; border: 1px solid #21262d; border-radius: 4px;
+                       padding: 1rem; margin: .6rem 0; overflow-x: auto; }
+
+    /* ── Logs tab ── */
+    #log-toolbar {
+      display: flex; align-items: center; gap: 1rem; margin-bottom: 0.75rem;
+      font-size: 0.8rem;
+    }
+    #log-file-name { color: #6e7681; font-family: monospace; }
+    #log-autoscroll-label { color: #8b949e; cursor: pointer; user-select: none; }
+    #log-filter {
+      background: #161b22; border: 1px solid #30363d; color: #c9d1d9;
+      border-radius: 4px; padding: 0.2rem 0.6rem; font-size: 0.78rem; width: 180px;
+    }
+    #log-filter:focus { outline: 1px solid #58a6ff; }
+    #log-output {
+      background: #010409; border: 1px solid #21262d; border-radius: 6px;
+      padding: 0.75rem 1rem; height: 620px; overflow-y: auto;
+      font-family: "SFMono-Regular", Consolas, monospace; font-size: 0.76rem;
+      line-height: 1.55; white-space: pre-wrap; word-break: break-all;
+    }
+    .log-line { color: #8b949e; }
+    .log-line.tool-call   { color: #58a6ff; }
+    .log-line.tool-result { color: #7ee787; }
+    .log-line.finding     { color: #fa8c16; font-weight: 600; }
+    .log-line.note        { color: #c9d1d9; }
+    .log-line.diagram     { color: #d2a8ff; }
+    .log-line.warning     { color: #faad14; }
+    .log-line.error       { color: #ff4d4f; }
+  </style>
+</head>
+<body>
+
+<!-- ── Header ────────────────────────────────────────────────────────────── -->
+<h1>Pentest Dashboard</h1>
+<div id="status"><span class="dot"></span>Connecting…</div>
+
+<!-- ── Session strip ─────────────────────────────────────────────────────── -->
+<div id="session-strip">
+  <span><span class="s-label">Target </span><strong id="s-target">—</strong></span>
+  <span><span class="s-label">Depth </span><strong  id="s-depth">—</strong></span>
+  <span><span class="s-label">Scope </span><strong  id="s-scope">—</strong></span>
+  <span><span class="s-label">Status </span><strong id="s-status">—</strong></span>
+</div>
+
+<!-- ── Tab nav ───────────────────────────────────────────────────────────── -->
+<nav class="tab-nav">
+  <button class="tab-btn active" onclick="switchTab('findings')">Findings</button>
+  <button class="tab-btn"        onclick="switchTab('topology')">Topology</button>
+  <button class="tab-btn"        onclick="switchTab('components')">Components</button>
+  <button class="tab-btn"        onclick="switchTab('threat-model')" id="tab-btn-threat-model">Threat Model</button>
+  <button class="tab-btn"        onclick="switchTab('logs')">Logs</button>
+</nav>
+
+<!-- ── Tab: Findings ─────────────────────────────────────────────────────── -->
+<div id="tab-findings" class="tab-content active">
+  <div id="stats"></div>
+  <div id="findings-wrap"><div id="empty">No findings yet — run a scan.</div></div>
+</div>
+
+<!-- ── Tab: Topology ─────────────────────────────────────────────────────── -->
+<div id="tab-topology" class="tab-content">
+  <div id="diagrams-wrap">
+    <div id="empty">No diagrams yet — Claude calls report_diagram during a scan.</div>
+  </div>
+</div>
+
+<!-- ── Tab: Components ───────────────────────────────────────────────────── -->
+<div id="tab-components" class="tab-content">
+  <div id="components-wrap"></div>
+</div>
+
+<!-- ── Tab: Threat Model ─────────────────────────────────────────────────── -->
+<div id="tab-threat-model" class="tab-content">
+  <div id="tm-toolbar" style="display:flex;align-items:center;gap:1rem;margin-bottom:0.75rem;font-size:0.8rem;">
+    <select id="tm-file-select" onchange="onTmFileChange()"
+      style="background:#161b22;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;
+             padding:0.2rem 0.5rem;font-size:0.78rem;font-family:monospace;max-width:320px">
+      <option value="">latest</option>
+    </select>
+    <span id="tm-file-ts" style="color:#6e7681;font-family:monospace;font-size:0.75rem"></span>
+  </div>
+  <div id="threat-model-wrap" class="empty">No threat model yet — run the threat-modeling in <code>/pentester</code></div>
+</div>
+
+<!-- ── Tab: Logs ─────────────────────────────────────────────────────────── -->
+<div id="tab-logs" class="tab-content">
+  <div id="log-toolbar">
+    <select id="log-file-select" onchange="onLogFileChange()"
+      style="background:#161b22;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;
+             padding:0.2rem 0.5rem;font-size:0.78rem;font-family:monospace;max-width:280px">
+      <option value="">current session</option>
+    </select>
+    <input id="log-filter" type="text" placeholder="Filter lines…" oninput="renderLogs()">
+    <label id="log-autoscroll-label">
+      <input type="checkbox" id="log-autoscroll" checked> auto-scroll
+    </label>
+  </div>
+  <div id="log-output"></div>
+</div>
+
+<script>
+  mermaid.initialize({
+    startOnLoad: false,
+    theme: 'dark',
+    flowchart: { curve: 'linear', htmlLabels: false },
+  });
+
+  const POLL_MS   = 5000;
+  const SEV_ORDER = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
+
+  let filter     = 'all';
+  let seenIds    = new Set();
+  let freshIds   = new Set();
+  let allData    = { findings: [], diagrams: [] };
+  let lastOk     = null;
+  let _activeTab = 'findings';
+  let _logLines  = [];
+
+  // ── Tab switching ─────────────────────────────────────────────────────────
+  const TAB_NAMES = ['findings', 'topology', 'components', 'threat-model', 'logs'];
+
+  function switchTab(name) {
+    _activeTab = name;
+    document.querySelectorAll('.tab-btn').forEach((b, i) => {
+      b.classList.toggle('active', TAB_NAMES[i] === name);
+    });
+    document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+    document.getElementById(`tab-${name}`).classList.add('active');
+    if (name === 'topology')     renderTopology(allData.diagrams || []);
+    if (name === 'components')   renderComponentMap(allData.findings || []);
+    if (name === 'threat-model') pollThreatModel();
+    if (name === 'logs')         pollLogs();
+  }
+
+  // ── Session strip ─────────────────────────────────────────────────────────
+  async function pollSession() {
+    try {
+      const r = await fetch('/api/session?_=' + Date.now());
+      if (!r.ok) return;
+      const s = await r.json();
+      if (!s.target) return;
+      document.getElementById('session-strip').classList.add('visible');
+      document.getElementById('s-target').textContent = s.target || '—';
+      document.getElementById('s-depth').textContent  = s.depth_label || s.depth || '—';
+      document.getElementById('s-scope').textContent  = (s.scope || []).join(', ') || '—';
+      const statusEl = document.getElementById('s-status');
+      statusEl.textContent = s.status || '—';
+      statusEl.className   = `session-status-${s.status || 'running'}`;
+    } catch { /* session may not exist yet */ }
+  }
+
+  // ── Findings tab ──────────────────────────────────────────────────────────
+  async function pollFindings() {
+    try {
+      const r = await fetch(`/api/findings?_=${Date.now()}`);
+      if (!r.ok) throw new Error('not found');
+      const data = await r.json();
+      freshIds = new Set();
+      (data.findings || []).forEach(f => {
+        if (!seenIds.has(f.id)) freshIds.add(f.id);
+        seenIds.add(f.id);
+      });
+      allData = data;
+      lastOk  = new Date();
+      renderFindings();
+    } catch {
+      document.getElementById('status').innerHTML =
+        '<span class="dot" style="background:#f85149"></span>Waiting for data…';
+    }
+  }
+
+  function renderFindings() {
+    const findings = allData.findings || [];
+    const target   = allData.meta?.target || '';
+    const ago = lastOk ? Math.round((Date.now() - lastOk) / 1000) + 's ago' : '';
+    document.getElementById('status').innerHTML =
+      `<span class="dot"></span>Live · refreshes every 5 s · last updated ${ago}` +
+      (target ? ` · <strong style="color:#c9d1d9">${target}</strong>` : '');
+    renderStats(findings);
+    renderFindingsTable(findings);
+    if (_activeTab === 'topology')   renderTopology(allData.diagrams || []);
+    if (_activeTab === 'components') renderComponentMap(findings);
+  }
+
+  function renderStats(findings) {
+    const c = { all: findings.length, critical:0, high:0, medium:0, low:0, info:0 };
+    findings.forEach(f => { if (c[f.severity] !== undefined) c[f.severity]++; });
+    document.getElementById('stats').innerHTML =
+      ['all','critical','high','medium','low','info'].map(s =>
+        `<span class="stat stat-${s}${filter===s?' active':''}" onclick="setFilter('${s}')">
+          ${s==='all'?'ALL':s.toUpperCase()} ${c[s]}
+        </span>`
+      ).join('');
+  }
+
+  function renderFindingsTable(findings) {
+    const filtered = filter === 'all' ? findings : findings.filter(f => f.severity === filter);
+    filtered.sort((a, b) => {
+      const d = (SEV_ORDER[a.severity]??5) - (SEV_ORDER[b.severity]??5);
+      return d !== 0 ? d : new Date(b.timestamp) - new Date(a.timestamp);
+    });
+    const wrap = document.getElementById('findings-wrap');
+    if (!filtered.length) {
+      wrap.innerHTML = '<div id="empty">No findings' +
+        (filter !== 'all' ? ` for <strong>${filter}</strong>` : ' yet — run a scan.') + '</div>';
+      return;
+    }
+    const openIds = new Set();
+    wrap.querySelectorAll('details[open]').forEach(el => openIds.add(el.dataset.id));
+    wrap.innerHTML = `<table><thead><tr>
+      <th>Severity</th><th>Finding</th><th>Target</th><th>Tool</th><th>Time</th>
+    </tr></thead><tbody>${filtered.map(f => rowHTML(f, openIds)).join('')}</tbody></table>`;
+  }
+
+  function rowHTML(f, openIds) {
+    const isNew  = freshIds.has(f.id);
+    const isOpen = openIds.has(f.id);
+    const ts     = new Date(f.timestamp).toLocaleTimeString();
+    const newBadge = isNew ? '<span class="new-badge">NEW</span>' : '';
+    const cve      = f.cve ? `<div class="cve">CVE: ${esc(f.cve)}</div>` : '';
+    const ghBtn    = f.gh_issue
+      ? `<button class="copy-gh-btn" onclick="copyGhIssue(this,'${f.id}')" title="Copy GitHub issue">
+           <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+             <path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"/><path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"/>
+           </svg>
+           GH Issue
+         </button>`
+      : '';
+    return `<tr>
+      <td><span class="badge badge-${f.severity}">${f.severity}</span></td>
+      <td>
+        <div class="desc"><strong>${esc(f.title)}</strong>${newBadge}${ghBtn}</div>
+        <div style="margin-top:.3rem;color:#8b949e;font-size:.82rem">${esc(f.description)}</div>
+        ${cve}
+        ${f.evidence ? `<details ${isOpen?'open':''} data-id="${f.id}">
+          <summary></summary>
+          <pre class="evidence">${esc(f.evidence)}</pre>
+        </details>` : ''}
+      </td>
+      <td><span class="target">${esc(f.target)}</span></td>
+      <td><span class="tool">${esc(f.tool_used)}</span></td>
+      <td><span class="ts">${ts}</span></td>
+    </tr>`;
+  }
+
+  // ── GH Issue clipboard copy ────────────────────────────────────────────────
+  function copyGhIssue(btn, findingId) {
+    const f = (allData.findings || []).find(x => x.id === findingId);
+    if (!f?.gh_issue) return;
+    navigator.clipboard.writeText(f.gh_issue).then(() => {
+      btn.classList.add('copied');
+      btn.innerHTML = btn.innerHTML.replace('GH Issue', 'Copied!');
+      setTimeout(() => {
+        btn.classList.remove('copied');
+        btn.innerHTML = btn.innerHTML.replace('Copied!', 'GH Issue');
+      }, 2000);
+    });
+  }
+
+  function setFilter(sev) {
+    filter = sev;
+    renderStats(allData.findings || []);
+    renderFindingsTable(allData.findings || []);
+  }
+
+  // ── Topology tab ──────────────────────────────────────────────────────────
+  async function renderTopology(diagrams) {
+    const wrap = document.getElementById('diagrams-wrap');
+    if (!diagrams.length) {
+      wrap.innerHTML = '<div id="empty">No diagrams yet — Claude calls report_diagram during a scan.</div>';
+      return;
+    }
+    // Clear placeholder if it's still there
+    const placeholder = wrap.querySelector('#empty');
+    if (placeholder) placeholder.remove();
+    const existing = new Set([...wrap.querySelectorAll('[data-diag-id]')].map(el => el.dataset.diagId));
+    for (const d of diagrams) {
+      if (existing.has(d.id)) continue;
+      const card = document.createElement('div');
+      card.className = 'diagram-card';
+      card.dataset.diagId = d.id;
+      const mermaidEl = document.createElement('div');
+      mermaidEl.className = 'mermaid';
+      mermaidEl.textContent = d.mermaid;
+      card.innerHTML = `<h3>${esc(d.title)}</h3><span class="ts">${new Date(d.timestamp).toLocaleTimeString()}</span>`;
+      card.appendChild(mermaidEl);
+      wrap.appendChild(card);
+      try {
+        await mermaid.run({ nodes: [mermaidEl] });
+      } catch (err) {
+        mermaidEl.innerHTML = `<div style="color:#ff4d4f;font-size:.8rem;margin-bottom:.5rem">
+          ⚠ Mermaid render error: ${esc(String(err?.message||err))}</div>
+          <pre style="background:#010409;color:#7ee787;padding:.6rem;border-radius:4px;
+                      font-size:.75rem;white-space:pre-wrap;word-break:break-all;
+                      border:1px solid #21262d;max-height:400px;overflow-y:auto">${esc(d.mermaid)}</pre>`;
+      }
+    }
+  }
+
+  // ── Components tab ────────────────────────────────────────────────────────
+  const _COMP_RULES = [
+    [/ftp|sftp/i,                                           '📂', 'FTP Server'],
+    [/smtp|email|\bmail\b/i,                                '📧', 'Mail Server'],
+    [/\bssh\b/i,                                            '🔒', 'SSH Service'],
+    [/admin|management panel|control panel|back.?office/i,  '⚙️',  'Admin Panel'],
+    [/database|sql dump|mongo|redis|postgres|mysql|\bdb\b/i,'🗄️', 'Database'],
+    [/prometheus|grafana|metric|monitor|observ/i,            '📊', 'Monitoring'],
+    [/login|logout|auth|session|password|credential/i,       '🔑', 'Authentication'],
+    [/api\b|rest\b|graphql|endpoint/i,                       '🔌', 'API'],
+    [/cors|csp\b|clickjack|security.?header/i,               '🌐', 'Web Config'],
+    [/docker|kubernetes|k8s|container/i,                     '🐳', 'Infrastructure'],
+    [/aws|s3\b|azure|gcp|cloud/i,                            '☁️', 'Cloud Services'],
+    [/upload|file.*upload/i,                                 '📤', 'File Upload'],
+    [/\bsmb\b|samba|ldap|\brdp\b|\bvnc\b/i,                '🖧',  'Network Services'],
+  ];
+
+  function _inferComponent(f) {
+    const t = `${f.title||''} ${f.description||''}`;
+    for (const [pat, icon, name] of _COMP_RULES) {
+      if (pat.test(t)) return { icon, name };
+    }
+    const tool = (f.tool_used||'').toLowerCase();
+    if (tool === 'nmap' || tool === 'naabu')         return { icon: '🖧',  name: 'Network Services' };
+    if (tool === 'trufflehog' || tool === 'semgrep') return { icon: '📝', name: 'Codebase' };
+    return { icon: '🌐', name: 'Web Application' };
+  }
+
+  const _SEV_SORT = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
+
+  function renderComponentMap(findings) {
+    const wrap = document.getElementById('components-wrap');
+    if (!findings.length) {
+      wrap.innerHTML = '<div id="empty">No findings yet — run a scan.</div>';
+      return;
+    }
+    const groups = {};
+    for (const f of findings) {
+      const { icon, name } = _inferComponent(f);
+      if (!groups[name]) groups[name] = { icon, name, findings: [] };
+      groups[name].findings.push(f);
+    }
+    const sorted = Object.values(groups).sort((a, b) => {
+      const worstA = Math.min(...a.findings.map(f => _SEV_SORT[f.severity] ?? 5));
+      const worstB = Math.min(...b.findings.map(f => _SEV_SORT[f.severity] ?? 5));
+      return worstA - worstB;
+    });
+    sorted.forEach(g => g.findings.sort((a, b) =>
+      (_SEV_SORT[a.severity] ?? 5) - (_SEV_SORT[b.severity] ?? 5)
+    ));
+    const total = findings.length;
+    const header = `<div style="font-size:.82rem;color:#6e7681;margin-bottom:1rem">
+      ${sorted.length} component${sorted.length!==1?'s':''} · ${total} finding${total!==1?'s':''}
+    </div>`;
+    const cards = sorted.map(g => {
+      const vulns = g.findings.map(f => `
+        <div class="comp-vuln">
+          <span class="badge badge-${f.severity}">${f.severity}</span>
+          <span class="comp-vuln-title">${esc(f.title)}</span>
+        </div>`).join('');
+      return `<div class="comp-card">
+        <div class="comp-header">
+          <span class="comp-icon">${g.icon}</span>
+          <span class="comp-name">${esc(g.name)}</span>
+          <span class="comp-count">${g.findings.length} finding${g.findings.length!==1?'s':''}</span>
+        </div>
+        ${vulns}
+      </div>`;
+    }).join('');
+    wrap.innerHTML = header + `<div class="comp-grid">${cards}</div>`;
+  }
+
+  // ── Threat Model tab ──────────────────────────────────────────────────────
+  let _tmCurrentFile    = '';
+  let _tmCurrentContent = '';
+
+  function onTmFileChange() {
+    const sel = document.getElementById('tm-file-select');
+    _tmCurrentFile    = sel.value;
+    _tmCurrentContent = ''; // force re-render
+    pollThreatModel();
+  }
+
+  async function pollThreatModel() {
+    let data;
+    try {
+      const qs = _tmCurrentFile ? `&file=${encodeURIComponent(_tmCurrentFile)}` : '';
+      const r  = await fetch(`/api/threat-model?_=${Date.now()}${qs}`);
+      if (!r.ok) return;
+      data = await r.json();
+    } catch { return; }
+
+    // Update file dropdown
+    const files = data.files || [];
+    const sel   = document.getElementById('tm-file-select');
+    const prev  = sel.value || data.file || '';
+    while (sel.options.length > 1) sel.remove(1);
+    for (const f of files) {
+      const opt = document.createElement('option');
+      opt.value = f; opt.textContent = f;
+      sel.appendChild(opt);
+    }
+    if (prev) sel.value = prev;
+
+    // Mark tab when files exist
+    if (files.length) {
+      const btn = document.getElementById('tab-btn-threat-model');
+      if (btn && !btn.textContent.includes('●')) btn.textContent = 'Threat Model ●';
+    }
+
+    if (!data.content) return;
+    if (data.content === _tmCurrentContent) return; // no change
+    _tmCurrentContent = data.content;
+
+    // Update filename label
+    const tsEl = document.getElementById('tm-file-ts');
+    if (tsEl) tsEl.textContent = data.file || '';
+
+    renderThreatModel(data.content, data.svgs || {});
+  }
+
+  function renderThreatModel(content, svgs) {
+    const wrap = document.getElementById('threat-model-wrap');
+    wrap.classList.remove('empty');
+    const html = (typeof marked !== 'undefined')
+      ? marked.parse(content)
+      : `<pre style="white-space:pre-wrap;word-break:break-all;font-size:.82rem;color:#c9d1d9">${esc(content)}</pre>`;
+    wrap.innerHTML = `<div id="tm-content">${html}</div>`;
+
+    // Replace mermaid code blocks with pre-rendered SVGs from the server
+    let idx = 0;
+    wrap.querySelectorAll('pre code.language-mermaid').forEach(block => {
+      const svg = svgs[String(idx)];
+      const pre = block.parentElement;
+      const div = document.createElement('div');
+      div.className = 'tm-mermaid-wrap';
+      if (svg) {
+        div.innerHTML = svg;
+        // Force SVG to fill container width and use light stroke for dark bg
+        const svgEl = div.querySelector('svg');
+        if (svgEl) {
+          svgEl.style.maxWidth = '100%';
+          svgEl.style.height = 'auto';
+        }
+      } else {
+        div.innerHTML = `<pre style="color:#6e7681;font-size:.75rem">${esc(block.textContent)}</pre>`;
+      }
+      pre.replaceWith(div);
+      idx++;
+    });
+  }
+
+  // ── Logs tab ──────────────────────────────────────────────────────────────
+  let _selectedLogFile = '';
+
+  function onLogFileChange() {
+    _selectedLogFile = document.getElementById('log-file-select').value;
+    pollLogs();
+  }
+
+  async function pollLogs() {
+    try {
+      const qs = _selectedLogFile ? `&file=${encodeURIComponent(_selectedLogFile)}` : '';
+      const r  = await fetch(`/api/logs?_=${Date.now()}${qs}`);
+      if (!r.ok) return;
+      const data = await r.json();
+
+      // Populate file selector (preserve current selection)
+      const sel   = document.getElementById('log-file-select');
+      const files = data.files || [];
+      const prev  = sel.value;
+      while (sel.options.length > 1) sel.remove(1);
+      for (const f of files) {
+        const opt = document.createElement('option');
+        opt.value = f;
+        opt.textContent = f;
+        sel.appendChild(opt);
+      }
+      if (prev) sel.value = prev;
+
+      _logLines = data.lines || [];
+      renderLogs();
+    } catch { /* ignore */ }
+  }
+
+  function classifyLine(line) {
+    if (line.includes('TOOL_CALL'))   return 'tool-call';
+    if (line.includes('TOOL_RESULT')) return 'tool-result';
+    if (line.includes('FINDING'))     return 'finding';
+    if (line.includes('NOTE'))        return 'note';
+    if (line.includes('DIAGRAM'))     return 'diagram';
+    if (line.includes('WARNING'))     return 'warning';
+    if (line.includes('ERROR'))       return 'error';
+    return '';
+  }
+
+  function renderLogs() {
+    const q      = document.getElementById('log-filter').value.toLowerCase();
+    const out    = document.getElementById('log-output');
+    const scroll = document.getElementById('log-autoscroll').checked;
+    const lines  = q ? _logLines.filter(l => l.toLowerCase().includes(q)) : _logLines;
+    out.innerHTML = lines.map(l => {
+      const cls = classifyLine(l);
+      return `<div class="log-line ${cls}">${esc(l)}</div>`;
+    }).join('');
+    if (scroll) out.scrollTop = out.scrollHeight;
+  }
+
+  // ── Helpers ───────────────────────────────────────────────────────────────
+  function esc(s) {
+    return String(s ?? '')
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  // ── Polling intervals ─────────────────────────────────────────────────────
+  setInterval(pollFindings,    POLL_MS);
+  setInterval(pollSession,     POLL_MS);
+  setInterval(pollThreatModel, POLL_MS);
+  setInterval(() => { if (lastOk && _activeTab === 'findings') renderFindings(); }, 1000);
+  setInterval(() => { if (_activeTab === 'logs') pollLogs(); }, 3000);
+
+  // Initial load
+  pollFindings();
+  pollSession();
+  pollThreatModel();
+  pollLogs();
+</script>
+</body>
+</html>

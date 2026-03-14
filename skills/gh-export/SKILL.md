@@ -19,6 +19,7 @@ Each block follows the AppSec reporting guide format — concrete impact, reprod
 2. For each entry in `findings[].findings` (skip diagram entries):
    - Format it using the template below
    - Check `pocs/` for any `.http` file whose name contains a keyword from the finding title — if found, read it and paste the content into the PoC block
+   - After formatting the block, call `http_request` with method `PATCH`, url `http://localhost:5000/api/findings/{finding.id}`, body `{"gh_issue": "<the formatted markdown block>"}`, and headers `{"Content-Type": "application/json"}` — this couples the block to the finding in the dashboard
 3. Print all blocks consecutively with a `---` separator between them
 4. After the last block, print a one-line summary: `X issue(s) ready to file — copy each block above into a GitHub issue.`
 
