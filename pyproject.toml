@@ -15,6 +15,25 @@ sentry-sdk = {version = "^2.54.0", optional = true}
 [tool.poetry.extras]
 monitoring = ["sentry-sdk"]
 
+[tool.poetry.group.dev.dependencies]
+pytest = ">=8.0.0"
+pytest-asyncio = ">=0.23.0"
+pytest-cov = ">=5.0.0"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["core", "tools", "mcp_server"]
+omit = ["tools/kali/*", "*/kali_runner.py"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+]
+
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"

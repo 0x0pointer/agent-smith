@@ -159,3 +159,4 @@ installers/              install.sh · uninstall.sh
 | [docs/skills.md](docs/skills.md) | Slash commands, chaining guide, examples |
 | [docs/dashboard-api.md](docs/dashboard-api.md) | FastAPI endpoints, response shapes |
 | [docs/extending.md](docs/extending.md) | How to add new tools and skills |
+| [docs/testing.md](docs/testing.md) | Running the test suite, coverage, adding new tests |
