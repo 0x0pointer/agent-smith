@@ -10,7 +10,7 @@ class Tool:
     image:           str
     build_args:      Callable[..., list[str]]
     parser:          Callable[[str, str], list[dict]] | None = None
-    default_timeout: int  = 120
+    default_timeout: int  = 600
     risk_level:      str  = "intrusive"
     needs_mount:     bool = False
     description:     str  = ""

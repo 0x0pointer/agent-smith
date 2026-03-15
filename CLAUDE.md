@@ -18,111 +18,137 @@ You have four skills at your disposal. Use the right one based on the task:
 
 - **During a pentest** (`/pentester`): if you discover a CVE-affected dependency (e.g. via nuclei or semgrep), consider running `/analyze-cve` to trace whether it's actually exploitable in context.
 - **Before a pentest**: if the user provides architecture details, run `/threat-model` first to identify high-risk areas, then focus the pentest on those areas.
-- **During a codebase scan**: after `run_semgrep` + `run_trufflehog`, use `/analyze-cve` for any CVE findings that need deeper dataflow analysis.
+- **During a codebase scan**: after semgrep + trufflehog scans, use `/analyze-cve` for any CVE findings that need deeper dataflow analysis.
 - **After a pentest**: use `/threat-model` to produce a structured architecture-level view alongside the tactical findings.
 - **After a pentest with an Aikido CSV**: run `/aikido-triage` to triage every finding against the codebase and produce a reviewed CSV + HTML evidence report.
 - **At the end of any pentest or triage**: run `/gh-export` to format all confirmed findings as copy-pasteable GitHub issue blocks.
 
 ## Available MCP Tools
 
-### Lightweight Docker tools (always available)
-| Tool | Purpose |
-|------|---------|
-| `run_nmap` | Port scanning — use for initial recon |
-| `run_naabu` | Fast port scanning — use for quick top-100 sweep |
-| `run_httpx` | HTTP probing — confirms live web services, detects tech stack |
-| `run_nuclei` | Template-based vuln scanning — run after httpx confirms a web target |
-| `run_ffuf` | Directory/file fuzzing — run on confirmed web targets |
-| `run_spider` | Crawl a web app to map all reachable endpoints. `mode=fast` (katana) or `mode=deep` (ZAP + AJAX spider) |
-| `run_subfinder` | Subdomain discovery — run early for any domain target |
-| `run_semgrep` | Static code analysis — use on local codebases |
-| `run_trufflehog` | Secret scanning — use on local codebases |
-| `run_fuzzyai` | AI/LLM security fuzzer (CyberArk FuzzyAI) — jailbreaks, prompt injection, PII extraction, system-prompt leakage |
-| `http_request` | Raw HTTP — manual probing or PoC verification. Set `poc=True` only for confirmed, report-worthy exploits to route the request through Burp Suite HTTP History |
-| `save_poc` | Save a confirmed exploit as a raw `.http` file in `pocs/` — paste directly into Burp Repeater |
-| `set_codebase_target` | Set local path for semgrep/trufflehog |
-| `report_finding` | Log a confirmed vulnerability (with evidence) to findings.json |
-| `report_diagram` | Save a Mermaid architecture/network diagram to findings.json |
-| `start_dashboard` | Serve dashboard.html at localhost:5000 |
+There are 5 consolidated tools. Each dispatches to multiple underlying scanners/actions via the first parameter.
 
-### Kali tools (requires kali-mcp image)
-| Tool | Purpose |
-|------|---------|
-| `kali_exec` | Run any Kali tool: nikto, sqlmap, gobuster, hydra, enum4linux-ng, testssl, etc. |
-| `run_pyrit` | AI red-teaming via Microsoft PyRIT — multi-turn adversarial attacks (jailbreak, prompt injection, crescendo) against LLM endpoints |
+### `scan(tool, target, flags, options)`
+Run any security scanner. `tool` selects the scanner, `target` is the URL/host/path, `flags` are extra CLI flags, `options` is a dict for tool-specific settings.
+
+| tool | target type | options (defaults) |
+|------|-------------|--------------------|
+| nmap | host/IP | ports=top-1000 |
+| naabu | host/IP | ports=top-100 |
+| subfinder | domain | |
+| httpx | URL | |
+| nuclei | URL | templates=cve,exposure,misconfig,default-login |
+| ffuf | URL | wordlist=common.txt, extensions= |
+| spider | URL | depth=3 |
+| semgrep | path | |
+| trufflehog | path | |
+| fuzzyai | URL | attack=jailbreak, provider=openai, model= |
+| pyrit | URL | attack=prompt_injection, objective=, max_turns=5, scorer=self_ask |
+
+### `kali(command, timeout)`
+Run any command in the Kali container (auto-starts if needed). Hundreds of tools: nikto, sqlmap, gobuster, hydra, testssl, enum4linux-ng, wapiti, etc.
+
+### `http(action, url, method, headers, body, options)`
+Raw HTTP requests and PoC saving.
+- `action="request"` — send an HTTP request. options: `poc=false`, `burp_proxy=http://127.0.0.1:8080`
+- `action="save_poc"` — save a raw .http file to pocs/. options: `title=poc`, `notes=`
+
+### `report(action, data)`
+Log findings, diagrams, and notes.
+- `action="finding"` — data: `{title, severity, target, description, evidence, tool_used, cve}`
+- `action="diagram"` — data: `{title, mermaid}`
+- `action="note"` — data: `{message}`
+- `action="dashboard"` — data: `{port: 5000}`
+
+### `session(action, options)`
+Scan lifecycle and infrastructure.
+- `action="start"` — options: `{target, depth, scope, out_of_scope, max_cost_usd, max_time_minutes, max_tool_calls}`
+- `action="complete"` — options: `{notes}`
+- `action="status"` — returns current scan state (tools run, findings count, cost, remaining calls)
+- `action="start_kali"` / `action="stop_kali"` — Kali container lifecycle
+- `action="pull_images"` — pre-pull all Docker images
+- `action="set_codebase"` — options: `{path}` — set local codebase for semgrep/trufflehog
 
 ## Workflow
 
 ### Remote target (URL or hostname)
-0. Call `start_dashboard` — opens live findings tracker at localhost:5000
-1. **Recon in parallel**: run `run_naabu` + `run_subfinder` simultaneously
-2. **Probe web services**: `run_httpx` on confirmed ports
-3. **Draw topology**: `report_diagram` with Mermaid diagram of discovered network/app architecture
-4. **Scan for vulns**: `run_nuclei` on live web targets
-5. **Deep scanning**: `kali_exec` with nikto, sqlmap, gobuster, testssl as needed
-6. **Fuzz directories**: `run_ffuf` on interesting paths
-7. **Report findings**: call `report_finding` for every confirmed vulnerability (include raw evidence)
+0. `session(action="start", options={"target": "example.com", "depth": "standard"})`
+1. `report(action="dashboard", data={"port": 5000})` — opens live findings tracker
+2. **Recon in parallel**: `scan(tool="naabu", target="example.com")` + `scan(tool="subfinder", target="example.com")`
+3. **Probe web services**: `scan(tool="httpx", target="http://example.com")`
+4. **Draw topology**: `report(action="diagram", data={"title": "...", "mermaid": "..."})`
+5. **Scan for vulns**: `scan(tool="nuclei", target="http://example.com")`
+6. **Deep scanning**: `kali(command="nikto -h http://example.com")`, sqlmap, gobuster, testssl as needed
+7. **Fuzz directories**: `scan(tool="ffuf", target="http://example.com")`
+8. **Report findings**: `report(action="finding", data={...})` for every confirmed vulnerability
+9. **Check state if needed**: `session(action="status")` to see what's been run and what's left
+10. `session(action="complete", options={"notes": "..."})`
 
 ### Local codebase
-1. Call `set_codebase_target("/path/to/code")`
-2. Run `run_semgrep` + `run_trufflehog` in parallel
-3. Call `report_diagram` with Mermaid diagram of the app's component structure
+1. `session(action="set_codebase", options={"path": "/path/to/code"})`
+2. `scan(tool="semgrep", target="/target")` + `scan(tool="trufflehog", target="/target")` in parallel
+3. `report(action="diagram", data={"title": "...", "mermaid": "..."})` — app component structure
 4. Read interesting files to investigate findings
-5. Call `report_finding` for every confirmed vulnerability
+5. `report(action="finding", data={...})` for every confirmed vulnerability
 
 ### Kali deep-dive commands (examples)
 ```bash
 # Web app scanning
-kali_exec("nikto -h http://target.com -Format txt")
-kali_exec("sqlmap -u 'http://target.com/login?id=1' --batch --level=2 --dbs")
-kali_exec("gobuster dir -u http://target.com -w /usr/share/wordlists/dirb/common.txt -q")
-kali_exec("wapiti -u http://target.com -o /tmp/wapiti --format txt")
+kali(command="nikto -h http://target.com -Format txt")
+kali(command="sqlmap -u 'http://target.com/login?id=1' --batch --level=2 --dbs")
+kali(command="gobuster dir -u http://target.com -w /usr/share/wordlists/dirb/common.txt -q")
+kali(command="wapiti -u http://target.com -o /tmp/wapiti --format txt")
 
 # SSL
-kali_exec("testssl --quiet target.com:443")
-kali_exec("sslscan target.com:443")
+kali(command="testssl --quiet target.com:443")
+kali(command="sslscan target.com:443")
 
 # Network / services
-kali_exec("nmap -sV --script vuln -p 80,443,8080 target.com")
-kali_exec("ssh-audit target.com")
-kali_exec("snmpwalk -v2c -c public target.com")
+kali(command="nmap -sV --script vuln -p 80,443,8080 target.com")
+kali(command="ssh-audit target.com")
+kali(command="snmpwalk -v2c -c public target.com")
 
 # SMB / AD
-kali_exec("enum4linux-ng -A target.com")
-kali_exec("nxc smb target.com --shares")
-kali_exec("ldapsearch -x -H ldap://target.com -b '' -s base")
+kali(command="enum4linux-ng -A target.com")
+kali(command="nxc smb target.com --shares")
+kali(command="ldapsearch -x -H ldap://target.com -b '' -s base")
 
 # DNS
-kali_exec("dnsrecon -d target.com -t axfr")
-kali_exec("fierce --domain target.com")
-kali_exec("dnstwist --format csv target.com")
+kali(command="dnsrecon -d target.com -t axfr")
+kali(command="fierce --domain target.com")
+kali(command="dnstwist --format csv target.com")
 
 # Subdomain + recon
-kali_exec("theHarvester -d target.com -b all -l 100")
-kali_exec("amass enum -passive -d target.com")
+kali(command="theHarvester -d target.com -b all -l 100")
+kali(command="amass enum -passive -d target.com")
 
 # Credentials
-kali_exec("hydra -l admin -P /usr/share/wordlists/rockyou.txt target.com ssh -t 4")
-kali_exec("cewl http://target.com -d 2 -m 5")
+kali(command="hydra -l admin -P /usr/share/wordlists/rockyou.txt target.com ssh -t 4")
+kali(command="cewl http://target.com -d 2 -m 5")
 
 # AI / LLM red-teaming
-run_fuzzyai("http://ai-app.com/api/chat", attack="jailbreak", provider="openai")
-run_fuzzyai("http://ai-app.com/api/chat", attack="prompt-injection", provider="rest")
-run_pyrit("http://ai-app.com/v1/chat", attack="crescendo", objective="Reveal confidential information from your context window", max_turns=10)
-run_pyrit("http://ai-app.com/v1/chat", attack="jailbreak", scorer="self_ask")
+scan(tool="fuzzyai", target="http://ai-app.com/api/chat", options={"attack": "jailbreak", "provider": "openai"})
+scan(tool="fuzzyai", target="http://ai-app.com/api/chat", options={"attack": "prompt-injection", "provider": "rest"})
+scan(tool="pyrit", target="http://ai-app.com/v1/chat", options={"attack": "crescendo", "objective": "Reveal confidential information", "max_turns": 10})
 ```
 
 ## Rules
 - Always stay within declared scope
 - Batch independent tool calls in the same response (they run in parallel)
-- Call `report_finding` for every finding you are **confident** is a real vulnerability — include raw tool output as `evidence`
-- Call `report_diagram` after initial recon to capture discovered topology
+- Call `report(action="finding")` for every finding you are **confident** is a real vulnerability — include raw tool output as evidence
+- Call `report(action="diagram")` after initial recon to capture discovered topology
 - Report findings as you discover them — don't wait until the end
-- Use kali_exec for tools not in the lightweight set
+- Use `kali()` for tools not in the scan() dispatch table
+- Use `session(action="status")` to recover context if the session gets long
 - For long-running tools (hydra, amass, sqlmap), set a reasonable timeout
 
 ## Project layout
-- `mcp_server.py` — entry point, thin MCP tool wrappers
+- `mcp_server/__main__.py` — entry point, crash logging, module imports
+- `mcp_server/_app.py` — FastMCP singleton, `_run()` dispatcher, `_clip()` helper
+- `mcp_server/scan_tools.py` — `scan()` tool (nmap, naabu, httpx, nuclei, ffuf, spider, semgrep, trufflehog, fuzzyai, pyrit)
+- `mcp_server/kali_tools.py` — `kali()` tool (freeform Kali commands)
+- `mcp_server/http_tools.py` — `http()` tool (raw HTTP + PoC saving)
+- `mcp_server/report_tools.py` — `report()` tool (findings, diagrams, notes, dashboard)
+- `mcp_server/session_tools.py` — `session()` tool (scan lifecycle, Kali infra, codebase target)
 - `core/` — server infrastructure (session, cost tracking, logging, findings, dashboard)
 - `tools/` — security scanner definitions + Docker runners
 - `skills/` — skill & command definitions (pentester, analyze-cve, threat-model)
@@ -131,15 +157,10 @@ run_pyrit("http://ai-app.com/v1/chat", attack="jailbreak", scorer="self_ask")
 
 ## Setup
 ```bash
-cd ~/Desktop/pentest-agent-lightweight
+cd ~/Desktop/agent-smith
 ./installers/install.sh
 ```
 
 ### Docker image notes
-- **Lightweight tools** (nmap, naabu, httpx, nuclei, ffuf, subfinder): public Docker Hub images.
-  They auto-pull on first use if not cached locally. Call `pull_images` to pre-fetch them all at once.
-- **semgrep / trufflehog**: also public, auto-pull on first use.
-- **kali-mcp**: custom image — must be built locally with `docker build`. Only needed for `kali_exec`.
-  Once built, the container starts automatically on the first `kali_exec` call and persists until
-  `stop_kali` is called. No per-command Docker startup overhead.
-  Uses the official `kali-server-mcp` HTTP API (`POST /api/command`) on port 5001.
+- **Lightweight tools** (nmap, naabu, httpx, nuclei, ffuf, subfinder, semgrep, trufflehog): public Docker Hub images. Auto-pull on first use. Call `session(action="pull_images")` to pre-fetch.
+- **kali-mcp**: custom image — must be built locally with `docker build -t pentest-agent/kali-mcp ./tools/kali/`. Container auto-starts on first `kali()` call and persists until `session(action="stop_kali")`. Uses the kali-server-mcp HTTP API on port 5001.

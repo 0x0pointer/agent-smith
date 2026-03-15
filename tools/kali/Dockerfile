@@ -61,12 +61,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     seclists wordlists \
     && rm -rf /var/lib/apt/lists/*
 
-# ProjectDiscovery tools via apt (katana not in arm64 repo — installed via Go below)
+# ProjectDiscovery tools via apt (katana not in arm64 repo — installed via pre-built binary)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    naabu httpx-toolkit subfinder amass dnsx nuclei golang-go \
-    && rm -rf /var/lib/apt/lists/* \
-    && go install github.com/projectdiscovery/katana/cmd/katana@latest \
-    && mv /root/go/bin/katana /usr/local/bin/katana 2>/dev/null || true
+    naabu httpx-toolkit subfinder amass dnsx nuclei \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install katana from pre-built GitHub release (supports amd64 + arm64)
+RUN ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') \
+    && KATANA_VERSION=$(curl -fsSL "https://api.github.com/repos/projectdiscovery/katana/releases/latest" \
+        | grep '"tag_name"' | head -1 | sed 's/.*"v\([^"]*\)".*/\1/') \
+    && curl -fsSL "https://github.com/projectdiscovery/katana/releases/download/v${KATANA_VERSION}/katana_${KATANA_VERSION}_linux_${ARCH}.zip" \
+        -o /tmp/katana.zip \
+    && unzip /tmp/katana.zip katana -d /usr/local/bin/ \
+    && chmod +x /usr/local/bin/katana \
+    && rm /tmp/katana.zip
 
 # Official Kali MCP server — provides POST /api/command (and per-tool endpoints)
 # on port 5000. Replaces our hand-rolled server.py.
@@ -76,7 +84,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # AI red-teaming: Microsoft PyRIT + thin CLI runner
 # pyrit-runner wraps the PyRIT SDK for scripted multi-turn adversarial attacks.
-RUN pip3 install --no-cache-dir pyrit --break-system-packages
+# base2048 (PyRIT dep) requires Rust to compile — install, build, then clean up.
+RUN apt-get update && apt-get install -y --no-install-recommends rustc cargo \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip3 install --no-cache-dir --ignore-installed pyrit --break-system-packages \
+    && apt-get purge -y rustc cargo \
+    && apt-get autoremove -y \
+    && rm -rf /root/.cargo /root/.rustup
 COPY pyrit_runner.py /usr/local/bin/pyrit-runner
 RUN chmod +x /usr/local/bin/pyrit-runner
 

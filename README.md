@@ -31,11 +31,11 @@ Claude decides what to run. Each tool's output is aggregated and returned to Cla
 flowchart TD
     User["You\n/pentester · /threat-model · /gh-export"]
     Claude["Claude Code\nAI orchestrator"]
-    MCP["mcp_server/\nMCP tool layer\nnetwork · web · exploitation · ai_red_team · reporting"]
-    Docker["Docker containers\nephemeral --rm\nnmap · nuclei · httpx · ffuf · semgrep · trufflehog"]
+    MCP["mcp_server/\n5 consolidated tools\nscan · kali · http · report · session"]
+    Docker["Docker containers\nephemeral --rm · 2 GB RAM · 1.5 CPU\nnmap · nuclei · httpx · ffuf · semgrep · trufflehog"]
     Kali["Kali Linux container\npersistent · port 5001\nnikto · sqlmap · hydra · testssl · pyrit"]
-    Core["core/\nsession · cost · logger · findings · api_server"]
-    Dashboard["FastAPI dashboard\nlocalhost:5000\nFindings · Topology · Components · Threat Model · Logs"]
+    Core["core/\nsession · logger · findings · api_server"]
+    Dashboard["FastAPI dashboard\nlocalhost:5000\nFindings · Topology · Threat Model · Logs"]
     Target["Target\nURL · IP range · codebase"]
 
     User -->|slash command| Claude
@@ -61,7 +61,7 @@ flowchart TD
 | [Docker Desktop](https://www.docker.com/products/docker-desktop/) | must be running |
 | [Poetry](https://python-poetry.org) | `curl -sSL https://install.python-poetry.org \| python3 -` |
 | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | `npm install -g @anthropic-ai/claude-code` |
-| [Node.js](https://nodejs.org) v18+ | required for server-side Mermaid diagram rendering (`npx`) |
+| [Node.js](https://nodejs.org) v18+ | optional — enables server-side Mermaid pre-rendering; diagrams fall back to client-side rendering without it |
 
 ### Install
 
@@ -105,28 +105,25 @@ docker build -t pentest-agent/kali-mcp ./tools/kali/
 ## Project layout
 
 ```
-mcp_server/              MCP tool layer (Claude-callable tools)
+mcp_server/              MCP tool layer — 5 consolidated tools (Claude-callable)
   __main__.py            entry point  →  python -m mcp_server
-  _app.py                FastMCP singleton + shared helpers
-  network.py             run_nmap, run_naabu, run_subfinder
-  web.py                 run_httpx, run_nuclei, run_ffuf, run_spider
-  code_analysis.py       run_semgrep, run_trufflehog, set_codebase_target
-  exploitation.py        http_request, save_poc, kali_exec
-  ai_red_team.py         run_fuzzyai, run_pyrit
-  scan.py                start_scan, complete_scan, log_note
-  reporting.py           report_finding, report_diagram, start_dashboard
-  infra.py               start_kali, stop_kali, pull_images
+  _app.py                FastMCP singleton + shared helpers (_run, _clip)
+  scan_tools.py          scan()    — nmap · naabu · httpx · nuclei · ffuf · spider
+                                     subfinder · semgrep · trufflehog · fuzzyai · pyrit
+  kali_tools.py          kali()    — freeform commands in the Kali container
+  http_tools.py          http()    — raw HTTP requests + PoC saving
+  report_tools.py        report()  — findings · diagrams · notes · dashboard
+  session_tools.py       session() — scan lifecycle · Kali infra · codebase target
 
 core/                    Server infrastructure
   session.py             Scan scope, depth presets, hard limit enforcement
-  cost.py                Per-tool token/cost tracking → session_cost.json
-  logger.py              Structured session log → logs/session_*.log
+  logger.py              Structured session log → logs/pentest.log
   findings.py            findings.json read/write (findings + diagrams)
   api_server.py          FastAPI web server (dashboard + REST API)
 
 tools/                   Docker tool definitions + runners
   base.py                Tool dataclass
-  docker_runner.py       Async docker run --rm wrapper
+  docker_runner.py       Async docker run --rm wrapper (--memory=2g --cpus=1.5)
   kali_runner.py         Persistent Kali container lifecycle
   nmap / naabu / httpx / nuclei / subfinder / semgrep / trufflehog / fuzzyai
 
@@ -142,7 +139,7 @@ skills/                  Slash command definitions
   gh-export/SKILL.md
 
 templates/
-  dashboard.html         5-tab dashboard (Findings · Topology · Components · Threat Model · Logs)
+  dashboard.html         4-tab dashboard (Findings · Topology · Threat Model · Logs)
 
 threat-model/            Threat model reports (*.md) — auto-displayed in the Threat Model tab
 

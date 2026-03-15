@@ -632,7 +632,12 @@
           svgEl.style.height = 'auto';
         }
       } else {
-        div.innerHTML = `<pre style="color:#6e7681;font-size:.75rem">${esc(block.textContent)}</pre>`;
+        // npx/mmdc not available — render client-side via mermaid.js (already loaded)
+        const mermaidEl = document.createElement('div');
+        mermaidEl.className = 'mermaid';
+        mermaidEl.textContent = block.textContent;
+        div.appendChild(mermaidEl);
+        mermaid.run({ nodes: [mermaidEl] });
       }
       pre.replaceWith(div);
       idx++;

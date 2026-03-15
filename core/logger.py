@@ -1,8 +1,8 @@
 """
 Session logger
 ==============
-Writes one structured log file per MCP server process (= one Claude session).
-Log files land in logs/session_YYYY-MM-DD_HH-MM-SS.log
+Appends all sessions to a single log file: logs/pentest.log
+Each server start writes a SESSION_START marker so sessions are easy to tell apart.
 
 Public API
 ----------
@@ -20,30 +20,31 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
-# Setup — one log file per process
+# Setup — single persistent log file, appended across sessions
 # ---------------------------------------------------------------------------
 
 _REPO_ROOT = Path(__file__).parent.parent
 _LOG_DIR = _REPO_ROOT / "logs"
 _LOG_DIR.mkdir(exist_ok=True)
 
-_session_ts = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S")
-log_path    = _LOG_DIR / f"session_{_session_ts}.log"
+log_path = _LOG_DIR / "pentest.log"
 
 _fmt = logging.Formatter(
     fmt="%(asctime)s  %(levelname)-8s  %(message)s",
     datefmt="%Y-%m-%dT%H:%M:%SZ",
 )
 
-_fh = logging.FileHandler(log_path, encoding="utf-8")
+_fh = logging.FileHandler(log_path, mode="a", encoding="utf-8")
 _fh.setFormatter(_fmt)
 
 _log = logging.getLogger("pentest")
 _log.setLevel(logging.DEBUG)
 _log.addHandler(_fh)
 
-# Write session header
-_log.info("SESSION_START  log=%s", log_path.name)
+# Write session boundary so multiple restarts are easy to distinguish
+_session_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+_log.info("=" * 80)
+_log.info("SESSION_START  %s", _session_ts)
 
 
 # ---------------------------------------------------------------------------
@@ -56,8 +57,16 @@ def tool_call(name: str, kwargs: dict) -> None:
 
 
 def tool_result(name: str, result: str) -> None:
-    """Log the full tool output — exactly what Claude receives."""
+    """Log the full unclipped tool output for forensic review."""
     _log.info("TOOL_RESULT  %-20s\n%s\n%s", name, result, "─" * 80)
+
+
+def tool_result_verbose(name: str, raw_stdout: str, raw_stderr: str) -> None:
+    """Log raw stdout+stderr before any clipping — full verbose output."""
+    if raw_stdout:
+        _log.debug("RAW_STDOUT   %-20s\n%s", name, raw_stdout)
+    if raw_stderr:
+        _log.debug("RAW_STDERR   %-20s\n%s", name, raw_stderr)
 
 
 def finding(severity: str, title: str, target: str) -> None:

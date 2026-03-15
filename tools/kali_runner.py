@@ -134,7 +134,7 @@ def _host_rewrite(command: str) -> str:
     return command
 
 
-async def exec_command(command: str, timeout: int = 120) -> str:
+async def exec_command(command: str, timeout: int = 600) -> str:
     """
     Run a shell command via the kali-server-mcp HTTP API.
     Auto-starts the container if it isn't already running.
@@ -162,5 +162,5 @@ async def exec_command(command: str, timeout: int = 120) -> str:
                 if timed_out:
                     output = f"[partial — command timed out]\n{output}"
                 return output or "[no output]"
-    except Exception as exc:
-        return f"Error calling kali API: {exc}"
+    except BaseException as exc:
+        return f"Error calling kali API: {type(exc).__name__}: {exc}"

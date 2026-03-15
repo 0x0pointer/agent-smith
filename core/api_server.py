@@ -19,9 +19,11 @@ Usage
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-import threading
+import os
+import sys
 from pathlib import Path
 
 _log = logging.getLogger(__name__)
@@ -171,14 +173,12 @@ async def api_logs(file: str = "") -> JSONResponse:
     from core.logger import log_path, _LOG_DIR
     try:
         all_files = sorted(
-            [p.name for p in _LOG_DIR.glob("session_*.log")],
+            [p.name for p in _LOG_DIR.glob("*.log")],
             reverse=True,
         )
         target = _LOG_DIR / file if file else log_path
-        # Reject path traversal
-        target = target.resolve()
-        if not str(target).startswith(str(_LOG_DIR.resolve())):
-            return JSONResponse({"lines": [], "files": all_files, "error": "invalid file"})
+        if not target.resolve().is_relative_to(_LOG_DIR.resolve()):
+            return JSONResponse({"lines": [], "files": all_files, "error": "invalid path"})
         lines = target.read_text(encoding="utf-8").splitlines() if target.exists() else []
         return JSONResponse({"lines": lines, "file": target.name, "files": all_files})
     except Exception as exc:
@@ -187,48 +187,72 @@ async def api_logs(file: str = "") -> JSONResponse:
 
 # ── Server lifecycle ──────────────────────────────────────────────────────────
 
-_server_thread: threading.Thread | None = None
+_PID_FILE = _REPO_ROOT / "logs" / "dashboard.pid"
+
+
+def _read_pid() -> int | None:
+    try:
+        return int(_PID_FILE.read_text().strip())
+    except Exception:
+        return None
+
+
+def _write_pid(pid: int) -> None:
+    _PID_FILE.write_text(str(pid))
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def _port_healthy(port: int) -> bool:
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        return s.connect_ex(("localhost", port)) == 0
 
 
 async def serve(port: int = 5000) -> str:
     """
-    Start the FastAPI server in a daemon thread. Idempotent — safe to call
-    multiple times. Returns the dashboard URL.
+    Start the dashboard server as an independent background process.
+    Survives MCP server restarts — uses a PID file to detect and reuse
+    a previously spawned dashboard instead of killing it.
     """
-    global _server_thread
-    import asyncio
+    import signal
+    import subprocess as _sp
 
-    # If a stale process is holding the port (e.g. from a previous session),
-    # kill it so we start fresh with current code.
-    import socket
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        port_in_use = s.connect_ex(("localhost", port)) == 0
-    if port_in_use and (_server_thread is None or not _server_thread.is_alive()):
-        import signal, subprocess
-        result = subprocess.run(["lsof", "-ti", f"tcp:{port}"], capture_output=True, text=True)
-        for pid in result.stdout.split():
-            try:
-                import os; os.kill(int(pid), signal.SIGKILL)
-            except Exception:
-                pass
-        await asyncio.sleep(0.5)
-
-    if _server_thread is not None and _server_thread.is_alive():
+    # Check PID file first — survives MCP server restarts
+    saved_pid = _read_pid()
+    if saved_pid and _pid_alive(saved_pid) and _port_healthy(port):
         return f"http://localhost:{port}"
 
-    import uvicorn
+    # Old process died or never existed — clean up stale PID on port
+    if saved_pid and _pid_alive(saved_pid):
+        try:
+            os.kill(saved_pid, signal.SIGTERM)
+            await asyncio.sleep(0.3)
+        except OSError:
+            pass
 
-    config = uvicorn.Config(
-        app,
-        host="0.0.0.0",
-        port=port,
-        log_level="error",
-        loop="asyncio",
+    # Fire-and-forget: Popen returns immediately, child runs independently.
+    # stdout/stderr → /dev/null so the MCP stdio pipe is never touched.
+    # start_new_session=True detaches from MCP server's process group.
+    proc = _sp.Popen(
+        [sys.executable, "-m", "uvicorn",
+         "core.api_server:app",
+         "--host", "0.0.0.0",
+         "--port", str(port),
+         "--no-access-log",
+         "--log-level", "critical"],
+        stdout=_sp.DEVNULL,
+        stderr=_sp.DEVNULL,
+        cwd=str(_REPO_ROOT),
+        start_new_session=True,
     )
-    server = uvicorn.Server(config)
+    _write_pid(proc.pid)
 
-    _server_thread = threading.Thread(target=server.run, daemon=True)
-    _server_thread.start()
-
-    await asyncio.sleep(1.2)
+    await asyncio.sleep(1.5)     # give uvicorn time to bind the port
     return f"http://localhost:{port}"

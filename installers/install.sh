@@ -19,10 +19,9 @@ echo ""
 command -v docker  >/dev/null 2>&1 || die "docker not found — install Docker Desktop first."
 command -v poetry  >/dev/null 2>&1 || die "poetry not found — install with: curl -sSL https://install.python-poetry.org | python3 -"
 command -v claude  >/dev/null 2>&1 || die "claude not found — install Claude Code first: https://docs.anthropic.com/en/docs/claude-code"
-command -v node    >/dev/null 2>&1 || die "node not found — install Node.js v18+ from https://nodejs.org (required for Mermaid diagram rendering)"
-command -v npx     >/dev/null 2>&1 || die "npx not found — comes with Node.js, check your Node installation"
+command -v node    >/dev/null 2>&1 || warn "node not found — Mermaid diagrams will render client-side (install Node.js v18+ for server-side pre-rendering)"
 
-ok "Prerequisites satisfied (docker, poetry, claude, node)"
+ok "Prerequisites satisfied (docker, poetry, claude)"
 
 # ── Python dependencies ───────────────────────────────────────────────────────
 echo ""

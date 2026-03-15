@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 
-DEFAULT_TIMEOUT = 120
+DEFAULT_TIMEOUT = 600
 
 
 async def run_container(
@@ -20,7 +20,7 @@ async def run_container(
     extra_volumes: list of (host_path, container_path) tuples for additional -v mounts.
     env_vars: environment variables to inject into the container via -e flags.
     """
-    cmd = ["docker", "run", "--rm", "--network=host", "--tty"]
+    cmd = ["docker", "run", "--rm", "--network=host", "--memory=2g", "--cpus=1.5"]
 
     for key, val in (env_vars or {}).items():
         cmd += ["-e", f"{key}={val}"]
