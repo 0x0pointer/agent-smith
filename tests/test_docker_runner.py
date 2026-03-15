@@ -116,6 +116,41 @@ async def test_timeout_raises_and_kills_process():
 
 
 @pytest.mark.asyncio
+async def test_extra_volumes_added_as_mounts(tmp_path):
+    proc = _make_proc()
+    extra = [(str(tmp_path), "/extra:ro")]
+    with patch("tools.docker_runner.asyncio.create_subprocess_exec", return_value=proc) as mock_exec:
+        await run_container("nmap:latest", [], extra_volumes=extra)
+    cmd = mock_exec.call_args[0]
+    assert "-v" in cmd
+    assert any("/extra:ro" in str(a) for a in cmd)
+
+
+@pytest.mark.asyncio
+async def test_timeout_communicates_after_kill():
+    """After TimeoutError, proc.communicate() must be awaited to reap the process."""
+    communicate_calls = []
+
+    async def _communicate():
+        communicate_calls.append(True)
+        return b"", b""
+
+    proc = MagicMock()
+    proc.kill = MagicMock()
+    proc.communicate = _communicate
+
+    async def fake_wait_for(coro, timeout):
+        raise asyncio.TimeoutError
+
+    with patch("tools.docker_runner.asyncio.create_subprocess_exec", return_value=proc), \
+         patch("tools.docker_runner.asyncio.wait_for", side_effect=fake_wait_for):
+        with pytest.raises(asyncio.TimeoutError):
+            await run_container("nmap:latest", [], timeout=1)
+
+    assert len(communicate_calls) == 1
+
+
+@pytest.mark.asyncio
 async def test_output_bytes_decoded_with_replace():
     """Invalid UTF-8 bytes should be replaced, not raise."""
     proc = _make_proc(stdout=b"\xff\xfe raw bytes")
