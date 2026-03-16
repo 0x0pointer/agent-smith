@@ -4,6 +4,13 @@ findings.json
 session.json
 session_cost.json
 pocs/
+gh-issues.md
+threat-model/
+
+# ── Test coverage ────────────────────────────────────────────────────────────
+coverage.xml
+.coverage
+htmlcov/
 
 # ── Python ────────────────────────────────────────────────────────────────────
 __pycache__/

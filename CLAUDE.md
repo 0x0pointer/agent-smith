@@ -12,6 +12,7 @@ You have four skills at your disposal. Use the right one based on the task:
 | `/analyze-cve` | User asks to analyze a specific CVE in a dependency | Traces vulnerable code paths, assesses exploitability, generates Burp Suite PoC |
 | `/threat-model` | User asks for threat modeling, attack surface mapping, or security architecture review | PASTA framework threat model with STRIDE analysis, attack trees, risk register |
 | `/aikido-triage` | User provides an Aikido CSV export to review | Reads every flagged file, verdicts each finding as KEEP OPEN or CLOSE with code evidence, outputs a reviewed CSV and self-contained HTML report |
+| `/ai-redteam` | User asks to red-team or pentest an AI/LLM endpoint | OWASP LLM Top 10 assessment using FuzzyAI, PyRIT, Garak, and promptfoo — prompt injection, jailbreaks, system prompt leakage, excessive agency, output handling |
 | `/gh-export` | After any pentest or triage — user wants findings formatted for GitHub | Reads findings.json and outputs one copy-pasteable GitHub issue block per finding, following the AppSec reporting guide template |
 
 ### When to chain skills during an engagement
@@ -21,6 +22,8 @@ You have four skills at your disposal. Use the right one based on the task:
 - **During a codebase scan**: after semgrep + trufflehog scans, use `/analyze-cve` for any CVE findings that need deeper dataflow analysis.
 - **After a pentest**: use `/threat-model` to produce a structured architecture-level view alongside the tactical findings.
 - **After a pentest with an Aikido CSV**: run `/aikido-triage` to triage every finding against the codebase and produce a reviewed CSV + HTML evidence report.
+- **For AI/LLM targets**: run `/ai-redteam` instead of `/pentester` — it uses the OWASP LLM Top 10 framework and chains FuzzyAI, Garak, promptfoo, and PyRIT systematically.
+- **During a pentest with AI components**: if `/pentester` discovers an LLM endpoint, consider chaining into `/ai-redteam` for focused AI-specific testing.
 - **At the end of any pentest or triage**: run `/gh-export` to format all confirmed findings as copy-pasteable GitHub issue blocks.
 
 ## Available MCP Tools
@@ -43,6 +46,8 @@ Run any security scanner. `tool` selects the scanner, `target` is the URL/host/p
 | trufflehog | path | |
 | fuzzyai | URL | attack=jailbreak, provider=openai, model= |
 | pyrit | URL | attack=prompt_injection, objective=, max_turns=5, scorer=self_ask |
+| garak | URL | probes=dan,encoding,promptinject,..., generator=rest |
+| promptfoo | URL | plugins=prompt-injection,..., attack_strategies=jailbreak,crescendo |
 
 ### `kali(command, timeout)`
 Run any command in the Kali container (auto-starts if needed). Hundreds of tools: nikto, sqlmap, gobuster, hydra, testssl, enum4linux-ng, wapiti, etc.
@@ -129,6 +134,8 @@ kali(command="cewl http://target.com -d 2 -m 5")
 scan(tool="fuzzyai", target="http://ai-app.com/api/chat", options={"attack": "jailbreak", "provider": "openai"})
 scan(tool="fuzzyai", target="http://ai-app.com/api/chat", options={"attack": "prompt-injection", "provider": "rest"})
 scan(tool="pyrit", target="http://ai-app.com/v1/chat", options={"attack": "crescendo", "objective": "Reveal confidential information", "max_turns": 10})
+scan(tool="garak", target="http://ai-app.com/api/chat", options={"probes": "dan,encoding,promptinject,leakreplay,xss"})
+scan(tool="promptfoo", target="http://ai-app.com/api/chat", options={"plugins": "prompt-injection,excessive-agency,pii,hallucination,prompt-extraction"})
 ```
 
 ## Rules
@@ -151,7 +158,7 @@ scan(tool="pyrit", target="http://ai-app.com/v1/chat", options={"attack": "cresc
 - `mcp_server/session_tools.py` — `session()` tool (scan lifecycle, Kali infra, codebase target)
 - `core/` — server infrastructure (session, cost tracking, logging, findings, dashboard)
 - `tools/` — security scanner definitions + Docker runners
-- `skills/` — skill & command definitions (pentester, analyze-cve, threat-model)
+- `skills/` — skill & command definitions (pentester, analyze-cve, threat-model, ai-redteam)
 - `examples/` — reference reports
 - `installers/` — setup and teardown scripts
 

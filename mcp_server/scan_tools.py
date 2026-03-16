@@ -128,6 +128,53 @@ async def _handle_pyrit(target, flags, options):
     return result
 
 
+async def _handle_garak(target, flags, options):
+    from tools import kali_runner
+
+    probes = options.get("probes", "dan,encoding,promptinject,leakreplay,xss")
+    generator = options.get("generator", "rest")
+    timeout = options.get("timeout", 900)
+
+    safe_target = shlex.quote(target)
+    safe_probes = shlex.quote(probes)
+    cmd = f"garak --model_type {shlex.quote(generator)} --model_name {safe_target} --probes {safe_probes}"
+    if flags:
+        cmd += f" {shlex.join(shlex.split(flags))}"
+
+    log.tool_call("garak", {"target": target, "probes": probes, "generator": generator})
+    call_id = cost_tracker.start("garak")
+    result = _clip(await kali_runner.exec_command(cmd, timeout=timeout), 12_000)
+    cost_tracker.finish(call_id, result)
+    log.tool_result("garak", result)
+    return result
+
+
+async def _handle_promptfoo(target, flags, options):
+    from tools import kali_runner
+
+    plugins = options.get("plugins", "prompt-injection,excessive-agency,pii,hallucination,prompt-extraction")
+    strategies = options.get("attack_strategies", "jailbreak,crescendo")
+    timeout = options.get("timeout", 900)
+
+    safe_target = shlex.quote(target)
+    cmd = (
+        f"promptfoo redteam run"
+        f" --target {safe_target}"
+        f" --plugins {shlex.quote(plugins)}"
+        f" --strategies {shlex.quote(strategies)}"
+        f" --output json"
+    )
+    if flags:
+        cmd += f" {shlex.join(shlex.split(flags))}"
+
+    log.tool_call("promptfoo", {"target": target, "plugins": plugins, "strategies": strategies})
+    call_id = cost_tracker.start("promptfoo")
+    result = _clip(await kali_runner.exec_command(cmd, timeout=timeout), 12_000)
+    cost_tracker.finish(call_id, result)
+    log.tool_result("promptfoo", result)
+    return result
+
+
 _DISPATCH = {
     "nmap":       _handle_nmap,
     "naabu":      _handle_naabu,
@@ -140,6 +187,8 @@ _DISPATCH = {
     "trufflehog": _handle_trufflehog,
     "fuzzyai":    _handle_fuzzyai,
     "pyrit":      _handle_pyrit,
+    "garak":      _handle_garak,
+    "promptfoo":  _handle_promptfoo,
 }
 
 
@@ -165,6 +214,8 @@ async def scan(tool: str, target: str, flags: str = "", options: dict | None = N
     | trufflehog | path        |                                                   |
     | fuzzyai    | URL         | attack=jailbreak, provider=openai, model=         |
     | pyrit      | URL         | attack=prompt_injection, objective=, max_turns=5  |
+    | garak      | URL         | probes=dan,encoding,..., generator=rest            |
+    | promptfoo  | URL         | plugins=prompt-injection,..., attack_strategies=   |
     """
     handler = _DISPATCH.get(tool)
     if not handler:

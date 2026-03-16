@@ -94,6 +94,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends rustc cargo \
 COPY pyrit_runner.py /usr/local/bin/pyrit-runner
 RUN chmod +x /usr/local/bin/pyrit-runner
 
+# AI red-teaming: NVIDIA Garak — LLM vulnerability scanner (probe-based)
+RUN pip3 install --no-cache-dir garak --break-system-packages
+
+# AI red-teaming: promptfoo — LLM eval + red-team framework (npm)
+RUN apt-get update && apt-get install -y --no-install-recommends nodejs npm \
+    && rm -rf /var/lib/apt/lists/* \
+    && npm install -g promptfoo
+
 # Decompress rockyou wordlist (needed by hydra, john, etc.)
 RUN gzip -d /usr/share/wordlists/rockyou.txt.gz 2>/dev/null || true
 
