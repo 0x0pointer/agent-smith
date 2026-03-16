@@ -65,6 +65,10 @@ mkdir -p "$HOME/.claude/skills/gh-export"
 cp "$REPO_DIR/skills/gh-export/SKILL.md" "$HOME/.claude/skills/gh-export/SKILL.md"
 ok "/gh-export skill installed"
 
+mkdir -p "$HOME/.claude/skills/ai-redteam"
+cp "$REPO_DIR/skills/ai-redteam/SKILL.md" "$HOME/.claude/skills/ai-redteam/SKILL.md"
+ok "/ai-redteam skill installed"
+
 # ── AI testing API keys (FuzzyAI + PyRIT) ────────────────────────────────────
 echo ""
 echo "AI testing tools (FuzzyAI + PyRIT) use LLM APIs for attacks and scoring."
@@ -158,5 +162,6 @@ echo "    /pentester scan https://target.com       — full pentest"
 echo "    /analyze-cve lodash 4.17.20 CVE-...      — CVE exploitability analysis"
 echo "    /threat-model                             — PASTA threat model"
 echo "    /aikido-triage findings.csv /path/to/app — triage Aikido CSV + HTML report"
+echo "    /ai-redteam https://ai-app.com/api/chat   — OWASP LLM Top 10 red-team assessment"
 echo "    /gh-export                               — export findings as GitHub issue blocks"
 echo ""

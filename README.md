@@ -88,6 +88,7 @@ Open Claude Code and use a slash command:
 /threat-model
 /analyze-cve lodash 4.17.20 CVE-2021-23337
 /aikido-triage ~/Downloads/findings.csv /path/to/codebase
+/ai-redteam https://ai-app.com/api/chat provider=openai depth=standard
 ```
 
 Claude calls `start_dashboard` automatically. Open `http://localhost:5000` to watch findings appear in real time.
@@ -139,6 +140,7 @@ skills/                  Slash command definitions
   threat-modeling/SKILL.md
   aikido-triage/SKILL.md
   gh-export/SKILL.md
+  ai-redteam/SKILL.md
 
 templates/
   dashboard.html         4-tab dashboard (Findings · Topology · Threat Model · Logs)
@@ -159,4 +161,6 @@ installers/              install.sh · uninstall.sh
 | [docs/skills.md](docs/skills.md) | Slash commands, chaining guide, examples |
 | [docs/dashboard-api.md](docs/dashboard-api.md) | FastAPI endpoints, response shapes |
 | [docs/extending.md](docs/extending.md) | How to add new tools and skills |
+
+> **Adding a new skill?** After creating `skills/<name>/SKILL.md`, you must also copy it to `~/.claude/skills/<name>/SKILL.md` (or re-run `./installers/install.sh`) for Claude Code to pick it up. Skills in the `skills/` directory alone are not automatically registered.
 | [docs/testing.md](docs/testing.md) | Running the test suite, coverage, adding new tests |
