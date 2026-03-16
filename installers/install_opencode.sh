@@ -25,6 +25,12 @@ command -v opencode >/dev/null 2>&1 || die "opencode not found — install from:
 
 ok "Prerequisites satisfied (docker, poetry, opencode)"
 
+# ── Pull skills submodule ────────────────────────────────────────────────────
+echo ""
+echo "Pulling skills submodule..."
+git -C "$REPO_DIR" submodule update --init --recursive
+ok "Skills submodule up to date"
+
 # ── Python dependencies ───────────────────────────────────────────────────────
 echo ""
 echo "Installing Python dependencies..."
@@ -77,7 +83,8 @@ cp "$REPO_DIR/skills/analyze-cve/SKILL.md"       "$OPENCODE_COMMANDS_DIR/analyze
 cp "$REPO_DIR/skills/threat-modeling/SKILL.md"   "$OPENCODE_COMMANDS_DIR/threat-model.md"
 cp "$REPO_DIR/skills/aikido-triage/SKILL.md"     "$OPENCODE_COMMANDS_DIR/aikido-triage.md"
 cp "$REPO_DIR/skills/gh-export/SKILL.md"         "$OPENCODE_COMMANDS_DIR/gh-export.md"
-ok "/pentester, /analyze-cve, /threat-model, /aikido-triage, /gh-export commands available in all opencode sessions"
+cp "$REPO_DIR/skills/ai-redteam/SKILL.md"       "$OPENCODE_COMMANDS_DIR/ai-redteam.md"
+ok "/pentester, /analyze-cve, /threat-model, /aikido-triage, /gh-export, /ai-redteam commands available in all opencode sessions"
 
 # ── Next steps ────────────────────────────────────────────────────────────────
 echo ""

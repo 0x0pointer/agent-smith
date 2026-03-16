@@ -68,12 +68,14 @@ flowchart TD
 ### Install
 
 ```bash
-git clone <repo-url>
+git clone --recursive <repo-url>
 cd agent-smith
 ./installers/install.sh
 ```
 
-The installer handles everything: Poetry dependencies, API key prompts, MCP registration, and skill installation.
+The `--recursive` flag pulls the [skills submodule](https://github.com/0x0pointer/skills) automatically. The installer handles everything else: Poetry dependencies, API key prompts, MCP registration, and skill installation.
+
+> **Already cloned without `--recursive`?** Run `git submodule update --init --recursive` to pull the skills.
 
 > **After install, fully quit and reopen Claude Code.** The MCP server connects at startup — tools won't be available until you do this.
 
@@ -134,7 +136,7 @@ tools/kali/              Kali image
   Dockerfile             Builds pentest-agent/kali-mcp
   pyrit_runner.py        CLI shim for Microsoft PyRIT
 
-skills/                  Slash command definitions
+skills/                  Slash command definitions (git submodule → github.com/0x0pointer/skills)
   pentester.md
   analyze-cve/SKILL.md
   threat-modeling/SKILL.md
@@ -162,5 +164,5 @@ installers/              install.sh · uninstall.sh
 | [docs/dashboard-api.md](docs/dashboard-api.md) | FastAPI endpoints, response shapes |
 | [docs/extending.md](docs/extending.md) | How to add new tools and skills |
 
-> **Adding a new skill?** After creating `skills/<name>/SKILL.md`, you must also copy it to `~/.claude/skills/<name>/SKILL.md` (or re-run `./installers/install.sh`) for Claude Code to pick it up. Skills in the `skills/` directory alone are not automatically registered.
+> **Adding a new skill?** Skills live in a separate repo ([github.com/0x0pointer/skills](https://github.com/0x0pointer/skills)) pulled in as a git submodule. After adding a skill there, update the submodule pointer (`git add skills && git commit`) and re-run `./installers/install.sh` to deploy it to `~/.claude/skills/`.
 | [docs/testing.md](docs/testing.md) | Running the test suite, coverage, adding new tests |

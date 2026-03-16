@@ -113,9 +113,11 @@ No registration needed. Document it in `CLAUDE.md` under the Kali deep-dive exam
 
 ## Adding a new skill
 
-Skills are on-demand instruction sets — loaded only when invoked, so they don't bloat the system prompt.
+Skills live in a separate repo ([github.com/0x0pointer/skills](https://github.com/0x0pointer/skills)) pulled in as a git submodule at `skills/`.
 
 ### 1. Create the skill file
+
+Clone the skills repo and add your skill:
 
 ```
 skills/my-skill/SKILL.md
@@ -136,18 +138,27 @@ You are doing X. Follow these steps:
 3. Call `report_finding` for every confirmed vulnerability.
 ```
 
-### 2. Install it
+Commit and push to the skills repo, then update the submodule pointer in agent-smith:
+
+```bash
+cd skills && git pull origin main && cd ..
+git add skills
+git commit -m "update skills submodule"
+```
+
+### 2. Register it in the installers
 
 Add to `installers/install.sh`:
 
 ```bash
-cp "$REPO_DIR/skills/my-skill/SKILL.md" "$HOME/.claude/skills/my-skill.md"
+mkdir -p "$HOME/.claude/skills/my-skill"
+cp "$REPO_DIR/skills/my-skill/SKILL.md" "$HOME/.claude/skills/my-skill/SKILL.md"
 ```
 
-Add the reverse to `installers/uninstall.sh`:
+Add the reverse to `installers/uninstall.sh` (append to the `for skill_dir in ...` loop):
 
 ```bash
-rm -f "$HOME/.claude/skills/my-skill.md"
+"$HOME/.claude/skills/my-skill"
 ```
 
 ### 3. Document it

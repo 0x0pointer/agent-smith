@@ -1,6 +1,6 @@
 # Skills Reference
 
-Skills are slash commands that expand into detailed instructions for Claude. They are installed into `~/.claude/commands/` or `~/.claude/skills/` by `install.sh`.
+Skills are slash commands that expand into detailed instructions for Claude. They live in a separate repo ([github.com/0x0pointer/skills](https://github.com/0x0pointer/skills)) pulled in as a git submodule at `skills/`, and are installed into `~/.claude/commands/` or `~/.claude/skills/` by `install.sh`.
 
 ---
 
@@ -145,6 +145,52 @@ Once `/gh-export` has run, each finding in the **Findings** tab shows a **clipbo
 
 ---
 
+## `/ai-redteam`
+
+Red-team assessment of AI/LLM endpoints using the OWASP LLM Top 10 (2025) framework. Systematically tests all 10 categories using four complementary tools.
+
+```
+/ai-redteam https://ai-app.com/api/chat provider=openai depth=standard
+/ai-redteam https://ai-app.com/v1/chat provider=rest depth=thorough
+/ai-redteam https://ai-app.com/api/chat depth=quick
+```
+
+**What it does:**
+
+1. Calls `start_scan` with target, depth, and limits
+2. Calls `start_dashboard` — live findings tracker
+3. **Recon & fingerprinting** — probes the endpoint for model identification, response format, rate limiting, tool/function calling surface, and hidden parameters
+4. Calls `report_diagram` with an architecture diagram of the AI system (trust boundaries, guardrails, tool layer, RAG)
+5. **Automated scanning** — runs tools in parallel based on depth:
+   - FuzzyAI: single-turn jailbreak fuzzing (jailbreak, prompt injection, system prompt leak, PII extraction, XSS injection)
+   - Garak: probe-based scanning (DAN, encoding attacks, data leakage, hallucination, malware generation)
+   - promptfoo: plugin-based evaluation (134 plugins — excessive agency, RAG poisoning, reasoning DoS, MCP attacks)
+   - PyRIT: multi-turn orchestrated attacks (crescendo, jailbreak with configurable objectives)
+6. **Targeted multi-turn attacks** — based on Phase 2 results, runs focused attacks on weak categories (tool parameter fuzzing, authority marker rotation, multi-objective payloads)
+7. **Manual verification & PoC** — reproduces each finding with `http_request`, saves confirmed exploits via `save_poc`
+8. Calls `report_finding` for every confirmed vulnerability — mapped to OWASP LLM category
+9. Produces OWASP coverage summary showing which categories were tested and what was found
+10. Calls `complete_scan` and chains into `/gh-export`
+
+**Tools used:**
+
+| Tool | Coverage | Type |
+|------|----------|------|
+| FuzzyAI (CyberArk) | LLM01, LLM02, LLM05, LLM07 | Single-turn fuzzing |
+| Garak (NVIDIA) | LLM01, LLM02, LLM05, LLM07, LLM09 | Probe-based scanning |
+| promptfoo | LLM01, LLM05, LLM06, LLM08, LLM09, LLM10 | Plugin-based evaluation |
+| PyRIT (Microsoft) | LLM01, LLM02, LLM07, LLM09 | Multi-turn orchestration |
+
+**Depth presets:**
+
+| Depth | Tools | Cost | Time | Calls |
+|---|---|---|---|---|
+| `quick` | FuzzyAI (jailbreak + system-prompt-leak) | $0.10 | 10 min | 5 |
+| `standard` | FuzzyAI (all attacks) + Garak (top probes) + PyRIT (prompt_injection) | $0.50 | 30 min | 15 |
+| `thorough` | All 4 tools + multi-turn crescendo + manual follow-up | $2.00 | 90 min | 40 |
+
+---
+
 ## Chaining skills
 
 Skills are designed to be chained automatically during an engagement:
@@ -155,7 +201,11 @@ Before a pentest
 
 During a pentest (/pentester)
   ├── /analyze-cve            if nuclei or semgrep finds a CVE dependency
+  ├── /ai-redteam             if an LLM endpoint is discovered
   └── runs automatically
+
+For AI/LLM targets (instead of /pentester)
+  └── /ai-redteam             OWASP LLM Top 10 assessment
 
 After a pentest
   ├── /aikido-triage          if an Aikido CSV export is available

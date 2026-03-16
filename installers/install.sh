@@ -23,6 +23,12 @@ command -v node    >/dev/null 2>&1 || warn "node not found — Mermaid diagrams 
 
 ok "Prerequisites satisfied (docker, poetry, claude)"
 
+# ── Pull skills submodule ────────────────────────────────────────────────────
+echo ""
+echo "Pulling skills submodule..."
+git -C "$REPO_DIR" submodule update --init --recursive
+ok "Skills submodule up to date"
+
 # ── Python dependencies ───────────────────────────────────────────────────────
 echo ""
 echo "Installing Python dependencies..."
