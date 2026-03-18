@@ -46,6 +46,14 @@ _calls: list[dict] = []
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
+def reset() -> None:
+    """Reset all counters for a new scan session."""
+    global _session_start, _calls
+    _session_start = datetime.now(timezone.utc).isoformat()
+    _calls = []
+    _flush()
+
+
 def start(tool_name: str) -> str:
     """
     Record that a tool has started. Flushes immediately so the dashboard

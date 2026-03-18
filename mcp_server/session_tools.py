@@ -77,10 +77,11 @@ def _do_start(opts):
     ]
     if cfg["out_of_scope"]:
         lines.append(f"  Out-of-scope: {', '.join(cfg['out_of_scope'])}")
+    call_limit_str = f"{lim['max_tool_calls']} tool calls" if lim['max_tool_calls'] > 0 else "unlimited"
     lines += [
         f"  Cost limit  : ${lim['max_cost_usd']}",
         f"  Time limit  : {lim['max_time_minutes']} min",
-        f"  Call limit  : {lim['max_tool_calls']} tool calls",
+        f"  Call limit  : {call_limit_str}",
         "",
         f"Proceed with the {depth} scan workflow.",
         "Stop and call session(action='complete') when finished or when a limit is hit.",
@@ -135,13 +136,14 @@ def _do_complete(opts):
 def _do_status():
     summary = cost_tracker.get_summary()
     data = findings_store._load()
+    current = scan_session.get() or {}
     return json.dumps({
-        "target": scan_session._state.get("target", ""),
+        "target": current.get("target", ""),
         "tools_run": sorted(_session_tools_called),
         "findings_count": len(data.get("findings", [])),
         "diagrams_count": len(data.get("diagrams", [])),
-        "cost_usd": summary.get("total_cost_usd", 0),
-        "tool_calls": summary.get("total_calls", 0),
+        "cost_usd": summary.get("est_cost_usd", 0),
+        "tool_calls": summary.get("tool_calls_total", 0),
     }, indent=2)
 
 

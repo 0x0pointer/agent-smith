@@ -35,7 +35,7 @@ def test_start_applies_preset_limits():
 def test_start_thorough_preset():
     sess = core.session.start("example.com", depth="thorough")
     assert sess["limits"]["max_cost_usd"] == pytest.approx(2.00)
-    assert sess["limits"]["max_tool_calls"] == 60
+    assert sess["limits"]["max_tool_calls"] == 0  # unlimited
 
 
 def test_start_custom_limits_override_preset():
@@ -187,3 +187,38 @@ def test_remaining_never_goes_negative():
     core.session.start("example.com", depth="recon", max_tool_calls=5)
     r = core.session.remaining(_fake_cost(calls=100))
     assert r["calls_remaining"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Unlimited tool calls (max_tool_calls=0)
+# ---------------------------------------------------------------------------
+
+def test_check_limits_unlimited_calls_never_triggers():
+    core.session.start("example.com", depth="thorough")
+    msg = core.session.check_limits(_fake_cost(calls=999))
+    assert msg is None  # cost/time still within budget
+
+
+def test_remaining_unlimited_calls_returns_minus_one():
+    core.session.start("example.com", depth="thorough")
+    r = core.session.remaining(_fake_cost(calls=50))
+    assert r["calls_remaining"] == -1
+    assert r["calls_pct"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Counter reset on new session
+# ---------------------------------------------------------------------------
+
+def test_start_resets_cost_tracker():
+    """Starting a new session should zero out cost tracker counters."""
+    import core.cost as cost_tracker
+    # Simulate a previous session's calls
+    cid = cost_tracker.start("nmap")
+    cost_tracker.finish(cid, "x" * 4000)
+    assert cost_tracker.get_summary()["tool_calls_total"] == 1
+
+    # Starting a new session should reset
+    core.session.start("new-target.com")
+    assert cost_tracker.get_summary()["tool_calls_total"] == 0
+    assert cost_tracker.get_summary()["est_cost_usd"] == 0

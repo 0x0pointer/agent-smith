@@ -34,7 +34,7 @@ Full penetration test — recon through exploitation through reporting.
 |---|---|---|---|---|
 | `recon` | naabu + subfinder + httpx | $0.10 | 15 min | 10 |
 | `standard` | recon + nuclei + spider + ffuf | $0.50 | 45 min | 25 |
-| `thorough` | standard + full Kali toolchain | $2.00 | 120 min | 60 |
+| `thorough` | standard + full Kali toolchain | $2.00 | 120 min | unlimited |
 
 ---
 
@@ -262,6 +262,75 @@ Comprehensive container and Kubernetes security assessment covering OWASP Kubern
 
 ---
 
+## `/ssl-tls-audit`
+
+Deep TLS/SSL configuration audit with compliance mapping to PCI DSS 4.0, NIST SP 800-52r2, and FedRAMP.
+
+```
+/ssl-tls-audit secureby.design depth=thorough
+/ssl-tls-audit 10.0.0.1:443 depth=standard
+/ssl-tls-audit mail.example.com depth=quick
+```
+
+**What it does:**
+
+1. Calls `start_scan` with target and depth
+2. **Automated scanning** — testssl.sh, sslscan, sslyze, nuclei SSL templates in parallel
+3. **Protocol version analysis** — SSLv2/3, TLS 1.0/1.1/1.2/1.3 support and enforcement
+4. **Cipher suite & ordering** — NULL, EXPORT, DES, RC4, 3DES, CBC, DHE strength, server preference
+5. **Certificate chain validation** — validity, chain completeness, key size, SAN, CT logs, OCSP stapling
+6. **Known vulnerability testing** — Heartbleed, POODLE, BEAST, CRIME, BREACH, ROBOT, DROWN, Lucky13, Ticketbleed, GOLDENDOODLE
+7. **ECDHE curve analysis** — P-256, P-384, P-521, X25519, brainpool, preference enforcement
+8. **TLS 1.3 specific** — 0-RTT replay, PSK modes, downgrade detection, GREASE, TLS_FALLBACK_SCSV
+9. **Session management** — ticket reuse, session ID fixation, resumption, ticket lifetime
+10. **Renegotiation** — client-initiated DoS, secure renegotiation (RFC 5746)
+11. **HSTS analysis** — max-age, includeSubDomains, preload list, subdomain bypass
+12. **Certificate revocation** — CRL distribution points, OCSP responder, stapled response freshness
+13. **Multi-port TLS scanning** — 20+ TLS-bearing ports (SMTP, IMAP, LDAPS, RDP, MQTT, etc.)
+14. **Compliance mapping** — PCI DSS 4.0 Section 4, NIST SP 800-52r2, FedRAMP controls
+15. Calls `report_finding` for every confirmed weakness with compliance impact
+
+**Depth presets:**
+
+| Depth | Tools | Cost | Time | Calls |
+|---|---|---|---|---|
+| `quick` | testssl quick mode + HSTS check | $0.05 | 5 min | 5 |
+| `standard` | testssl full + sslscan + nuclei SSL + HTTP headers + cert chain | $0.20 | 15 min | 12 |
+| `thorough` | standard + openssl manual + nmap + multi-port + TLS 1.3 deep + session + renegotiation + revocation + compliance | $0.50 | 30 min | 25 |
+
+---
+
+## `/network-assess`
+
+Internal network assessment — assumes attacker has physical or VPN access to the target network.
+
+```
+/network-assess 192.168.1.0/24 depth=standard
+/network-assess 10.0.0.0/16 depth=thorough
+/network-assess 172.16.0.0/24 depth=quick
+```
+
+**What it does:**
+
+1. **Host discovery** — ARP scan, ping sweep, NetBIOS enumeration
+2. **Port scanning & service detection** — naabu fast scan, nmap service detection, full port scan at thorough depth
+3. **Broadcast protocol analysis** — LLMNR/NBT-NS/mDNS detection (poisoning risk for credential capture)
+4. **SNMP enumeration** — community string brute-force, SNMP walk for device info, routing tables, processes
+5. **Share enumeration** — SMB shares (null session, anonymous), NFS exports
+6. **Network segmentation testing** — inter-VLAN access, firewall rule testing, DNS segmentation
+7. **Infrastructure device audit** — router/switch discovery, default credentials, SSH audit
+8. Calls `report_diagram` with network topology and `complete_scan`
+
+**Depth presets:**
+
+| Depth | Tools | Cost | Time | Calls |
+|---|---|---|---|---|
+| `quick` | host discovery + top-100 ports + service ID | $0.10 | 15 min | 10 |
+| `standard` | quick + top-1000 ports + SMB/SNMP/NFS enum + broadcast protocols | $0.50 | 45 min | 25 |
+| `thorough` | standard + full port scan + segmentation testing + router/switch audit | $2.00 | 120 min | 60 |
+
+---
+
 ## Chaining skills
 
 Skills are designed to be chained automatically during an engagement:
@@ -273,14 +342,20 @@ Before a pentest
 
 During a pentest (/pentester)
   ├── /analyze-cve            if nuclei or semgrep finds a CVE dependency
+  ├── /ssl-tls-audit          if TLS services are found — PCI DSS/NIST compliance audit
+  ├── /network-assess         if internal network scope — segmentation, SNMP, broadcast protocols
   ├── /container-k8s-security if Docker/K8s infrastructure is discovered
   ├── /ai-redteam             if an LLM endpoint is discovered
-  └── runs automatically
+  └── /supply-chain           if codebase scan — dependency + CI/CD security
+
+During a codebase scan
+  └── /analyze-cve            trace CVE reachability in code
 
 For AI/LLM targets (instead of /pentester)
   └── /ai-redteam             OWASP LLM Top 10 assessment
 
 After a pentest
+  ├── /threat-model           STRIDE analysis based on discovered architecture
   ├── /aikido-triage          if an Aikido CSV export is available
   └── /gh-export              format all findings as GitHub issues
 ```

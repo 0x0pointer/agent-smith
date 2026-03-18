@@ -17,7 +17,7 @@ Depth presets
 
   thorough — standard + full Kali toolchain (nikto, sqlmap, testssl, …)
              comprehensive but noisy — confirm authorisation first
-             default limits: $2.00  |  120 min  |  60 tool calls
+             default limits: $2.00  |  120 min  |  unlimited tool calls
 
 Hard limit enforcement
 ----------------------
@@ -36,6 +36,8 @@ import json
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+
+from core import cost as cost_tracker
 
 # ── Depth presets ─────────────────────────────────────────────────────────────
 
@@ -59,7 +61,7 @@ PRESETS: dict[str, dict] = {
         "description": "Standard + full Kali toolchain (nikto, sqlmap, testssl, …)",
         "max_cost_usd":     2.00,
         "max_time_minutes": 120,
-        "max_tool_calls":   60,
+        "max_tool_calls":   0,       # 0 = unlimited — cost and time are the constraints
     },
 }
 
@@ -84,6 +86,9 @@ def start(
 ) -> dict:
     """Initialise a new scan session and write session.json."""
     global _current
+
+    # Reset cost/call counters from any previous session
+    cost_tracker.reset()
 
     preset = PRESETS.get(depth, PRESETS["standard"])
     limits = {
@@ -141,9 +146,9 @@ def check_limits(cost_summary: dict) -> str | None:
             "Do not run any more tools. Call complete_scan() and write the final report.",
         )
 
-    # ── Tool calls ────────────────────────────────────────────────────────────
+    # ── Tool calls (0 = unlimited) ────────────────────────────────────────────
     calls = cost_summary.get("tool_calls_total", 0)
-    if calls >= lim["max_tool_calls"]:
+    if lim["max_tool_calls"] > 0 and calls >= lim["max_tool_calls"]:
         return _stop(
             "limit_reached",
             f"CALL LIMIT: {calls} tool calls made (limit {lim['max_tool_calls']}). "
@@ -178,13 +183,14 @@ def remaining(cost_summary: dict) -> dict:
     ).total_seconds() / 60
     spent   = cost_summary.get("est_cost_usd", 0)
     calls   = cost_summary.get("tool_calls_total", 0)
+    max_calls = lim["max_tool_calls"]
     return {
         "cost_remaining_usd":     round(max(0, lim["max_cost_usd"] - spent), 4),
         "time_remaining_minutes": round(max(0, lim["max_time_minutes"] - elapsed), 1),
-        "calls_remaining":        max(0, lim["max_tool_calls"] - calls),
+        "calls_remaining":        max(0, max_calls - calls) if max_calls > 0 else -1,
         "cost_pct":               min(100, round(spent / lim["max_cost_usd"] * 100, 1)),
         "time_pct":               min(100, round(elapsed / lim["max_time_minutes"] * 100, 1)),
-        "calls_pct":              min(100, round(calls / lim["max_tool_calls"] * 100, 1)),
+        "calls_pct":              min(100, round(calls / max_calls * 100, 1)) if max_calls > 0 else 0,
     }
 
 
