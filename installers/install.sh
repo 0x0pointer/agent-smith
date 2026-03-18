@@ -152,6 +152,10 @@ settings_path.write_text(json.dumps(data, indent=2) + "\n")
 PYEOF
 ok "pentest-agent tools will run without approval prompts"
 
+# ── Ensure hook scripts are executable ────────────────────────────────────────
+chmod +x "$REPO_DIR/.claude/hooks/post-compact.sh" 2>/dev/null || true
+ok "Hook scripts are executable"
+
 # ── Next steps ────────────────────────────────────────────────────────────────
 echo ""
 echo "  Done! Optional next steps:"

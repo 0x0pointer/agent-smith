@@ -83,6 +83,7 @@ def start(
     max_cost_usd:     float | None = None,
     max_time_minutes: int   | None = None,
     max_tool_calls:   int   | None = None,
+    skill:            str   | None = None,
 ) -> dict:
     """Initialise a new scan session and write session.json."""
     global _current
@@ -110,6 +111,8 @@ def start(
         "status":       "running",   # running | limit_reached | complete
         "stop_reason":  None,
         "limits":       limits,
+        "skill":         skill,
+        "skill_history": [skill] if skill else [],
     }
     _flush()
     return _current
@@ -170,6 +173,18 @@ def complete(notes: str = "") -> dict:
 
 
 def get() -> dict | None:
+    return _current
+
+
+def set_skill(skill_name: str) -> dict | None:
+    """Update the active skill (e.g. when chaining skills during a session)."""
+    global _current
+    if _current is None or _current["status"] != "running":
+        return None
+    _current["skill"] = skill_name
+    if skill_name not in _current["skill_history"]:
+        _current["skill_history"].append(skill_name)
+    _flush()
     return _current
 
 

@@ -187,6 +187,15 @@ scan(tool="promptfoo", target="http://ai-app.com/api/chat", options={"plugins": 
 - Use `session(action="status")` to recover context if the session gets long
 - For long-running tools (hydra, amass, sqlmap), set a reasonable timeout
 
+## Context recovery after compaction
+
+When you see a "CONTEXT RECOVERY AFTER COMPACTION" message or realize your context was compacted mid-scan:
+
+1. **Re-invoke the active skill** — use the Skill tool to reload its full workflow. Do NOT continue from memory alone.
+2. **Call `session(action="status")`** — see what tools already ran, findings count, cost.
+3. **Resume, don't restart** — pick up from where the workflow was interrupted. The `tools_run` list shows completed steps.
+4. **When chaining skills** — call `session(action="set_skill", options={"skill": "new-skill"})` so recovery knows which skill to reload.
+
 ## Project layout
 - `mcp_server/__main__.py` — entry point, crash logging, module imports
 - `mcp_server/_app.py` — FastMCP singleton, `_run()` dispatcher, `_clip()` helper

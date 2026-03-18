@@ -16,16 +16,19 @@ from mcp_server._app import mcp, _session_tools_called
 async def session(action: str, options: dict | None = None) -> str:
     """Scan lifecycle and infrastructure management.
 
-    action  : start | complete | status | start_kali | stop_kali | pull_images | set_codebase
+    action  : start | complete | status | set_skill | start_kali | stop_kali | pull_images | set_codebase
 
     start options:
       target, depth=standard (recon|standard|thorough), scope=[],
-      out_of_scope=[], max_cost_usd=, max_time_minutes=, max_tool_calls=
+      out_of_scope=[], max_cost_usd=, max_time_minutes=, max_tool_calls=, skill=
 
     complete options:
       notes=
 
-    status: returns current scan state (target, tools run, findings, cost)
+    status: returns current scan state (target, tools run, findings, cost, skill)
+
+    set_skill options:
+      skill= (name of the active skill, e.g. "pentester", "ai-redteam")
 
     set_codebase options:
       path= (absolute path to local codebase)
@@ -40,6 +43,8 @@ async def session(action: str, options: dict | None = None) -> str:
         return _do_complete(opts)
     elif action == "status":
         return _do_status()
+    elif action == "set_skill":
+        return _do_set_skill(opts)
     elif action == "start_kali":
         return await _do_start_kali()
     elif action == "stop_kali":
@@ -49,7 +54,7 @@ async def session(action: str, options: dict | None = None) -> str:
     elif action == "set_codebase":
         return _do_set_codebase(opts)
     else:
-        return f"Unknown action '{action}'. Use: start, complete, status, start_kali, stop_kali, pull_images, set_codebase"
+        return f"Unknown action '{action}'. Use: start, complete, status, set_skill, start_kali, stop_kali, pull_images, set_codebase"
 
 
 def _do_start(opts):
@@ -63,6 +68,7 @@ def _do_start(opts):
         max_cost_usd=opts.get("max_cost_usd"),
         max_time_minutes=opts.get("max_time_minutes"),
         max_tool_calls=opts.get("max_tool_calls"),
+        skill=opts.get("skill"),
     )
     lim = cfg["limits"]
     log.note(
@@ -137,14 +143,38 @@ def _do_status():
     summary = cost_tracker.get_summary()
     data = findings_store._load()
     current = scan_session.get() or {}
-    return json.dumps({
+    remaining = scan_session.remaining(summary) if current else {}
+    result = {
         "target": current.get("target", ""),
+        "depth": current.get("depth", ""),
+        "status": current.get("status", ""),
+        "skill": current.get("skill"),
+        "skill_history": current.get("skill_history", []),
         "tools_run": sorted(_session_tools_called),
         "findings_count": len(data.get("findings", [])),
         "diagrams_count": len(data.get("diagrams", [])),
         "cost_usd": summary.get("est_cost_usd", 0),
         "tool_calls": summary.get("tool_calls_total", 0),
-    }, indent=2)
+    }
+    if remaining:
+        result["remaining"] = remaining
+    if current.get("skill") and current.get("status") == "running":
+        result["_recovery_hint"] = (
+            f"If you lost context, re-invoke the /{current['skill']} skill "
+            f"to reload its workflow, then resume from where tools_run left off."
+        )
+    return json.dumps(result, indent=2)
+
+
+def _do_set_skill(opts):
+    skill_name = opts.get("skill", "")
+    if not skill_name:
+        return "Error: 'skill' option is required"
+    result = scan_session.set_skill(skill_name)
+    if result is None:
+        return "No active running session — cannot set skill."
+    log.note(f"Active skill changed to: {skill_name}")
+    return f"Active skill set to: {skill_name}"
 
 
 async def _do_start_kali():

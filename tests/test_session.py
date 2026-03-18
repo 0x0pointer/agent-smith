@@ -222,3 +222,57 @@ def test_start_resets_cost_tracker():
     core.session.start("new-target.com")
     assert cost_tracker.get_summary()["tool_calls_total"] == 0
     assert cost_tracker.get_summary()["est_cost_usd"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Skill tracking
+# ---------------------------------------------------------------------------
+
+def test_start_with_skill():
+    sess = core.session.start("example.com", skill="pentester")
+    assert sess["skill"] == "pentester"
+    assert sess["skill_history"] == ["pentester"]
+
+
+def test_start_without_skill():
+    sess = core.session.start("example.com")
+    assert sess["skill"] is None
+    assert sess["skill_history"] == []
+
+
+def test_set_skill_updates_active():
+    core.session.start("example.com", skill="pentester")
+    result = core.session.set_skill("ai-redteam")
+    assert result["skill"] == "ai-redteam"
+
+
+def test_set_skill_appends_to_history():
+    core.session.start("example.com", skill="pentester")
+    core.session.set_skill("ai-redteam")
+    assert core.session.get()["skill_history"] == ["pentester", "ai-redteam"]
+
+
+def test_set_skill_no_duplicates_in_history():
+    core.session.start("example.com", skill="pentester")
+    core.session.set_skill("ai-redteam")
+    core.session.set_skill("pentester")
+    assert core.session.get()["skill_history"] == ["pentester", "ai-redteam"]
+
+
+def test_set_skill_returns_none_without_session():
+    assert core.session.set_skill("pentester") is None
+
+
+def test_set_skill_noop_after_complete():
+    core.session.start("example.com", skill="pentester")
+    core.session.complete("done")
+    assert core.session.set_skill("ai-redteam") is None
+
+
+def test_skill_persisted_to_file(tmp_path, monkeypatch):
+    import json
+    monkeypatch.setattr(core.session, "_SESSION_FILE", tmp_path / "session.json")
+    core.session.start("example.com", skill="pentester")
+    data = json.loads((tmp_path / "session.json").read_text())
+    assert data["skill"] == "pentester"
+    assert data["skill_history"] == ["pentester"]
