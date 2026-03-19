@@ -136,7 +136,11 @@ async def _get_svgs(candidate: Path, content: str) -> dict[str, str]:
 async def api_get_threat_model(file: str = "") -> JSONResponse:
     files: list[str] = []
     if _THREAT_MODEL_DIR.exists():
-        files = sorted([p.name for p in _THREAT_MODEL_DIR.glob("*.md")], reverse=True)
+        # Sort by modification time (most recent first) so the active scan's
+        # threat model appears as the default selection.
+        md_paths = list(_THREAT_MODEL_DIR.glob("*.md"))
+        md_paths.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        files = [p.name for p in md_paths]
 
     if not file and files:
         file = files[0]
