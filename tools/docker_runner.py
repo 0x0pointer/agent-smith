@@ -5,6 +5,36 @@ import os
 
 DEFAULT_TIMEOUT = 600
 
+_pulled_images: set[str] = set()
+
+
+async def _ensure_image(image: str) -> None:
+    """Pull an image if it hasn't been pulled this session."""
+    if image in _pulled_images:
+        return
+    proc = await asyncio.create_subprocess_exec(
+        "docker", "image", "inspect", image,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    await proc.wait()
+    if proc.returncode == 0:
+        _pulled_images.add(image)
+        return
+    pull = await asyncio.create_subprocess_exec(
+        "docker", "pull", image,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await pull.communicate()
+    if pull.returncode != 0:
+        msg = stderr.decode(errors="replace").strip() or stdout.decode(errors="replace").strip()
+        raise RuntimeError(
+            f"Failed to pull Docker image '{image}': {msg}. "
+            f"If this is a private image, run 'docker login ghcr.io' first."
+        )
+    _pulled_images.add(image)
+
 
 async def run_container(
     image: str,
@@ -20,6 +50,7 @@ async def run_container(
     extra_volumes: list of (host_path, container_path) tuples for additional -v mounts.
     env_vars: environment variables to inject into the container via -e flags.
     """
+    await _ensure_image(image)
     cmd = ["docker", "run", "--rm", "--network=host", "--memory=2g", "--cpus=1.5"]
 
     for key, val in (env_vars or {}).items():
