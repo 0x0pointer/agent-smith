@@ -3,6 +3,7 @@ Consolidated HTTP tool — replaces http_request and save_poc from exploitation.
 """
 import json
 import os
+from typing import Any
 
 from core import cost as cost_tracker
 from core import logger as log
@@ -15,7 +16,7 @@ async def http(
     url:     str,
     method:  str = "GET",
     headers: dict | None = None,
-    body:    str | None = None,
+    body:    Any = None,
     options: dict | None = None,
 ) -> str:
     """Raw HTTP request or PoC saving.
@@ -35,6 +36,8 @@ async def http(
       title=poc        — filename label
       notes=           — description written as comment in the .http file
     """
+    if isinstance(body, dict):
+        body = json.dumps(body)
     opts = options or {}
 
     if action == "request":
