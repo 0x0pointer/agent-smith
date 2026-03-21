@@ -135,6 +135,16 @@ async def _handle_garak(target, flags, options):
     generator = options.get("generator", "rest")
     timeout = options.get("timeout", 900)
 
+    # Garak requires fully-qualified probe names (e.g. "probes.dan" not "dan")
+    qualified = []
+    for p in probes.split(","):
+        p = p.strip()
+        if p and not p.startswith("probes."):
+            p = f"probes.{p}"
+        if p:
+            qualified.append(p)
+    probes = ",".join(qualified)
+
     safe_target = shlex.quote(target)
     safe_probes = shlex.quote(probes)
     cmd = f"garak --model_type {shlex.quote(generator)} --model_name {safe_target} --probes {safe_probes}"
