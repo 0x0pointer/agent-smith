@@ -44,6 +44,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--provider", default="openai",
                    choices=["openai", "anthropic", "azure"],
                    help="LLM provider for attacker/scorer (default: openai)")
+    p.add_argument("--scorer", default="self_ask",
+                   choices=["self_ask", "substring", "true_false"],
+                   help="Scoring method for attack success (default: self_ask)")
     return p
 
 
@@ -108,14 +111,40 @@ def init_pyrit() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Scorer construction
+# ---------------------------------------------------------------------------
+
+def make_scorer(scorer_type: str, model: str):
+    """Build a PyRIT scorer based on the --scorer argument."""
+    if scorer_type == "substring":
+        from pyrit.score import SubStringScorer
+        return SubStringScorer(substring=model, category="jailbreak")
+    elif scorer_type == "true_false":
+        from pyrit.score import TrueFalseQuestionScorer
+        scorer_target = make_attacker_target(model)
+        return TrueFalseQuestionScorer(
+            true_false_question_path=None,
+            chat_target=scorer_target,
+        )
+    else:  # self_ask (default)
+        from pyrit.score import SelfAskTrueFalseScorer
+        scorer_target = make_attacker_target(model)
+        return SelfAskTrueFalseScorer(
+            chat_target=scorer_target,
+        )
+
+
+# ---------------------------------------------------------------------------
 # Attack runners
 # ---------------------------------------------------------------------------
 
 async def run_prompt_injection(args: argparse.Namespace) -> None:
     from pyrit.orchestrator import PromptSendingOrchestrator
     target = make_target(args.target_url, args.model)
+    scorer = make_scorer(args.scorer, args.model)
     orchestrator = PromptSendingOrchestrator(
         objective_target=target,
+        scorers=[scorer],
         verbose=True,
     )
     await orchestrator.send_prompts_async(prompt_list=[args.objective])
@@ -130,10 +159,12 @@ async def run_jailbreak(args: argparse.Namespace) -> None:
         from pyrit.orchestrator import RedTeamingOrchestrator
         attacker = make_attacker_target(args.model)
         target   = make_target(args.target_url, args.model)
+        scorer   = make_scorer(args.scorer, args.model)
         orchestrator = RedTeamingOrchestrator(
             attack_strategy=args.objective,
             objective_target=target,
             red_teaming_chat=attacker,
+            objective_scorer=scorer,
             max_turns=args.max_turns,
             verbose=True,
         )
@@ -153,10 +184,11 @@ async def run_crescendo(args: argparse.Namespace) -> None:
         from pyrit.orchestrator import CrescendoOrchestrator
         attacker = make_attacker_target(args.model)
         target   = make_target(args.target_url, args.model)
+        scorer   = make_scorer(args.scorer, args.model)
         orchestrator = CrescendoOrchestrator(
             objective_target=target,
             adversarial_chat=attacker,
-            scoring_target=make_attacker_target(args.model),
+            scoring_target=scorer,
             max_rounds=args.max_turns,
             verbose=True,
         )
@@ -183,6 +215,7 @@ async def main() -> None:
     print(f"    target    : {args.target_url}")
     print(f"    objective : {args.objective}")
     print(f"    max_turns : {args.max_turns}")
+    print(f"    scorer    : {args.scorer}")
     print()
 
     init_pyrit()
