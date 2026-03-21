@@ -90,13 +90,26 @@ async def _handle_trufflehog(target, flags, options):
 
 
 async def _handle_fuzzyai(target, flags, options):
-    return await _run(
-        "fuzzyai", target=target,
-        attack=options.get("attack", "jailbreak"),
-        provider=options.get("provider", "openai"),
-        model=options.get("model", ""),
-        flags=flags,
-    )
+    from tools import kali_runner
+
+    attack = options.get("attack", "jailbreak")
+    provider = options.get("provider", "openai")
+    model = options.get("model", "")
+    timeout = options.get("timeout", 900)
+
+    safe_target = shlex.quote(target)
+    cmd = f"fuzzyai --target {safe_target} --attack {shlex.quote(attack)} --provider {shlex.quote(provider)}"
+    if model:
+        cmd += f" --model {shlex.quote(model)}"
+    if flags:
+        cmd += f" {shlex.join(shlex.split(flags))}"
+
+    log.tool_call("fuzzyai", {"target": target, "attack": attack, "provider": provider, "model": model})
+    call_id = cost_tracker.start("fuzzyai")
+    result = _clip(await kali_runner.exec_command(cmd, timeout=timeout), 12_000)
+    cost_tracker.finish(call_id, result)
+    log.tool_result("fuzzyai", result)
+    return result
 
 
 async def _handle_pyrit(target, flags, options):
@@ -108,6 +121,8 @@ async def _handle_pyrit(target, flags, options):
     attack = options.get("attack", "prompt_injection")
     timeout = options.get("timeout", 900)
 
+    body_key = options.get("body_key", "message")
+
     cmd_parts = [
         "pyrit-runner",
         "--target-url", target,
@@ -115,6 +130,7 @@ async def _handle_pyrit(target, flags, options):
         "--objective", f'"{objective}"',
         "--max-turns", max_turns,
         "--scorer", scorer,
+        "--body-key", body_key,
     ]
     if flags:
         cmd_parts += shlex.split(flags)
@@ -147,7 +163,12 @@ async def _handle_garak(target, flags, options):
 
     safe_target = shlex.quote(target)
     safe_probes = shlex.quote(probes)
-    cmd = f"garak --model_type {shlex.quote(generator)} --model_name {safe_target} --probes {safe_probes}"
+    # garak v0.13.1+ deprecated --model_type/--model_name; use --generator and --generator_option
+    cmd = (
+        f"garak --generator {shlex.quote(generator)}"
+        f" --generator_option api_base={safe_target}"
+        f" --probes {safe_probes}"
+    )
     if flags:
         cmd += f" {shlex.join(shlex.split(flags))}"
 

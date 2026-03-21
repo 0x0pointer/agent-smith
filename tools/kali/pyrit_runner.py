@@ -63,19 +63,18 @@ def _make_openai_target(target_url: str, model: str, api_key: str):
     )
 
 
-def _make_http_target(target_url: str):
+def _make_http_target(target_url: str, body_key: str = "message"):
     from pyrit.prompt_target import HTTPTarget
-    # Generic JSON body — adjust if the target uses a different schema
     http_req = (
         f"POST {target_url}\n"
         "Content-Type: application/json\n"
         "\n"
-        '{"message": "{{PROMPT}}"}'
+        '{' + f'"{body_key}": ' + '"{{PROMPT}}"}'
     )
     return HTTPTarget(http_request=http_req)
 
 
-def make_target(target_url: str, model: str):
+def make_target(target_url: str, model: str, body_key: str = "message"):
     """Build the best available PyRIT target for the given URL."""
     api_key = os.environ.get("OPENAI_API_KEY", "")
     # If an OpenAI key is present and the URL looks like an OpenAI-compatible API,
@@ -85,7 +84,7 @@ def make_target(target_url: str, model: str):
             return _make_openai_target(target_url, model, api_key)
         except Exception as exc:
             print(f"[!] OpenAIChatTarget failed ({exc}), falling back to HTTPTarget", file=sys.stderr)
-    return _make_http_target(target_url)
+    return _make_http_target(target_url, body_key)
 
 
 def make_attacker_target(model: str):
