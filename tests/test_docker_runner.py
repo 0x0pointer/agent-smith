@@ -10,6 +10,13 @@ import pytest
 from tools.docker_runner import run_container
 
 
+@pytest.fixture(autouse=True)
+def _skip_image_pull():
+    """Bypass _ensure_image so tests don't need a Docker daemon."""
+    with patch("tools.docker_runner._ensure_image", new_callable=AsyncMock):
+        yield
+
+
 def _make_proc(stdout: bytes = b"", stderr: bytes = b"", returncode: int = 0):
     """Return a mock Process whose communicate() returns (stdout, stderr)."""
     proc = MagicMock()
