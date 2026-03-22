@@ -30,7 +30,7 @@ else
 fi
 
 # ── Remove security analysis skills ──────────────────────────────────────────
-for skill_dir in "$HOME/.claude/skills/analyze-cve" "$HOME/.claude/skills/threat-modeling" "$HOME/.claude/skills/aikido-triage" "$HOME/.claude/skills/gh-export" "$HOME/.claude/skills/ai-redteam" "$HOME/.claude/skills/container-k8s-security" "$HOME/.claude/skills/cloud-security"; do
+for skill_dir in "$HOME/.claude/skills/analyze-cve" "$HOME/.claude/skills/threat-modeling" "$HOME/.claude/skills/aikido-triage" "$HOME/.claude/skills/gh-export" "$HOME/.claude/skills/ai-redteam" "$HOME/.claude/skills/container-k8s-security" "$HOME/.claude/skills/cloud-security" "$HOME/.claude/skills/ad-assessment"; do
     if [ -d "$skill_dir" ]; then
         rm -rf "$skill_dir"
         ok "Removed $(basename "$skill_dir") skill"
