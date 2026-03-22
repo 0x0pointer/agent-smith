@@ -175,20 +175,63 @@ async def _handle_promptfoo(target, flags, options):
     return result
 
 
+async def _handle_metasploit(target, flags, options):
+    from tools import metasploit_runner
+
+    module = options.get("module", "")
+    payload = options.get("payload", "")
+    rhosts = target
+    rport = options.get("rport", "")
+    lhost = options.get("lhost", "")
+    lport = options.get("lport", "4444")
+    timeout = options.get("timeout", 900)
+    extra = options.get("extra", "")
+
+    # Build msfconsole resource command
+    rc_lines = [f"use {module}"] if module else []
+    if rhosts:
+        rc_lines.append(f"set RHOSTS {rhosts}")
+    if rport:
+        rc_lines.append(f"set RPORT {rport}")
+    if payload:
+        rc_lines.append(f"set PAYLOAD {payload}")
+    if lhost:
+        rc_lines.append(f"set LHOST {lhost}")
+    if lport and payload:
+        rc_lines.append(f"set LPORT {lport}")
+    if extra:
+        rc_lines.extend(extra.split(";"))
+    rc_lines.append("run")
+    rc_lines.append("exit")
+
+    rc_script = "; ".join(rc_lines)
+    cmd = f'msfconsole -q -x "{rc_script}"'
+    if flags:
+        cmd += f" {shlex.join(shlex.split(flags))}"
+
+    log.tool_call("metasploit", {"target": target, "module": module, "payload": payload})
+    call_id = cost_tracker.start("metasploit")
+    result = _clip(await metasploit_runner.exec_command(cmd, timeout=timeout), 12_000)
+    cost_tracker.finish(call_id, result)
+    log.tool_result("metasploit", result)
+    return result
+
+
 _DISPATCH = {
-    "nmap":       _handle_nmap,
-    "naabu":      _handle_naabu,
-    "subfinder":  _handle_subfinder,
-    "httpx":      _handle_httpx,
-    "nuclei":     _handle_nuclei,
-    "ffuf":       _handle_ffuf,
-    "spider":     _handle_spider,
-    "semgrep":    _handle_semgrep,
-    "trufflehog": _handle_trufflehog,
-    "fuzzyai":    _handle_fuzzyai,
-    "pyrit":      _handle_pyrit,
-    "garak":      _handle_garak,
-    "promptfoo":  _handle_promptfoo,
+    "nmap":        _handle_nmap,
+    "naabu":       _handle_naabu,
+    "subfinder":   _handle_subfinder,
+    "httpx":       _handle_httpx,
+    "nuclei":      _handle_nuclei,
+    "ffuf":        _handle_ffuf,
+    "spider":      _handle_spider,
+    "semgrep":     _handle_semgrep,
+    "trufflehog":  _handle_trufflehog,
+    "fuzzyai":     _handle_fuzzyai,
+    "pyrit":       _handle_pyrit,
+    "garak":       _handle_garak,
+    "promptfoo":   _handle_promptfoo,
+    "metasploit":  _handle_metasploit,
 }
 
 
@@ -216,6 +259,7 @@ async def scan(tool: str, target: str, flags: str = "", options: dict | None = N
     | pyrit      | URL         | attack=prompt_injection, objective=, max_turns=5  |
     | garak      | URL         | probes=dan,encoding,..., generator=rest            |
     | promptfoo  | URL         | plugins=prompt-injection,..., attack_strategies=   |
+    | metasploit | host/IP     | module=, payload=, rport=, lhost=, lport=4444     |
     """
     handler = _DISPATCH.get(tool)
     if not handler:

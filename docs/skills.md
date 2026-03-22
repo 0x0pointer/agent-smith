@@ -357,6 +357,39 @@ Post-exploitation workflow — privilege escalation, credential harvesting, pers
 
 ---
 
+## `/metasploit`
+
+Exploit validation and exploitation using Metasploit Framework. Runs in a **dedicated Docker container** (separate from Kali). Validates CVEs discovered by nuclei, nikto, or other scanners with actual exploit modules.
+
+```
+/metasploit 10.0.0.5 cve=CVE-2017-0144 depth=standard
+/metasploit 192.168.1.10 service=http cve=CVE-2021-44228 depth=thorough
+/metasploit 10.0.0.1 depth=quick
+```
+
+**What it does:**
+
+1. **Module discovery** — searches Metasploit module database by CVE or service keyword
+2. **Vulnerability validation** — runs auxiliary scanner modules to confirm without exploiting
+3. **Exploitation** — runs exploit modules with configurable payloads (safe to reverse shell)
+4. **Post-exploitation** — session management, hashdump, sysinfo, pivoting
+5. **Payload generation** — msfvenom for custom payloads
+
+**Depth presets:**
+
+| Depth | Tools | Cost | Time | Calls |
+|---|---|---|---|---|
+| `quick` | Auxiliary scanner modules only — validate without exploitation | $0.10 | 15 min | 10 |
+| `standard` | quick + exploit modules with safe payloads (cmd/unix/generic) | $0.50 | 45 min | 25 |
+| `thorough` | standard + reverse shells + post-exploitation + pivoting | $2.00 | 120 min | 60 |
+
+**Docker setup:** Requires its own image (based on `metasploitframework/metasploit-framework`):
+```bash
+docker build -t pentest-agent/metasploit ./tools/metasploit/
+```
+
+---
+
 ## Chaining skills
 
 Skills are designed to be chained automatically during an engagement:
@@ -368,6 +401,7 @@ Before a pentest
 
 During a pentest (/pentester)
   ├── /analyze-cve            if nuclei or semgrep finds a CVE dependency
+  ├── /metasploit             if exploitable CVE confirmed — validate with Metasploit modules
   ├── /ssl-tls-audit          if TLS services are found — PCI DSS/NIST compliance audit
   ├── /network-assess         if internal network scope — segmentation, SNMP, broadcast protocols
   ├── /credential-audit       weak auth found — brute-force, spraying, default credentials

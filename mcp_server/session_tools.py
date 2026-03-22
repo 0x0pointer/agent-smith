@@ -16,7 +16,7 @@ from mcp_server._app import mcp, _session_tools_called
 async def session(action: str, options: dict | None = None) -> str:
     """Scan lifecycle and infrastructure management.
 
-    action  : start | complete | status | set_skill | start_kali | stop_kali | pull_images | set_codebase
+    action  : start | complete | status | set_skill | start_kali | stop_kali | start_metasploit | stop_metasploit | pull_images | set_codebase
 
     start options:
       target, depth=standard (recon|standard|thorough), scope=[],
@@ -33,7 +33,7 @@ async def session(action: str, options: dict | None = None) -> str:
     set_codebase options:
       path= (absolute path to local codebase)
 
-    start_kali, stop_kali, pull_images: no options needed
+    start_kali, stop_kali, start_metasploit, stop_metasploit, pull_images: no options needed
     """
     opts = options or {}
 
@@ -49,12 +49,16 @@ async def session(action: str, options: dict | None = None) -> str:
         return await _do_start_kali()
     elif action == "stop_kali":
         return await _do_stop_kali()
+    elif action == "start_metasploit":
+        return await _do_start_metasploit()
+    elif action == "stop_metasploit":
+        return await _do_stop_metasploit()
     elif action == "pull_images":
         return await _do_pull_images()
     elif action == "set_codebase":
         return _do_set_codebase(opts)
     else:
-        return f"Unknown action '{action}'. Use: start, complete, status, set_skill, start_kali, stop_kali, pull_images, set_codebase"
+        return f"Unknown action '{action}'. Use: start, complete, status, set_skill, start_kali, stop_kali, start_metasploit, stop_metasploit, pull_images, set_codebase"
 
 
 def _do_start(opts):
@@ -194,6 +198,26 @@ async def _do_stop_kali():
     log.tool_call("stop_kali", {})
     result = await kali_runner.stop()
     log.tool_result("stop_kali", result)
+    return result
+
+
+async def _do_start_metasploit():
+    from tools import metasploit_runner
+    log.tool_call("start_metasploit", {})
+    ok, msg = await metasploit_runner.ensure_running()
+    result = (
+        f"Metasploit container ready at {metasploit_runner.MSF_API} ({msg})"
+        if ok else f"Failed to start Metasploit container: {msg}"
+    )
+    log.tool_result("start_metasploit", result)
+    return result
+
+
+async def _do_stop_metasploit():
+    from tools import metasploit_runner
+    log.tool_call("stop_metasploit", {})
+    result = await metasploit_runner.stop()
+    log.tool_result("stop_metasploit", result)
     return result
 
 

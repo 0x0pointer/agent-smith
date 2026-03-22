@@ -18,6 +18,7 @@ You have 30 skills at your disposal. Use the right one based on the task:
 | Skill | Trigger | What it does |
 |-------|---------|--------------|
 | `/container-k8s-security` | User asks to assess containers or Kubernetes | Container escape, K8s RBAC, pod security, exposed API servers, etcd access, image vulnerabilities |
+| `/metasploit` | CVE confirmed exploitable — validate with Metasploit | Exploit validation, payload generation, post-exploitation (separate Docker container) |
 
 ### Analysis & Reporting Skills
 
@@ -87,6 +88,7 @@ Run any security scanner. `tool` selects the scanner, `target` is the URL/host/p
 | pyrit | URL | attack=prompt_injection, objective=, max_turns=5, scorer=self_ask |
 | garak | URL | probes=dan,encoding,promptinject,..., generator=rest |
 | promptfoo | URL | plugins=prompt-injection,..., attack_strategies=jailbreak,crescendo |
+| metasploit | host/IP | module=, payload=, rport=, lhost=, lport=4444 |
 
 ### `kali(command, timeout)`
 Run any command in the Kali container (auto-starts if needed). Hundreds of tools: nikto, sqlmap, gobuster, hydra, testssl, enum4linux-ng, wapiti, etc.
@@ -109,6 +111,7 @@ Scan lifecycle and infrastructure.
 - `action="complete"` — options: `{notes}`
 - `action="status"` — returns current scan state (tools run, findings count, cost, remaining calls)
 - `action="start_kali"` / `action="stop_kali"` — Kali container lifecycle
+- `action="start_metasploit"` / `action="stop_metasploit"` — Metasploit container lifecycle
 - `action="pull_images"` — pre-pull all Docker images
 - `action="set_codebase"` — options: `{path}` — set local codebase for semgrep/trufflehog
 
