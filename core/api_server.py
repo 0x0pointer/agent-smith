@@ -176,6 +176,18 @@ async def api_patch_finding(finding_id: str, request: Request) -> JSONResponse:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
 
+@app.delete("/api/clear")
+async def api_clear() -> JSONResponse:
+    """Reset findings.json to empty state — clears all findings, diagrams, and session data."""
+    from core.findings import FINDINGS_FILE, _save
+    _save({
+        "meta": {"created": "", "target": ""},
+        "findings": [],
+        "diagrams": [],
+    })
+    return JSONResponse({"ok": True})
+
+
 @app.get("/api/logs")
 async def api_logs(file: str = "") -> JSONResponse:
     from core.logger import log_path, _LOG_DIR

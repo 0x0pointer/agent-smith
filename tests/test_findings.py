@@ -82,7 +82,7 @@ async def test_update_finding_attaches_gh_issue(findings_file):
     entry = await core.findings.add_finding(
         title="SQLi", severity="high", target="t", description="d", evidence="e"
     )
-    result = await core.findings.update_finding(entry["id"], "## GitHub Issue\nFix this.")
+    result = await core.findings.update_finding(entry["id"], gh_issue="## GitHub Issue\nFix this.")
     assert result is True
     data = json.loads(findings_file.read_text())
     assert data["findings"][0]["gh_issue"] == "## GitHub Issue\nFix this."
@@ -90,7 +90,7 @@ async def test_update_finding_attaches_gh_issue(findings_file):
 
 @pytest.mark.asyncio
 async def test_update_finding_returns_false_for_missing_id(findings_file):
-    result = await core.findings.update_finding("nonexistent-uuid", "issue")
+    result = await core.findings.update_finding("nonexistent-uuid", gh_issue="issue")
     assert result is False
 
 

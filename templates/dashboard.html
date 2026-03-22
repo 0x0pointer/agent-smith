@@ -16,7 +16,14 @@
     }
 
     /* ── Header ── */
+    .header-row { display: flex; justify-content: space-between; align-items: center; }
     h1 { font-size: 1.2rem; color: #f0f6fc; margin-bottom: 0.25rem; }
+    .clear-btn {
+      background: none; border: 1px solid #30363d; border-radius: 4px;
+      color: #6e7681; padding: 0.25rem 0.7rem; font-size: 0.75rem;
+      cursor: pointer; transition: color .15s, border-color .15s;
+    }
+    .clear-btn:hover { color: #da3633; border-color: #da3633; }
 
     #status { font-size: 0.8rem; color: #6e7681; margin-bottom: 0.75rem; }
     #status .dot {
@@ -252,7 +259,10 @@
 <body>
 
 <!-- ── Header ────────────────────────────────────────────────────────────── -->
-<h1>Pentest Dashboard</h1>
+<div class="header-row">
+  <h1>Pentest Dashboard</h1>
+  <button class="clear-btn" onclick="clearFindings()" title="Clear all findings, diagrams, and session data">Clear All</button>
+</div>
 <div id="status"><span class="dot"></span>Connecting…</div>
 
 <!-- ── Session strip ─────────────────────────────────────────────────────── -->
@@ -526,6 +536,21 @@
     filter = sev;
     renderStats(allData.findings || []);
     renderFindingsTable(allData.findings || []);
+  }
+
+  // ── Clear all findings ──────────────────────────────────────────────────
+  function clearFindings() {
+    if (!confirm('Clear all findings, diagrams, and session data? This cannot be undone.')) return;
+    fetch('/api/clear', { method: 'DELETE' })
+      .then(r => r.json())
+      .then(d => {
+        if (d.ok) {
+          allData = { findings: [], diagrams: [] };
+          renderStats([]);
+          renderFindingsTable([]);
+        }
+      })
+      .catch(() => alert('Failed to clear — is the dashboard API running?'));
   }
 
   // ── Topology tab ──────────────────────────────────────────────────────────
