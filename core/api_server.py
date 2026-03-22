@@ -165,8 +165,12 @@ async def api_patch_finding(finding_id: str, request: Request) -> JSONResponse:
     from core.findings import update_finding
     try:
         body = await request.json()
-        gh_issue = body.get("gh_issue", "")
-        updated = await update_finding(finding_id, gh_issue)
+        updated = await update_finding(
+            finding_id,
+            gh_issue=body.get("gh_issue"),
+            remediation=body.get("remediation"),
+            reproduction=body.get("reproduction"),
+        )
         return JSONResponse({"ok": updated})
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)

@@ -8,9 +8,16 @@ Schema
 {
   "meta":     { "created": "<ISO>", "target": "" },
   "findings": [ { id, timestamp, title, severity, target,
-                   description, evidence, tool_used, cve } ],
+                   description, evidence, tool_used, cve,
+                   reproduction?, gh_issue?, remediation? } ],
   "diagrams": [ { id, timestamp, title, mermaid } ]
 }
+
+Optional fields set via update_finding():
+  reproduction: { type, command, expected, verified }
+  gh_issue:     "<markdown block>"
+  remediation:  { summary, fix_type, diff, before, after, file, line,
+                  language, effort, breaking_change, references, verification }
 
 Used exclusively by mcp_server.py; not a Tool registry entry.
 """
@@ -60,6 +67,7 @@ async def add_finding(
     evidence:    str,
     tool_used:   str = "",
     cve:         str = "",
+    reproduction: dict | None = None,
 ) -> dict:
     """Append a vulnerability finding. Returns the stored entry."""
     entry = {
@@ -73,6 +81,8 @@ async def add_finding(
         "tool_used":   tool_used,
         "cve":         cve,
     }
+    if reproduction:
+        entry["reproduction"] = reproduction
     async with _lock:
         data = _load()
         data["findings"].append(entry)
@@ -80,14 +90,23 @@ async def add_finding(
     return entry
 
 
-async def update_finding(finding_id: str, gh_issue: str) -> bool:
-    """Attach a GitHub issue markdown block to an existing finding by id.
-    Returns True if the finding was found and updated, False otherwise."""
+_UPDATABLE_FIELDS = {"gh_issue", "remediation", "reproduction"}
+
+
+async def update_finding(finding_id: str, **fields) -> bool:
+    """Update fields on an existing finding by id.
+
+    Accepted fields: gh_issue, remediation, reproduction.
+    Returns True if the finding was found and updated, False otherwise.
+    """
+    updates = {k: v for k, v in fields.items() if k in _UPDATABLE_FIELDS and v is not None}
+    if not updates:
+        return False
     async with _lock:
         data = _load()
         for entry in data["findings"]:
             if entry.get("id") == finding_id:
-                entry["gh_issue"] = gh_issue
+                entry.update(updates)
                 _save(data)
                 return True
     return False

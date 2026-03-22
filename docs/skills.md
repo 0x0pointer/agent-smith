@@ -143,9 +143,38 @@ Triage every finding in an Aikido SAST/SCA CSV export against the actual codebas
 
 ---
 
+## `/remediate`
+
+Generates specific, implementable fixes for every finding in `findings.json`. Produces code patches (unified diff), configuration changes, dependency updates, and IaC fixes — not generic advice but actual before/after code.
+
+```
+/remediate depth=thorough
+/remediate finding-id-here
+```
+
+**What it does:**
+
+1. Reads all findings from the dashboard API
+2. For each finding (critical/high first), generates a specific fix based on the vulnerability type and framework
+3. PATCHes each finding with a `remediation` object containing: summary, diff, before/after code, effort level, breaking change flag, OWASP references, and verification step
+4. Uses the finding's `reproduction` command as the regression test: "run this after the fix — it should now fail"
+
+**Dashboard integration:** Each finding with remediation shows a "Fix" button that expands to show the diff, effort level, and verification steps.
+
+**Export integration:** `/gh-export` includes a `## Remediation` section in each GitHub issue when remediation data is present.
+
+**Depth presets:**
+
+| Depth | What runs | Cost | Time | Calls |
+|---|---|---|---|---|
+| `quick` | Summary fix + effort level per finding | $0.10 | 10 min | 10 |
+| `thorough` | Full diff + before/after + references + verification per finding | $0.50 | 30 min | 30 |
+
+---
+
 ## `/gh-export`
 
-Formats all confirmed findings from `findings.json` as copy-pasteable GitHub issue blocks, following the AppSec reporting guide template. After generating each block, patches the finding in `findings.json` with the formatted text so the dashboard can surface it.
+Formats all confirmed findings from `findings.json` as copy-pasteable GitHub issue blocks, following the AppSec reporting guide template. Now includes a `## Remediation` section with code diffs and verification steps when `/remediate` has run. After generating each block, patches the finding in `findings.json` with the formatted text so the dashboard can surface it.
 
 ```
 /gh-export
@@ -582,8 +611,9 @@ For AI/LLM targets (instead of /pentester)
 
 After a pentest
   ├── /threat-model           STRIDE analysis based on discovered architecture
+  ├── /remediate              generate specific fixes for every finding
   ├── /aikido-triage          if an Aikido CSV export is available
-  └── /gh-export              format all findings as GitHub issues
+  └── /gh-export              format findings as GitHub issues (includes remediation)
 ```
 
 Claude chains these automatically based on context — you can also invoke them manually at any point.

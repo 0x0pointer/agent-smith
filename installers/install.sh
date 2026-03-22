@@ -107,6 +107,10 @@ mkdir -p "$HOME/.claude/skills/codebase"
 cp "$REPO_DIR/skills/codebase/SKILL.md" "$HOME/.claude/skills/codebase/SKILL.md"
 ok "/codebase skill installed"
 
+mkdir -p "$HOME/.claude/skills/remediate"
+cp "$REPO_DIR/skills/remediate/SKILL.md" "$HOME/.claude/skills/remediate/SKILL.md"
+ok "/remediate skill installed"
+
 # ── AI testing API keys (FuzzyAI + PyRIT) ────────────────────────────────────
 echo ""
 echo "AI testing tools (FuzzyAI + PyRIT) use LLM APIs for attacks and scoring."

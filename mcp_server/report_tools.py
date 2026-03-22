@@ -14,7 +14,8 @@ async def report(action: str, data: dict) -> str:
 
     finding data:
       title, severity (critical|high|medium|low|info), target,
-      description, evidence, tool_used=, cve=
+      description, evidence, tool_used=, cve=,
+      reproduction= {type: http|command|script|manual, command: "...", expected: "..."}
 
     diagram data:
       title, mermaid (valid Mermaid source)
@@ -49,6 +50,7 @@ async def _do_finding(data):
         evidence=data.get("evidence", ""),
         tool_used=data.get("tool_used", ""),
         cve=data.get("cve", ""),
+        reproduction=data.get("reproduction"),
     )
     log.finding(severity, title, target)
     return f"Finding logged: [{severity.upper()}] {title}"
