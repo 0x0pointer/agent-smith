@@ -109,7 +109,8 @@ _ask_key() {
         printf "  %s — %s\n  Value (Enter to skip): " "$key" "$desc"
     fi
     # Read silently so the key never echoes to the terminal
-    IFS= read -r -s value
+    # || true prevents set -e from exiting on empty input (read returns 1 on EOF/empty with -s)
+    IFS= read -r -s value || true
     echo ""
     if [[ -n "$value" ]]; then
         # Use Python to safely write the key=value pair — avoids sed injection
@@ -182,7 +183,7 @@ _SCANNER_IMAGES=(
     "trufflesecurity/trufflehog"
 )
 printf "  Pull lightweight scanner images? (~2 min) [Y/n]: "
-read -r _pull_answer
+read -r _pull_answer || true
 if [[ "${_pull_answer:-Y}" =~ ^[Yy]$ ]]; then
     for img in "${_SCANNER_IMAGES[@]}"; do
         if docker pull "$img" >/dev/null 2>&1; then
@@ -199,7 +200,7 @@ echo ""
 
 # Kali image (build)
 printf "  Build Kali image? (~10 min — required for most skills) [Y/n]: "
-read -r _kali_answer
+read -r _kali_answer || true
 if [[ "${_kali_answer:-Y}" =~ ^[Yy]$ ]]; then
     echo "  Building pentest-agent/kali-mcp (this may take a while)..."
     if docker build -t pentest-agent/kali-mcp "$REPO_DIR/tools/kali/" 2>&1 | tail -5; then
@@ -215,7 +216,7 @@ echo ""
 
 # Metasploit image (build)
 printf "  Build Metasploit image? (~5 min — required for /metasploit skill) [Y/n]: "
-read -r _msf_answer
+read -r _msf_answer || true
 if [[ "${_msf_answer:-Y}" =~ ^[Yy]$ ]]; then
     echo "  Building pentest-agent/metasploit..."
     if docker build -t pentest-agent/metasploit "$REPO_DIR/tools/metasploit/" 2>&1 | tail -5; then
