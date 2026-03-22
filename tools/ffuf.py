@@ -12,7 +12,8 @@ def _build_args(
     extensions: str = "",
     flags:      str = "",
 ) -> list[str]:
-    args = ["-u", f"{url}/FUZZ", "-w", wordlist, "-of", "json", "-o", "/dev/stdout", "-s"]
+    args = ["-u", f"{url}/FUZZ", "-w", wordlist, "-of", "json", "-o", "/dev/stdout", "-s",
+            "-rate", "50"]  # 50 req/s — avoid DoS on target
     if extensions:
         args += ["-e", extensions]
     if flags:
@@ -24,7 +25,7 @@ TOOL = Tool(
     name            = "ffuf",
     image           = "ghcr.io/ffuf/ffuf",
     build_args      = _build_args,
-    default_timeout = 900,
+    default_timeout = 14400,  # 4 hours — rate-limited at 50 req/s
     risk_level      = "intrusive",
     max_output      = 8_000,   # matched paths only (JSON); tail-biased clip keeps last results
     description     = (

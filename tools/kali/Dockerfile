@@ -59,13 +59,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     theharvester nfs-common lbd \
     && rm -rf /var/lib/apt/lists/*
 
-# Layer 10: network utilities + wordlists + document tools + RDP + cross-compilation
+# Layer 10: network utilities + wordlists + document tools + cross-compilation
 # gcc-mingw-w64 — cross-compile C exploits to Windows EXE/DLL from Kali
 RUN apt-get update && apt-get install -y --no-install-recommends \
     socat proxychains4 curl wget \
     seclists wordlists \
-    gcc gcc-multilib gcc-mingw-w64 unrar p7zip-full \
-    poppler-utils freerdp3-x11 \
+    gcc gcc-mingw-w64 unrar p7zip-full \
+    poppler-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+# Optional: gcc-multilib (amd64 only) + freerdp (xfreerdp for RDP)
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends gcc-multilib 2>/dev/null || true \
+    && apt-get install -y --no-install-recommends freerdp2-x11 2>/dev/null \
+    || apt-get install -y --no-install-recommends xfreerdp 2>/dev/null || true \
     && rm -rf /var/lib/apt/lists/*
 
 # ProjectDiscovery tools via apt (katana not in arm64 repo — installed via pre-built binary)

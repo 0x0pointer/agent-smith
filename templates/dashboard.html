@@ -441,6 +441,11 @@
     wrap.innerHTML = `<table><thead><tr>
       <th>Severity</th><th>Finding</th><th>Target</th><th>Tool</th><th>Time</th>
     </tr></thead><tbody>${filtered.map(f => rowHTML(f, openIds)).join('')}</tbody></table>`;
+    // Restore open fix panels after DOM rebuild
+    _openFixPanels.forEach(id => {
+      const el = document.getElementById('fix-' + id);
+      if (el) el.style.display = 'block';
+    });
   }
 
   function rowHTML(f, openIds) {
@@ -508,9 +513,17 @@
   }
 
   // ── Fix button — toggle remediation detail ─────────────────────────────────
+  const _openFixPanels = new Set();
   function toggleFix(findingId) {
     const el = document.getElementById('fix-' + findingId);
-    if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
+    if (!el) return;
+    if (_openFixPanels.has(findingId)) {
+      _openFixPanels.delete(findingId);
+      el.style.display = 'none';
+    } else {
+      _openFixPanels.add(findingId);
+      el.style.display = 'block';
+    }
   }
 
   function buildFixDetail(f) {
