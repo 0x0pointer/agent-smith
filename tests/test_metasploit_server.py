@@ -2,6 +2,7 @@
 Tests for tools.metasploit.server — Flask API for Metasploit container.
 
 Uses Flask test client — no Docker needed.
+Skipped entirely if Flask is not installed (it lives inside the Docker image).
 """
 import json
 import sys
@@ -9,6 +10,8 @@ import os
 from unittest.mock import patch, MagicMock
 
 import pytest
+
+flask = pytest.importorskip("flask", reason="Flask only installed inside Metasploit Docker image")
 
 # Add the metasploit tools dir to path so we can import server
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tools", "metasploit"))
