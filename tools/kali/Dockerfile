@@ -55,10 +55,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     theharvester nfs-common lbd \
     && rm -rf /var/lib/apt/lists/*
 
-# Layer 10: network utilities + wordlists
+# Layer 10: network utilities + wordlists + document tools + RDP
 RUN apt-get update && apt-get install -y --no-install-recommends \
     socat proxychains4 curl wget \
     seclists wordlists \
+    poppler-utils freerdp3-x11 \
     && rm -rf /var/lib/apt/lists/*
 
 # ProjectDiscovery tools via apt (katana not in arm64 repo — installed via pre-built binary)
