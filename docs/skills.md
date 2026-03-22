@@ -4,6 +4,38 @@ Skills are slash commands that expand into detailed instructions for Claude. The
 
 ---
 
+## `/codebase`
+
+White-box source code security review structured around OWASP ASVS 5.0 (427 verification requirements). Reads and understands application source code to build a security knowledge base that enriches all downstream skills.
+
+```
+/codebase /path/to/project depth=standard
+/codebase /path/to/project depth=thorough focus=auth
+/codebase /path/to/project depth=quick
+```
+
+**What it does:**
+
+1. **Orientation** — identify tech stack, framework, dependencies, project structure, configuration
+2. **Attack surface mapping** — extract ALL route/endpoint definitions from source code with auth/middleware annotations
+3. **Auth architecture** — map authentication mechanism, session config, authorization model, token handling (ASVS V6-V10)
+4. **Automated scanning** — semgrep SAST + trufflehog secret scanning in parallel
+5. **Dangerous pattern analysis** — injection, output encoding, deserialization, input validation, file handling, business logic (ASVS V1-V5)
+6. **Infrastructure review** — cryptography, TLS config, secret management, data protection, error handling, IaC (ASVS V11-V16)
+7. **Security profile output** — structured summary for downstream skills + ASVS coverage map
+
+**Depth presets:**
+
+| Depth | What runs | Cost | Time | Calls |
+|---|---|---|---|---|
+| `quick` | Orientation + automated scanning (semgrep + trufflehog) | $0.10 | 15 min | 10 |
+| `standard` | quick + route mapping + auth review + dangerous patterns | $0.50 | 45 min | 30 |
+| `thorough` | full ASVS-mapped review + IaC + crypto + source-to-sink tracing | $2.00 | 120 min | 60 |
+
+**Chains into:** `/threat-model` (real architecture from code), `/pentester` (targeted scanning of discovered endpoints), `/web-exploit` (source-to-sink context), `/cloud-security` (IaC verification), `/analyze-cve` (full code context for CVE tracing).
+
+---
+
 ## `/pentester`
 
 Full penetration test — recon through exploitation through reporting.
@@ -518,6 +550,7 @@ Skills are designed to be chained automatically during an engagement:
 
 ```
 Before a pentest
+  ├── /codebase               if source code available — ASVS 5.0 white-box review
   ├── /osint                  passive recon — subdomains, emails, tech stack, cloud storage
   └── /threat-model           identify high-risk areas to focus the scan
 

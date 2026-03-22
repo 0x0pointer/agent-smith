@@ -24,6 +24,7 @@ You have 30 skills at your disposal. Use the right one based on the task:
 | `/metasploit` | CVE confirmed exploitable — validate with Metasploit | Exploit validation, payload generation, post-exploitation (separate Docker container) |
 | `/reverse-shell` | Exploit needs a callback — generate payload and listener | Platform-specific reverse shells (bash, python, php, powershell, msfvenom) + Kali listener setup |
 | `/web-exploit` | Injection point or logic flaw found — deep exploitation | SQLi (blind/OOB), XSS, SSRF, parameter tampering, file upload bypass, deserialization, command injection |
+| `/codebase` | Source code available — white-box review before testing | ASVS 5.0 code review: endpoint mapping, auth architecture, dangerous patterns, IaC, source-to-sink tracing |
 
 ### Analysis & Reporting Skills
 
@@ -43,6 +44,7 @@ You have 30 skills at your disposal. Use the right one based on the task:
 ### When to chain skills during an engagement
 
 - **During a pentest** (`/pentester`): if you discover a CVE-affected dependency (e.g. via nuclei or semgrep), consider running `/analyze-cve` to trace whether it's actually exploitable in context.
+- **Before a pentest — source code available**: run `/codebase` first for ASVS 5.0 white-box review. Maps endpoints, auth, dangerous patterns from source. Makes all subsequent testing targeted.
 - **Before a pentest**: if the user provides architecture details, run `/threat-model` first to identify high-risk areas, then focus the pentest on those areas.
 - **Before a pentest**: run `/osint` for passive recon to inform the active testing scope.
 - **During a pentest — API target**: chain into `/api-security` for OWASP API Top 10 coverage.
