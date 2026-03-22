@@ -99,7 +99,11 @@ echo "Press Enter to skip any key you don't need right now."
 echo ""
 
 ENV_FILE="$REPO_DIR/.env"
-touch "$ENV_FILE"
+if [ ! -f "$ENV_FILE" ] && [ -f "$REPO_DIR/.env.example" ]; then
+    cp "$REPO_DIR/.env.example" "$ENV_FILE"
+else
+    touch "$ENV_FILE"
+fi
 chmod 600 "$ENV_FILE"
 
 _ask_key() {
