@@ -7,7 +7,7 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from tools.metasploit_runner import ensure_running, stop, exec_command, container_running, image_exists
+from tools.metasploit_runner import ensure_running, stop, exec_command, container_running, image_exists, _host_rewrite
 
 
 # ---------------------------------------------------------------------------
@@ -21,6 +21,22 @@ def _make_proc(stdout: bytes = b"", stderr: bytes = b"", returncode: int = 0):
     proc.wait = AsyncMock(return_value=returncode)
     proc.kill = MagicMock()
     return proc
+
+
+# ---------------------------------------------------------------------------
+# _host_rewrite tests
+# ---------------------------------------------------------------------------
+
+def test_host_rewrite_replaces_localhost():
+    assert "host.docker.internal" in _host_rewrite("curl http://localhost:8080")
+
+
+def test_host_rewrite_replaces_127():
+    assert "host.docker.internal" in _host_rewrite("curl http://127.0.0.1:8080")
+
+
+def test_host_rewrite_leaves_other_hosts():
+    assert _host_rewrite("curl http://example.com") == "curl http://example.com"
 
 
 # ---------------------------------------------------------------------------
@@ -59,6 +75,13 @@ async def test_container_running_false():
         assert await container_running() is False
 
 
+@pytest.mark.asyncio
+async def test_container_running_empty():
+    proc = _make_proc(stdout=b"")
+    with patch("tools.metasploit_runner.asyncio.create_subprocess_exec", return_value=proc):
+        assert await container_running() is False
+
+
 # ---------------------------------------------------------------------------
 # stop tests
 # ---------------------------------------------------------------------------
@@ -77,6 +100,38 @@ async def test_stop_failure():
     with patch("tools.metasploit_runner.asyncio.create_subprocess_exec", return_value=proc):
         result = await stop()
     assert "no such container" in result
+
+
+# ---------------------------------------------------------------------------
+# ensure_running tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_ensure_running_already_running():
+    with patch("tools.metasploit_runner.container_running", new_callable=AsyncMock, return_value=True):
+        ok, msg = await ensure_running()
+    assert ok is True
+    assert "already running" in msg
+
+
+@pytest.mark.asyncio
+async def test_ensure_running_image_missing():
+    with patch("tools.metasploit_runner.container_running", new_callable=AsyncMock, return_value=False), \
+         patch("tools.metasploit_runner.image_exists", new_callable=AsyncMock, return_value=False):
+        ok, msg = await ensure_running()
+    assert ok is False
+    assert "not found" in msg
+
+
+@pytest.mark.asyncio
+async def test_ensure_running_docker_run_fails():
+    run_proc = _make_proc(returncode=1, stderr=b"port already in use")
+    with patch("tools.metasploit_runner.container_running", new_callable=AsyncMock, return_value=False), \
+         patch("tools.metasploit_runner.image_exists", new_callable=AsyncMock, return_value=True), \
+         patch("tools.metasploit_runner.asyncio.create_subprocess_exec", return_value=run_proc):
+        ok, msg = await ensure_running()
+    assert ok is False
+    assert "port already in use" in msg
 
 
 # ---------------------------------------------------------------------------
@@ -108,27 +163,6 @@ async def test_exec_command_returns_error_when_not_running():
 
 
 @pytest.mark.asyncio
-async def test_exec_command_rewrites_localhost():
-    with patch("tools.metasploit_runner.ensure_running", new_callable=AsyncMock, return_value=(True, "started")):
-        mock_session = MagicMock()
-        mock_resp = AsyncMock()
-        mock_resp.json = AsyncMock(return_value={"stdout": "", "stderr": "", "timed_out": False})
-        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
-        mock_resp.__aexit__ = AsyncMock(return_value=False)
-        mock_session.post = MagicMock(return_value=mock_resp)
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-
-        with patch("aiohttp.ClientSession", return_value=mock_session):
-            await exec_command("curl http://localhost:8080")
-
-        call_args = mock_session.post.call_args
-        sent_json = call_args[1].get("json", {}) if call_args[1] else call_args[0][1] if len(call_args[0]) > 1 else {}
-        # The command should have localhost rewritten
-        # (we verify the function ran without error — the rewrite is internal)
-
-
-@pytest.mark.asyncio
 async def test_exec_command_timed_out_prefix():
     with patch("tools.metasploit_runner.ensure_running", new_callable=AsyncMock, return_value=(True, "started")):
         mock_session = MagicMock()
@@ -144,3 +178,29 @@ async def test_exec_command_timed_out_prefix():
             result = await exec_command("long-running-command")
     assert "timed out" in result.lower()
     assert "partial output" in result
+
+
+@pytest.mark.asyncio
+async def test_exec_command_no_output():
+    with patch("tools.metasploit_runner.ensure_running", new_callable=AsyncMock, return_value=(True, "started")):
+        mock_session = MagicMock()
+        mock_resp = AsyncMock()
+        mock_resp.json = AsyncMock(return_value={"stdout": "", "stderr": "", "timed_out": False})
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+        mock_session.post = MagicMock(return_value=mock_resp)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            result = await exec_command("true")
+    assert result == "[no output]"
+
+
+@pytest.mark.asyncio
+async def test_exec_command_api_error():
+    with patch("tools.metasploit_runner.ensure_running", new_callable=AsyncMock, return_value=(True, "started")):
+        with patch("aiohttp.ClientSession", side_effect=ConnectionError("refused")):
+            result = await exec_command("whoami")
+    assert "Error" in result
+    assert "ConnectionError" in result
