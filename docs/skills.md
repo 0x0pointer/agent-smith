@@ -399,6 +399,36 @@ Active Directory security audit using the MITRE ATT&CK framework — full domain
 
 ---
 
+## `/email-security`
+
+Email infrastructure security audit — SPF, DKIM, DMARC configuration, open relay testing, spoofing resilience, MTA-STS, and SMTP security.
+
+```
+/email-security example.com depth=standard
+/email-security corp.local depth=thorough
+/email-security acme.io depth=quick
+```
+
+**What it does:**
+
+1. **DNS record analysis** — SPF record validation (syntax, `+all` vs `-all`, lookup count), DKIM selector discovery, DMARC policy check (`p=none` vs `reject`, reporting)
+2. **SMTP service analysis** — STARTTLS support, certificate validation, banner information disclosure
+3. **Open relay testing** — swaks relay test to external domain (critical if accepted)
+4. **Spoofing resilience** — send spoofed email as internal user, test acceptance
+5. **User enumeration** — VRFY, EXPN, RCPT TO response differences
+6. **MTA-STS policy** — fetch and verify policy mode (enforce/testing/none), MX alignment
+7. **TLS-RPT** — TLSRPT DNS record for failure reporting
+
+**Depth presets:**
+
+| Depth | Tools | Cost | Time | Calls |
+|---|---|---|---|---|
+| `quick` | SPF + DKIM + DMARC + MX lookup | $0.05 | 5 min | 5 |
+| `standard` | quick + STARTTLS + MTA-STS + open relay + spoofing test | $0.15 | 15 min | 12 |
+| `thorough` | standard + user enumeration + full SMTP audit + TLS cert analysis | $0.30 | 30 min | 20 |
+
+---
+
 ## `/post-exploit`
 
 Post-exploitation workflow — privilege escalation, credential harvesting, persistence assessment, and pivot preparation. Uses LinPEAS/WinPEAS as primary enumeration with dynamic GTFOBins cross-referencing.
@@ -445,6 +475,7 @@ During a pentest (/pentester)
   ├── /container-k8s-security if Docker/K8s infrastructure is discovered
   ├── /cloud-security         if AWS/Azure/GCP infrastructure is discovered
   ├── /ad-assessment          if Active Directory domain is discovered
+  ├── /email-security         if SMTP services found (port 25/465/587)
   └── /ai-redteam             if an LLM endpoint is discovered
 
 After initial access (/post-exploit)
