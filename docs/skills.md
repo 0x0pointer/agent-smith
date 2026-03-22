@@ -262,6 +262,41 @@ Comprehensive container and Kubernetes security assessment covering OWASP Kubern
 
 ---
 
+## `/cloud-security`
+
+Cloud security posture assessment for AWS, Azure, and GCP — IAM privilege escalation, public storage, serverless attack surface, database exposure, logging gaps, and compliance mapping.
+
+```
+/cloud-security my-aws-account provider=aws mode=authenticated depth=standard
+/cloud-security 10.0.0.5 provider=aws mode=external depth=quick
+/cloud-security my-project provider=gcp mode=authenticated depth=thorough
+```
+
+**What it does:**
+
+1. **External recon** — public bucket/blob scanning, IMDS probing (AWS/Azure/GCP metadata endpoints), nuclei cloud templates
+2. **IAM privilege escalation** — systematic testing of iam:PassRole+Lambda, iam:CreatePolicyVersion, iam:AttachUserPolicy, sts:AssumeRole chains, cross-account trust abuse (10 escalation vectors with severity matrix)
+3. **Storage deep-dive** — bucket policies, ACLs, versioning, encryption, cross-account access, pre-signed URL abuse, object-level ACL enumeration
+4. **Network security** — security groups/NSGs open to 0.0.0.0/0, critical port exposure
+5. **Serverless attack surface** — Lambda/Functions env var secrets, layer inspection, API Gateway auth bypass, Step Functions state injection
+6. **Database exposure** — RDS/DynamoDB/ElastiCache/DocumentDB/OpenSearch public access, encryption, snapshot sharing
+7. **Logging validation** — CloudTrail, VPC Flow Logs, GuardDuty, Security Hub, Config
+8. **Container registry security** — ECR/ACR/Artifact Registry scanning, cross-account pull, immutability
+9. **Cloud-specific attacks** — resource policy confusion, SSM/Secrets Manager enumeration, managed identity abuse, service account key audit
+10. **Automated scanning** — Prowler + ScoutSuite
+11. **Attack path mapping** — chains from public exposure to sensitive data access
+12. **Compliance mapping** — SOC 2, PCI DSS 4.0, HIPAA, CIS benchmarks
+
+**Depth presets:**
+
+| Depth | Tools | Cost | Time | Calls |
+|---|---|---|---|---|
+| `quick` | Public bucket scan + IMDS probe + nuclei cloud templates | $0.10 | 15 min | 10 |
+| `standard` | quick + IAM escalation + storage deep-dive + security groups | $0.50 | 45 min | 25 |
+| `thorough` | standard + Prowler/ScoutSuite + serverless + databases + logging + container registry + attack paths + compliance | $2.00 | 120 min | 60 |
+
+---
+
 ## `/ssl-tls-audit`
 
 Deep TLS/SSL configuration audit with compliance mapping to PCI DSS 4.0, NIST SP 800-52r2, and FedRAMP.
@@ -328,6 +363,71 @@ Internal network assessment — assumes attacker has physical or VPN access to t
 | `quick` | host discovery + top-100 ports + service ID | $0.10 | 15 min | 10 |
 | `standard` | quick + top-1000 ports + SMB/SNMP/NFS enum + broadcast protocols | $0.50 | 45 min | 25 |
 | `thorough` | standard + full port scan + segmentation testing + router/switch audit | $2.00 | 120 min | 60 |
+
+## `/ad-assessment`
+
+Active Directory security audit using the MITRE ATT&CK framework — full domain enumeration, ADCS attacks (ESC1-ESC8), delegation abuse, ACL analysis, GPO security, BloodHound attack paths, and forest trust exploitation.
+
+```
+/ad-assessment 10.0.0.1 domain=CORP.LOCAL user=auditor pass=P@ssw0rd depth=standard
+/ad-assessment dc01.corp.local domain=CORP.LOCAL depth=thorough
+/ad-assessment 192.168.1.10 depth=quick
+```
+
+**What it does:**
+
+1. **Domain enumeration** — functional level, password policy, privileged groups, Machine Account Quota, Protected Users
+2. **Kerberos attacks** — Kerberoasting (SPN enumeration + hash cracking), AS-REP Roasting
+3. **Service account security** — SPN accounts with old passwords, gMSA detection, DONT_EXPIRE_PASSWORD
+4. **ADCS assessment** — ESC1 through ESC8 (SAN abuse, enrollment agent, template ACL, CA flags, NTLM relay to HTTP enrollment)
+5. **Delegation analysis** — unconstrained, constrained (S4U2Proxy), RBCD
+6. **Fine-grained password policies** — FGPP precedence, weak policies on service accounts
+7. **LAPS deployment** — coverage gaps, v1 vs v2, unauthorized read access
+8. **GPO security** — GPP passwords, writable GPOs, security-critical settings (logon scripts, scheduled tasks, restricted groups)
+9. **ACL analysis** — dangerous permissions (DCSync, WriteDACL, GenericAll on AdminSDHolder), GUID-decoded rights
+10. **BloodHound collection** — shortest path to DA, Kerberoastable with DA path, unconstrained delegation
+11. **Forest trust analysis** — SID filtering, selective authentication, trust key extraction
+12. **Attack path prioritization** — P0 (immediate DA) through P3 (defense gaps)
+
+**Depth presets:**
+
+| Depth | Tools | Cost | Time | Calls |
+|---|---|---|---|---|
+| `quick` | Domain enum + password policy + privileged groups + Kerberoasting + AS-REP | $0.10 | 15 min | 10 |
+| `standard` | quick + ADCS (ESC1-ESC8) + delegation + GPO + ACL + FGPP + LAPS + service accounts | $0.50 | 45 min | 25 |
+| `thorough` | standard + BloodHound + forest trust analysis + attack path prioritization | $2.00 | 120 min | 60 |
+
+---
+
+## `/email-security`
+
+Email infrastructure security audit — SPF, DKIM, DMARC configuration, open relay testing, spoofing resilience, MTA-STS, and SMTP security.
+
+```
+/email-security example.com depth=standard
+/email-security corp.local depth=thorough
+/email-security acme.io depth=quick
+```
+
+**What it does:**
+
+1. **DNS record analysis** — SPF record validation (syntax, `+all` vs `-all`, lookup count), DKIM selector discovery, DMARC policy check (`p=none` vs `reject`, reporting)
+2. **SMTP service analysis** — STARTTLS support, certificate validation, banner information disclosure
+3. **Open relay testing** — swaks relay test to external domain (critical if accepted)
+4. **Spoofing resilience** — send spoofed email as internal user, test acceptance
+5. **User enumeration** — VRFY, EXPN, RCPT TO response differences
+6. **MTA-STS policy** — fetch and verify policy mode (enforce/testing/none), MX alignment
+7. **TLS-RPT** — TLSRPT DNS record for failure reporting
+
+**Depth presets:**
+
+| Depth | Tools | Cost | Time | Calls |
+|---|---|---|---|---|
+| `quick` | SPF + DKIM + DMARC + MX lookup | $0.05 | 5 min | 5 |
+| `standard` | quick + STARTTLS + MTA-STS + open relay + spoofing test | $0.15 | 15 min | 12 |
+| `thorough` | standard + user enumeration + full SMTP audit + TLS cert analysis | $0.30 | 30 min | 20 |
+
+---
 
 ## `/post-exploit`
 
@@ -431,10 +531,14 @@ During a pentest (/pentester)
   ├── /credential-audit       weak auth found — brute-force, spraying, default credentials
   ├── /post-exploit           initial access obtained — privesc, credential harvesting, pivot
   ├── /container-k8s-security if Docker/K8s infrastructure is discovered
+  ├── /cloud-security         if AWS/Azure/GCP infrastructure is discovered
+  ├── /ad-assessment          if Active Directory domain is discovered
+  ├── /email-security         if SMTP services found (port 25/465/587)
   └── /ai-redteam             if an LLM endpoint is discovered
 
 After initial access (/post-exploit)
   ├── /lateral-movement       credentials + pivot opportunities — pass-the-hash, Kerberoasting
+  ├── /ad-assessment          domain environment — ADCS, delegation, ACLs, trust analysis
   └── /credential-audit       harvested hashes — crack and test credentials
 
 During a codebase scan

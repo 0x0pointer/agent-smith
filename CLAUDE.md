@@ -18,6 +18,9 @@ You have 30 skills at your disposal. Use the right one based on the task:
 | Skill | Trigger | What it does |
 |-------|---------|--------------|
 | `/container-k8s-security` | User asks to assess containers or Kubernetes | Container escape, K8s RBAC, pod security, exposed API servers, etcd access, image vulnerabilities |
+| `/cloud-security` | User asks to assess cloud infrastructure (AWS/Azure/GCP) | IAM privilege escalation, public storage, serverless attack surface, database exposure, logging gaps, compliance mapping |
+| `/ad-assessment` | User asks to audit Active Directory | Domain enumeration, ADCS (ESC1-ESC8), delegation abuse, ACL analysis, GPO security, BloodHound attack paths, trust exploitation |
+| `/email-security` | User asks to audit email security for a domain | SPF, DKIM, DMARC, open relay, spoofing resilience, MTA-STS, SMTP user enumeration |
 | `/metasploit` | CVE confirmed exploitable — validate with Metasploit | Exploit validation, payload generation, post-exploitation (separate Docker container) |
 | `/reverse-shell` | Exploit needs a callback — generate payload and listener | Platform-specific reverse shells (bash, python, php, powershell, msfvenom) + Kali listener setup |
 | `/web-exploit` | Injection point or logic flaw found — deep exploitation | SQLi (blind/OOB), XSS, SSRF, parameter tampering, file upload bypass, deserialization, command injection |

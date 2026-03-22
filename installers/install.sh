@@ -79,6 +79,18 @@ mkdir -p "$HOME/.claude/skills/container-k8s-security"
 cp "$REPO_DIR/skills/container-k8s-security/SKILL.md" "$HOME/.claude/skills/container-k8s-security/SKILL.md"
 ok "/container-k8s-security skill installed"
 
+mkdir -p "$HOME/.claude/skills/cloud-security"
+cp "$REPO_DIR/skills/cloud-security/SKILL.md" "$HOME/.claude/skills/cloud-security/SKILL.md"
+ok "/cloud-security skill installed"
+
+mkdir -p "$HOME/.claude/skills/ad-assessment"
+cp "$REPO_DIR/skills/ad-assessment/SKILL.md" "$HOME/.claude/skills/ad-assessment/SKILL.md"
+ok "/ad-assessment skill installed"
+
+mkdir -p "$HOME/.claude/skills/email-security"
+cp "$REPO_DIR/skills/email-security/SKILL.md" "$HOME/.claude/skills/email-security/SKILL.md"
+ok "/email-security skill installed"
+
 mkdir -p "$HOME/.claude/skills/metasploit"
 cp "$REPO_DIR/skills/metasploit/SKILL.md" "$HOME/.claude/skills/metasploit/SKILL.md"
 ok "/metasploit skill installed"
@@ -245,6 +257,9 @@ echo "    /analyze-cve lodash 4.17.20 CVE-...      — CVE exploitability analys
 echo "    /threat-model                             — PASTA threat model"
 echo "    /aikido-triage findings.csv /path/to/app — triage Aikido CSV + HTML report"
 echo "    /ai-redteam https://ai-app.com/api/chat   — OWASP LLM Top 10 red-team assessment"
+echo "    /cloud-security my-aws-account provider=aws — cloud security posture assessment"
+echo "    /ad-assessment 10.0.0.1 domain=CORP.LOCAL  — Active Directory security audit"
+echo "    /email-security example.com              — email SPF/DKIM/DMARC audit"
 echo "    /metasploit 10.0.0.5 cve=CVE-2017-0144   — Metasploit exploit validation"
 echo "    /gh-export                               — export findings as GitHub issue blocks"
 echo ""

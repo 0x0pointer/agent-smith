@@ -17,7 +17,7 @@ import os
 import subprocess
 from flask import Flask, jsonify, request
 
-app = Flask(__name__)
+app = Flask(__name__)  # NOSONAR — no CSRF needed: stateless JSON API with no cookies/sessions, bound to localhost via Docker
 
 # Optional shared secret — if MSF_API_SECRET is set, all /api/command
 # requests must include it in the X-API-Secret header.
@@ -43,7 +43,7 @@ def run_command():
 
     try:
         result = subprocess.run(
-            ["bash", "-c", command],  # nosec B603 — intentional command execution in isolated container
+            ["bash", "-c", command],  # nosec B603 — intentional command execution in isolated container  # NOSONAR
             capture_output=True,
             timeout=timeout,
         )
@@ -61,4 +61,4 @@ def run_command():
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    app.run(host="0.0.0.0", port=5000)  # NOSONAR — must bind 0.0.0.0 inside Docker for port mapping

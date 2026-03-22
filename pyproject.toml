@@ -26,7 +26,7 @@ testpaths = ["tests"]
 
 [tool.coverage.run]
 source = ["core", "tools", "mcp_server"]
-omit = ["tools/kali/*", "*/kali_runner.py"]
+omit = ["tools/kali/*", "*/kali_runner.py", "tools/metasploit/*"]
 
 [tool.coverage.report]
 exclude_lines = [
