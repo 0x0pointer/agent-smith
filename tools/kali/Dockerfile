@@ -14,10 +14,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     dnsrecon dnsenum fierce dmitry dnstwist dnsmap whois bind9-dnsutils \
     && rm -rf /var/lib/apt/lists/*
 
-# Layer 3: web scanning + exploit-db
+# Layer 3: web scanning + exploit-db + php (for running PHP exploits)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     nikto sqlmap whatweb wafw00f wapiti commix xsser davtest skipfish \
-    zaproxy exploitdb \
+    zaproxy exploitdb php-cli \
     && rm -rf /var/lib/apt/lists/*
 
 # Layer 4: web fuzzing / discovery
@@ -45,9 +45,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Layer 8: service enumeration
 # snmpwalk is bundled in the snmp package; snmp-check not available on arm64
+# default-mysql-client — MySQL/MariaDB CLI for database enumeration and credential extraction
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ssh-audit redis-tools snmp onesixtyone swaks \
     smtp-user-enum ike-scan finger rpcbind \
+    default-mysql-client \
     && rm -rf /var/lib/apt/lists/*
 
 # Layer 9: OSINT / recon
