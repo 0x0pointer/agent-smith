@@ -37,11 +37,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Layer 7: SMB / Windows / AD
 # rpcclient is bundled inside smbclient; ldapdomaindump is pip-only
+# certipy-ad — ADCS enumeration and exploitation (ESC1-ESC8)
+# bloodhound — BloodHound ingestor for AD attack path mapping
 RUN apt-get update && apt-get install -y --no-install-recommends \
     smbmap smbclient samba-common-bin impacket-scripts \
     enum4linux-ng netexec ldap-utils python3-pip \
     && rm -rf /var/lib/apt/lists/* \
-    && pip3 install --no-cache-dir ldapdomaindump --break-system-packages
+    && pip3 install --no-cache-dir ldapdomaindump certipy-ad bloodhound --break-system-packages
 
 # Layer 8: service enumeration
 # snmpwalk is bundled in the snmp package; snmp-check not available on arm64

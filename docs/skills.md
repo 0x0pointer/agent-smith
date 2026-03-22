@@ -364,6 +364,41 @@ Internal network assessment — assumes attacker has physical or VPN access to t
 | `standard` | quick + top-1000 ports + SMB/SNMP/NFS enum + broadcast protocols | $0.50 | 45 min | 25 |
 | `thorough` | standard + full port scan + segmentation testing + router/switch audit | $2.00 | 120 min | 60 |
 
+## `/ad-assessment`
+
+Active Directory security audit using the MITRE ATT&CK framework — full domain enumeration, ADCS attacks (ESC1-ESC8), delegation abuse, ACL analysis, GPO security, BloodHound attack paths, and forest trust exploitation.
+
+```
+/ad-assessment 10.0.0.1 domain=CORP.LOCAL user=auditor pass=P@ssw0rd depth=standard
+/ad-assessment dc01.corp.local domain=CORP.LOCAL depth=thorough
+/ad-assessment 192.168.1.10 depth=quick
+```
+
+**What it does:**
+
+1. **Domain enumeration** — functional level, password policy, privileged groups, Machine Account Quota, Protected Users
+2. **Kerberos attacks** — Kerberoasting (SPN enumeration + hash cracking), AS-REP Roasting
+3. **Service account security** — SPN accounts with old passwords, gMSA detection, DONT_EXPIRE_PASSWORD
+4. **ADCS assessment** — ESC1 through ESC8 (SAN abuse, enrollment agent, template ACL, CA flags, NTLM relay to HTTP enrollment)
+5. **Delegation analysis** — unconstrained, constrained (S4U2Proxy), RBCD
+6. **Fine-grained password policies** — FGPP precedence, weak policies on service accounts
+7. **LAPS deployment** — coverage gaps, v1 vs v2, unauthorized read access
+8. **GPO security** — GPP passwords, writable GPOs, security-critical settings (logon scripts, scheduled tasks, restricted groups)
+9. **ACL analysis** — dangerous permissions (DCSync, WriteDACL, GenericAll on AdminSDHolder), GUID-decoded rights
+10. **BloodHound collection** — shortest path to DA, Kerberoastable with DA path, unconstrained delegation
+11. **Forest trust analysis** — SID filtering, selective authentication, trust key extraction
+12. **Attack path prioritization** — P0 (immediate DA) through P3 (defense gaps)
+
+**Depth presets:**
+
+| Depth | Tools | Cost | Time | Calls |
+|---|---|---|---|---|
+| `quick` | Domain enum + password policy + privileged groups + Kerberoasting + AS-REP | $0.10 | 15 min | 10 |
+| `standard` | quick + ADCS (ESC1-ESC8) + delegation + GPO + ACL + FGPP + LAPS + service accounts | $0.50 | 45 min | 25 |
+| `thorough` | standard + BloodHound + forest trust analysis + attack path prioritization | $2.00 | 120 min | 60 |
+
+---
+
 ## `/post-exploit`
 
 Post-exploitation workflow — privilege escalation, credential harvesting, persistence assessment, and pivot preparation. Uses LinPEAS/WinPEAS as primary enumeration with dynamic GTFOBins cross-referencing.
@@ -409,10 +444,12 @@ During a pentest (/pentester)
   ├── /post-exploit           initial access obtained — privesc, credential harvesting, pivot
   ├── /container-k8s-security if Docker/K8s infrastructure is discovered
   ├── /cloud-security         if AWS/Azure/GCP infrastructure is discovered
+  ├── /ad-assessment          if Active Directory domain is discovered
   └── /ai-redteam             if an LLM endpoint is discovered
 
 After initial access (/post-exploit)
   ├── /lateral-movement       credentials + pivot opportunities — pass-the-hash, Kerberoasting
+  ├── /ad-assessment          domain environment — ADCS, delegation, ACLs, trust analysis
   └── /credential-audit       harvested hashes — crack and test credentials
 
 During a codebase scan

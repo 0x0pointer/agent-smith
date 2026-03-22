@@ -19,6 +19,7 @@ You have 30 skills at your disposal. Use the right one based on the task:
 |-------|---------|--------------|
 | `/container-k8s-security` | User asks to assess containers or Kubernetes | Container escape, K8s RBAC, pod security, exposed API servers, etcd access, image vulnerabilities |
 | `/cloud-security` | User asks to assess cloud infrastructure (AWS/Azure/GCP) | IAM privilege escalation, public storage, serverless attack surface, database exposure, logging gaps, compliance mapping |
+| `/ad-assessment` | User asks to audit Active Directory | Domain enumeration, ADCS (ESC1-ESC8), delegation abuse, ACL analysis, GPO security, BloodHound attack paths, trust exploitation |
 
 ### Analysis & Reporting Skills
 
