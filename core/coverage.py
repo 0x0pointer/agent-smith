@@ -101,7 +101,9 @@ def _load() -> dict:
 
 
 def _save(data: dict) -> None:
-    COVERAGE_FILE.write_text(json.dumps(data, indent=2))
+    # Re-resolve on every write so the path is always absolute and canonical,
+    # guarding against any monkeypatching that supplies a relative path.
+    Path(COVERAGE_FILE).resolve().write_text(json.dumps(data, indent=2))
 
 
 def _recount(data: dict) -> None:
@@ -229,6 +231,37 @@ async def add_endpoint(
     return {"endpoint_id": ep_id, "new_cells": new_cells, "dedup": False}
 
 
+def _integrity_warning_for_status(
+    cell_id: str, prev_status: str, status: str, inj_type: str, notes: str
+) -> str:
+    """Return an integrity warning string, or empty string if no violation."""
+    final_statuses = {"tested_clean", "vulnerable"}
+    if status in final_statuses and prev_status not in ("in_progress", "tested_clean", "vulnerable"):
+        return (
+            f"INTEGRITY WARNING: cell {cell_id} went {prev_status} -> {status} "
+            f"without passing through in_progress first. "
+            f"This usually means the cell was bulk-marked without actually being tested. "
+            f"Mark the cell in_progress BEFORE running your test tool."
+        )
+    return _na_bypass_warning(cell_id, status, inj_type, notes)
+
+
+def _na_bypass_warning(cell_id: str, status: str, inj_type: str, notes: str) -> str:
+    """Return a warning if N/A is set without bypass justification, else empty string."""
+    if status != "not_applicable" or inj_type not in _BYPASS_REQUIRED_TYPES:
+        return ""
+    bypass_technique = _BYPASS_REQUIRED_TYPES[inj_type]
+    keywords = bypass_technique.lower().split(", ")
+    if any(kw in notes.lower() for kw in keywords) or len(notes) >= 40:
+        return ""
+    return (
+        f"INTEGRITY WARNING: marking {inj_type} as N/A without explaining "
+        f"why bypass techniques don't apply. For {inj_type}, you should test: "
+        f"{bypass_technique}. Add this to your notes or actually test before "
+        f"marking N/A."
+    )
+
+
 async def update_cell(
     cell_id: str,
     status: str,
@@ -245,41 +278,14 @@ async def update_cell(
     if status not in valid:
         return False
 
-    warning = ""
-
     async with _lock:
         data = _load()
         for cell in data["matrix"]:
             if cell["id"] == cell_id:
-                prev_status = cell["status"]
-                inj_type = cell.get("injection_type", "")
-
-                # --- Integrity rule 1: require in_progress before final status ---
-                final_statuses = {"tested_clean", "vulnerable"}
-                if status in final_statuses and prev_status not in ("in_progress", "tested_clean", "vulnerable"):
-                    warning = (
-                        f"INTEGRITY WARNING: cell {cell_id} went {prev_status} -> {status} "
-                        f"without passing through in_progress first. "
-                        f"This usually means the cell was bulk-marked without actually being tested. "
-                        f"Mark the cell in_progress BEFORE running your test tool."
-                    )
-
-                # --- Integrity rule 2: N/A on bypass-required types needs justification ---
-                if status == "not_applicable" and inj_type in _BYPASS_REQUIRED_TYPES:
-                    bypass_technique = _BYPASS_REQUIRED_TYPES[inj_type]
-                    # Check if notes mention the bypass technique (loosely)
-                    notes_lower = notes.lower()
-                    bypass_keywords = bypass_technique.lower().split(", ")
-                    has_justification = any(kw in notes_lower for kw in bypass_keywords)
-                    if not has_justification and len(notes) < 40:
-                        warning = (
-                            f"INTEGRITY WARNING: marking {inj_type} as N/A without explaining "
-                            f"why bypass techniques don't apply. For {inj_type}, you should test: "
-                            f"{bypass_technique}. Add this to your notes or actually test before "
-                            f"marking N/A."
-                        )
-
-                # --- Apply the update (always apply, but return warning) ---
+                warning = _integrity_warning_for_status(
+                    cell_id, cell["status"], status,
+                    cell.get("injection_type", ""), notes,
+                )
                 cell["status"] = status
                 cell["notes"] = notes
                 cell["tested_by"] = tested_by
@@ -292,52 +298,41 @@ async def update_cell(
     return False
 
 
+def _apply_bulk_cell(cell: dict, upd: dict, warnings: list[str]) -> None:
+    """Apply one bulk-update entry to a cell in-place, appending any warnings."""
+    st = upd.get("status", "")
+    notes_text = upd.get("notes", "")
+    warning = _integrity_warning_for_status(
+        cell["id"], cell["status"], st,
+        cell.get("injection_type", ""), notes_text,
+    )
+    if warning:
+        warnings.append(warning)
+    cell["status"] = st
+    cell["notes"] = notes_text
+    cell["tested_by"] = upd.get("tested_by", "")
+    if upd.get("finding_id"):
+        cell["finding_id"] = upd["finding_id"]
+    cell["tested_at"] = datetime.now(timezone.utc).isoformat()
+
+
 async def bulk_update(updates: list[dict]) -> dict:
     """Update multiple cells. Each update: {cell_id, status, notes?, finding_id?, tested_by?}.
 
     Returns {"updated": N, "warnings": [str]} — warnings for integrity violations.
     """
     valid = {"pending", "in_progress", "tested_clean", "vulnerable", "not_applicable", "skipped"}
-    final_statuses = {"tested_clean", "vulnerable"}
 
     async with _lock:
         data = _load()
         cell_map = {c["id"]: c for c in data["matrix"]}
         count = 0
-        warnings = []
+        warnings: list[str] = []
         for upd in updates:
             cid = upd.get("cell_id", "")
-            st = upd.get("status", "")
-            if st not in valid or cid not in cell_map:
+            if upd.get("status", "") not in valid or cid not in cell_map:
                 continue
-            cell = cell_map[cid]
-            prev_status = cell["status"]
-            inj_type = cell.get("injection_type", "")
-            notes_text = upd.get("notes", "")
-
-            # Integrity rule 1: require in_progress before final status
-            if st in final_statuses and prev_status not in ("in_progress", "tested_clean", "vulnerable"):
-                warnings.append(
-                    f"{cid} ({inj_type}): {prev_status} -> {st} without in_progress first"
-                )
-
-            # Integrity rule 2: N/A on bypass-required types needs justification
-            if st == "not_applicable" and inj_type in _BYPASS_REQUIRED_TYPES:
-                bypass_technique = _BYPASS_REQUIRED_TYPES[inj_type]
-                notes_lower = notes_text.lower()
-                bypass_keywords = bypass_technique.lower().split(", ")
-                has_justification = any(kw in notes_lower for kw in bypass_keywords)
-                if not has_justification and len(notes_text) < 40:
-                    warnings.append(
-                        f"{cid} ({inj_type}): marked N/A without testing bypass ({bypass_technique})"
-                    )
-
-            cell["status"] = st
-            cell["notes"] = notes_text
-            cell["tested_by"] = upd.get("tested_by", "")
-            if upd.get("finding_id"):
-                cell["finding_id"] = upd["finding_id"]
-            cell["tested_at"] = datetime.now(timezone.utc).isoformat()
+            _apply_bulk_cell(cell_map[cid], upd, warnings)
             count += 1
         _recount(data)
         _save(data)

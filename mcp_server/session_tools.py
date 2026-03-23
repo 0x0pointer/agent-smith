@@ -124,6 +124,56 @@ def _do_start(opts):
     return "\n".join(lines)
 
 
+def _coverage_blockers(cov: dict) -> list[str]:
+    """Return coverage-related completion blockers for the given matrix state."""
+    from core.coverage import _BYPASS_REQUIRED_TYPES  # local import to avoid circularity
+    blockers: list[str] = []
+    meta = cov.get("meta", {})
+    total = meta.get("total_cells", 0)
+    if total == 0:
+        return blockers
+
+    addressed = meta.get("tested", 0) + meta.get("not_applicable", 0) + meta.get("skipped", 0)
+    pct = (addressed / total) * 100
+    if pct < 80:
+        blockers.append(
+            f"LOW COVERAGE: only {addressed}/{total} matrix cells addressed ({pct:.0f}%). "
+            f"Review pending cells in the coverage matrix — test, skip with reason, or mark N/A."
+        )
+
+    all_cells = cov.get("matrix", [])
+    untooled = [c for c in all_cells
+                if c["status"] in ("tested_clean", "vulnerable") and not c.get("tested_by")]
+    if untooled:
+        blockers.append(
+            f"INTEGRITY: {len(untooled)} cell(s) marked tested/vulnerable but have no "
+            f"tested_by tool. Re-test these cells or add the tested_by field."
+        )
+
+    suspect_na = _suspect_na_cells(all_cells, _BYPASS_REQUIRED_TYPES)
+    if suspect_na:
+        sample = ", ".join(suspect_na[:5]) + ("..." if len(suspect_na) > 5 else "")
+        blockers.append(
+            f"INTEGRITY: {len(suspect_na)} cell(s) marked N/A without testing bypass "
+            f"techniques: {sample}. Test the bypass before marking N/A."
+        )
+    return blockers
+
+
+def _suspect_na_cells(cells: list[dict], bypass_types: dict) -> list[str]:
+    """Return cell IDs/types marked N/A without bypass justification."""
+    suspect = []
+    for c in cells:
+        if c["status"] != "not_applicable" or c["injection_type"] not in bypass_types:
+            continue
+        cell_notes = c.get("notes", "")
+        bypass = bypass_types[c["injection_type"]]
+        keywords = bypass.lower().split(", ")
+        if not any(kw in cell_notes.lower() for kw in keywords) and len(cell_notes) < 40:
+            suspect.append(f"{c['id']} ({c['injection_type']})")
+    return suspect
+
+
 def _do_complete(opts):
     notes = opts.get("notes", "")
     blockers: list[str] = []
@@ -145,10 +195,7 @@ def _do_complete(opts):
     repo_root = os.path.dirname(os.path.dirname(__file__))
     pocs_dir = os.path.join(repo_root, "pocs")
     poc_files = set(os.listdir(pocs_dir)) if os.path.isdir(pocs_dir) else set()
-    high_findings = [
-        f for f in data.get("findings", [])
-        if f.get("severity") in ("high", "critical")
-    ]
+    high_findings = [f for f in data.get("findings", []) if f.get("severity") in ("high", "critical")]
     if high_findings and not poc_files:
         titles = ", ".join(f["title"] for f in high_findings)
         blockers.append(
@@ -156,50 +203,8 @@ def _do_complete(opts):
             f"Call http(action='request', poc=true) + http(action='save_poc') for each: {titles}"
         )
 
-    # Coverage matrix completeness check (soft warning, not a blocker)
-    from core.coverage import get_matrix, _BYPASS_REQUIRED_TYPES
-    cov = get_matrix()
-    cov_meta = cov.get("meta", {})
-    total = cov_meta.get("total_cells", 0)
-    if total > 0:
-        addressed = (
-            cov_meta.get("tested", 0)
-            + cov_meta.get("not_applicable", 0)
-            + cov_meta.get("skipped", 0)
-        )
-        pct = (addressed / total) * 100
-        if pct < 80:
-            blockers.append(
-                f"LOW COVERAGE: only {addressed}/{total} matrix cells addressed ({pct:.0f}%). "
-                f"Review pending cells in the coverage matrix — test, skip with reason, or mark N/A."
-            )
-
-        # Integrity check: cells marked tested without tested_by tool
-        all_cells = cov.get("matrix", [])
-        untooled = [c for c in all_cells
-                    if c["status"] in ("tested_clean", "vulnerable") and not c.get("tested_by")]
-        if untooled:
-            blockers.append(
-                f"INTEGRITY: {len(untooled)} cell(s) marked tested/vulnerable but have no "
-                f"tested_by tool. This indicates cells were marked without actually running a "
-                f"tool. Re-test these cells or add the tested_by field."
-            )
-
-        # Integrity check: N/A on bypass-required types without justification
-        suspect_na = []
-        for c in all_cells:
-            if c["status"] == "not_applicable" and c["injection_type"] in _BYPASS_REQUIRED_TYPES:
-                notes = c.get("notes", "")
-                bypass = _BYPASS_REQUIRED_TYPES[c["injection_type"]]
-                keywords = bypass.lower().split(", ")
-                if not any(kw in notes.lower() for kw in keywords) and len(notes) < 40:
-                    suspect_na.append(f"{c['id']} ({c['injection_type']})")
-        if suspect_na:
-            blockers.append(
-                f"INTEGRITY: {len(suspect_na)} cell(s) marked N/A without testing bypass "
-                f"techniques: {', '.join(suspect_na[:5])}{'...' if len(suspect_na) > 5 else ''}. "
-                f"Test the bypass (e.g. Content-Type switching for XXE) before marking N/A."
-            )
+    from core.coverage import get_matrix
+    blockers.extend(_coverage_blockers(get_matrix()))
 
     if blockers:
         msg = "complete BLOCKED — fix the following first:\n\n"
