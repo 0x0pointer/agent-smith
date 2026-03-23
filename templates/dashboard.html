@@ -170,8 +170,28 @@
     }
     .diagram-card h3 { font-size: 0.9rem; color: #f0f6fc; margin-bottom: 0.75rem; }
     .diagram-card .ts { display: block; margin-bottom: 0.5rem; }
-    .mermaid { background: #161b22; }
+    .mermaid { background: #0d1117; }
     .mermaid svg { max-width: 100%; }
+    .mermaid svg text { fill: #e5e7eb !important; font-size: 14px !important; }
+    .mermaid svg .node rect,
+    .mermaid svg .node polygon,
+    .mermaid svg .node circle { stroke-width: 1.5px; }
+    .mermaid svg .edgeLabel { background-color: #161b22; color: #9ca3af; font-size: 12px; }
+    .diagram-zoom-wrap {
+      overflow: hidden; cursor: grab; position: relative;
+      border: 1px solid #21262d; border-radius: 4px; background: #0d1117;
+    }
+    .diagram-zoom-wrap:active { cursor: grabbing; }
+    .diagram-zoom-inner { transform-origin: 0 0; transition: none; }
+    .diagram-zoom-controls {
+      position: absolute; top: 8px; right: 8px; display: flex; gap: 4px; z-index: 2;
+    }
+    .diagram-zoom-controls button {
+      background: #21262d; border: 1px solid #30363d; color: #c9d1d9;
+      border-radius: 4px; width: 28px; height: 28px; cursor: pointer;
+      font-size: 1rem; line-height: 1; display: flex; align-items: center; justify-content: center;
+    }
+    .diagram-zoom-controls button:hover { background: #30363d; color: #f0f6fc; }
 
     /* ── Component map ── */
     .comp-grid {
@@ -227,6 +247,11 @@
     #tm-content hr { border: none; border-top: 1px solid #30363d; margin: 1.2rem 0; }
     .tm-mermaid-wrap { background: #0d1117; border: 1px solid #21262d; border-radius: 4px;
                        padding: 1rem; margin: .6rem 0; overflow-x: auto; }
+    .tm-mermaid-wrap svg text { fill: #e5e7eb !important; font-size: 14px !important; }
+    .tm-mermaid-wrap svg .node rect,
+    .tm-mermaid-wrap svg .node polygon,
+    .tm-mermaid-wrap svg .node circle { stroke-width: 1.5px; }
+    .tm-mermaid-wrap svg .edgeLabel { background-color: #161b22; color: #9ca3af; font-size: 12px; }
 
     /* ── Coverage tab ── */
     #coverage-summary {
@@ -393,7 +418,32 @@
 <script>
   mermaid.initialize({
     startOnLoad: false,
-    theme: 'dark',
+    theme: 'base',
+    themeVariables: {
+      // Background
+      background: '#0d1117',
+      primaryColor: '#1f2937',
+      primaryTextColor: '#e5e7eb',
+      primaryBorderColor: '#374151',
+      // Secondary (decisions, conditions)
+      secondaryColor: '#1e3a5f',
+      secondaryTextColor: '#e5e7eb',
+      secondaryBorderColor: '#2563eb',
+      // Tertiary
+      tertiaryColor: '#2d1f3d',
+      tertiaryTextColor: '#e5e7eb',
+      tertiaryBorderColor: '#7c3aed',
+      // Lines and text
+      lineColor: '#6b7280',
+      textColor: '#e5e7eb',
+      // Notes
+      noteBkgColor: '#1e293b',
+      noteTextColor: '#cbd5e1',
+      noteBorderColor: '#334155',
+      // Fonts — consistent size
+      fontSize: '14px',
+      fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+    },
     flowchart: { curve: 'linear', htmlLabels: false },
   });
 
@@ -644,22 +694,83 @@
       const card = document.createElement('div');
       card.className = 'diagram-card';
       card.dataset.diagId = d.id;
-      const mermaidEl = document.createElement('div');
-      mermaidEl.className = 'mermaid';
-      mermaidEl.textContent = d.mermaid;
       card.innerHTML = `<h3>${esc(d.title)}</h3><span class="ts">${new Date(d.timestamp).toLocaleTimeString()}</span>`;
-      card.appendChild(mermaidEl);
-      wrap.appendChild(card);
-      try {
-        await mermaid.run({ nodes: [mermaidEl] });
-      } catch (err) {
-        mermaidEl.innerHTML = `<div style="color:#ff4d4f;font-size:.8rem;margin-bottom:.5rem">
-          ⚠ Mermaid render error: ${esc(String(err?.message||err))}</div>
-          <pre style="background:#010409;color:#7ee787;padding:.6rem;border-radius:4px;
-                      font-size:.75rem;white-space:pre-wrap;word-break:break-all;
-                      border:1px solid #21262d;max-height:400px;overflow-y:auto">${esc(d.mermaid)}</pre>`;
+
+      // Wrap in zoomable container
+      const zoomWrap = document.createElement('div');
+      zoomWrap.className = 'diagram-zoom-wrap';
+      const zoomInner = document.createElement('div');
+      zoomInner.className = 'diagram-zoom-inner';
+
+      if (d.svg) {
+        // Use server-rendered SVG (matches threat model theme)
+        zoomInner.innerHTML = d.svg;
+        const svgEl = zoomInner.querySelector('svg');
+        if (svgEl) { svgEl.style.maxWidth = '100%'; svgEl.style.height = 'auto'; }
+      } else {
+        // Fallback to client-side rendering
+        const mermaidEl = document.createElement('div');
+        mermaidEl.className = 'mermaid';
+        mermaidEl.textContent = d.mermaid;
+        zoomInner.appendChild(mermaidEl);
+        try {
+          await mermaid.run({ nodes: [mermaidEl] });
+        } catch (err) {
+          mermaidEl.innerHTML = `<div style="color:#ff4d4f;font-size:.8rem;margin-bottom:.5rem">
+            ⚠ Mermaid render error: ${esc(String(err?.message||err))}</div>
+            <pre style="background:#010409;color:#7ee787;padding:.6rem;border-radius:4px;
+                        font-size:.75rem;white-space:pre-wrap;word-break:break-all;
+                        border:1px solid #21262d;max-height:400px;overflow-y:auto">${esc(d.mermaid)}</pre>`;
+        }
       }
+
+      zoomWrap.appendChild(zoomInner);
+      zoomWrap.insertAdjacentHTML('beforeend', `<div class="diagram-zoom-controls">
+        <button onclick="diagramZoom(this,1.3)" title="Zoom in">+</button>
+        <button onclick="diagramZoom(this,0.7)" title="Zoom out">&minus;</button>
+        <button onclick="diagramReset(this)" title="Reset view">&#8634;</button>
+      </div>`);
+      initDiagramPanZoom(zoomWrap);
+      card.appendChild(zoomWrap);
+      wrap.appendChild(card);
     }
+  }
+
+  // ── Diagram pan/zoom ─────────────────────────────────────────────────────
+  function initDiagramPanZoom(wrap) {
+    let scale = 1, tx = 0, ty = 0, dragging = false, sx = 0, sy = 0;
+    const inner = wrap.querySelector('.diagram-zoom-inner');
+    const apply = () => { inner.style.transform = `translate(${tx}px,${ty}px) scale(${scale})`; };
+
+    wrap.addEventListener('wheel', e => {
+      e.preventDefault();
+      const factor = e.deltaY < 0 ? 1.15 : 0.87;
+      scale = Math.max(0.1, Math.min(10, scale * factor));
+      apply();
+    }, { passive: false });
+
+    wrap.addEventListener('mousedown', e => {
+      if (e.target.closest('.diagram-zoom-controls')) return;
+      dragging = true; sx = e.clientX - tx; sy = e.clientY - ty;
+    });
+    wrap.addEventListener('mousemove', e => {
+      if (!dragging) return;
+      tx = e.clientX - sx; ty = e.clientY - sy; apply();
+    });
+    wrap.addEventListener('mouseup', () => { dragging = false; });
+    wrap.addEventListener('mouseleave', () => { dragging = false; });
+
+    wrap._pz = { reset() { scale = 1; tx = 0; ty = 0; apply(); }, zoom(f) { scale = Math.max(0.1, Math.min(10, scale * f)); apply(); } };
+  }
+
+  function diagramZoom(btn, factor) {
+    const wrap = btn.closest('.diagram-zoom-wrap');
+    if (wrap?._pz) wrap._pz.zoom(factor);
+  }
+
+  function diagramReset(btn) {
+    const wrap = btn.closest('.diagram-zoom-wrap');
+    if (wrap?._pz) wrap._pz.reset();
   }
 
   // ── Components tab ────────────────────────────────────────────────────────
@@ -955,10 +1066,27 @@
     const tsEl = document.getElementById('tm-file-ts');
     if (tsEl) tsEl.textContent = data.file || '';
 
-    renderThreatModel(data.content, data.svgs || {});
+    await renderThreatModel(data.content, data.svgs || {});
   }
 
-  function renderThreatModel(content, svgs) {
+  // Remap light pastel style colours to dark equivalents so diagrams
+  // authored with light fills render correctly on the dark dashboard.
+  const _TM_COLOR_MAP = {
+    'fill:#f44': 'fill:#7a0000', 'fill:#f88': 'fill:#6b1a1a',
+    'fill:#faa': 'fill:#5c1a1a', 'fill:#fcc': 'fill:#4d1a1a',
+    'fill:#ffd': 'fill:#3d3000', 'fill:#ffa': 'fill:#3d3000',
+    'fill:#ddf': 'fill:#1a2a4a', 'fill:#bbf': 'fill:#1a2040',
+    'stroke:#c00': 'stroke:#ff6666', 'stroke:#a00': 'stroke:#ff5555',
+    'stroke:#c44': 'stroke:#ff8888', 'stroke:#aa0': 'stroke:#ddcc00',
+    'stroke:#44a': 'stroke:#6699ff',
+  };
+  function _remapMermaidColors(src) {
+    for (const [light, dark] of Object.entries(_TM_COLOR_MAP))
+      src = src.replaceAll(light, dark);
+    return src;
+  }
+
+  async function renderThreatModel(content, svgs) {
     const wrap = document.getElementById('threat-model-wrap');
     wrap.classList.remove('empty');
     const html = (typeof marked !== 'undefined')
@@ -966,32 +1094,50 @@
       : `<pre style="white-space:pre-wrap;word-break:break-all;font-size:.82rem;color:#c9d1d9">${esc(content)}</pre>`;
     wrap.innerHTML = `<div id="tm-content">${html}</div>`;
 
-    // Replace mermaid code blocks with pre-rendered SVGs from the server
+    // Replace mermaid code blocks with server-rendered SVGs when available,
+    // fall back to client-side rendering only when server SVGs are missing.
     let idx = 0;
-    wrap.querySelectorAll('pre code.language-mermaid').forEach(block => {
-      const svg = svgs[String(idx)];
+    const blocks = [...wrap.querySelectorAll('pre code.language-mermaid')];
+    for (const block of blocks) {
       const pre = block.parentElement;
       const div = document.createElement('div');
-      div.className = 'tm-mermaid-wrap';
-      if (svg) {
-        div.innerHTML = svg;
-        // Force SVG to fill container width and use light stroke for dark bg
-        const svgEl = div.querySelector('svg');
-        if (svgEl) {
-          svgEl.style.maxWidth = '100%';
-          svgEl.style.height = 'auto';
-        }
+      div.className = 'tm-mermaid-wrap diagram-zoom-wrap';
+      const zoomInner = document.createElement('div');
+      zoomInner.className = 'diagram-zoom-inner';
+
+      const serverSvg = svgs[String(idx)];
+      if (serverSvg) {
+        // Use server-rendered SVG (reliable, uses mermaid-config.json theme)
+        zoomInner.innerHTML = serverSvg;
+        const svgEl = zoomInner.querySelector('svg');
+        if (svgEl) { svgEl.style.maxWidth = '100%'; svgEl.style.height = 'auto'; }
       } else {
-        // npx/mmdc not available — render client-side via mermaid.js (already loaded)
+        // Fall back to client-side rendering
         const mermaidEl = document.createElement('div');
         mermaidEl.className = 'mermaid';
-        mermaidEl.textContent = block.textContent;
-        div.appendChild(mermaidEl);
-        mermaid.run({ nodes: [mermaidEl] });
+        mermaidEl.textContent = _remapMermaidColors(block.textContent);
+        zoomInner.appendChild(mermaidEl);
+        try {
+          await mermaid.run({ nodes: [mermaidEl] });
+        } catch (err) {
+          mermaidEl.innerHTML = `<div style="color:#ff4d4f;font-size:.8rem;margin-bottom:.5rem">
+            ⚠ Mermaid render error: ${esc(String(err?.message||err))}</div>
+            <pre style="background:#010409;color:#7ee787;padding:.6rem;border-radius:4px;
+                        font-size:.75rem;white-space:pre-wrap;word-break:break-all;
+                        border:1px solid #21262d;max-height:400px;overflow-y:auto">${esc(block.textContent)}</pre>`;
+        }
       }
+
+      div.appendChild(zoomInner);
+      div.insertAdjacentHTML('beforeend', `<div class="diagram-zoom-controls">
+        <button onclick="diagramZoom(this,1.3)" title="Zoom in">+</button>
+        <button onclick="diagramZoom(this,0.7)" title="Zoom out">&minus;</button>
+        <button onclick="diagramReset(this)" title="Reset view">&#8634;</button>
+      </div>`);
+      initDiagramPanZoom(div);
       pre.replaceWith(div);
       idx++;
-    });
+    }
   }
 
   // ── Logs tab ──────────────────────────────────────────────────────────────

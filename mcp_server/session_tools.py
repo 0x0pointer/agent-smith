@@ -75,20 +75,51 @@ async def session(action: str, options: dict | None = None) -> str:
 
 def _do_start(opts):
     _session_tools_called.clear()
-    # Reset coverage matrix for new session (sync — just rewrites the file)
-    from core.coverage import COVERAGE_FILE, _save as _cov_save
-    from datetime import datetime, timezone
-    _cov_save({
-        "meta": {
-            "created": datetime.now(timezone.utc).isoformat(),
-            "target": "",
-            "total_cells": 0, "tested": 0, "vulnerable": 0,
-            "not_applicable": 0, "skipped": 0,
-        },
-        "endpoints": [],
-        "matrix": [],
-    })
     target = opts.get("target", "")
+
+    # Coverage matrix lifecycle: only reset when the target changes.
+    # Same target = keep matrix (resume interrupted scan or view completed results).
+    # Different target = archive old matrix, then reset.
+    from core.coverage import COVERAGE_FILE, _save as _cov_save, get_matrix
+    from datetime import datetime, timezone
+    import shutil
+
+    prev = scan_session.get()
+    prev_target = prev.get("target", "") if prev else ""
+    cov = get_matrix()
+    has_data = len(cov.get("matrix", [])) > 0
+
+    if prev_target and prev_target != target and has_data:
+        # Different target — archive the old matrix before resetting
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        archive_dir = COVERAGE_FILE.parent / "logs"
+        archive_dir.mkdir(exist_ok=True)
+        archive_path = archive_dir / f"coverage_matrix_{ts}.json"
+        shutil.copy2(COVERAGE_FILE, archive_path)
+        log.note(f"Coverage matrix archived to {archive_path.name} (previous target: {prev_target})")
+        _cov_save({
+            "meta": {
+                "created": datetime.now(timezone.utc).isoformat(),
+                "target": target,
+                "total_cells": 0, "tested": 0, "in_progress": 0,
+                "vulnerable": 0, "not_applicable": 0, "skipped": 0,
+            },
+            "endpoints": [],
+            "matrix": [],
+        })
+    elif not has_data:
+        # Empty matrix — just set the target
+        _cov_save({
+            "meta": {
+                "created": datetime.now(timezone.utc).isoformat(),
+                "target": target,
+                "total_cells": 0, "tested": 0, "in_progress": 0,
+                "vulnerable": 0, "not_applicable": 0, "skipped": 0,
+            },
+            "endpoints": [],
+            "matrix": [],
+        })
+    # Same target with existing data — keep matrix as-is (resume or view results)
     depth = opts.get("depth", "standard")
     cfg = scan_session.start(
         target=target, depth=depth,
