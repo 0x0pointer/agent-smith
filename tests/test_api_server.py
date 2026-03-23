@@ -175,7 +175,7 @@ def test_api_threat_model_reads_content(tmp_path, monkeypatch):
     monkeypatch.setattr(srv, "_THREAT_MODEL_DIR", tmp_path)
     md = tmp_path / "model.md"
     md.write_text("# My threat model\nsome content")
-    with patch("core.api_server._get_svgs", new=AsyncMock(return_value={})):
+    with patch("core.api_server._render_mermaid_svgs", return_value={}):
         response = client.get("/api/threat-model?file=model.md")
     assert response.status_code == 200
     assert "My threat model" in response.json()["content"]
