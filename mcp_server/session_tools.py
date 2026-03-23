@@ -16,7 +16,7 @@ from mcp_server._app import mcp, _session_tools_called
 async def session(action: str, options: dict | None = None) -> str:
     """Scan lifecycle and infrastructure management.
 
-    action  : start | complete | status | set_skill | start_kali | stop_kali | start_metasploit | stop_metasploit | pull_images | set_codebase
+    action  : start | complete | status | set_skill | set_step | start_kali | stop_kali | start_metasploit | stop_metasploit | pull_images | set_codebase
 
     start options:
       target, depth=standard (recon|standard|thorough), scope=[],
@@ -29,6 +29,9 @@ async def session(action: str, options: dict | None = None) -> str:
 
     set_skill options:
       skill= (name of the active skill, e.g. "pentester", "ai-redteam")
+
+    set_step options:
+      step= (current workflow step, e.g. "5_nuclei_scan")
 
     set_codebase options:
       path= (absolute path to local codebase)
@@ -45,6 +48,8 @@ async def session(action: str, options: dict | None = None) -> str:
         return _do_status()
     elif action == "set_skill":
         return _do_set_skill(opts)
+    elif action == "set_step":
+        return _do_set_step(opts)
     elif action == "start_kali":
         return await _do_start_kali()
     elif action == "stop_kali":
@@ -58,7 +63,7 @@ async def session(action: str, options: dict | None = None) -> str:
     elif action == "set_codebase":
         return _do_set_codebase(opts)
     else:
-        return f"Unknown action '{action}'. Use: start, complete, status, set_skill, start_kali, stop_kali, start_metasploit, stop_metasploit, pull_images, set_codebase"
+        return f"Unknown action '{action}'. Use: start, complete, status, set_skill, set_step, start_kali, stop_kali, start_metasploit, stop_metasploit, pull_images, set_codebase"
 
 
 def _do_start(opts):
@@ -148,24 +153,33 @@ def _do_status():
     data = findings_store._load()
     current = scan_session.get() or {}
     remaining = scan_session.remaining(summary) if current else {}
+    # Merge in-memory + persisted tool tracking for resilience
+    persisted_tools = set(current.get("tools_called", []))
+    all_tools = sorted(_session_tools_called | persisted_tools)
     result = {
         "target": current.get("target", ""),
         "depth": current.get("depth", ""),
         "status": current.get("status", ""),
         "skill": current.get("skill"),
-        "skill_history": current.get("skill_history", []),
-        "tools_run": sorted(_session_tools_called),
+        "current_step": current.get("current_step"),
+        "tools_run": all_tools,
         "findings_count": len(data.get("findings", [])),
         "diagrams_count": len(data.get("diagrams", [])),
         "cost_usd": summary.get("est_cost_usd", 0),
         "tool_calls": summary.get("tool_calls_total", 0),
     }
     if remaining:
-        result["remaining"] = remaining
+        result["remaining"] = {
+            "cost_usd": remaining.get("cost_remaining_usd", 0),
+            "time_min": remaining.get("time_remaining_minutes", 0),
+            "calls": remaining.get("calls_remaining", -1),
+        }
     if current.get("skill") and current.get("status") == "running":
+        step = current.get("current_step", "")
+        step_msg = f" Resume at step: {step}." if step else ""
         result["_recovery_hint"] = (
             f"If you lost context, re-invoke the /{current['skill']} skill "
-            f"to reload its workflow, then resume from where tools_run left off."
+            f"to reload its workflow.{step_msg}"
         )
     return json.dumps(result, indent=2)
 
@@ -179,6 +193,17 @@ def _do_set_skill(opts):
         return "No active running session — cannot set skill."
     log.note(f"Active skill changed to: {skill_name}")
     return f"Active skill set to: {skill_name}"
+
+
+def _do_set_step(opts):
+    step = opts.get("step", "")
+    if not step:
+        return "Error: 'step' option is required"
+    result = scan_session.set_step(step)
+    if result is None:
+        return "No active running session — cannot set step."
+    log.note(f"Step checkpoint: {step}")
+    return f"Step checkpoint: {step}"
 
 
 async def _do_start_kali():

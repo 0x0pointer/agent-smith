@@ -60,6 +60,7 @@ _session_tools_called: set[str] = set()
 
 def _record(tool_name: str) -> None:
     _session_tools_called.add(tool_name)
+    scan_session.add_tool_called(tool_name)
 
 
 # ── Output clipping ───────────────────────────────────────────────────────────

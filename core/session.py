@@ -113,6 +113,8 @@ def start(
         "limits":       limits,
         "skill":         skill,
         "skill_history": [skill] if skill else [],
+        "tools_called":  [],
+        "current_step":  None,
     }
     _flush()
     return _current
@@ -184,6 +186,25 @@ def set_skill(skill_name: str) -> dict | None:
     _current["skill"] = skill_name
     if skill_name not in _current["skill_history"]:
         _current["skill_history"].append(skill_name)
+    _flush()
+    return _current
+
+
+def add_tool_called(tool_name: str) -> None:
+    """Persist a tool name to the tools_called list in session.json."""
+    if _current and _current["status"] == "running":
+        tools = _current.setdefault("tools_called", [])
+        if tool_name not in tools:
+            tools.append(tool_name)
+            _flush()
+
+
+def set_step(step: str) -> dict | None:
+    """Update the current workflow step checkpoint (e.g. '5_nuclei_scan')."""
+    global _current
+    if _current is None or _current["status"] != "running":
+        return None
+    _current["current_step"] = step
     _flush()
     return _current
 

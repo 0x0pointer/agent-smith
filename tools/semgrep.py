@@ -64,7 +64,7 @@ TOOL = Tool(
     default_timeout = 900,
     risk_level      = "safe",
     needs_mount     = True,
-    max_output      = 20_000,  # parser already strips AST noise; 20K covers ~100 findings
+    max_output      = 12_000,  # parser strips AST noise; 12K aligns with other structured tools
     description     = (
         "Static code analysis — finds security bugs in source code. "
         "Mounts the local codebase (set via set_codebase_target). "

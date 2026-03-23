@@ -276,3 +276,90 @@ def test_skill_persisted_to_file(tmp_path, monkeypatch):
     data = json.loads((tmp_path / "session.json").read_text())
     assert data["skill"] == "pentester"
     assert data["skill_history"] == ["pentester"]
+
+
+# ---------------------------------------------------------------------------
+# tools_called tracking
+# ---------------------------------------------------------------------------
+
+def test_start_initialises_tools_called():
+    sess = core.session.start("example.com")
+    assert sess["tools_called"] == []
+
+
+def test_add_tool_called_appends():
+    core.session.start("example.com")
+    core.session.add_tool_called("nmap")
+    core.session.add_tool_called("nuclei")
+    assert core.session.get()["tools_called"] == ["nmap", "nuclei"]
+
+
+def test_add_tool_called_no_duplicates():
+    core.session.start("example.com")
+    core.session.add_tool_called("nmap")
+    core.session.add_tool_called("nmap")
+    assert core.session.get()["tools_called"] == ["nmap"]
+
+
+def test_add_tool_called_noop_without_session():
+    core.session._current = None
+    core.session.add_tool_called("nmap")  # should not raise
+
+
+def test_add_tool_called_noop_after_complete():
+    core.session.start("example.com")
+    core.session.complete("done")
+    core.session.add_tool_called("nmap")
+    assert core.session.get()["tools_called"] == []
+
+
+def test_tools_called_persisted_to_file(tmp_path, monkeypatch):
+    import json
+    monkeypatch.setattr(core.session, "_SESSION_FILE", tmp_path / "session.json")
+    core.session.start("example.com")
+    core.session.add_tool_called("nmap")
+    core.session.add_tool_called("httpx")
+    data = json.loads((tmp_path / "session.json").read_text())
+    assert data["tools_called"] == ["nmap", "httpx"]
+
+
+# ---------------------------------------------------------------------------
+# current_step checkpoint
+# ---------------------------------------------------------------------------
+
+def test_start_initialises_current_step():
+    sess = core.session.start("example.com")
+    assert sess["current_step"] is None
+
+
+def test_set_step_updates():
+    core.session.start("example.com")
+    result = core.session.set_step("3_nuclei_scan")
+    assert result["current_step"] == "3_nuclei_scan"
+
+
+def test_set_step_overwrites_previous():
+    core.session.start("example.com")
+    core.session.set_step("3_nuclei_scan")
+    core.session.set_step("5_ffuf")
+    assert core.session.get()["current_step"] == "5_ffuf"
+
+
+def test_set_step_returns_none_without_session():
+    core.session._current = None
+    assert core.session.set_step("anything") is None
+
+
+def test_set_step_noop_after_complete():
+    core.session.start("example.com")
+    core.session.complete("done")
+    assert core.session.set_step("late_step") is None
+
+
+def test_step_persisted_to_file(tmp_path, monkeypatch):
+    import json
+    monkeypatch.setattr(core.session, "_SESSION_FILE", tmp_path / "session.json")
+    core.session.start("example.com")
+    core.session.set_step("5_ffuf")
+    data = json.loads((tmp_path / "session.json").read_text())
+    assert data["current_step"] == "5_ffuf"

@@ -1,11 +1,12 @@
 """
-Tests for tools.semgrep._parse and tools.trufflehog._parse.
+Tests for tools.semgrep._parse, tools.trufflehog._parse, and tools.nuclei._parse.
 """
 import json
 import pytest
 
 from tools.semgrep import _parse as semgrep_parse
 from tools.trufflehog import _parse as trufflehog_parse
+from tools.nuclei import _parse as nuclei_parse
 
 
 # ---------------------------------------------------------------------------
@@ -183,3 +184,105 @@ def test_trufflehog_parse_skips_blank_lines():
     stdout = "\n\n" + _th_line() + "\n\n"
     findings = trufflehog_parse(stdout, "")
     assert len(findings) == 1
+
+
+# ---------------------------------------------------------------------------
+# nuclei parser
+# ---------------------------------------------------------------------------
+
+def _nuclei_line(template_id="cve-2021-44228", severity="critical",
+                 name="Log4Shell", matched_at="http://target.com:8080",
+                 type_="http", host="target.com", cve_id="CVE-2021-44228"):
+    obj = {
+        "template-id": template_id,
+        "info": {
+            "severity": severity,
+            "name": name,
+            "classification": {"cve-id": cve_id} if cve_id else {},
+        },
+        "matched-at": matched_at,
+        "type": type_,
+        "host": host,
+        # Verbose fields that should be stripped by the parser
+        "template-url": "https://github.com/nuclei-templates/...",
+        "curl-command": "curl -X GET http://target.com:8080",
+        "matcher-name": "log4j-detect",
+        "request": "GET / HTTP/1.1\r\nHost: target.com\r\n...",
+        "response": "HTTP/1.1 200 OK\r\n...",
+    }
+    return json.dumps(obj)
+
+
+def test_nuclei_parse_returns_list():
+    assert isinstance(nuclei_parse(_nuclei_line(), ""), list)
+
+
+def test_nuclei_parse_empty_input():
+    assert nuclei_parse("", "") == []
+
+
+def test_nuclei_parse_single_finding():
+    findings = nuclei_parse(_nuclei_line(), "")
+    assert len(findings) == 1
+
+
+def test_nuclei_parse_extracts_template():
+    findings = nuclei_parse(_nuclei_line(template_id="cve-2021-44228"), "")
+    assert findings[0]["template"] == "cve-2021-44228"
+
+
+def test_nuclei_parse_extracts_severity():
+    findings = nuclei_parse(_nuclei_line(severity="high"), "")
+    assert findings[0]["severity"] == "high"
+
+
+def test_nuclei_parse_extracts_name():
+    findings = nuclei_parse(_nuclei_line(name="Log4Shell RCE"), "")
+    assert findings[0]["name"] == "Log4Shell RCE"
+
+
+def test_nuclei_parse_extracts_matched():
+    findings = nuclei_parse(_nuclei_line(matched_at="http://x.com/api"), "")
+    assert findings[0]["matched"] == "http://x.com/api"
+
+
+def test_nuclei_parse_extracts_host():
+    findings = nuclei_parse(_nuclei_line(host="10.0.0.1"), "")
+    assert findings[0]["host"] == "10.0.0.1"
+
+
+def test_nuclei_parse_extracts_cve():
+    findings = nuclei_parse(_nuclei_line(cve_id="CVE-2021-44228"), "")
+    assert findings[0]["cve"] == "CVE-2021-44228"
+
+
+def test_nuclei_parse_strips_verbose_fields():
+    findings = nuclei_parse(_nuclei_line(), "")
+    keys = set(findings[0].keys())
+    assert "curl-command" not in keys
+    assert "request" not in keys
+    assert "response" not in keys
+    assert "template-url" not in keys
+
+
+def test_nuclei_parse_skips_invalid_json():
+    stdout = "not json\n" + _nuclei_line() + "\ngarbage"
+    findings = nuclei_parse(stdout, "")
+    assert len(findings) == 1
+
+
+def test_nuclei_parse_multiple_findings():
+    lines = "\n".join(_nuclei_line(template_id=f"cve-{i}") for i in range(5))
+    findings = nuclei_parse(lines, "")
+    assert len(findings) == 5
+
+
+def test_nuclei_parse_skips_blank_lines():
+    stdout = "\n\n" + _nuclei_line() + "\n\n"
+    findings = nuclei_parse(stdout, "")
+    assert len(findings) == 1
+
+
+def test_nuclei_parse_no_classification():
+    findings = nuclei_parse(_nuclei_line(cve_id=None), "")
+    assert findings[0]["cve"] == ""

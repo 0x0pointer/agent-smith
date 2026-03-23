@@ -204,9 +204,10 @@ scan(tool="promptfoo", target="http://ai-app.com/api/chat", options={"plugins": 
 When you see a "CONTEXT RECOVERY AFTER COMPACTION" message or realize your context was compacted mid-scan:
 
 1. **Re-invoke the active skill** — use the Skill tool to reload its full workflow. Do NOT continue from memory alone.
-2. **Call `session(action="status")`** — see what tools already ran, findings count, cost.
-3. **Resume, don't restart** — pick up from where the workflow was interrupted. The `tools_run` list shows completed steps.
+2. **Call `session(action="status")`** — see what tools already ran (`tools_run`), current step (`current_step`), findings count, cost. These are persisted to disk and survive compaction.
+3. **Resume at the right step** — use `current_step` to skip already-completed phases. Don't restart the workflow from scratch.
 4. **When chaining skills** — call `session(action="set_skill", options={"skill": "new-skill"})` so recovery knows which skill to reload.
+5. **Set step checkpoints** — call `session(action="set_step", options={"step": "5_nuclei_scan"})` at major workflow transitions so recovery can resume at the right point.
 
 ## Project layout
 - `mcp_server/__main__.py` — entry point, crash logging, module imports

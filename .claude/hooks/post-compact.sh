@@ -23,9 +23,15 @@ if data.get("status") != "running":
 skill = data.get("skill", "")
 target = data.get("target", "")
 depth = data.get("depth", "")
+step = data.get("current_step", "")
+tools = data.get("tools_called", [])
 
 print("CONTEXT RECOVERY AFTER COMPACTION")
 print(f"Active scan: {target} (depth={depth})")
+if tools:
+    print(f"Tools already run: {', '.join(tools)}")
+if step:
+    print(f"Resume at step: {step}")
 if skill:
     print(f"Active skill: /{skill}")
     print(f"ACTION REQUIRED: Re-invoke the /{skill} skill to reload its workflow.")
