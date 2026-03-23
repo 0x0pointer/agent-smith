@@ -255,6 +255,8 @@
     }
     .cov-matrix tbody tr { border-bottom: 1px solid #21262d; }
     .cov-matrix tbody tr:hover { background: #161b22; }
+    .cov-ep-header { background: #161b22; }
+    .cov-ep-header:hover { background: #1c2128 !important; }
     .cov-matrix td { padding: 0.3rem; text-align: center; vertical-align: middle; }
     .cov-matrix td:first-child { text-align: left; font-family: monospace; font-size: 0.76rem; color: #58a6ff; white-space: nowrap; }
 
@@ -264,6 +266,8 @@
     }
     .cov-cell:hover { opacity: .7; }
     .cov-cell.pending    { background: #21262d; border: 1px solid #30363d; }
+    .cov-cell.in_progress { background: #1f6feb; animation: pulse-blue 2s infinite; }
+    @keyframes pulse-blue { 0%,100%{opacity:1} 50%{opacity:.5} }
     .cov-cell.tested_clean { background: #238636; }
     .cov-cell.vulnerable { background: #da3633; }
     .cov-cell.not_applicable { background: #484f58; }
@@ -732,6 +736,13 @@
 
   // ── Coverage tab ─────────────────────────────────────────────────────────
   let _covData = null;
+  const _openCovEndpoints = new Set();
+
+  function toggleCovEndpoint(epId) {
+    if (_openCovEndpoints.has(epId)) _openCovEndpoints.delete(epId);
+    else _openCovEndpoints.add(epId);
+    renderCoverage();
+  }
 
   async function pollCoverage() {
     try {
@@ -765,11 +776,13 @@
     const vuln = meta.vulnerable || 0;
     const na = meta.not_applicable || 0;
     const skipped = meta.skipped || 0;
-    const pending = total - tested - na - skipped;
+    const inProg = meta.in_progress || 0;
+    const pending = total - tested - na - skipped - inProg;
 
     sumWrap.innerHTML = [
       `<span class="cov-stat cov-tested">TESTED ${tested}</span>`,
       `<span class="cov-stat cov-vulnerable">VULNERABLE ${vuln}</span>`,
+      inProg ? `<span class="cov-stat" style="background:rgba(31,111,235,.15);border-color:#1f6feb;color:#58a6ff">IN PROGRESS ${inProg}</span>` : '',
       `<span class="cov-stat cov-na">N/A ${na}</span>`,
       `<span class="cov-stat cov-skipped">SKIPPED ${skipped}</span>`,
       `<span class="cov-stat cov-pending">PENDING ${pending}</span>`,
@@ -789,48 +802,80 @@
       cellMap[`${c.endpoint_id}|${c.param}|${c.injection_type}`] = c;
     });
 
-    // Build rows: one per (endpoint, param)
-    const rows = [];
+    // Group rows by endpoint
+    const epGroups = {};
     _covData.endpoints.forEach(ep => {
-      // Collect unique params for this endpoint
       const params = new Set();
       (_covData.matrix || []).forEach(c => {
         if (c.endpoint_id === ep.id) params.add(c.param);
       });
-      [...params].sort().forEach(p => {
-        rows.push({ ep, param: p });
-      });
+      epGroups[ep.id] = { ep, params: [...params].sort() };
     });
+
+    // Per-endpoint summary: count statuses
+    function epSummary(epId) {
+      const cells = (_covData.matrix || []).filter(c => c.endpoint_id === epId);
+      const counts = { pending: 0, in_progress: 0, tested_clean: 0, vulnerable: 0, not_applicable: 0, skipped: 0 };
+      cells.forEach(c => { if (counts[c.status] !== undefined) counts[c.status]++; });
+      return counts;
+    }
 
     // Render table
     const colHeaders = cols.map(c =>
       `<th class="cov-col-header">${esc(c)}</th>`
     ).join('');
 
-    const bodyRows = rows.map(({ ep, param }) => {
-      const label = param === '_endpoint'
-        ? `${ep.method} ${esc(ep.path)}`
-        : `${ep.method} ${esc(ep.path)} → ${esc(param)}`;
-      const cells = cols.map(inj => {
-        const key = `${ep.id}|${param}|${inj}`;
-        const cell = cellMap[key];
-        if (!cell) return '<td></td>';
-        return `<td><span class="cov-cell ${cell.status}"
-          data-cell-id="${cell.id}"
-          data-ep-path="${esc(ep.path)}"
-          data-ep-method="${ep.method}"
-          data-param="${esc(param)}"
-          data-inj="${esc(inj)}"
-          data-status="${cell.status}"
-          data-notes="${esc(cell.notes || '')}"
-          data-finding="${cell.finding_id || ''}"
-          data-tested="${cell.tested_at || ''}"
-          onmouseenter="showCovTooltip(event,this)"
-          onmouseleave="hideCovTooltip()"
-        ></span></td>`;
-      }).join('');
-      return `<tr><td>${label}</td>${cells}</tr>`;
-    }).join('');
+    function cellHtml(epId, param, inj, ep) {
+      const key = `${epId}|${param}|${inj}`;
+      const cell = cellMap[key];
+      if (!cell) return '<td></td>';
+      return `<td><span class="cov-cell ${cell.status}"
+        data-cell-id="${cell.id}"
+        data-ep-path="${esc(ep.path)}"
+        data-ep-method="${ep.method}"
+        data-param="${esc(param)}"
+        data-inj="${esc(inj)}"
+        data-status="${cell.status}"
+        data-notes="${esc(cell.notes || '')}"
+        data-finding="${cell.finding_id || ''}"
+        data-tested="${cell.tested_at || ''}"
+        onmouseenter="showCovTooltip(event,this)"
+        onmouseleave="hideCovTooltip()"
+      ></span></td>`;
+    }
+
+    let bodyRows = '';
+    Object.values(epGroups).forEach(({ ep, params }) => {
+      const s = epSummary(ep.id);
+      const totalCells = s.pending + s.in_progress + s.tested_clean + s.vulnerable + s.not_applicable + s.skipped;
+      const doneCells = s.tested_clean + s.vulnerable + s.not_applicable + s.skipped;
+      const vulnBadge = s.vulnerable ? `<span style="color:#ff4d4f;margin-left:.5rem">${s.vulnerable} vuln</span>` : '';
+      const progBadge = s.in_progress ? `<span style="color:#58a6ff;margin-left:.5rem">${s.in_progress} in progress</span>` : '';
+      const isOpen = _openCovEndpoints.has(ep.id);
+      const arrow = isOpen ? '&#9660;' : '&#9654;';
+
+      // Endpoint header row (clickable)
+      bodyRows += `<tr class="cov-ep-header" onclick="toggleCovEndpoint('${ep.id}')" style="cursor:pointer">
+        <td style="font-weight:600;color:#f0f6fc">
+          <span style="margin-right:.4rem;font-size:.7rem">${arrow}</span>
+          ${ep.method} ${esc(ep.path)}
+          <span style="color:#6e7681;font-weight:400;margin-left:.5rem">${doneCells}/${totalCells}</span>
+          ${vulnBadge}${progBadge}
+        </td>
+        ${cols.map(() => '<td></td>').join('')}
+      </tr>`;
+
+      // Param rows (collapsible)
+      if (isOpen) {
+        params.forEach(p => {
+          const label = p === '_endpoint'
+            ? '<span style="color:#6e7681;padding-left:1.2rem">endpoint-level</span>'
+            : `<span style="padding-left:1.2rem">${esc(p)} <span style="color:#6e7681;font-size:.75rem">(${(_covData.matrix||[]).find(c=>c.endpoint_id===ep.id&&c.param===p)?.param_type||''})</span></span>`;
+          const cells = cols.map(inj => cellHtml(ep.id, p, inj, ep)).join('');
+          bodyRows += `<tr><td>${label}</td>${cells}</tr>`;
+        });
+      }
+    });
 
     wrap.innerHTML = `<div style="overflow-x:auto"><table class="cov-matrix">
       <thead><tr><th>Endpoint / Param</th>${colHeaders}</tr></thead>
@@ -841,7 +886,7 @@
   function showCovTooltip(e, el) {
     const tt = document.getElementById('cov-tooltip');
     const statusColors = {
-      pending: '#8b949e', tested_clean: '#3fb950', vulnerable: '#ff4d4f',
+      pending: '#8b949e', in_progress: '#58a6ff', tested_clean: '#3fb950', vulnerable: '#ff4d4f',
       not_applicable: '#6e7681', skipped: '#d2a922'
     };
     const status = el.dataset.status;
