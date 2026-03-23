@@ -445,8 +445,6 @@ def _do_pre_chain(opts):
     meta = cov.get("meta", {})
     data = findings_store._load()
 
-    summary = cost_tracker.get_summary()
-
     # Set the new skill
     scan_session.set_skill(next_skill)
     log.note(f"Pre-chain checkpoint: {prev_skill} -> {next_skill}")

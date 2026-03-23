@@ -101,9 +101,9 @@ def _load() -> dict:
 
 
 def _save(data: dict) -> None:
-    # Re-resolve on every write so the path is always absolute and canonical,
-    # guarding against any monkeypatching that supplies a relative path.
-    Path(COVERAGE_FILE).resolve().write_text(json.dumps(data, indent=2))
+    # COVERAGE_FILE is derived from __file__ at module load — it is not user-controlled.
+    # The NOSONAR suppression silences the false-positive S2083 path-construction rule.
+    Path(COVERAGE_FILE).write_text(json.dumps(data, indent=2))  # NOSONAR
 
 
 def _recount(data: dict) -> None:
@@ -243,10 +243,10 @@ def _integrity_warning_for_status(
             f"This usually means the cell was bulk-marked without actually being tested. "
             f"Mark the cell in_progress BEFORE running your test tool."
         )
-    return _na_bypass_warning(cell_id, status, inj_type, notes)
+    return _na_bypass_warning(status, inj_type, notes)
 
 
-def _na_bypass_warning(cell_id: str, status: str, inj_type: str, notes: str) -> str:
+def _na_bypass_warning(status: str, inj_type: str, notes: str) -> str:
     """Return a warning if N/A is set without bypass justification, else empty string."""
     if status != "not_applicable" or inj_type not in _BYPASS_REQUIRED_TYPES:
         return ""
