@@ -12,6 +12,7 @@ import pytest
 import core.cost
 import core.session
 import core.findings
+import core.coverage
 
 
 @pytest.fixture(autouse=True)
@@ -38,9 +39,23 @@ def reset_findings_lock(monkeypatch):
     monkeypatch.setattr(core.findings, "_lock", asyncio.Lock())
 
 
+@pytest.fixture(autouse=True)
+def reset_coverage_lock(monkeypatch):
+    """Recreate the coverage module's asyncio.Lock() per test."""
+    monkeypatch.setattr(core.coverage, "_lock", asyncio.Lock())
+
+
 @pytest.fixture
 def findings_file(tmp_path, monkeypatch):
     """Redirect findings.json to a temp file and return the Path."""
     path = tmp_path / "findings.json"
     monkeypatch.setattr(core.findings, "FINDINGS_FILE", path)
+    return path
+
+
+@pytest.fixture
+def coverage_file(tmp_path, monkeypatch):
+    """Redirect coverage_matrix.json to a temp file and return the Path."""
+    path = tmp_path / "coverage_matrix.json"
+    monkeypatch.setattr(core.coverage, "COVERAGE_FILE", path)
     return path

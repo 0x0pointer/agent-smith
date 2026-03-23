@@ -111,6 +111,30 @@ mkdir -p "$HOME/.claude/skills/remediate"
 cp "$REPO_DIR/skills/remediate/SKILL.md" "$HOME/.claude/skills/remediate/SKILL.md"
 ok "/remediate skill installed"
 
+mkdir -p "$HOME/.claude/skills/credential-audit"
+cp "$REPO_DIR/skills/credential-audit/SKILL.md" "$HOME/.claude/skills/credential-audit/SKILL.md"
+ok "/credential-audit skill installed"
+
+mkdir -p "$HOME/.claude/skills/lateral-movement"
+cp "$REPO_DIR/skills/lateral-movement/SKILL.md" "$HOME/.claude/skills/lateral-movement/SKILL.md"
+ok "/lateral-movement skill installed"
+
+mkdir -p "$HOME/.claude/skills/network-assess"
+cp "$REPO_DIR/skills/network-assess/SKILL.md" "$HOME/.claude/skills/network-assess/SKILL.md"
+ok "/network-assess skill installed"
+
+mkdir -p "$HOME/.claude/skills/osint"
+cp "$REPO_DIR/skills/osint/SKILL.md" "$HOME/.claude/skills/osint/SKILL.md"
+ok "/osint skill installed"
+
+mkdir -p "$HOME/.claude/skills/post-exploit"
+cp "$REPO_DIR/skills/post-exploit/SKILL.md" "$HOME/.claude/skills/post-exploit/SKILL.md"
+ok "/post-exploit skill installed"
+
+mkdir -p "$HOME/.claude/skills/ssl-tls-audit"
+cp "$REPO_DIR/skills/ssl-tls-audit/SKILL.md" "$HOME/.claude/skills/ssl-tls-audit/SKILL.md"
+ok "/ssl-tls-audit skill installed"
+
 # ── AI testing API keys (FuzzyAI + PyRIT) ────────────────────────────────────
 echo ""
 echo "AI testing tools (FuzzyAI + PyRIT) use LLM APIs for attacks and scoring."

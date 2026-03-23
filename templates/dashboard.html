@@ -228,6 +228,55 @@
     .tm-mermaid-wrap { background: #0d1117; border: 1px solid #21262d; border-radius: 4px;
                        padding: 1rem; margin: .6rem 0; overflow-x: auto; }
 
+    /* ── Coverage tab ── */
+    #coverage-summary {
+      display: flex; gap: 0.6rem; flex-wrap: wrap; margin-bottom: 1rem;
+    }
+    .cov-stat {
+      padding: 0.25rem 0.75rem; border-radius: 4px; font-size: 0.8rem;
+      font-weight: 600; border: 1px solid;
+    }
+    .cov-tested     { background: rgba(88,166,255,.15); border-color: #58a6ff; color: #58a6ff; }
+    .cov-vulnerable { background: rgba(255,77,79,.15);  border-color: #ff4d4f; color: #ff4d4f; }
+    .cov-na         { background: rgba(110,118,129,.15); border-color: #6e7681; color: #6e7681; }
+    .cov-skipped    { background: rgba(210,169,34,.15); border-color: #d2a922; color: #d2a922; }
+    .cov-pending    { background: rgba(48,54,61,.5);    border-color: #30363d; color: #8b949e; }
+
+    .cov-matrix { width: 100%; border-collapse: collapse; font-size: 0.78rem; }
+    .cov-matrix thead th {
+      background: #161b22; color: #8b949e; font-weight: 500;
+      padding: 0.4rem 0.3rem; border-bottom: 1px solid #30363d;
+      position: sticky; top: 0; z-index: 1;
+    }
+    .cov-matrix thead th.cov-col-header {
+      writing-mode: vertical-rl; text-orientation: mixed;
+      transform: rotate(180deg); white-space: nowrap;
+      height: 100px; text-align: left; font-size: 0.72rem;
+    }
+    .cov-matrix tbody tr { border-bottom: 1px solid #21262d; }
+    .cov-matrix tbody tr:hover { background: #161b22; }
+    .cov-matrix td { padding: 0.3rem; text-align: center; vertical-align: middle; }
+    .cov-matrix td:first-child { text-align: left; font-family: monospace; font-size: 0.76rem; color: #58a6ff; white-space: nowrap; }
+
+    .cov-cell {
+      display: inline-block; width: 16px; height: 16px; border-radius: 3px;
+      cursor: pointer; transition: opacity .15s;
+    }
+    .cov-cell:hover { opacity: .7; }
+    .cov-cell.pending    { background: #21262d; border: 1px solid #30363d; }
+    .cov-cell.tested_clean { background: #238636; }
+    .cov-cell.vulnerable { background: #da3633; }
+    .cov-cell.not_applicable { background: #484f58; }
+    .cov-cell.skipped    { background: #9e6a03; }
+
+    .cov-tooltip {
+      position: fixed; background: #1c2128; border: 1px solid #444c56; border-radius: 6px;
+      padding: 0.6rem 0.8rem; font-size: 0.78rem; color: #c9d1d9; z-index: 999;
+      pointer-events: none; max-width: 320px; box-shadow: 0 4px 12px rgba(0,0,0,.4);
+    }
+    .cov-tooltip strong { color: #f0f6fc; }
+    .cov-tooltip .cov-tt-status { text-transform: uppercase; font-size: 0.7rem; font-weight: 700; }
+
     /* ── Logs tab ── */
     #log-toolbar {
       display: flex; align-items: center; gap: 1rem; margin-bottom: 0.75rem;
@@ -278,6 +327,7 @@
   <button class="tab-btn active" onclick="switchTab('findings')">Findings</button>
   <button class="tab-btn"        onclick="switchTab('topology')">Topology</button>
   <button class="tab-btn"        onclick="switchTab('components')">Components</button>
+  <button class="tab-btn"        onclick="switchTab('coverage')" id="tab-btn-coverage">Coverage</button>
   <button class="tab-btn"        onclick="switchTab('threat-model')" id="tab-btn-threat-model">Threat Model</button>
   <button class="tab-btn"        onclick="switchTab('logs')">Logs</button>
 </nav>
@@ -299,6 +349,13 @@
 <div id="tab-components" class="tab-content">
   <div id="components-wrap"></div>
 </div>
+
+<!-- ── Tab: Coverage ────────────────────────────────────────────────────── -->
+<div id="tab-coverage" class="tab-content">
+  <div id="coverage-summary"></div>
+  <div id="coverage-wrap"><div class="empty-placeholder">No coverage data yet — run a scan with web-exploit.</div></div>
+</div>
+<div id="cov-tooltip" class="cov-tooltip" style="display:none"></div>
 
 <!-- ── Tab: Threat Model ─────────────────────────────────────────────────── -->
 <div id="tab-threat-model" class="tab-content">
@@ -348,7 +405,7 @@
   let _logLines  = [];
 
   // ── Tab switching ─────────────────────────────────────────────────────────
-  const TAB_NAMES = ['findings', 'topology', 'components', 'threat-model', 'logs'];
+  const TAB_NAMES = ['findings', 'topology', 'components', 'coverage', 'threat-model', 'logs'];
 
   function switchTab(name) {
     _activeTab = name;
@@ -359,6 +416,7 @@
     document.getElementById(`tab-${name}`).classList.add('active');
     if (name === 'topology')     renderTopology(allData.diagrams || []);
     if (name === 'components')   renderComponentMap(allData.findings || []);
+    if (name === 'coverage')     pollCoverage();
     if (name === 'threat-model') pollThreatModel();
     if (name === 'logs')         pollLogs();
   }
@@ -672,6 +730,140 @@
     wrap.innerHTML = header + `<div class="comp-grid">${cards}</div>`;
   }
 
+  // ── Coverage tab ─────────────────────────────────────────────────────────
+  let _covData = null;
+
+  async function pollCoverage() {
+    try {
+      const r = await fetch(`/api/coverage?_=${Date.now()}`);
+      if (!r.ok) return;
+      _covData = await r.json();
+      renderCoverage();
+      // Update tab badge
+      const meta = _covData.meta || {};
+      const btn = document.getElementById('tab-btn-coverage');
+      const total = meta.total_cells || 0;
+      const tested = meta.tested || 0;
+      if (btn && total > 0) {
+        btn.textContent = `Coverage (${tested}/${total})`;
+      }
+    } catch { /* ignore */ }
+  }
+
+  function renderCoverage() {
+    const wrap = document.getElementById('coverage-wrap');
+    const sumWrap = document.getElementById('coverage-summary');
+    if (!_covData || !_covData.endpoints || !_covData.endpoints.length) {
+      wrap.innerHTML = '<div class="empty-placeholder">No coverage data yet — run a scan with web-exploit.</div>';
+      sumWrap.innerHTML = '';
+      return;
+    }
+
+    const meta = _covData.meta || {};
+    const total = meta.total_cells || 0;
+    const tested = meta.tested || 0;
+    const vuln = meta.vulnerable || 0;
+    const na = meta.not_applicable || 0;
+    const skipped = meta.skipped || 0;
+    const pending = total - tested - na - skipped;
+
+    sumWrap.innerHTML = [
+      `<span class="cov-stat cov-tested">TESTED ${tested}</span>`,
+      `<span class="cov-stat cov-vulnerable">VULNERABLE ${vuln}</span>`,
+      `<span class="cov-stat cov-na">N/A ${na}</span>`,
+      `<span class="cov-stat cov-skipped">SKIPPED ${skipped}</span>`,
+      `<span class="cov-stat cov-pending">PENDING ${pending}</span>`,
+      `<span style="font-size:.8rem;color:#6e7681;align-self:center">${_covData.endpoints.length} endpoints · ${total} cells</span>`,
+    ].join('');
+
+    // Collect all injection types that have at least one cell
+    const injTypes = new Set();
+    (_covData.matrix || []).forEach(c => injTypes.add(c.injection_type));
+    const cols = [...injTypes].sort();
+
+    // Build endpoint→param→injection_type map
+    const epMap = {};
+    _covData.endpoints.forEach(ep => { epMap[ep.id] = ep; });
+    const cellMap = {};  // key: "ep_id|param|inj_type" → cell
+    (_covData.matrix || []).forEach(c => {
+      cellMap[`${c.endpoint_id}|${c.param}|${c.injection_type}`] = c;
+    });
+
+    // Build rows: one per (endpoint, param)
+    const rows = [];
+    _covData.endpoints.forEach(ep => {
+      // Collect unique params for this endpoint
+      const params = new Set();
+      (_covData.matrix || []).forEach(c => {
+        if (c.endpoint_id === ep.id) params.add(c.param);
+      });
+      [...params].sort().forEach(p => {
+        rows.push({ ep, param: p });
+      });
+    });
+
+    // Render table
+    const colHeaders = cols.map(c =>
+      `<th class="cov-col-header">${esc(c)}</th>`
+    ).join('');
+
+    const bodyRows = rows.map(({ ep, param }) => {
+      const label = param === '_endpoint'
+        ? `${ep.method} ${esc(ep.path)}`
+        : `${ep.method} ${esc(ep.path)} → ${esc(param)}`;
+      const cells = cols.map(inj => {
+        const key = `${ep.id}|${param}|${inj}`;
+        const cell = cellMap[key];
+        if (!cell) return '<td></td>';
+        return `<td><span class="cov-cell ${cell.status}"
+          data-cell-id="${cell.id}"
+          data-ep-path="${esc(ep.path)}"
+          data-ep-method="${ep.method}"
+          data-param="${esc(param)}"
+          data-inj="${esc(inj)}"
+          data-status="${cell.status}"
+          data-notes="${esc(cell.notes || '')}"
+          data-finding="${cell.finding_id || ''}"
+          data-tested="${cell.tested_at || ''}"
+          onmouseenter="showCovTooltip(event,this)"
+          onmouseleave="hideCovTooltip()"
+        ></span></td>`;
+      }).join('');
+      return `<tr><td>${label}</td>${cells}</tr>`;
+    }).join('');
+
+    wrap.innerHTML = `<div style="overflow-x:auto"><table class="cov-matrix">
+      <thead><tr><th>Endpoint / Param</th>${colHeaders}</tr></thead>
+      <tbody>${bodyRows}</tbody>
+    </table></div>`;
+  }
+
+  function showCovTooltip(e, el) {
+    const tt = document.getElementById('cov-tooltip');
+    const statusColors = {
+      pending: '#8b949e', tested_clean: '#3fb950', vulnerable: '#ff4d4f',
+      not_applicable: '#6e7681', skipped: '#d2a922'
+    };
+    const status = el.dataset.status;
+    const color = statusColors[status] || '#8b949e';
+    tt.innerHTML = `
+      <div><strong>${el.dataset.epMethod} ${el.dataset.epPath}</strong></div>
+      <div style="margin-top:.2rem">Param: <strong>${el.dataset.param === '_endpoint' ? '(endpoint-level)' : el.dataset.param}</strong></div>
+      <div style="margin-top:.2rem">Test: <strong>${el.dataset.inj}</strong></div>
+      <div style="margin-top:.3rem"><span class="cov-tt-status" style="color:${color}">${status.replace('_',' ')}</span></div>
+      ${el.dataset.notes ? `<div style="margin-top:.3rem;color:#8b949e">${el.dataset.notes}</div>` : ''}
+      ${el.dataset.finding ? `<div style="margin-top:.2rem;color:#58a6ff">Finding: ${el.dataset.finding}</div>` : ''}
+      ${el.dataset.tested ? `<div style="margin-top:.2rem;color:#6e7681;font-size:.72rem">${new Date(el.dataset.tested).toLocaleString()}</div>` : ''}
+    `;
+    tt.style.display = 'block';
+    tt.style.left = (e.clientX + 12) + 'px';
+    tt.style.top = (e.clientY + 12) + 'px';
+  }
+
+  function hideCovTooltip() {
+    document.getElementById('cov-tooltip').style.display = 'none';
+  }
+
   // ── Threat Model tab ──────────────────────────────────────────────────────
   let _tmCurrentFile    = '';
   let _tmCurrentContent = '';
@@ -822,6 +1014,7 @@
   // ── Polling intervals ─────────────────────────────────────────────────────
   setInterval(pollFindings,    POLL_MS);
   setInterval(pollSession,     POLL_MS);
+  setInterval(pollCoverage,    POLL_MS);
   setInterval(pollThreatModel, POLL_MS);
   setInterval(() => { if (lastOk && _activeTab === 'findings') renderFindings(); }, 1000);
   setInterval(() => { if (_activeTab === 'logs') pollLogs(); }, 3000);
@@ -829,6 +1022,7 @@
   // Initial load
   pollFindings();
   pollSession();
+  pollCoverage();
   pollThreatModel();
   pollLogs();
 </script>

@@ -32,6 +32,7 @@ _REPO_ROOT         = Path(__file__).parent.parent
 _FINDINGS_FILE     = _REPO_ROOT / "findings.json"
 _SESSION_FILE      = _REPO_ROOT / "session.json"
 _COST_FILE         = _REPO_ROOT / "session_cost.json"
+_COVERAGE_FILE     = _REPO_ROOT / "coverage_matrix.json"
 _TEMPLATES_DIR     = _REPO_ROOT / "templates"
 _THREAT_MODEL_DIR = _REPO_ROOT / "threat-model"
 
@@ -72,6 +73,11 @@ async def api_session() -> JSONResponse:
 @app.get("/api/cost")
 async def api_cost() -> JSONResponse:
     return JSONResponse(_read_json(_COST_FILE))
+
+
+@app.get("/api/coverage")
+async def api_coverage() -> JSONResponse:
+    return JSONResponse(_read_json(_COVERAGE_FILE))
 
 
 # Cache: (filepath, mtime) -> svgs dict

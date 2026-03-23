@@ -9,14 +9,14 @@ from core import cost as cost_tracker
 from core import findings as findings_store
 from core import logger as log
 from core import session as scan_session
-from mcp_server._app import mcp, _session_tools_called
+from mcp_server._app import mcp, _ensure_dict, _session_tools_called
 
 
 @mcp.tool()
 async def session(action: str, options: dict | None = None) -> str:
     """Scan lifecycle and infrastructure management.
 
-    action  : start | complete | status | set_skill | set_step | start_kali | stop_kali | start_metasploit | stop_metasploit | pull_images | set_codebase
+    action  : start | complete | status | recovery | set_skill | set_step | start_kali | stop_kali | start_metasploit | stop_metasploit | pull_images | set_codebase
 
     start options:
       target, depth=standard (recon|standard|thorough), scope=[],
@@ -26,6 +26,9 @@ async def session(action: str, options: dict | None = None) -> str:
       notes=
 
     status: returns current scan state (target, tools run, findings, cost, skill)
+
+    recovery: returns compact recovery brief after context compaction — resume step,
+              in-progress cells with technique notes, pending escalation leads, action list
 
     set_skill options:
       skill= (name of the active skill, e.g. "pentester", "ai-redteam")
@@ -38,7 +41,7 @@ async def session(action: str, options: dict | None = None) -> str:
 
     start_kali, stop_kali, start_metasploit, stop_metasploit, pull_images: no options needed
     """
-    opts = options or {}
+    opts = _ensure_dict(options) or {}
 
     if action == "start":
         return _do_start(opts)
@@ -62,12 +65,27 @@ async def session(action: str, options: dict | None = None) -> str:
         return await _do_pull_images()
     elif action == "set_codebase":
         return _do_set_codebase(opts)
+    elif action == "recovery":
+        return _do_recovery()
     else:
-        return f"Unknown action '{action}'. Use: start, complete, status, set_skill, set_step, start_kali, stop_kali, start_metasploit, stop_metasploit, pull_images, set_codebase"
+        return f"Unknown action '{action}'. Use: start, complete, status, recovery, set_skill, set_step, start_kali, stop_kali, start_metasploit, stop_metasploit, pull_images, set_codebase"
 
 
 def _do_start(opts):
     _session_tools_called.clear()
+    # Reset coverage matrix for new session (sync — just rewrites the file)
+    from core.coverage import COVERAGE_FILE, _save as _cov_save
+    from datetime import datetime, timezone
+    _cov_save({
+        "meta": {
+            "created": datetime.now(timezone.utc).isoformat(),
+            "target": "",
+            "total_cells": 0, "tested": 0, "vulnerable": 0,
+            "not_applicable": 0, "skipped": 0,
+        },
+        "endpoints": [],
+        "matrix": [],
+    })
     target = opts.get("target", "")
     depth = opts.get("depth", "standard")
     cfg = scan_session.start(
@@ -136,6 +154,24 @@ def _do_complete(opts):
             f"Call http(action='request', poc=true) + http(action='save_poc') for each: {titles}"
         )
 
+    # Coverage matrix completeness check (soft warning, not a blocker)
+    from core.coverage import get_matrix
+    cov = get_matrix()
+    cov_meta = cov.get("meta", {})
+    total = cov_meta.get("total_cells", 0)
+    if total > 0:
+        addressed = (
+            cov_meta.get("tested", 0)
+            + cov_meta.get("not_applicable", 0)
+            + cov_meta.get("skipped", 0)
+        )
+        pct = (addressed / total) * 100
+        if pct < 80:
+            blockers.append(
+                f"LOW COVERAGE: only {addressed}/{total} matrix cells addressed ({pct:.0f}%). "
+                f"Review pending cells in the coverage matrix — test, skip with reason, or mark N/A."
+            )
+
     if blockers:
         msg = "complete BLOCKED — fix the following first:\n\n"
         msg += "\n\n".join(f"  [{i+1}] {b}" for i, b in enumerate(blockers))
@@ -168,6 +204,18 @@ def _do_status():
         "cost_usd": summary.get("est_cost_usd", 0),
         "tool_calls": summary.get("tool_calls_total", 0),
     }
+    # Coverage matrix summary
+    from core.coverage import get_matrix
+    cov = get_matrix()
+    meta = cov.get("meta", {})
+    result["coverage"] = {
+        "total_cells": meta.get("total_cells", 0),
+        "tested": meta.get("tested", 0),
+        "vulnerable": meta.get("vulnerable", 0),
+        "not_applicable": meta.get("not_applicable", 0),
+        "skipped": meta.get("skipped", 0),
+        "endpoints": len(cov.get("endpoints", [])),
+    }
     if remaining:
         result["remaining"] = {
             "cost_usd": remaining.get("cost_remaining_usd", 0),
@@ -181,6 +229,106 @@ def _do_status():
             f"If you lost context, re-invoke the /{current['skill']} skill "
             f"to reload its workflow.{step_msg}"
         )
+    return json.dumps(result, indent=2)
+
+
+def _do_recovery():
+    """Compact recovery brief — one call gives the agent everything to resume."""
+    current = scan_session.get() or {}
+    if not current or current.get("status") != "running":
+        return json.dumps({"error": "No active scan session to recover."})
+
+    summary = cost_tracker.get_summary()
+    remaining = scan_session.remaining(summary)
+
+    # Coverage matrix: in_progress and pending cells
+    from core.coverage import get_matrix
+    cov = get_matrix()
+    meta = cov.get("meta", {})
+    endpoints = cov.get("endpoints", [])
+    ep_map = {ep["id"]: ep["path"] for ep in endpoints}
+
+    in_progress_cells = [
+        {
+            "cell_id": c["id"],
+            "endpoint": ep_map.get(c["endpoint_id"], "?"),
+            "param": c["param"],
+            "injection": c["injection_type"],
+            "notes": c["notes"],
+        }
+        for c in cov.get("matrix", [])
+        if c["status"] == "in_progress"
+    ]
+
+    pending_count = sum(1 for c in cov.get("matrix", []) if c["status"] == "pending")
+
+    # Findings with pending escalation leads
+    data = findings_store._load()
+    pending_escalations = []
+    for f in data.get("findings", []):
+        leads = f.get("escalation_leads", [])
+        pending = [l for l in leads if l.get("status") == "pending"]
+        if pending:
+            pending_escalations.append({
+                "finding_id": f["id"],
+                "title": f["title"],
+                "pending_leads": [l["lead"] for l in pending],
+            })
+
+    # Determine resume step from tools_run
+    step_tools = {
+        "2": ["naabu", "subfinder"],
+        "3": ["httpx"],
+        "5": ["ffuf"],
+        "6": ["spider"],
+        "6a": [],  # web-exploit skill — check skill_history
+        "8": ["nuclei"],
+    }
+    tools_run = set(_session_tools_called)
+    resume_step = None
+    for step, tools in step_tools.items():
+        if step == "6a":
+            if "web-exploit" not in current.get("skill_history", []):
+                resume_step = "6a (chain /web-exploit with endpoint inventory)"
+                break
+        elif tools and not any(t in tools_run for t in tools):
+            resume_step = f"{step} ({', '.join(tools)})"
+            break
+    if not resume_step:
+        resume_step = "10+ (deep dives / reporting)"
+
+    result = {
+        "target": current.get("target", ""),
+        "depth": current.get("depth", ""),
+        "skill": current.get("skill"),
+        "resume_from_step": resume_step,
+        "tools_already_run": sorted(tools_run),
+        "findings_count": len(data.get("findings", [])),
+        "cost_usd": summary.get("est_cost_usd", 0),
+        "remaining": remaining,
+        "coverage_in_progress": in_progress_cells,
+        "coverage_pending_cells": pending_count,
+        "coverage_tested": meta.get("tested", 0),
+        "pending_escalations": pending_escalations,
+        "action_required": [],
+    }
+
+    # Build action list
+    if in_progress_cells:
+        result["action_required"].append(
+            f"Resume {len(in_progress_cells)} in-progress test cell(s) — read their notes for technique state"
+        )
+    if pending_escalations:
+        result["action_required"].append(
+            f"Follow up on {len(pending_escalations)} finding(s) with pending escalation leads"
+        )
+    if resume_step.startswith("6a"):
+        result["action_required"].append(
+            "Chain /web-exploit — endpoint inventory exists but systematic testing not started"
+        )
+    if not result["action_required"]:
+        result["action_required"].append(f"Resume from step {resume_step}")
+
     return json.dumps(result, indent=2)
 
 
