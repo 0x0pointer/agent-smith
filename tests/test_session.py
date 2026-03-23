@@ -34,7 +34,7 @@ def test_start_applies_preset_limits():
 
 def test_start_thorough_preset():
     sess = core.session.start("example.com", depth="thorough")
-    assert sess["limits"]["max_cost_usd"] == pytest.approx(2.00)
+    assert sess["limits"]["max_cost_usd"] == pytest.approx(100.00)
     assert sess["limits"]["max_tool_calls"] == 0  # unlimited
 
 

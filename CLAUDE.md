@@ -73,7 +73,7 @@ You have 30 skills at your disposal. Use the right one based on the task:
 - **For authorized social engineering**: run `/phishing-sim` with written authorization.
 - **For egress testing**: run `/c2-simulation` to identify viable C2 channels (simulated traffic only).
 - **After any scan with findings**: run `/remediate` to generate specific fixes (code patches, config changes) for every finding. Stores remediation in findings.json for dashboard and exports.
-- **At the end of any pentest or triage**: run `/gh-export` to format all confirmed findings as copy-pasteable GitHub issue blocks (now includes ## Remediation section if fixes were generated).
+- **Only when explicitly requested by the user**: run `/gh-export` to format all confirmed findings as copy-pasteable GitHub issue blocks. Do NOT auto-invoke — wait for the user to ask.
 
 ## Available MCP Tools
 

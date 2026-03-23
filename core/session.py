@@ -17,7 +17,7 @@ Depth presets
 
   thorough — standard + full Kali toolchain (nikto, sqlmap, testssl, …)
              comprehensive but noisy — confirm authorisation first
-             default limits: $2.00  |  120 min  |  unlimited tool calls
+             default limits: $100.00  |  8 hours  |  unlimited tool calls
 
 Hard limit enforcement
 ----------------------
@@ -59,8 +59,8 @@ PRESETS: dict[str, dict] = {
     "thorough": {
         "label":       "Thorough",
         "description": "Standard + full Kali toolchain (nikto, sqlmap, testssl, …)",
-        "max_cost_usd":     2.00,
-        "max_time_minutes": 120,
+        "max_cost_usd":     100.00,
+        "max_time_minutes": 480,     # 8 hours
         "max_tool_calls":   0,       # 0 = unlimited — cost and time are the constraints
     },
 }
