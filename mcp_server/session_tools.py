@@ -9,14 +9,14 @@ from core import cost as cost_tracker
 from core import findings as findings_store
 from core import logger as log
 from core import session as scan_session
-from mcp_server._app import mcp, _session_tools_called
+from mcp_server._app import mcp, _ensure_dict, _session_tools_called
 
 
 @mcp.tool()
 async def session(action: str, options: dict | None = None) -> str:
     """Scan lifecycle and infrastructure management.
 
-    action  : start | complete | status | set_skill | set_step | start_kali | stop_kali | start_metasploit | stop_metasploit | pull_images | set_codebase
+    action  : start | complete | status | recovery | set_skill | set_step | start_kali | stop_kali | start_metasploit | stop_metasploit | pull_images | set_codebase
 
     start options:
       target, depth=standard (recon|standard|thorough), scope=[],
@@ -26,6 +26,9 @@ async def session(action: str, options: dict | None = None) -> str:
       notes=
 
     status: returns current scan state (target, tools run, findings, cost, skill)
+
+    recovery: returns compact recovery brief after context compaction — resume step,
+              in-progress cells with technique notes, pending escalation leads, action list
 
     set_skill options:
       skill= (name of the active skill, e.g. "pentester", "ai-redteam")
@@ -38,7 +41,7 @@ async def session(action: str, options: dict | None = None) -> str:
 
     start_kali, stop_kali, start_metasploit, stop_metasploit, pull_images: no options needed
     """
-    opts = options or {}
+    opts = _ensure_dict(options) or {}
 
     if action == "start":
         return _do_start(opts)
@@ -62,12 +65,29 @@ async def session(action: str, options: dict | None = None) -> str:
         return await _do_pull_images()
     elif action == "set_codebase":
         return _do_set_codebase(opts)
+    elif action == "recovery":
+        return _do_recovery()
+    elif action == "pre_chain":
+        return _do_pre_chain(opts)
     else:
-        return f"Unknown action '{action}'. Use: start, complete, status, set_skill, set_step, start_kali, stop_kali, start_metasploit, stop_metasploit, pull_images, set_codebase"
+        return f"Unknown action '{action}'. Use: start, complete, status, recovery, pre_chain, set_skill, set_step, start_kali, stop_kali, start_metasploit, stop_metasploit, pull_images, set_codebase"
 
 
 def _do_start(opts):
     _session_tools_called.clear()
+    # Reset coverage matrix for new session (sync — just rewrites the file)
+    from core.coverage import COVERAGE_FILE, _save as _cov_save
+    from datetime import datetime, timezone
+    _cov_save({
+        "meta": {
+            "created": datetime.now(timezone.utc).isoformat(),
+            "target": "",
+            "total_cells": 0, "tested": 0, "vulnerable": 0,
+            "not_applicable": 0, "skipped": 0,
+        },
+        "endpoints": [],
+        "matrix": [],
+    })
     target = opts.get("target", "")
     depth = opts.get("depth", "standard")
     cfg = scan_session.start(
@@ -104,6 +124,56 @@ def _do_start(opts):
     return "\n".join(lines)
 
 
+def _coverage_blockers(cov: dict) -> list[str]:
+    """Return coverage-related completion blockers for the given matrix state."""
+    from core.coverage import _BYPASS_REQUIRED_TYPES  # local import to avoid circularity
+    blockers: list[str] = []
+    meta = cov.get("meta", {})
+    total = meta.get("total_cells", 0)
+    if total == 0:
+        return blockers
+
+    addressed = meta.get("tested", 0) + meta.get("not_applicable", 0) + meta.get("skipped", 0)
+    pct = (addressed / total) * 100
+    if pct < 80:
+        blockers.append(
+            f"LOW COVERAGE: only {addressed}/{total} matrix cells addressed ({pct:.0f}%). "
+            f"Review pending cells in the coverage matrix — test, skip with reason, or mark N/A."
+        )
+
+    all_cells = cov.get("matrix", [])
+    untooled = [c for c in all_cells
+                if c["status"] in ("tested_clean", "vulnerable") and not c.get("tested_by")]
+    if untooled:
+        blockers.append(
+            f"INTEGRITY: {len(untooled)} cell(s) marked tested/vulnerable but have no "
+            f"tested_by tool. Re-test these cells or add the tested_by field."
+        )
+
+    suspect_na = _suspect_na_cells(all_cells, _BYPASS_REQUIRED_TYPES)
+    if suspect_na:
+        sample = ", ".join(suspect_na[:5]) + ("..." if len(suspect_na) > 5 else "")
+        blockers.append(
+            f"INTEGRITY: {len(suspect_na)} cell(s) marked N/A without testing bypass "
+            f"techniques: {sample}. Test the bypass before marking N/A."
+        )
+    return blockers
+
+
+def _suspect_na_cells(cells: list[dict], bypass_types: dict) -> list[str]:
+    """Return cell IDs/types marked N/A without bypass justification."""
+    suspect = []
+    for c in cells:
+        if c["status"] != "not_applicable" or c["injection_type"] not in bypass_types:
+            continue
+        cell_notes = c.get("notes", "")
+        bypass = bypass_types[c["injection_type"]]
+        keywords = bypass.lower().split(", ")
+        if not any(kw in cell_notes.lower() for kw in keywords) and len(cell_notes) < 40:
+            suspect.append(f"{c['id']} ({c['injection_type']})")
+    return suspect
+
+
 def _do_complete(opts):
     notes = opts.get("notes", "")
     blockers: list[str] = []
@@ -125,16 +195,16 @@ def _do_complete(opts):
     repo_root = os.path.dirname(os.path.dirname(__file__))
     pocs_dir = os.path.join(repo_root, "pocs")
     poc_files = set(os.listdir(pocs_dir)) if os.path.isdir(pocs_dir) else set()
-    high_findings = [
-        f for f in data.get("findings", [])
-        if f.get("severity") in ("high", "critical")
-    ]
+    high_findings = [f for f in data.get("findings", []) if f.get("severity") in ("high", "critical")]
     if high_findings and not poc_files:
         titles = ", ".join(f["title"] for f in high_findings)
         blockers.append(
             f"NO POC FILES: {len(high_findings)} high/critical finding(s) have no Burp PoC. "
             f"Call http(action='request', poc=true) + http(action='save_poc') for each: {titles}"
         )
+
+    from core.coverage import get_matrix
+    blockers.extend(_coverage_blockers(get_matrix()))
 
     if blockers:
         msg = "complete BLOCKED — fix the following first:\n\n"
@@ -168,6 +238,18 @@ def _do_status():
         "cost_usd": summary.get("est_cost_usd", 0),
         "tool_calls": summary.get("tool_calls_total", 0),
     }
+    # Coverage matrix summary
+    from core.coverage import get_matrix
+    cov = get_matrix()
+    meta = cov.get("meta", {})
+    result["coverage"] = {
+        "total_cells": meta.get("total_cells", 0),
+        "tested": meta.get("tested", 0),
+        "vulnerable": meta.get("vulnerable", 0),
+        "not_applicable": meta.get("not_applicable", 0),
+        "skipped": meta.get("skipped", 0),
+        "endpoints": len(cov.get("endpoints", [])),
+    }
     if remaining:
         result["remaining"] = {
             "cost_usd": remaining.get("cost_remaining_usd", 0),
@@ -181,6 +263,213 @@ def _do_status():
             f"If you lost context, re-invoke the /{current['skill']} skill "
             f"to reload its workflow.{step_msg}"
         )
+    return json.dumps(result, indent=2)
+
+
+_INJECTION_TOOL_MAP = {
+    "sqli": {"sqlmap", "http_request", "kali"},
+    "xxe": {"http_request", "kali"},
+    "xss": {"xsser", "http_request", "kali"},
+    "ssti": {"http_request", "kali"},
+    "cmdi": {"commix", "http_request", "kali"},
+    "ssrf": {"http_request", "kali"},
+    "nosqli": {"http_request", "kali"},
+    "deserial": {"http_request", "kali"},
+}
+
+
+def _determine_resume_step(current: dict, tools_run: set[str]) -> str:
+    """Find the earliest incomplete pentester workflow step."""
+    step_tools = {
+        "2": ["naabu", "subfinder"],
+        "3": ["httpx"],
+        "5": ["ffuf"],
+        "6": ["spider"],
+        "6a": [],
+        "8": ["nuclei"],
+    }
+    for step, tools in step_tools.items():
+        if step == "6a":
+            if "web-exploit" not in current.get("skill_history", []):
+                return "6a (chain /web-exploit with endpoint inventory)"
+        elif tools and not any(t in tools_run for t in tools):
+            return f"{step} ({', '.join(tools)})"
+    return "10+ (deep dives / reporting)"
+
+
+def _check_coverage_integrity(matrix: list[dict], tools_run: set[str]) -> list[str]:
+    """Cross-check coverage cell statuses against tools actually run."""
+    warnings: list[str] = []
+
+    # Cells marked tested/vulnerable without a tested_by field
+    by_type: dict[str, list[str]] = {}
+    for c in matrix:
+        if c["status"] in ("tested_clean", "vulnerable") and not c.get("tested_by"):
+            by_type.setdefault(c["injection_type"], []).append(c["id"])
+    for inj, ids in by_type.items():
+        warnings.append(
+            f"SUSPECT: {len(ids)} {inj} cell(s) marked tested but have no tested_by tool. "
+            f"Re-verify these cells with actual tool execution."
+        )
+
+    # Injection types marked clean but no corresponding tool ran
+    tested_types = {c["injection_type"] for c in matrix if c["status"] == "tested_clean"}
+    for inj_type in tested_types:
+        expected_tools = _INJECTION_TOOL_MAP.get(inj_type, set())
+        if expected_tools and not (expected_tools & tools_run):
+            warnings.append(
+                f"MISMATCH: {inj_type} cells marked clean but none of "
+                f"{expected_tools} appear in tools_run. These cells were likely "
+                f"marked from memory, not from actual testing."
+            )
+
+    return warnings
+
+
+def _do_recovery():
+    """Compact recovery brief — one call gives the agent everything to resume."""
+    current = scan_session.get() or {}
+    if not current or current.get("status") != "running":
+        return json.dumps({"error": "No active scan session to recover."})
+
+    summary = cost_tracker.get_summary()
+    remaining = scan_session.remaining(summary)
+
+    # Coverage matrix: in_progress and pending cells
+    from core.coverage import get_matrix
+    cov = get_matrix()
+    meta = cov.get("meta", {})
+    ep_map = {ep["id"]: ep["path"] for ep in cov.get("endpoints", [])}
+
+    in_progress_cells = [
+        {
+            "cell_id": c["id"],
+            "endpoint": ep_map.get(c["endpoint_id"], "?"),
+            "param": c["param"],
+            "injection": c["injection_type"],
+            "notes": c["notes"],
+        }
+        for c in cov.get("matrix", [])
+        if c["status"] == "in_progress"
+    ]
+
+    pending_count = sum(1 for c in cov.get("matrix", []) if c["status"] == "pending")
+
+    # Findings with pending escalation leads
+    data = findings_store._load()
+    pending_escalations = []
+    for f in data.get("findings", []):
+        leads = [l for l in f.get("escalation_leads", []) if l.get("status") == "pending"]
+        if leads:
+            pending_escalations.append({
+                "finding_id": f["id"],
+                "title": f["title"],
+                "pending_leads": [l["lead"] for l in leads],
+            })
+
+    tools_run = set(_session_tools_called)
+    resume_step = _determine_resume_step(current, tools_run)
+    integrity_warnings = _check_coverage_integrity(cov.get("matrix", []), tools_run)
+
+    result = {
+        "target": current.get("target", ""),
+        "depth": current.get("depth", ""),
+        "skill": current.get("skill"),
+        "resume_from_step": resume_step,
+        "tools_already_run": sorted(tools_run),
+        "findings_count": len(data.get("findings", [])),
+        "cost_usd": summary.get("est_cost_usd", 0),
+        "remaining": remaining,
+        "coverage_in_progress": in_progress_cells,
+        "coverage_pending_cells": pending_count,
+        "coverage_tested": meta.get("tested", 0),
+        "pending_escalations": pending_escalations,
+        "integrity_warnings": integrity_warnings,
+        "action_required": _build_action_list(
+            integrity_warnings, in_progress_cells, pending_escalations, resume_step
+        ),
+    }
+
+    return json.dumps(result, indent=2)
+
+
+def _build_action_list(
+    integrity_warnings: list[str],
+    in_progress_cells: list[dict],
+    pending_escalations: list[dict],
+    resume_step: str,
+) -> list[str]:
+    """Build prioritized action list for recovery."""
+    actions: list[str] = []
+    if integrity_warnings:
+        actions.append(
+            f"FIX {len(integrity_warnings)} INTEGRITY WARNING(S): cells marked tested/clean "
+            f"without tool evidence. Re-test these cells with actual tools before proceeding."
+        )
+    if in_progress_cells:
+        actions.append(
+            f"Resume {len(in_progress_cells)} in-progress test cell(s) — read their notes for technique state"
+        )
+    if pending_escalations:
+        actions.append(
+            f"Follow up on {len(pending_escalations)} finding(s) with pending escalation leads"
+        )
+    if resume_step.startswith("6a"):
+        actions.append(
+            "Chain /web-exploit — endpoint inventory exists but systematic testing not started"
+        )
+    if not actions:
+        actions.append(f"Resume from step {resume_step}")
+    return actions
+
+
+def _do_pre_chain(opts):
+    """Checkpoint state before chaining to a new skill.
+
+    Persists all state to disk so it survives compaction, then returns
+    a summary of what the next skill needs to know.
+    """
+    next_skill = opts.get("next_skill", "")
+    if not next_skill:
+        return "Error: 'next_skill' option is required"
+
+    current = scan_session.get() or {}
+    prev_skill = current.get("skill", "unknown")
+
+    # Persist cost state
+    cost_tracker.flush()
+
+    # Calculate context savings estimate
+    from core.coverage import get_matrix
+    cov = get_matrix()
+    meta = cov.get("meta", {})
+    data = findings_store._load()
+
+    # Set the new skill
+    scan_session.set_skill(next_skill)
+    log.note(f"Pre-chain checkpoint: {prev_skill} -> {next_skill}")
+
+    result = {
+        "action": "pre_chain",
+        "previous_skill": prev_skill,
+        "next_skill": next_skill,
+        "state_persisted": {
+            "findings": len(data.get("findings", [])),
+            "diagrams": len(data.get("diagrams", [])),
+            "coverage_cells": meta.get("total_cells", 0),
+            "coverage_tested": meta.get("tested", 0),
+            "coverage_pending": sum(1 for c in cov.get("matrix", []) if c["status"] == "pending"),
+        },
+        "context_recommendation": (
+            f"RECOMMEND COMPACTION: The /{prev_skill} skill and its tool results are "
+            f"no longer needed in context. All state is persisted to disk "
+            f"(session.json, findings.json, coverage_matrix.json). "
+            f"Compacting before loading /{next_skill} would free ~50-80k tokens "
+            f"(~40% of context window). The /{next_skill} skill can recover "
+            f"full state via session(action='recovery')."
+        ),
+    }
+
     return json.dumps(result, indent=2)
 
 

@@ -109,7 +109,7 @@ COPY pyrit_runner.py /usr/local/bin/pyrit-runner
 RUN chmod +x /usr/local/bin/pyrit-runner
 
 # AI red-teaming: CyberArk FuzzyAI — single-turn LLM jailbreak fuzzer
-RUN pip3 install --no-cache-dir fuzzyai --break-system-packages || true
+RUN pip3 install --no-cache-dir git+https://github.com/cyberark/FuzzyAI.git --break-system-packages || true
 
 # AI red-teaming: NVIDIA Garak — LLM vulnerability scanner (probe-based)
 RUN pip3 install --no-cache-dir garak --break-system-packages || true

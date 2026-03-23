@@ -1,6 +1,7 @@
 # ── Scan output ──────────────────────────────────────────────────────────────
 logs/
 findings.json
+coverage_matrix.json
 session.json
 session_cost.json
 pocs/

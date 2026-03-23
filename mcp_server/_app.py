@@ -63,6 +63,17 @@ def _record(tool_name: str) -> None:
     scan_session.add_tool_called(tool_name)
 
 
+# ── Parameter coercion ────────────────────────────────────────────────────
+
+def _ensure_dict(value):
+    """Coerce a JSON string to dict. LLMs sometimes serialize dict params as strings."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return json.loads(value)
+    return value
+
+
 # ── Output clipping ───────────────────────────────────────────────────────────
 
 def _clip(text: str, limit: int = 8_000) -> str:

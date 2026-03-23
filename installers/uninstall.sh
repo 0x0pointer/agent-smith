@@ -30,7 +30,7 @@ else
 fi
 
 # ── Remove security analysis skills ──────────────────────────────────────────
-for skill_dir in "$HOME/.claude/skills/analyze-cve" "$HOME/.claude/skills/threat-modeling" "$HOME/.claude/skills/aikido-triage" "$HOME/.claude/skills/gh-export" "$HOME/.claude/skills/ai-redteam" "$HOME/.claude/skills/container-k8s-security" "$HOME/.claude/skills/cloud-security" "$HOME/.claude/skills/ad-assessment" "$HOME/.claude/skills/email-security" "$HOME/.claude/skills/metasploit" "$HOME/.claude/skills/reverse-shell" "$HOME/.claude/skills/web-exploit" "$HOME/.claude/skills/codebase" "$HOME/.claude/skills/remediate"; do
+for skill_dir in "$HOME/.claude/skills/analyze-cve" "$HOME/.claude/skills/threat-modeling" "$HOME/.claude/skills/aikido-triage" "$HOME/.claude/skills/gh-export" "$HOME/.claude/skills/ai-redteam" "$HOME/.claude/skills/container-k8s-security" "$HOME/.claude/skills/cloud-security" "$HOME/.claude/skills/ad-assessment" "$HOME/.claude/skills/email-security" "$HOME/.claude/skills/metasploit" "$HOME/.claude/skills/reverse-shell" "$HOME/.claude/skills/web-exploit" "$HOME/.claude/skills/codebase" "$HOME/.claude/skills/remediate" "$HOME/.claude/skills/credential-audit" "$HOME/.claude/skills/lateral-movement" "$HOME/.claude/skills/network-assess" "$HOME/.claude/skills/osint" "$HOME/.claude/skills/post-exploit" "$HOME/.claude/skills/ssl-tls-audit"; do
     if [ -d "$skill_dir" ]; then
         rm -rf "$skill_dir"
         ok "Removed $(basename "$skill_dir") skill"

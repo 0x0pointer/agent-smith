@@ -157,3 +157,47 @@ async def test_findings_and_diagrams_coexist(findings_file):
     data = json.loads(findings_file.read_text())
     assert len(data["findings"]) == 1
     assert len(data["diagrams"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# escalation_leads
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_add_finding_with_escalation_leads(findings_file):
+    leads = [
+        {"lead": "Crack admin hash", "status": "pending"},
+        {"lead": "Try --os-shell for RCE", "status": "pending"},
+    ]
+    entry = await core.findings.add_finding(
+        title="SQLi", severity="critical", target="t",
+        description="d", evidence="e", escalation_leads=leads,
+    )
+    assert "escalation_leads" in entry
+    assert len(entry["escalation_leads"]) == 2
+    assert entry["escalation_leads"][0]["status"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_update_finding_escalation_leads(findings_file):
+    leads = [{"lead": "Crack hash", "status": "pending"}]
+    entry = await core.findings.add_finding(
+        title="SQLi", severity="high", target="t",
+        description="d", evidence="e", escalation_leads=leads,
+    )
+    updated_leads = [{"lead": "Crack hash", "status": "done", "result": "Password: admin123"}]
+    ok = await core.findings.update_finding(entry["id"], escalation_leads=updated_leads)
+    assert ok
+    data = json.loads(findings_file.read_text())
+    f = data["findings"][0]
+    assert f["escalation_leads"][0]["status"] == "done"
+    assert "admin123" in f["escalation_leads"][0]["result"]
+
+
+@pytest.mark.asyncio
+async def test_add_finding_without_escalation_leads(findings_file):
+    entry = await core.findings.add_finding(
+        title="XSS", severity="medium", target="t",
+        description="d", evidence="e",
+    )
+    assert "escalation_leads" not in entry

@@ -6,7 +6,7 @@ Security tools emit the most important findings at the END, so tail preservation
 is the primary correctness requirement.
 """
 import pytest
-from mcp_server._app import _clip
+from mcp_server._app import _clip, _ensure_dict
 
 
 def test_short_string_returned_unchanged():
@@ -82,3 +82,26 @@ def test_clipped_annotation_format():
     result = _clip(text, limit=8_000)
     assert "chars clipped" in result
     assert "[…" in result
+
+
+# ---------------------------------------------------------------------------
+# _ensure_dict
+# ---------------------------------------------------------------------------
+
+def test_ensure_dict_passes_dict_through():
+    d = {"key": "value"}
+    assert _ensure_dict(d) is d
+
+
+def test_ensure_dict_converts_json_string():
+    result = _ensure_dict('{"key": "value"}')
+    assert result == {"key": "value"}
+
+
+def test_ensure_dict_returns_none_for_none():
+    assert _ensure_dict(None) is None
+
+
+def test_ensure_dict_handles_nested_json():
+    result = _ensure_dict('{"a": {"b": [1, 2, 3]}}')
+    assert result["a"]["b"] == [1, 2, 3]

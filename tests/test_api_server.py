@@ -92,6 +92,24 @@ def test_api_cost_returns_data_when_file_exists(tmp_path, monkeypatch):
     assert response.json()["est_cost_usd"] == 0.05
 
 
+# ── GET /api/coverage ────────────────────────────────────────────────────────
+
+def test_api_coverage_returns_json(tmp_path, monkeypatch):
+    import core.api_server as srv
+    monkeypatch.setattr(srv, "_COVERAGE_FILE", tmp_path / "coverage_matrix.json")
+    response = client.get("/api/coverage")
+    assert response.status_code == 200
+    assert response.json() == {}
+
+def test_api_coverage_returns_data_when_file_exists(tmp_path, monkeypatch):
+    import core.api_server as srv
+    f = tmp_path / "coverage_matrix.json"
+    f.write_text('{"meta": {"total_cells": 5}, "endpoints": [], "matrix": []}')
+    monkeypatch.setattr(srv, "_COVERAGE_FILE", f)
+    response = client.get("/api/coverage")
+    assert response.json()["meta"]["total_cells"] == 5
+
+
 # ── GET /api/logs ─────────────────────────────────────────────────────────────
 
 def test_api_logs_returns_lines(tmp_path, monkeypatch):
