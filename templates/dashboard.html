@@ -671,11 +671,11 @@
       zoomInner.className = 'diagram-zoom-inner';
       zoomInner.appendChild(mermaidEl);
       zoomWrap.appendChild(zoomInner);
-      zoomWrap.innerHTML += `<div class="diagram-zoom-controls">
+      zoomWrap.insertAdjacentHTML('beforeend', `<div class="diagram-zoom-controls">
         <button onclick="diagramZoom(this,1.3)" title="Zoom in">+</button>
         <button onclick="diagramZoom(this,0.7)" title="Zoom out">&minus;</button>
         <button onclick="diagramReset(this)" title="Reset view">&#8634;</button>
-      </div>`;
+      </div>`);
       initDiagramPanZoom(zoomWrap);
       card.appendChild(zoomWrap);
       wrap.appendChild(card);
