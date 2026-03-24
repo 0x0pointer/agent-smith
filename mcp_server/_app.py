@@ -60,6 +60,18 @@ _session_tools_called: set[str] = set()
 
 def _record(tool_name: str) -> None:
     _session_tools_called.add(tool_name)
+    scan_session.add_tool_called(tool_name)
+
+
+# ── Parameter coercion ────────────────────────────────────────────────────
+
+def _ensure_dict(value):
+    """Coerce a JSON string to dict. LLMs sometimes serialize dict params as strings."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return json.loads(value)
+    return value
 
 
 # ── Output clipping ───────────────────────────────────────────────────────────

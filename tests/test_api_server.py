@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock, AsyncMock
 from fastapi.testclient import TestClient
 
-from core.api_server import app, _read_json
+from core.api_server import app, _read_json, _remap_mermaid_dark, _render_mermaid_svgs
 
 client = TestClient(app)
 
@@ -92,6 +92,24 @@ def test_api_cost_returns_data_when_file_exists(tmp_path, monkeypatch):
     assert response.json()["est_cost_usd"] == 0.05
 
 
+# ── GET /api/coverage ────────────────────────────────────────────────────────
+
+def test_api_coverage_returns_json(tmp_path, monkeypatch):
+    import core.api_server as srv
+    monkeypatch.setattr(srv, "_COVERAGE_FILE", tmp_path / "coverage_matrix.json")
+    response = client.get("/api/coverage")
+    assert response.status_code == 200
+    assert response.json() == {}
+
+def test_api_coverage_returns_data_when_file_exists(tmp_path, monkeypatch):
+    import core.api_server as srv
+    f = tmp_path / "coverage_matrix.json"
+    f.write_text('{"meta": {"total_cells": 5}, "endpoints": [], "matrix": []}')
+    monkeypatch.setattr(srv, "_COVERAGE_FILE", f)
+    response = client.get("/api/coverage")
+    assert response.json()["meta"]["total_cells"] == 5
+
+
 # ── GET /api/logs ─────────────────────────────────────────────────────────────
 
 def test_api_logs_returns_lines(tmp_path, monkeypatch):
@@ -157,7 +175,7 @@ def test_api_threat_model_reads_content(tmp_path, monkeypatch):
     monkeypatch.setattr(srv, "_THREAT_MODEL_DIR", tmp_path)
     md = tmp_path / "model.md"
     md.write_text("# My threat model\nsome content")
-    with patch("core.api_server._get_svgs", new=AsyncMock(return_value={})):
+    with patch("core.api_server._render_mermaid_svgs", return_value={}):
         response = client.get("/api/threat-model?file=model.md")
     assert response.status_code == 200
     assert "My threat model" in response.json()["content"]
@@ -168,6 +186,96 @@ def test_api_threat_model_missing_file_returns_empty(tmp_path, monkeypatch):
     response = client.get("/api/threat-model?file=ghost.md")
     assert response.status_code == 200
     assert response.json()["content"] == ""
+
+
+# ── _remap_mermaid_dark ───────────────────────────────────────────────────────
+
+def test_remap_mermaid_dark_replaces_light_fills():
+    src = "style Node fill:#fcc,stroke:#c44"
+    result = _remap_mermaid_dark(src)
+    assert "fill:#4d1a1a" in result
+    assert "stroke:#ff8888" in result
+
+def test_remap_mermaid_dark_leaves_unknown_colors():
+    src = "style Node fill:#abc,stroke:#def"
+    assert _remap_mermaid_dark(src) == src
+
+def test_remap_mermaid_dark_handles_multiple_replacements():
+    src = "fill:#f44 fill:#ffd stroke:#c00"
+    result = _remap_mermaid_dark(src)
+    assert "fill:#5c1a1a" in result
+    assert "fill:#3d3000" in result
+    assert "stroke:#ff6666" in result
+
+def test_remap_mermaid_dark_text_color_override():
+    src = "color:#000"
+    assert _remap_mermaid_dark(src) == "color:#e5e7eb"
+
+
+# ── _render_mermaid_svgs ─────────────────────────────────────────────────────
+
+def test_render_mermaid_svgs_no_blocks():
+    assert _render_mermaid_svgs("# Just markdown\nNo diagrams here") == {}
+
+def test_render_mermaid_svgs_caches_by_content(monkeypatch):
+    import core.api_server as srv
+    monkeypatch.setattr(srv, "_svg_cache", {})
+    content = "no mermaid"
+    _render_mermaid_svgs(content)
+    # Second call should hit cache — verify cache is populated
+    import hashlib
+    key = hashlib.sha256(content.encode()).hexdigest()
+    assert key in srv._svg_cache
+
+def test_render_mermaid_svgs_calls_mmdc(tmp_path, monkeypatch):
+    import core.api_server as srv
+    monkeypatch.setattr(srv, "_svg_cache", {})
+    svg_content = '<svg><text>diagram</text></svg>'
+    def fake_run(cmd, **kwargs):
+        # Write a fake SVG to the output path
+        out_path = cmd[cmd.index('-o') + 1]
+        Path(out_path).write_text(svg_content)
+        return MagicMock(returncode=0)
+    with patch("subprocess.run", side_effect=fake_run):
+        result = _render_mermaid_svgs("```mermaid\ngraph TD\n  A-->B\n```")
+    assert "0" in result
+    assert "<svg>" in result["0"]
+
+def test_render_mermaid_svgs_handles_mmdc_failure(monkeypatch):
+    import core.api_server as srv
+    monkeypatch.setattr(srv, "_svg_cache", {})
+    with patch("subprocess.run", side_effect=Exception("mmdc not found")):
+        result = _render_mermaid_svgs("```mermaid\ngraph TD\n  A-->B\n```")
+    assert result == {}
+
+
+# ── GET /api/findings with diagrams ──────────────────────────────────────────
+
+def test_api_findings_renders_diagram_svgs(tmp_path, monkeypatch):
+    import core.api_server as srv
+    f = tmp_path / "findings.json"
+    f.write_text(json.dumps({
+        "findings": [],
+        "diagrams": [{"id": "d1", "title": "Topology", "mermaid": "graph TD\n  A-->B"}]
+    }))
+    monkeypatch.setattr(srv, "_FINDINGS_FILE", f)
+    with patch("core.api_server._render_mermaid_svgs", return_value={"0": "<svg>ok</svg>"}):
+        response = client.get("/api/findings")
+    assert response.status_code == 200
+    assert response.json()["diagrams"][0]["svg"] == "<svg>ok</svg>"
+
+def test_api_findings_skips_diagram_with_existing_svg(tmp_path, monkeypatch):
+    import core.api_server as srv
+    f = tmp_path / "findings.json"
+    f.write_text(json.dumps({
+        "findings": [],
+        "diagrams": [{"id": "d1", "mermaid": "graph TD\n  A-->B", "svg": "<svg>cached</svg>"}]
+    }))
+    monkeypatch.setattr(srv, "_FINDINGS_FILE", f)
+    with patch("core.api_server._render_mermaid_svgs") as mock_render:
+        response = client.get("/api/findings")
+    mock_render.assert_not_called()
+    assert response.json()["diagrams"][0]["svg"] == "<svg>cached</svg>"
 
 
 # ── PATCH /api/findings/{id} ──────────────────────────────────────────────────

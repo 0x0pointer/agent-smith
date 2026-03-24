@@ -13,7 +13,8 @@ def _build_args(
     flags:      str = "",
 ) -> list[str]:
     args = ["-u", f"{url}/FUZZ", "-w", wordlist, "-of", "json", "-o", "/dev/stdout", "-s",
-            "-rate", "50"]  # 50 req/s — avoid DoS on target
+            "-rate", "50",  # 50 req/s — avoid DoS on target
+            "-ac"]          # auto-calibrate — filter catch-all responses
     if extensions:
         args += ["-e", extensions]
     if flags:

@@ -73,7 +73,7 @@ You have 30 skills at your disposal. Use the right one based on the task:
 - **For authorized social engineering**: run `/phishing-sim` with written authorization.
 - **For egress testing**: run `/c2-simulation` to identify viable C2 channels (simulated traffic only).
 - **After any scan with findings**: run `/remediate` to generate specific fixes (code patches, config changes) for every finding. Stores remediation in findings.json for dashboard and exports.
-- **At the end of any pentest or triage**: run `/gh-export` to format all confirmed findings as copy-pasteable GitHub issue blocks (now includes ## Remediation section if fixes were generated).
+- **Only when explicitly requested by the user**: run `/gh-export` to format all confirmed findings as copy-pasteable GitHub issue blocks. Do NOT auto-invoke — wait for the user to ask.
 
 ## Available MCP Tools
 
@@ -108,11 +108,16 @@ Raw HTTP requests and PoC saving.
 - `action="save_poc"` — save a raw .http file to pocs/. options: `title=poc`, `notes=`
 
 ### `report(action, data)`
-Log findings, diagrams, and notes.
+Log findings, diagrams, notes, and coverage matrix updates.
 - `action="finding"` — data: `{title, severity, target, description, evidence, tool_used, cve}`
 - `action="diagram"` — data: `{title, mermaid}`
 - `action="note"` — data: `{message}`
 - `action="dashboard"` — data: `{port: 5000}`
+- `action="coverage"` — data: `{type, ...}` — manage the coverage matrix:
+  - `type="endpoint"` — register endpoint + auto-generate cells: `{path, method, params=[{name, type, value_hint}], discovered_by, auth_context}`
+  - `type="tested"` — mark cell tested: `{cell_id, status (tested_clean|vulnerable|not_applicable|skipped), notes, finding_id}`
+  - `type="bulk_tested"` — mark multiple cells: `{updates=[{cell_id, status, notes, finding_id}]}`
+  - `type="reset"` — clear the matrix
 
 ### `session(action, options)`
 Scan lifecycle and infrastructure.
@@ -204,9 +209,11 @@ scan(tool="promptfoo", target="http://ai-app.com/api/chat", options={"plugins": 
 When you see a "CONTEXT RECOVERY AFTER COMPACTION" message or realize your context was compacted mid-scan:
 
 1. **Re-invoke the active skill** — use the Skill tool to reload its full workflow. Do NOT continue from memory alone.
-2. **Call `session(action="status")`** — see what tools already ran, findings count, cost.
-3. **Resume, don't restart** — pick up from where the workflow was interrupted. The `tools_run` list shows completed steps.
-4. **When chaining skills** — call `session(action="set_skill", options={"skill": "new-skill"})` so recovery knows which skill to reload.
+2. **Call `session(action="recovery")`** — returns a compact brief with: resume step, in-progress test cells (with technique notes), pending escalation leads, and prioritized action list. One call gives you everything to resume.
+3. **Resume in-progress cells first** — these have notes about what was already tried. Continue from the notes, don't restart techniques from scratch.
+4. **Follow pending escalation leads** — findings with unresolved leads represent attack paths you discovered but didn't finish.
+5. **NEVER skip to reporting** — having findings does NOT mean scanning is done. Resume from the earliest incomplete step.
+6. **When chaining skills** — call `session(action="set_skill", options={"skill": "new-skill"})` so recovery knows which skill to reload.
 
 ## Project layout
 - `mcp_server/__main__.py` — entry point, crash logging, module imports

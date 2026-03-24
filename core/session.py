@@ -17,7 +17,7 @@ Depth presets
 
   thorough — standard + full Kali toolchain (nikto, sqlmap, testssl, …)
              comprehensive but noisy — confirm authorisation first
-             default limits: $2.00  |  120 min  |  unlimited tool calls
+             default limits: $100.00  |  8 hours  |  unlimited tool calls
 
 Hard limit enforcement
 ----------------------
@@ -59,8 +59,8 @@ PRESETS: dict[str, dict] = {
     "thorough": {
         "label":       "Thorough",
         "description": "Standard + full Kali toolchain (nikto, sqlmap, testssl, …)",
-        "max_cost_usd":     2.00,
-        "max_time_minutes": 120,
+        "max_cost_usd":     100.00,
+        "max_time_minutes": 480,     # 8 hours
         "max_tool_calls":   0,       # 0 = unlimited — cost and time are the constraints
     },
 }
@@ -113,6 +113,8 @@ def start(
         "limits":       limits,
         "skill":         skill,
         "skill_history": [skill] if skill else [],
+        "tools_called":  [],
+        "current_step":  None,
     }
     _flush()
     return _current
@@ -184,6 +186,25 @@ def set_skill(skill_name: str) -> dict | None:
     _current["skill"] = skill_name
     if skill_name not in _current["skill_history"]:
         _current["skill_history"].append(skill_name)
+    _flush()
+    return _current
+
+
+def add_tool_called(tool_name: str) -> None:
+    """Persist a tool name to the tools_called list in session.json."""
+    if _current and _current["status"] == "running":
+        tools = _current.setdefault("tools_called", [])
+        if tool_name not in tools:
+            tools.append(tool_name)
+            _flush()
+
+
+def set_step(step: str) -> dict | None:
+    """Update the current workflow step checkpoint (e.g. '5_nuclei_scan')."""
+    global _current
+    if _current is None or _current["status"] != "running":
+        return None
+    _current["current_step"] = step
     _flush()
     return _current
 

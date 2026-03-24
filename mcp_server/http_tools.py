@@ -7,7 +7,7 @@ from typing import Any
 
 from core import cost as cost_tracker
 from core import logger as log
-from mcp_server._app import mcp
+from mcp_server._app import mcp, _ensure_dict
 
 
 @mcp.tool()
@@ -38,7 +38,8 @@ async def http(
     """
     if isinstance(body, dict):
         body = json.dumps(body)
-    opts = options or {}
+    headers = _ensure_dict(headers)
+    opts = _ensure_dict(options) or {}
 
     if action == "request":
         return await _do_request(url, method, headers, body, opts)

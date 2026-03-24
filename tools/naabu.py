@@ -8,8 +8,8 @@ from tools.base import Tool
 
 def _build_args(host: str, ports: str = "top-100", flags: str = "") -> list[str]:
     args = ["-host", host, "-json"]
-    if ports == "top-100":
-        args += ["-top-ports", "100"]
+    if ports.startswith("top-"):
+        args += ["-top-ports", ports.split("-", 1)[1]]
     elif ports == "full":
         args += ["-p", "-"]
     else:
