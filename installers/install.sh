@@ -99,9 +99,12 @@ mkdir -p "$HOME/.claude/skills/reverse-shell"
 cp "$REPO_DIR/skills/reverse-shell/SKILL.md" "$HOME/.claude/skills/reverse-shell/SKILL.md"
 ok "/reverse-shell skill installed"
 
-mkdir -p "$HOME/.claude/skills/web-exploit"
+mkdir -p "$HOME/.claude/skills/web-exploit/refs"
 cp "$REPO_DIR/skills/web-exploit/SKILL.md" "$HOME/.claude/skills/web-exploit/SKILL.md"
-ok "/web-exploit skill installed"
+if [ -d "$REPO_DIR/skills/web-exploit/refs" ]; then
+    cp "$REPO_DIR/skills/web-exploit/refs/"*.md "$HOME/.claude/skills/web-exploit/refs/"
+fi
+ok "/web-exploit skill installed (with lazy-loaded injection refs)"
 
 mkdir -p "$HOME/.claude/skills/codebase"
 cp "$REPO_DIR/skills/codebase/SKILL.md" "$HOME/.claude/skills/codebase/SKILL.md"
@@ -110,6 +113,30 @@ ok "/codebase skill installed"
 mkdir -p "$HOME/.claude/skills/remediate"
 cp "$REPO_DIR/skills/remediate/SKILL.md" "$HOME/.claude/skills/remediate/SKILL.md"
 ok "/remediate skill installed"
+
+mkdir -p "$HOME/.claude/skills/credential-audit"
+cp "$REPO_DIR/skills/credential-audit/SKILL.md" "$HOME/.claude/skills/credential-audit/SKILL.md"
+ok "/credential-audit skill installed"
+
+mkdir -p "$HOME/.claude/skills/lateral-movement"
+cp "$REPO_DIR/skills/lateral-movement/SKILL.md" "$HOME/.claude/skills/lateral-movement/SKILL.md"
+ok "/lateral-movement skill installed"
+
+mkdir -p "$HOME/.claude/skills/network-assess"
+cp "$REPO_DIR/skills/network-assess/SKILL.md" "$HOME/.claude/skills/network-assess/SKILL.md"
+ok "/network-assess skill installed"
+
+mkdir -p "$HOME/.claude/skills/osint"
+cp "$REPO_DIR/skills/osint/SKILL.md" "$HOME/.claude/skills/osint/SKILL.md"
+ok "/osint skill installed"
+
+mkdir -p "$HOME/.claude/skills/post-exploit"
+cp "$REPO_DIR/skills/post-exploit/SKILL.md" "$HOME/.claude/skills/post-exploit/SKILL.md"
+ok "/post-exploit skill installed"
+
+mkdir -p "$HOME/.claude/skills/ssl-tls-audit"
+cp "$REPO_DIR/skills/ssl-tls-audit/SKILL.md" "$HOME/.claude/skills/ssl-tls-audit/SKILL.md"
+ok "/ssl-tls-audit skill installed"
 
 # ── AI testing API keys (FuzzyAI + PyRIT) ────────────────────────────────────
 echo ""

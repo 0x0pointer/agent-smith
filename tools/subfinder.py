@@ -15,7 +15,7 @@ def _build_args(domain: str, flags: str = "") -> list[str]:
 
 TOOL = Tool(
     name            = "subfinder",
-    image           = "projectdiscovery/subfinder",
+    image           = "projectdiscovery/subfinder@sha256:5e62f2c278b6b32c957b8afd6bbefaed3e1ae0fd5b3c67a4d08eb15c65531399",
     build_args      = _build_args,
     default_timeout = 600,
     risk_level      = "safe",

@@ -108,11 +108,16 @@ Raw HTTP requests and PoC saving.
 - `action="save_poc"` — save a raw .http file to pocs/. options: `title=poc`, `notes=`
 
 ### `report(action, data)`
-Log findings, diagrams, and notes.
+Log findings, diagrams, notes, and coverage matrix updates.
 - `action="finding"` — data: `{title, severity, target, description, evidence, tool_used, cve}`
 - `action="diagram"` — data: `{title, mermaid}`
 - `action="note"` — data: `{message}`
 - `action="dashboard"` — data: `{port: 5000}`
+- `action="coverage"` — data: `{type, ...}` — manage the coverage matrix:
+  - `type="endpoint"` — register endpoint + auto-generate cells: `{path, method, params=[{name, type, value_hint}], discovered_by, auth_context}`
+  - `type="tested"` — mark cell tested: `{cell_id, status (tested_clean|vulnerable|not_applicable|skipped), notes, finding_id}`
+  - `type="bulk_tested"` — mark multiple cells: `{updates=[{cell_id, status, notes, finding_id}]}`
+  - `type="reset"` — clear the matrix
 
 ### `session(action, options)`
 Scan lifecycle and infrastructure.
@@ -204,10 +209,11 @@ scan(tool="promptfoo", target="http://ai-app.com/api/chat", options={"plugins": 
 When you see a "CONTEXT RECOVERY AFTER COMPACTION" message or realize your context was compacted mid-scan:
 
 1. **Re-invoke the active skill** — use the Skill tool to reload its full workflow. Do NOT continue from memory alone.
-2. **Call `session(action="status")`** — see what tools already ran (`tools_run`), current step (`current_step`), findings count, cost. These are persisted to disk and survive compaction.
-3. **Resume at the right step** — use `current_step` to skip already-completed phases. Don't restart the workflow from scratch.
-4. **When chaining skills** — call `session(action="set_skill", options={"skill": "new-skill"})` so recovery knows which skill to reload.
-5. **Set step checkpoints** — call `session(action="set_step", options={"step": "5_nuclei_scan"})` at major workflow transitions so recovery can resume at the right point.
+2. **Call `session(action="recovery")`** — returns a compact brief with: resume step, in-progress test cells (with technique notes), pending escalation leads, and prioritized action list. One call gives you everything to resume.
+3. **Resume in-progress cells first** — these have notes about what was already tried. Continue from the notes, don't restart techniques from scratch.
+4. **Follow pending escalation leads** — findings with unresolved leads represent attack paths you discovered but didn't finish.
+5. **NEVER skip to reporting** — having findings does NOT mean scanning is done. Resume from the earliest incomplete step.
+6. **When chaining skills** — call `session(action="set_skill", options={"skill": "new-skill"})` so recovery knows which skill to reload.
 
 ## Project layout
 - `mcp_server/__main__.py` — entry point, crash logging, module imports

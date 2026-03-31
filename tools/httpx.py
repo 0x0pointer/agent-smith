@@ -21,7 +21,7 @@ def _build_args(url: str, flags: str = "") -> list[str]:
 
 TOOL = Tool(
     name            = "httpx",
-    image           = "projectdiscovery/httpx",
+    image           = "projectdiscovery/httpx@sha256:043677c2c4ec10d8ba5e01d82eb368a29f54348893a391b8e95b7119b41db292",
     build_args      = _build_args,
     default_timeout = 300,
     risk_level      = "safe",

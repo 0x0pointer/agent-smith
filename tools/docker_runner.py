@@ -4,21 +4,27 @@ import asyncio
 import os
 
 DEFAULT_TIMEOUT = 600
+PULL_TIMEOUT = 300  # 5 min max for pulling a single image
 
 _pulled_images: set[str] = set()
 
 
-async def _ensure_image(image: str) -> None:
-    """Pull an image if it hasn't been pulled this session."""
-    if image in _pulled_images:
-        return
+async def image_exists(image: str) -> bool:
+    """Check if a Docker image exists locally (no pull)."""
     proc = await asyncio.create_subprocess_exec(
         "docker", "image", "inspect", image,
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL,
     )
     await proc.wait()
-    if proc.returncode == 0:
+    return proc.returncode == 0
+
+
+async def _ensure_image(image: str) -> None:
+    """Pull an image if it hasn't been pulled this session."""
+    if image in _pulled_images:
+        return
+    if await image_exists(image):
         _pulled_images.add(image)
         return
     pull = await asyncio.create_subprocess_exec(
@@ -26,7 +32,17 @@ async def _ensure_image(image: str) -> None:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout, stderr = await pull.communicate()
+    try:
+        stdout, stderr = await asyncio.wait_for(
+            pull.communicate(), timeout=PULL_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        pull.kill()
+        await pull.communicate()
+        raise RuntimeError(
+            f"Timed out pulling Docker image '{image}' after {PULL_TIMEOUT}s. "
+            f"Check your network or pre-pull with: docker pull {image}"
+        )
     if pull.returncode != 0:
         msg = stderr.decode(errors="replace").strip() or stdout.decode(errors="replace").strip()
         raise RuntimeError(

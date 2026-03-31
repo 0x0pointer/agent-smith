@@ -58,7 +58,7 @@ def _parse(stdout: str, stderr: str) -> list[dict]:
 
 TOOL = Tool(
     name            = "semgrep",
-    image           = "semgrep/semgrep",
+    image           = "semgrep/semgrep@sha256:3dab091ee3247fce7e4ed3df9f92b3bd72692c083295f53cec3f135b86404db1",
     build_args      = _build_args,
     parser          = _parse,
     default_timeout = 900,

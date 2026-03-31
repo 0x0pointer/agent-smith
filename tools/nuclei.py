@@ -55,7 +55,7 @@ def _build_args(
 
 TOOL = Tool(
     name            = "nuclei",
-    image           = "projectdiscovery/nuclei",
+    image           = "projectdiscovery/nuclei@sha256:cd763beb886f99dbac2526847431059077d67cda77c51bfae73f45987cc5fd92",
     build_args      = _build_args,
     parser          = _parse,
     default_timeout = 900,   # nuclei can run long on large targets; first run downloads templates

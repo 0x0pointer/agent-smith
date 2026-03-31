@@ -23,7 +23,7 @@ def _build_args(host: str, ports: str = "top-1000", flags: str = "") -> list[str
 
 TOOL = Tool(
     name            = "nmap",
-    image           = "instrumentisto/nmap",
+    image           = "instrumentisto/nmap@sha256:96f6ed194519b62421a1a1c57809e65a7f94d2aa1c8c25676f247e5e148c0827",
     build_args      = _build_args,
     default_timeout = 900,
     risk_level      = "intrusive",

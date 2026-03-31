@@ -6,7 +6,7 @@ import shlex
 from core import cost as cost_tracker
 from core import logger as log
 from core import session as scan_session
-from mcp_server._app import mcp, _clip, _record, _run
+from mcp_server._app import mcp, _clip, _ensure_dict, _record, _run
 
 
 async def _handle_nmap(target, flags, options):
@@ -292,6 +292,8 @@ async def scan(tool: str, target: str, flags: str = "", options: dict | None = N
     | promptfoo  | URL         | plugins=prompt-injection,..., attack_strategies=   |
     | metasploit | host/IP     | module=, payload=, rport=, lhost=, lport=4444     |
     """
+    options = _ensure_dict(options) or {}
+
     handler = _DISPATCH.get(tool)
     if not handler:
         return f"Unknown tool '{tool}'. Available: {', '.join(_DISPATCH)}"
@@ -301,7 +303,7 @@ async def scan(tool: str, target: str, flags: str = "", options: dict | None = N
         return stop
 
     try:
-        return await handler(target, flags, options or {})
+        return await handler(target, flags, options)
     except BaseException as exc:
         err = f"[{tool} error: {type(exc).__name__}: {exc}]"
         log.tool_result(tool, err)

@@ -14,10 +14,11 @@ Schema
 }
 
 Optional fields set via update_finding():
-  reproduction: { type, command, expected, verified }
-  gh_issue:     "<markdown block>"
-  remediation:  { summary, fix_type, diff, before, after, file, line,
-                  language, effort, breaking_change, references, verification }
+  reproduction:     { type, command, expected, verified }
+  gh_issue:         "<markdown block>"
+  remediation:      { summary, fix_type, diff, before, after, file, line,
+                      language, effort, breaking_change, references, verification }
+  escalation_leads: [ { lead, status (pending|done|dismissed), result? } ]
 
 Used exclusively by mcp_server.py; not a Tool registry entry.
 """
@@ -68,6 +69,7 @@ async def add_finding(
     tool_used:   str = "",
     cve:         str = "",
     reproduction: dict | None = None,
+    escalation_leads: list[dict] | None = None,
 ) -> dict:
     """Append a vulnerability finding. Returns the stored entry."""
     entry = {
@@ -83,6 +85,8 @@ async def add_finding(
     }
     if reproduction:
         entry["reproduction"] = reproduction
+    if escalation_leads:
+        entry["escalation_leads"] = escalation_leads
     async with _lock:
         data = _load()
         data["findings"].append(entry)
@@ -90,7 +94,7 @@ async def add_finding(
     return entry
 
 
-_UPDATABLE_FIELDS = {"gh_issue", "remediation", "reproduction"}
+_UPDATABLE_FIELDS = {"gh_issue", "remediation", "reproduction", "escalation_leads"}
 
 
 async def update_finding(finding_id: str, **fields) -> bool:

@@ -170,8 +170,28 @@
     }
     .diagram-card h3 { font-size: 0.9rem; color: #f0f6fc; margin-bottom: 0.75rem; }
     .diagram-card .ts { display: block; margin-bottom: 0.5rem; }
-    .mermaid { background: #161b22; }
+    .mermaid { background: #0d1117; }
     .mermaid svg { max-width: 100%; }
+    .mermaid svg text { fill: #e5e7eb !important; font-size: 14px !important; }
+    .mermaid svg .node rect,
+    .mermaid svg .node polygon,
+    .mermaid svg .node circle { stroke-width: 1.5px; }
+    .mermaid svg .edgeLabel { background-color: #161b22; color: #9ca3af; font-size: 12px; }
+    .diagram-zoom-wrap {
+      overflow: hidden; cursor: grab; position: relative;
+      border: 1px solid #21262d; border-radius: 4px; background: #0d1117;
+    }
+    .diagram-zoom-wrap:active { cursor: grabbing; }
+    .diagram-zoom-inner { transform-origin: 0 0; transition: none; }
+    .diagram-zoom-controls {
+      position: absolute; top: 8px; right: 8px; display: flex; gap: 4px; z-index: 2;
+    }
+    .diagram-zoom-controls button {
+      background: #21262d; border: 1px solid #30363d; color: #c9d1d9;
+      border-radius: 4px; width: 28px; height: 28px; cursor: pointer;
+      font-size: 1rem; line-height: 1; display: flex; align-items: center; justify-content: center;
+    }
+    .diagram-zoom-controls button:hover { background: #30363d; color: #f0f6fc; }
 
     /* ── Component map ── */
     .comp-grid {
@@ -227,6 +247,64 @@
     #tm-content hr { border: none; border-top: 1px solid #30363d; margin: 1.2rem 0; }
     .tm-mermaid-wrap { background: #0d1117; border: 1px solid #21262d; border-radius: 4px;
                        padding: 1rem; margin: .6rem 0; overflow-x: auto; }
+    .tm-mermaid-wrap svg text { fill: #e5e7eb !important; font-size: 14px !important; }
+    .tm-mermaid-wrap svg .node rect,
+    .tm-mermaid-wrap svg .node polygon,
+    .tm-mermaid-wrap svg .node circle { stroke-width: 1.5px; }
+    .tm-mermaid-wrap svg .edgeLabel { background-color: #161b22; color: #9ca3af; font-size: 12px; }
+
+    /* ── Coverage tab ── */
+    #coverage-summary {
+      display: flex; gap: 0.6rem; flex-wrap: wrap; margin-bottom: 1rem;
+    }
+    .cov-stat {
+      padding: 0.25rem 0.75rem; border-radius: 4px; font-size: 0.8rem;
+      font-weight: 600; border: 1px solid;
+    }
+    .cov-tested     { background: rgba(88,166,255,.15); border-color: #58a6ff; color: #58a6ff; }
+    .cov-vulnerable { background: rgba(255,77,79,.15);  border-color: #ff4d4f; color: #ff4d4f; }
+    .cov-na         { background: rgba(110,118,129,.15); border-color: #6e7681; color: #6e7681; }
+    .cov-skipped    { background: rgba(210,169,34,.15); border-color: #d2a922; color: #d2a922; }
+    .cov-pending    { background: rgba(48,54,61,.5);    border-color: #30363d; color: #8b949e; }
+
+    .cov-matrix { width: 100%; border-collapse: collapse; font-size: 0.78rem; }
+    .cov-matrix thead th {
+      background: #161b22; color: #8b949e; font-weight: 500;
+      padding: 0.4rem 0.3rem; border-bottom: 1px solid #30363d;
+      position: sticky; top: 0; z-index: 1;
+    }
+    .cov-matrix thead th.cov-col-header {
+      writing-mode: vertical-rl; text-orientation: mixed;
+      transform: rotate(180deg); white-space: nowrap;
+      height: 100px; text-align: left; font-size: 0.72rem;
+    }
+    .cov-matrix tbody tr { border-bottom: 1px solid #21262d; }
+    .cov-matrix tbody tr:hover { background: #161b22; }
+    .cov-ep-header { background: #161b22; }
+    .cov-ep-header:hover { background: #1c2128 !important; }
+    .cov-matrix td { padding: 0.3rem; text-align: center; vertical-align: middle; }
+    .cov-matrix td:first-child { text-align: left; font-family: monospace; font-size: 0.76rem; color: #58a6ff; white-space: nowrap; }
+
+    .cov-cell {
+      display: inline-block; width: 16px; height: 16px; border-radius: 3px;
+      cursor: pointer; transition: opacity .15s;
+    }
+    .cov-cell:hover { opacity: .7; }
+    .cov-cell.pending    { background: #21262d; border: 1px solid #30363d; }
+    .cov-cell.in_progress { background: #1f6feb; animation: pulse-blue 2s infinite; }
+    @keyframes pulse-blue { 0%,100%{opacity:1} 50%{opacity:.5} }
+    .cov-cell.tested_clean { background: #238636; }
+    .cov-cell.vulnerable { background: #da3633; }
+    .cov-cell.not_applicable { background: #484f58; }
+    .cov-cell.skipped    { background: #9e6a03; }
+
+    .cov-tooltip {
+      position: fixed; background: #1c2128; border: 1px solid #444c56; border-radius: 6px;
+      padding: 0.6rem 0.8rem; font-size: 0.78rem; color: #c9d1d9; z-index: 999;
+      pointer-events: none; max-width: 320px; box-shadow: 0 4px 12px rgba(0,0,0,.4);
+    }
+    .cov-tooltip strong { color: #f0f6fc; }
+    .cov-tooltip .cov-tt-status { text-transform: uppercase; font-size: 0.7rem; font-weight: 700; }
 
     /* ── Logs tab ── */
     #log-toolbar {
@@ -278,6 +356,7 @@
   <button class="tab-btn active" onclick="switchTab('findings')">Findings</button>
   <button class="tab-btn"        onclick="switchTab('topology')">Topology</button>
   <button class="tab-btn"        onclick="switchTab('components')">Components</button>
+  <button class="tab-btn"        onclick="switchTab('coverage')" id="tab-btn-coverage">Coverage</button>
   <button class="tab-btn"        onclick="switchTab('threat-model')" id="tab-btn-threat-model">Threat Model</button>
   <button class="tab-btn"        onclick="switchTab('logs')">Logs</button>
 </nav>
@@ -299,6 +378,13 @@
 <div id="tab-components" class="tab-content">
   <div id="components-wrap"></div>
 </div>
+
+<!-- ── Tab: Coverage ────────────────────────────────────────────────────── -->
+<div id="tab-coverage" class="tab-content">
+  <div id="coverage-summary"></div>
+  <div id="coverage-wrap"><div class="empty-placeholder">No coverage data yet — run a scan with web-exploit.</div></div>
+</div>
+<div id="cov-tooltip" class="cov-tooltip" style="display:none"></div>
 
 <!-- ── Tab: Threat Model ─────────────────────────────────────────────────── -->
 <div id="tab-threat-model" class="tab-content">
@@ -332,7 +418,32 @@
 <script>
   mermaid.initialize({
     startOnLoad: false,
-    theme: 'dark',
+    theme: 'base',
+    themeVariables: {
+      // Background
+      background: '#0d1117',
+      primaryColor: '#1f2937',
+      primaryTextColor: '#e5e7eb',
+      primaryBorderColor: '#374151',
+      // Secondary (decisions, conditions)
+      secondaryColor: '#1e3a5f',
+      secondaryTextColor: '#e5e7eb',
+      secondaryBorderColor: '#2563eb',
+      // Tertiary
+      tertiaryColor: '#2d1f3d',
+      tertiaryTextColor: '#e5e7eb',
+      tertiaryBorderColor: '#7c3aed',
+      // Lines and text
+      lineColor: '#6b7280',
+      textColor: '#e5e7eb',
+      // Notes
+      noteBkgColor: '#1e293b',
+      noteTextColor: '#cbd5e1',
+      noteBorderColor: '#334155',
+      // Fonts — consistent size
+      fontSize: '14px',
+      fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+    },
     flowchart: { curve: 'linear', htmlLabels: false },
   });
 
@@ -348,7 +459,7 @@
   let _logLines  = [];
 
   // ── Tab switching ─────────────────────────────────────────────────────────
-  const TAB_NAMES = ['findings', 'topology', 'components', 'threat-model', 'logs'];
+  const TAB_NAMES = ['findings', 'topology', 'components', 'coverage', 'threat-model', 'logs'];
 
   function switchTab(name) {
     _activeTab = name;
@@ -359,6 +470,7 @@
     document.getElementById(`tab-${name}`).classList.add('active');
     if (name === 'topology')     renderTopology(allData.diagrams || []);
     if (name === 'components')   renderComponentMap(allData.findings || []);
+    if (name === 'coverage')     pollCoverage();
     if (name === 'threat-model') pollThreatModel();
     if (name === 'logs')         pollLogs();
   }
@@ -582,22 +694,83 @@
       const card = document.createElement('div');
       card.className = 'diagram-card';
       card.dataset.diagId = d.id;
-      const mermaidEl = document.createElement('div');
-      mermaidEl.className = 'mermaid';
-      mermaidEl.textContent = d.mermaid;
       card.innerHTML = `<h3>${esc(d.title)}</h3><span class="ts">${new Date(d.timestamp).toLocaleTimeString()}</span>`;
-      card.appendChild(mermaidEl);
-      wrap.appendChild(card);
-      try {
-        await mermaid.run({ nodes: [mermaidEl] });
-      } catch (err) {
-        mermaidEl.innerHTML = `<div style="color:#ff4d4f;font-size:.8rem;margin-bottom:.5rem">
-          ⚠ Mermaid render error: ${esc(String(err?.message||err))}</div>
-          <pre style="background:#010409;color:#7ee787;padding:.6rem;border-radius:4px;
-                      font-size:.75rem;white-space:pre-wrap;word-break:break-all;
-                      border:1px solid #21262d;max-height:400px;overflow-y:auto">${esc(d.mermaid)}</pre>`;
+
+      // Wrap in zoomable container
+      const zoomWrap = document.createElement('div');
+      zoomWrap.className = 'diagram-zoom-wrap';
+      const zoomInner = document.createElement('div');
+      zoomInner.className = 'diagram-zoom-inner';
+
+      if (d.svg) {
+        // Use server-rendered SVG (matches threat model theme)
+        zoomInner.innerHTML = d.svg;
+        const svgEl = zoomInner.querySelector('svg');
+        if (svgEl) { svgEl.style.maxWidth = '100%'; svgEl.style.height = 'auto'; }
+      } else {
+        // Fallback to client-side rendering
+        const mermaidEl = document.createElement('div');
+        mermaidEl.className = 'mermaid';
+        mermaidEl.textContent = d.mermaid;
+        zoomInner.appendChild(mermaidEl);
+        try {
+          await mermaid.run({ nodes: [mermaidEl] });
+        } catch (err) {
+          mermaidEl.innerHTML = `<div style="color:#ff4d4f;font-size:.8rem;margin-bottom:.5rem">
+            ⚠ Mermaid render error: ${esc(String(err?.message||err))}</div>
+            <pre style="background:#010409;color:#7ee787;padding:.6rem;border-radius:4px;
+                        font-size:.75rem;white-space:pre-wrap;word-break:break-all;
+                        border:1px solid #21262d;max-height:400px;overflow-y:auto">${esc(d.mermaid)}</pre>`;
+        }
       }
+
+      zoomWrap.appendChild(zoomInner);
+      zoomWrap.insertAdjacentHTML('beforeend', `<div class="diagram-zoom-controls">
+        <button onclick="diagramZoom(this,1.3)" title="Zoom in">+</button>
+        <button onclick="diagramZoom(this,0.7)" title="Zoom out">&minus;</button>
+        <button onclick="diagramReset(this)" title="Reset view">&#8634;</button>
+      </div>`);
+      initDiagramPanZoom(zoomWrap);
+      card.appendChild(zoomWrap);
+      wrap.appendChild(card);
     }
+  }
+
+  // ── Diagram pan/zoom ─────────────────────────────────────────────────────
+  function initDiagramPanZoom(wrap) {
+    let scale = 1, tx = 0, ty = 0, dragging = false, sx = 0, sy = 0;
+    const inner = wrap.querySelector('.diagram-zoom-inner');
+    const apply = () => { inner.style.transform = `translate(${tx}px,${ty}px) scale(${scale})`; };
+
+    wrap.addEventListener('wheel', e => {
+      e.preventDefault();
+      const factor = e.deltaY < 0 ? 1.15 : 0.87;
+      scale = Math.max(0.1, Math.min(10, scale * factor));
+      apply();
+    }, { passive: false });
+
+    wrap.addEventListener('mousedown', e => {
+      if (e.target.closest('.diagram-zoom-controls')) return;
+      dragging = true; sx = e.clientX - tx; sy = e.clientY - ty;
+    });
+    wrap.addEventListener('mousemove', e => {
+      if (!dragging) return;
+      tx = e.clientX - sx; ty = e.clientY - sy; apply();
+    });
+    wrap.addEventListener('mouseup', () => { dragging = false; });
+    wrap.addEventListener('mouseleave', () => { dragging = false; });
+
+    wrap._pz = { reset() { scale = 1; tx = 0; ty = 0; apply(); }, zoom(f) { scale = Math.max(0.1, Math.min(10, scale * f)); apply(); } };
+  }
+
+  function diagramZoom(btn, factor) {
+    const wrap = btn.closest('.diagram-zoom-wrap');
+    if (wrap?._pz) wrap._pz.zoom(factor);
+  }
+
+  function diagramReset(btn) {
+    const wrap = btn.closest('.diagram-zoom-wrap');
+    if (wrap?._pz) wrap._pz.reset();
   }
 
   // ── Components tab ────────────────────────────────────────────────────────
@@ -672,6 +845,181 @@
     wrap.innerHTML = header + `<div class="comp-grid">${cards}</div>`;
   }
 
+  // ── Coverage tab ─────────────────────────────────────────────────────────
+  let _covData = null;
+  const _openCovEndpoints = new Set();
+
+  function toggleCovEndpoint(epId) {
+    if (_openCovEndpoints.has(epId)) _openCovEndpoints.delete(epId);
+    else _openCovEndpoints.add(epId);
+    renderCoverage();
+  }
+
+  async function pollCoverage() {
+    try {
+      const r = await fetch(`/api/coverage?_=${Date.now()}`);
+      if (!r.ok) return;
+      _covData = await r.json();
+      renderCoverage();
+      // Update tab badge
+      const meta = _covData.meta || {};
+      const btn = document.getElementById('tab-btn-coverage');
+      const total = meta.total_cells || 0;
+      const tested = meta.tested || 0;
+      if (btn && total > 0) {
+        btn.textContent = `Coverage (${tested}/${total})`;
+      }
+    } catch { /* ignore */ }
+  }
+
+  function renderCoverage() {
+    const wrap = document.getElementById('coverage-wrap');
+    const sumWrap = document.getElementById('coverage-summary');
+    if (!_covData || !_covData.endpoints || !_covData.endpoints.length) {
+      wrap.innerHTML = '<div class="empty-placeholder">No coverage data yet — run a scan with web-exploit.</div>';
+      sumWrap.innerHTML = '';
+      return;
+    }
+
+    const meta = _covData.meta || {};
+    const total = meta.total_cells || 0;
+    const tested = meta.tested || 0;
+    const vuln = meta.vulnerable || 0;
+    const na = meta.not_applicable || 0;
+    const skipped = meta.skipped || 0;
+    const inProg = meta.in_progress || 0;
+    const pending = total - tested - na - skipped - inProg;
+
+    sumWrap.innerHTML = [
+      `<span class="cov-stat cov-tested">TESTED ${tested}</span>`,
+      `<span class="cov-stat cov-vulnerable">VULNERABLE ${vuln}</span>`,
+      inProg ? `<span class="cov-stat" style="background:rgba(31,111,235,.15);border-color:#1f6feb;color:#58a6ff">IN PROGRESS ${inProg}</span>` : '',
+      `<span class="cov-stat cov-na">N/A ${na}</span>`,
+      `<span class="cov-stat cov-skipped">SKIPPED ${skipped}</span>`,
+      `<span class="cov-stat cov-pending">PENDING ${pending}</span>`,
+      `<span style="font-size:.8rem;color:#6e7681;align-self:center">${_covData.endpoints.length} endpoints · ${total} cells</span>`,
+    ].join('');
+
+    // Collect all injection types that have at least one cell
+    const injTypes = new Set();
+    (_covData.matrix || []).forEach(c => injTypes.add(c.injection_type));
+    const cols = [...injTypes].sort();
+
+    // Build endpoint→param→injection_type map
+    const epMap = {};
+    _covData.endpoints.forEach(ep => { epMap[ep.id] = ep; });
+    const cellMap = {};  // key: "ep_id|param|inj_type" → cell
+    (_covData.matrix || []).forEach(c => {
+      cellMap[`${c.endpoint_id}|${c.param}|${c.injection_type}`] = c;
+    });
+
+    // Group rows by endpoint
+    const epGroups = {};
+    _covData.endpoints.forEach(ep => {
+      const params = new Set();
+      (_covData.matrix || []).forEach(c => {
+        if (c.endpoint_id === ep.id) params.add(c.param);
+      });
+      epGroups[ep.id] = { ep, params: [...params].sort() };
+    });
+
+    // Per-endpoint summary: count statuses
+    function epSummary(epId) {
+      const cells = (_covData.matrix || []).filter(c => c.endpoint_id === epId);
+      const counts = { pending: 0, in_progress: 0, tested_clean: 0, vulnerable: 0, not_applicable: 0, skipped: 0 };
+      cells.forEach(c => { if (counts[c.status] !== undefined) counts[c.status]++; });
+      return counts;
+    }
+
+    // Render table
+    const colHeaders = cols.map(c =>
+      `<th class="cov-col-header">${esc(c)}</th>`
+    ).join('');
+
+    function cellHtml(epId, param, inj, ep) {
+      const key = `${epId}|${param}|${inj}`;
+      const cell = cellMap[key];
+      if (!cell) return '<td></td>';
+      return `<td><span class="cov-cell ${cell.status}"
+        data-cell-id="${cell.id}"
+        data-ep-path="${esc(ep.path)}"
+        data-ep-method="${ep.method}"
+        data-param="${esc(param)}"
+        data-inj="${esc(inj)}"
+        data-status="${cell.status}"
+        data-notes="${esc(cell.notes || '')}"
+        data-finding="${cell.finding_id || ''}"
+        data-tested="${cell.tested_at || ''}"
+        onmouseenter="showCovTooltip(event,this)"
+        onmouseleave="hideCovTooltip()"
+      ></span></td>`;
+    }
+
+    let bodyRows = '';
+    Object.values(epGroups).forEach(({ ep, params }) => {
+      const s = epSummary(ep.id);
+      const totalCells = s.pending + s.in_progress + s.tested_clean + s.vulnerable + s.not_applicable + s.skipped;
+      const doneCells = s.tested_clean + s.vulnerable + s.not_applicable + s.skipped;
+      const vulnBadge = s.vulnerable ? `<span style="color:#ff4d4f;margin-left:.5rem">${s.vulnerable} vuln</span>` : '';
+      const progBadge = s.in_progress ? `<span style="color:#58a6ff;margin-left:.5rem">${s.in_progress} in progress</span>` : '';
+      const isOpen = _openCovEndpoints.has(ep.id);
+      const arrow = isOpen ? '&#9660;' : '&#9654;';
+
+      // Endpoint header row (clickable)
+      bodyRows += `<tr class="cov-ep-header" onclick="toggleCovEndpoint('${ep.id}')" style="cursor:pointer">
+        <td style="font-weight:600;color:#f0f6fc">
+          <span style="margin-right:.4rem;font-size:.7rem">${arrow}</span>
+          ${ep.method} ${esc(ep.path)}
+          <span style="color:#6e7681;font-weight:400;margin-left:.5rem">${doneCells}/${totalCells}</span>
+          ${vulnBadge}${progBadge}
+        </td>
+        ${cols.map(() => '<td></td>').join('')}
+      </tr>`;
+
+      // Param rows (collapsible)
+      if (isOpen) {
+        params.forEach(p => {
+          const label = p === '_endpoint'
+            ? '<span style="color:#6e7681;padding-left:1.2rem">endpoint-level</span>'
+            : `<span style="padding-left:1.2rem">${esc(p)} <span style="color:#6e7681;font-size:.75rem">(${(_covData.matrix||[]).find(c=>c.endpoint_id===ep.id&&c.param===p)?.param_type||''})</span></span>`;
+          const cells = cols.map(inj => cellHtml(ep.id, p, inj, ep)).join('');
+          bodyRows += `<tr><td>${label}</td>${cells}</tr>`;
+        });
+      }
+    });
+
+    wrap.innerHTML = `<div style="overflow-x:auto"><table class="cov-matrix">
+      <thead><tr><th>Endpoint / Param</th>${colHeaders}</tr></thead>
+      <tbody>${bodyRows}</tbody>
+    </table></div>`;
+  }
+
+  function showCovTooltip(e, el) {
+    const tt = document.getElementById('cov-tooltip');
+    const statusColors = {
+      pending: '#8b949e', in_progress: '#58a6ff', tested_clean: '#3fb950', vulnerable: '#ff4d4f',
+      not_applicable: '#6e7681', skipped: '#d2a922'
+    };
+    const status = el.dataset.status;
+    const color = statusColors[status] || '#8b949e';
+    tt.innerHTML = `
+      <div><strong>${el.dataset.epMethod} ${el.dataset.epPath}</strong></div>
+      <div style="margin-top:.2rem">Param: <strong>${el.dataset.param === '_endpoint' ? '(endpoint-level)' : el.dataset.param}</strong></div>
+      <div style="margin-top:.2rem">Test: <strong>${el.dataset.inj}</strong></div>
+      <div style="margin-top:.3rem"><span class="cov-tt-status" style="color:${color}">${status.replace('_',' ')}</span></div>
+      ${el.dataset.notes ? `<div style="margin-top:.3rem;color:#8b949e">${el.dataset.notes}</div>` : ''}
+      ${el.dataset.finding ? `<div style="margin-top:.2rem;color:#58a6ff">Finding: ${el.dataset.finding}</div>` : ''}
+      ${el.dataset.tested ? `<div style="margin-top:.2rem;color:#6e7681;font-size:.72rem">${new Date(el.dataset.tested).toLocaleString()}</div>` : ''}
+    `;
+    tt.style.display = 'block';
+    tt.style.left = (e.clientX + 12) + 'px';
+    tt.style.top = (e.clientY + 12) + 'px';
+  }
+
+  function hideCovTooltip() {
+    document.getElementById('cov-tooltip').style.display = 'none';
+  }
+
   // ── Threat Model tab ──────────────────────────────────────────────────────
   let _tmCurrentFile    = '';
   let _tmCurrentContent = '';
@@ -718,10 +1066,27 @@
     const tsEl = document.getElementById('tm-file-ts');
     if (tsEl) tsEl.textContent = data.file || '';
 
-    renderThreatModel(data.content, data.svgs || {});
+    await renderThreatModel(data.content, data.svgs || {});
   }
 
-  function renderThreatModel(content, svgs) {
+  // Remap light pastel style colours to dark equivalents so diagrams
+  // authored with light fills render correctly on the dark dashboard.
+  const _TM_COLOR_MAP = {
+    'fill:#f44': 'fill:#7a0000', 'fill:#f88': 'fill:#6b1a1a',
+    'fill:#faa': 'fill:#5c1a1a', 'fill:#fcc': 'fill:#4d1a1a',
+    'fill:#ffd': 'fill:#3d3000', 'fill:#ffa': 'fill:#3d3000',
+    'fill:#ddf': 'fill:#1a2a4a', 'fill:#bbf': 'fill:#1a2040',
+    'stroke:#c00': 'stroke:#ff6666', 'stroke:#a00': 'stroke:#ff5555',
+    'stroke:#c44': 'stroke:#ff8888', 'stroke:#aa0': 'stroke:#ddcc00',
+    'stroke:#44a': 'stroke:#6699ff',
+  };
+  function _remapMermaidColors(src) {
+    for (const [light, dark] of Object.entries(_TM_COLOR_MAP))
+      src = src.replaceAll(light, dark);
+    return src;
+  }
+
+  async function renderThreatModel(content, svgs) {
     const wrap = document.getElementById('threat-model-wrap');
     wrap.classList.remove('empty');
     const html = (typeof marked !== 'undefined')
@@ -729,32 +1094,50 @@
       : `<pre style="white-space:pre-wrap;word-break:break-all;font-size:.82rem;color:#c9d1d9">${esc(content)}</pre>`;
     wrap.innerHTML = `<div id="tm-content">${html}</div>`;
 
-    // Replace mermaid code blocks with pre-rendered SVGs from the server
+    // Replace mermaid code blocks with server-rendered SVGs when available,
+    // fall back to client-side rendering only when server SVGs are missing.
     let idx = 0;
-    wrap.querySelectorAll('pre code.language-mermaid').forEach(block => {
-      const svg = svgs[String(idx)];
+    const blocks = [...wrap.querySelectorAll('pre code.language-mermaid')];
+    for (const block of blocks) {
       const pre = block.parentElement;
       const div = document.createElement('div');
-      div.className = 'tm-mermaid-wrap';
-      if (svg) {
-        div.innerHTML = svg;
-        // Force SVG to fill container width and use light stroke for dark bg
-        const svgEl = div.querySelector('svg');
-        if (svgEl) {
-          svgEl.style.maxWidth = '100%';
-          svgEl.style.height = 'auto';
-        }
+      div.className = 'tm-mermaid-wrap diagram-zoom-wrap';
+      const zoomInner = document.createElement('div');
+      zoomInner.className = 'diagram-zoom-inner';
+
+      const serverSvg = svgs[String(idx)];
+      if (serverSvg) {
+        // Use server-rendered SVG (reliable, uses mermaid-config.json theme)
+        zoomInner.innerHTML = serverSvg;
+        const svgEl = zoomInner.querySelector('svg');
+        if (svgEl) { svgEl.style.maxWidth = '100%'; svgEl.style.height = 'auto'; }
       } else {
-        // npx/mmdc not available — render client-side via mermaid.js (already loaded)
+        // Fall back to client-side rendering
         const mermaidEl = document.createElement('div');
         mermaidEl.className = 'mermaid';
-        mermaidEl.textContent = block.textContent;
-        div.appendChild(mermaidEl);
-        mermaid.run({ nodes: [mermaidEl] });
+        mermaidEl.textContent = _remapMermaidColors(block.textContent);
+        zoomInner.appendChild(mermaidEl);
+        try {
+          await mermaid.run({ nodes: [mermaidEl] });
+        } catch (err) {
+          mermaidEl.innerHTML = `<div style="color:#ff4d4f;font-size:.8rem;margin-bottom:.5rem">
+            ⚠ Mermaid render error: ${esc(String(err?.message||err))}</div>
+            <pre style="background:#010409;color:#7ee787;padding:.6rem;border-radius:4px;
+                        font-size:.75rem;white-space:pre-wrap;word-break:break-all;
+                        border:1px solid #21262d;max-height:400px;overflow-y:auto">${esc(block.textContent)}</pre>`;
+        }
       }
+
+      div.appendChild(zoomInner);
+      div.insertAdjacentHTML('beforeend', `<div class="diagram-zoom-controls">
+        <button onclick="diagramZoom(this,1.3)" title="Zoom in">+</button>
+        <button onclick="diagramZoom(this,0.7)" title="Zoom out">&minus;</button>
+        <button onclick="diagramReset(this)" title="Reset view">&#8634;</button>
+      </div>`);
+      initDiagramPanZoom(div);
       pre.replaceWith(div);
       idx++;
-    });
+    }
   }
 
   // ── Logs tab ──────────────────────────────────────────────────────────────
@@ -822,6 +1205,7 @@
   // ── Polling intervals ─────────────────────────────────────────────────────
   setInterval(pollFindings,    POLL_MS);
   setInterval(pollSession,     POLL_MS);
+  setInterval(pollCoverage,    POLL_MS);
   setInterval(pollThreatModel, POLL_MS);
   setInterval(() => { if (lastOk && _activeTab === 'findings') renderFindings(); }, 1000);
   setInterval(() => { if (_activeTab === 'logs') pollLogs(); }, 3000);
@@ -829,6 +1213,7 @@
   // Initial load
   pollFindings();
   pollSession();
+  pollCoverage();
   pollThreatModel();
   pollLogs();
 </script>

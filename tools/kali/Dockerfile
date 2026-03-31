@@ -1,4 +1,4 @@
-FROM kalilinux/kali-rolling
+FROM kalilinux/kali-rolling@sha256:287cd5cfa409e258e9ec3661db4dff0bfbb45fc95734e82d3b270a0f749629ca
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -43,7 +43,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     smbmap smbclient samba-common-bin impacket-scripts \
     enum4linux-ng netexec ldap-utils python3-pip \
     && rm -rf /var/lib/apt/lists/* \
-    && pip3 install --no-cache-dir ldapdomaindump certipy-ad bloodhound --break-system-packages
+    && pip3 install --no-cache-dir ldapdomaindump==0.9.4 certipy-ad==5.0.4 bloodhound==1.9.0 --break-system-packages
 
 # Layer 8: service enumeration
 # snmpwalk is bundled in the snmp package; snmp-check not available on arm64
@@ -81,9 +81,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install katana from pre-built GitHub release (supports amd64 + arm64)
+# Pinned to v1.5.0 — update explicitly when needed
 RUN ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') \
-    && KATANA_VERSION=$(curl -fsSL "https://api.github.com/repos/projectdiscovery/katana/releases/latest" \
-        | grep '"tag_name"' | head -1 | sed 's/.*"v\([^"]*\)".*/\1/') \
+    && KATANA_VERSION=1.5.0 \
     && curl -fsSL "https://github.com/projectdiscovery/katana/releases/download/v${KATANA_VERSION}/katana_${KATANA_VERSION}_linux_${ARCH}.zip" \
         -o /tmp/katana.zip \
     && unzip /tmp/katana.zip katana -d /usr/local/bin/ \
@@ -101,23 +101,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # base2048 (PyRIT dep) requires Rust to compile — install, build, then clean up.
 RUN apt-get update && apt-get install -y --no-install-recommends rustc cargo \
     && rm -rf /var/lib/apt/lists/* \
-    && pip3 install --no-cache-dir --ignore-installed pyrit --break-system-packages \
+    && pip3 install --no-cache-dir --ignore-installed pyrit==0.11.0 --break-system-packages \
     && apt-get purge -y rustc cargo \
     && apt-get autoremove -y \
     && rm -rf /root/.cargo /root/.rustup
 COPY pyrit_runner.py /usr/local/bin/pyrit-runner
 RUN chmod +x /usr/local/bin/pyrit-runner
 
-# AI red-teaming: CyberArk FuzzyAI — single-turn LLM jailbreak fuzzer
-RUN pip3 install --no-cache-dir fuzzyai --break-system-packages || true
+# AI red-teaming: CyberArk FuzzyAI runs as a separate Docker image (ghcr.io/cyberark/fuzzyai),
+# not installed here. See tools/fuzzyai.py for the image definition.
 
 # AI red-teaming: NVIDIA Garak — LLM vulnerability scanner (probe-based)
-RUN pip3 install --no-cache-dir garak --break-system-packages || true
+RUN pip3 install --no-cache-dir garak==0.14.0 --break-system-packages || true
 
 # AI red-teaming: promptfoo — LLM eval + red-team framework (npm)
 RUN (apt-get update && apt-get install -y --no-install-recommends nodejs npm \
     && rm -rf /var/lib/apt/lists/* \
-    && npm install -g promptfoo) || true
+    && npm install -g promptfoo@0.121.2) || true
 
 # Layer 11: container & K8s security
 # trivy — container image vulnerability scanner
@@ -129,9 +129,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # kube-bench from GitHub release (not in Kali repos)
+# Pinned to v0.15.0 — update explicitly when needed
 RUN ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') \
-    && KB_VERSION=$(curl -fsSL "https://api.github.com/repos/aquasecurity/kube-bench/releases/latest" \
-        | grep '"tag_name"' | head -1 | sed 's/.*"v\([^"]*\)".*/\1/') \
+    && KB_VERSION=0.15.0 \
     && curl -fsSL "https://github.com/aquasecurity/kube-bench/releases/download/v${KB_VERSION}/kube-bench_${KB_VERSION}_linux_${ARCH}.tar.gz" \
         -o /tmp/kube-bench.tar.gz \
     && tar -xzf /tmp/kube-bench.tar.gz -C /usr/local/bin/ kube-bench \
@@ -139,9 +139,9 @@ RUN ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') \
     && rm /tmp/kube-bench.tar.gz
 
 # dive from GitHub release (Docker image layer explorer)
+# Pinned to v0.13.1 — update explicitly when needed
 RUN ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') \
-    && DIVE_VERSION=$(curl -fsSL "https://api.github.com/repos/wagoodman/dive/releases/latest" \
-        | grep '"tag_name"' | head -1 | sed 's/.*"v\([^"]*\)".*/\1/') \
+    && DIVE_VERSION=0.13.1 \
     && curl -fsSL "https://github.com/wagoodman/dive/releases/download/v${DIVE_VERSION}/dive_${DIVE_VERSION}_linux_${ARCH}.tar.gz" \
         -o /tmp/dive.tar.gz \
     && tar -xzf /tmp/dive.tar.gz -C /usr/local/bin/ dive \
@@ -150,7 +150,7 @@ RUN ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') \
 
 # Layer 12: cloud security — AWS CLI, Azure CLI, GCP CLI, Prowler, ScoutSuite
 # AWS CLI (via pip — kali apt awscli is often outdated)
-RUN pip3 install --no-cache-dir awscli --break-system-packages || true
+RUN pip3 install --no-cache-dir awscli==1.44.63 --break-system-packages || true
 
 # Azure CLI
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -167,7 +167,9 @@ RUN echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.
     && rm -rf /var/lib/apt/lists/* || true
 
 # Prowler (AWS/Azure/GCP security auditor) + ScoutSuite (multi-cloud auditor)
-RUN pip3 install --no-cache-dir prowler scoutsuite --break-system-packages || true
+# NOTE: prowler and scoutsuite currently fail to install on kali-rolling arm64.
+# Pinned versions for when the build succeeds on compatible platforms.
+RUN pip3 install --no-cache-dir prowler==5.22.0 scoutsuite==5.14.0 --break-system-packages || true
 
 # Decompress rockyou wordlist (needed by hydra, john, etc.)
 RUN gzip -d /usr/share/wordlists/rockyou.txt.gz 2>/dev/null || true

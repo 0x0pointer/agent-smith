@@ -66,7 +66,7 @@ def _parse(stdout: str, stderr: str) -> list[dict]:
 
 TOOL = Tool(
     name            = "trufflehog",
-    image           = "trufflesecurity/trufflehog",
+    image           = "trufflesecurity/trufflehog@sha256:d30c74906d19a1c7e3021d9d615e245bf159acece38bbc269c5dde9a8d775480",
     build_args      = _build_args,
     parser          = _parse,
     default_timeout = 600,

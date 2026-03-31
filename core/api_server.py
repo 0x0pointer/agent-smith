@@ -32,6 +32,7 @@ _REPO_ROOT         = Path(__file__).parent.parent
 _FINDINGS_FILE     = _REPO_ROOT / "findings.json"
 _SESSION_FILE      = _REPO_ROOT / "session.json"
 _COST_FILE         = _REPO_ROOT / "session_cost.json"
+_COVERAGE_FILE     = _REPO_ROOT / "coverage_matrix.json"
 _TEMPLATES_DIR     = _REPO_ROOT / "templates"
 _THREAT_MODEL_DIR = _REPO_ROOT / "threat-model"
 
@@ -52,6 +53,76 @@ def _read_json(path: Path) -> dict:
         return {}
 
 
+_svg_cache: dict[str, dict[str, str]] = {}  # content_hash -> svgs dict
+
+# Remap light-theme inline styles to dark-mode equivalents
+_DARK_REMAP = {
+    # Reds (danger/critical)
+    "fill:#f44": "fill:#5c1a1a", "fill:#f88": "fill:#6b1a1a",
+    "fill:#faa": "fill:#5c1a1a", "fill:#fcc": "fill:#4d1a1a",
+    "fill:#e53e3e": "fill:#7f1d1d", "fill:#fc8181": "fill:#6b2020",
+    # Yellows/oranges (warning)
+    "fill:#ffd": "fill:#3d3000", "fill:#ffa": "fill:#3d3000",
+    # Greens (safe/mitigated)
+    "fill:#68d391": "fill:#14532d", "fill:#48bb78": "fill:#14532d",
+    # Blues
+    "fill:#ddf": "fill:#1a2a4a", "fill:#bbf": "fill:#1a2040",
+    "fill:#63b3ed": "fill:#1e3a5f",
+    # Strokes
+    "stroke:#c00": "stroke:#ff6666", "stroke:#a00": "stroke:#ff5555",
+    "stroke:#c44": "stroke:#ff8888", "stroke:#aa0": "stroke:#ddcc00",
+    "stroke:#44a": "stroke:#6699ff", "stroke:#c53030": "stroke:#f87171",
+    "stroke:#e53e3e": "stroke:#f87171", "stroke:#38a169": "stroke:#4ade80",
+    # Text color overrides — force light text
+    "color:#fff": "color:#e5e7eb", "color:#000": "color:#e5e7eb",
+}
+
+def _remap_mermaid_dark(src: str) -> str:
+    for light, dark in _DARK_REMAP.items():
+        src = src.replace(light, dark)
+    return src
+
+
+def _render_mermaid_svgs(content: str) -> dict[str, str]:
+    """Extract mermaid blocks from markdown and render each to SVG via mmdc.
+    Results are cached by content hash to avoid blocking on every poll."""
+    import hashlib
+    import re
+    import subprocess
+    import tempfile
+
+    content_hash = hashlib.sha256(content.encode()).hexdigest()
+    if content_hash in _svg_cache:
+        return _svg_cache[content_hash]
+
+    blocks = re.findall(r'```mermaid\n(.*?)```', content, re.DOTALL)
+    svgs: dict[str, str] = {}
+    config_path = _REPO_ROOT / 'core' / 'mermaid-config.json'
+
+    for i, block in enumerate(blocks):
+        try:
+            with tempfile.NamedTemporaryFile(suffix='.mmd', mode='w', delete=False) as f:
+                f.write(_remap_mermaid_dark(block))
+                inp = f.name
+            out = inp.replace('.mmd', '.svg')
+            subprocess.run(
+                ['npx', '@mermaid-js/mermaid-cli', '-i', inp, '-o', out,
+                 '-c', str(config_path),
+                 '--backgroundColor', 'transparent'],
+                capture_output=True, text=True, timeout=60,
+                cwd=str(_REPO_ROOT),
+            )
+            if os.path.exists(out):
+                svgs[str(i)] = Path(out).read_text()
+                os.unlink(out)
+            os.unlink(inp)
+        except Exception:
+            pass
+
+    _svg_cache[content_hash] = svgs
+    return svgs
+
+
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @app.get("/")
@@ -61,7 +132,14 @@ async def dashboard_ui() -> FileResponse:
 
 @app.get("/api/findings")
 async def api_findings() -> JSONResponse:
-    return JSONResponse(_read_json(_FINDINGS_FILE))
+    data = _read_json(_FINDINGS_FILE)
+    # Render diagram SVGs server-side so topology tab matches threat model theme
+    for d in data.get("diagrams", []):
+        if d.get("mermaid") and "svg" not in d:
+            wrapped = f"```mermaid\n{d['mermaid']}\n```"
+            svgs = _render_mermaid_svgs(wrapped)
+            d["svg"] = svgs.get("0", "")
+    return JSONResponse(data)
 
 
 @app.get("/api/session")
@@ -74,62 +152,9 @@ async def api_cost() -> JSONResponse:
     return JSONResponse(_read_json(_COST_FILE))
 
 
-# Cache: (filepath, mtime) -> svgs dict
-_svg_cache: dict[str, tuple[float, dict[str, str]]] = {}
-
-
-def _prerender_mermaid_sync(content: str) -> dict[str, str]:
-    """Blocking: extract mermaid blocks and render each to SVG via mmdc."""
-    import re, subprocess, tempfile, os
-    blocks = re.findall(r'```mermaid\n(.*?)```', content, re.DOTALL)
-    svgs: dict[str, str] = {}
-    for i, block in enumerate(blocks):
-        try:
-            # Replace literal \n inside labels with a space
-            clean = block.replace('\\n', ' ')
-            # Remap light pastel style colors to dark equivalents
-            _COLOR_MAP = {
-                'fill:#f44': 'fill:#7a0000', 'fill:#f88': 'fill:#6b1a1a',
-                'fill:#faa': 'fill:#5c1a1a', 'fill:#fcc': 'fill:#4d1a1a',
-                'fill:#ffd': 'fill:#3d3000', 'fill:#ffa': 'fill:#3d3000',
-                'fill:#ddf': 'fill:#1a2a4a', 'fill:#bbf': 'fill:#1a2040',
-                'stroke:#c00': 'stroke:#ff6666', 'stroke:#a00': 'stroke:#ff5555',
-                'stroke:#c44': 'stroke:#ff8888', 'stroke:#aa0': 'stroke:#ddcc00',
-                'stroke:#44a': 'stroke:#6699ff',
-            }
-            for light, dark in _COLOR_MAP.items():
-                clean = clean.replace(light, dark)
-            with tempfile.NamedTemporaryFile(suffix='.mmd', mode='w', delete=False) as f:
-                f.write(clean)
-                inp = f.name
-            out = inp.replace('.mmd', '.svg')
-            subprocess.run(
-                ['npx', '@mermaid-js/mermaid-cli', '-i', inp, '-o', out,
-                 '-c', str(_REPO_ROOT / 'core' / 'mermaid-config.json'),
-                 '--backgroundColor', 'transparent'],
-                capture_output=True, text=True, timeout=60,
-                cwd=str(_REPO_ROOT),
-            )
-            if Path(out).exists():
-                svgs[str(i)] = Path(out).read_text()
-                os.unlink(out)
-            os.unlink(inp)
-        except Exception:
-            pass
-    return svgs
-
-
-async def _get_svgs(candidate: Path, content: str) -> dict[str, str]:
-    """Return cached SVGs or render in a thread pool (non-blocking)."""
-    import asyncio
-    key = str(candidate)
-    mtime = candidate.stat().st_mtime
-    if key in _svg_cache and _svg_cache[key][0] == mtime:
-        return _svg_cache[key][1]
-    loop = asyncio.get_event_loop()
-    svgs = await loop.run_in_executor(None, _prerender_mermaid_sync, content)
-    _svg_cache[key] = (mtime, svgs)
-    return svgs
+@app.get("/api/coverage")
+async def api_coverage() -> JSONResponse:
+    return JSONResponse(_read_json(_COVERAGE_FILE))
 
 
 @app.get("/api/threat-model")
@@ -146,7 +171,6 @@ async def api_get_threat_model(file: str = "") -> JSONResponse:
         file = files[0]
 
     content = ""
-    svgs: dict[str, str] = {}
     if file:
         if "/" in file or "\\" in file or ".." in file:
             return JSONResponse({"error": "invalid file"}, status_code=400)
@@ -155,7 +179,10 @@ async def api_get_threat_model(file: str = "") -> JSONResponse:
             return JSONResponse({"error": "invalid file"}, status_code=400)
         if candidate.exists():
             content = candidate.read_text(encoding="utf-8")
-            svgs = await _get_svgs(candidate, content)
+
+    svgs = {}
+    if content:
+        svgs = _render_mermaid_svgs(content)
 
     return JSONResponse({"files": files, "file": file, "content": content, "svgs": svgs})
 
