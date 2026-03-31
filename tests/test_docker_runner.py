@@ -7,7 +7,7 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from tools.docker_runner import _ensure_image, run_container
+from tools.docker_runner import _ensure_image, image_exists, run_container
 import tools.docker_runner as _dr
 
 
@@ -118,6 +118,48 @@ async def test_ensure_image_pull_failure_falls_back_to_stdout(_skip_image_pull):
     with patch("tools.docker_runner.asyncio.create_subprocess_exec", side_effect=_side_effect):
         with pytest.raises(RuntimeError, match="not found"):
             await _ensure_image("missing:latest")
+
+
+@pytest.mark.asyncio
+async def test_ensure_image_pull_timeout_raises(_skip_image_pull):
+    """docker pull exceeds PULL_TIMEOUT → RuntimeError with actionable message."""
+    inspect_proc = _make_inspect_proc(returncode=1)
+    pull_proc = MagicMock()
+    pull_proc.kill = MagicMock()
+    pull_proc.communicate = AsyncMock(return_value=(b"", b""))
+
+    call_count = 0
+
+    async def _side_effect(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        return inspect_proc if call_count == 1 else pull_proc
+
+    async def _fake_wait_for(coro, timeout):
+        raise asyncio.TimeoutError
+
+    with patch("tools.docker_runner.asyncio.create_subprocess_exec", side_effect=_side_effect), \
+         patch("tools.docker_runner.asyncio.wait_for", side_effect=_fake_wait_for):
+        with pytest.raises(RuntimeError, match="Timed out pulling"):
+            await _ensure_image("slow:latest")
+    pull_proc.kill.assert_called_once()
+    assert "slow:latest" not in _dr._pulled_images
+
+
+@pytest.mark.asyncio
+async def test_image_exists_returns_true():
+    """image_exists returns True when docker image inspect succeeds."""
+    proc = _make_inspect_proc(returncode=0)
+    with patch("tools.docker_runner.asyncio.create_subprocess_exec", return_value=proc):
+        assert await image_exists("present:latest") is True
+
+
+@pytest.mark.asyncio
+async def test_image_exists_returns_false():
+    """image_exists returns False when docker image inspect fails."""
+    proc = _make_inspect_proc(returncode=1)
+    with patch("tools.docker_runner.asyncio.create_subprocess_exec", return_value=proc):
+        assert await image_exists("absent:latest") is False
 
 
 # ---------------------------------------------------------------------------

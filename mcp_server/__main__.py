@@ -203,6 +203,48 @@ except BaseException:
     # Non-fatal — don't exit, the server may still function.
 
 
+# ── Docker image preflight check ─────────────────────────────────────────────
+# Verify all tool images exist locally before the server starts.
+# Missing images get a warning — they'll be pulled on first use, but the
+# user sees upfront which tools are ready vs. need a pull.
+
+_phase("DOCKER IMAGE PREFLIGHT CHECK")
+try:
+    from tools import REGISTRY
+    from tools.docker_runner import image_exists
+
+    async def _preflight():
+        ready, missing = [], []
+        for tool in REGISTRY.values():
+            img = tool.image
+            if await image_exists(img):
+                ready.append(img)
+            else:
+                missing.append(img)
+        return ready, missing
+
+    _ready, _missing = asyncio.run(_preflight())
+
+    for _img in _ready:
+        sys.stderr.write(f"  [OK]      {_img}\n")
+    for _img in _missing:
+        sys.stderr.write(f"  [MISSING] {_img}  — will pull on first use\n")
+    sys.stderr.flush()
+
+    if _missing:
+        _phase(
+            f"PREFLIGHT: {len(_ready)}/{len(_ready) + len(_missing)} images ready. "
+            f"Run 'docker pull' or session(action='pull_images') for: "
+            f"{', '.join(_missing)}"
+        )
+    else:
+        _phase(f"PREFLIGHT: all {len(_ready)} tool images ready")
+except BaseException:
+    _phase("PREFLIGHT CHECK FAILED (non-fatal)")
+    traceback.print_exc(file=sys.stderr)
+    # Non-fatal — server can still start, images will pull on demand.
+
+
 # ── Start MCP server ──────────────────────────────────────────────────────────
 
 _phase("CALLING mcp.run()  — server handshake begins now")
