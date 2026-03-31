@@ -52,7 +52,7 @@ You have 30 skills at your disposal. Use the right one based on the task:
 - **During a pentest — injection found**: chain into `/web-exploit` for deep exploitation (SQLi, XSS, SSRF chains, RCE).
 - **During a pentest — weak auth found**: chain into `/credential-audit` for brute-force, spraying, and credential testing.
 - **During a pentest — TLS services**: chain into `/ssl-tls-audit` for PCI DSS/NIST-mapped TLS assessment.
-- **During a pentest — access obtained**: chain into `/post-exploit` for privilege escalation and credential harvesting.
+- **During a pentest — RCE confirmed (MANDATORY)**: chain into `/post-exploit` for privilege escalation, credential harvesting, and pivot prep. If the target is containerized (K8s/Docker), also chain `/container-k8s-security` for SA token abuse, container escape, and namespace traversal. If blind RCE, chain `/reverse-shell` first for interactive access. This is a hard gate — the difference between "command injection" and "full cluster compromise" is post-exploitation.
 - **During a pentest — domain environment**: chain into `/ad-assessment` and `/lateral-movement` for AD attacks.
 - **During a pentest — cloud infrastructure**: chain into `/cloud-security` and `/container-k8s-security`.
 - **During a pentest — mobile app**: chain into `/mobile-security`, then `/api-security` for the backend.
