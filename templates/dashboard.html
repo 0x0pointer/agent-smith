@@ -18,12 +18,14 @@
     /* ── Header ── */
     .header-row { display: flex; justify-content: space-between; align-items: center; }
     h1 { font-size: 1.2rem; color: #f0f6fc; margin-bottom: 0.25rem; }
-    .clear-btn {
+    .header-buttons { display: flex; gap: 0.5rem; }
+    .clear-btn, .tunnel-btn {
       background: none; border: 1px solid #30363d; border-radius: 4px;
       color: #6e7681; padding: 0.25rem 0.7rem; font-size: 0.75rem;
       cursor: pointer; transition: color .15s, border-color .15s;
     }
     .clear-btn:hover { color: #da3633; border-color: #da3633; }
+    .tunnel-btn:hover { color: #d29922; border-color: #d29922; }
 
     #status { font-size: 0.8rem; color: #6e7681; margin-bottom: 0.75rem; }
     #status .dot {
@@ -339,7 +341,10 @@
 <!-- ── Header ────────────────────────────────────────────────────────────── -->
 <div class="header-row">
   <h1>Pentest Dashboard</h1>
-  <button class="clear-btn" onclick="clearFindings()" title="Clear all findings, diagrams, and session data">Clear All</button>
+  <div class="header-buttons">
+    <button class="tunnel-btn" onclick="cleanupTunnels()" title="Kill chisel tunnels and Meterpreter sessions">Cleanup Tunnels</button>
+    <button class="clear-btn" onclick="clearFindings()" title="Clear all findings, diagrams, and session data">Clear All</button>
+  </div>
 </div>
 <div id="status"><span class="dot"></span>Connecting…</div>
 
@@ -452,6 +457,7 @@
 
   let filter     = 'all';
   let seenIds    = new Set();
+  let scanDone   = false;   // true once session status is "complete" — stops polling
   let freshIds   = new Set();
   let allData    = { findings: [], diagrams: [] };
   let lastOk     = null;
@@ -489,11 +495,20 @@
       const statusEl = document.getElementById('s-status');
       statusEl.textContent = s.status || '—';
       statusEl.className   = `session-status-${s.status || 'running'}`;
+
+      // Stop polling once the scan is complete — prevents DOM updates
+      // that break text selection and copy/paste.
+      if (s.status === 'complete' && !scanDone) {
+        scanDone = true;
+        document.getElementById('status').innerHTML =
+          '<span class="dot" style="background:#6e7681;animation:none"></span>Scan complete — polling paused';
+      }
     } catch { /* session may not exist yet */ }
   }
 
   // ── Findings tab ──────────────────────────────────────────────────────────
   async function pollFindings() {
+    if (scanDone) return;
     try {
       const r = await fetch(`/api/findings?_=${Date.now()}`);
       if (!r.ok) throw new Error('not found');
@@ -663,16 +678,34 @@
     renderFindingsTable(allData.findings || []);
   }
 
+  // ── Tunnel cleanup ─────────────────────────────────────────────────────
+  function cleanupTunnels() {
+    if (!confirm('Kill chisel tunnels and Meterpreter sessions? You will lose access to internal services.')) return;
+    const btn = document.querySelector('.tunnel-btn');
+    btn.textContent = 'Cleaning up…';
+    btn.disabled = true;
+    fetch('/api/tunnels', { method: 'DELETE' })
+      .then(r => r.json())
+      .then(d => {
+        btn.textContent = d.message || 'Done';
+        setTimeout(() => { btn.textContent = 'Cleanup Tunnels'; btn.disabled = false; }, 3000);
+      })
+      .catch(() => { btn.textContent = 'Failed'; setTimeout(() => { btn.textContent = 'Cleanup Tunnels'; btn.disabled = false; }, 3000); });
+  }
+
   // ── Clear all findings ──────────────────────────────────────────────────
   function clearFindings() {
-    if (!confirm('Clear all findings, diagrams, and session data? This cannot be undone.')) return;
+    if (!confirm('Clear all findings, diagrams, and session data? This also kills any active tunnels. This cannot be undone.')) return;
     fetch('/api/clear', { method: 'DELETE' })
       .then(r => r.json())
       .then(d => {
         if (d.ok) {
           allData = { findings: [], diagrams: [] };
+          scanDone = false;  // resume polling for the next scan
           renderStats([]);
           renderFindingsTable([]);
+          document.getElementById('status').innerHTML =
+            '<span class="dot"></span>Live · refreshes every 5 s';
         }
       })
       .catch(() => alert('Failed to clear — is the dashboard API running?'));
@@ -856,6 +889,7 @@
   }
 
   async function pollCoverage() {
+    if (scanDone) return;
     try {
       const r = await fetch(`/api/coverage?_=${Date.now()}`);
       if (!r.ok) return;
@@ -1032,6 +1066,7 @@
   }
 
   async function pollThreatModel() {
+    if (scanDone) return;
     let data;
     try {
       const qs = _tmCurrentFile ? `&file=${encodeURIComponent(_tmCurrentFile)}` : '';
@@ -1149,6 +1184,7 @@
   }
 
   async function pollLogs() {
+    if (scanDone) return;
     try {
       const qs = _selectedLogFile ? `&file=${encodeURIComponent(_selectedLogFile)}` : '';
       const r  = await fetch(`/api/logs?_=${Date.now()}${qs}`);
@@ -1207,8 +1243,8 @@
   setInterval(pollSession,     POLL_MS);
   setInterval(pollCoverage,    POLL_MS);
   setInterval(pollThreatModel, POLL_MS);
-  setInterval(() => { if (lastOk && _activeTab === 'findings') renderFindings(); }, 1000);
-  setInterval(() => { if (_activeTab === 'logs') pollLogs(); }, 3000);
+  setInterval(() => { if (!scanDone && lastOk && _activeTab === 'findings') renderFindings(); }, 1000);
+  setInterval(() => { if (!scanDone && _activeTab === 'logs') pollLogs(); }, 3000);
 
   // Initial load
   pollFindings();

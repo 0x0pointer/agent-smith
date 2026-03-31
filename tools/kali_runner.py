@@ -81,6 +81,9 @@ async def ensure_running() -> tuple[bool, str]:
             "docker", "run", "-d",
             "--name", KALI_CONTAINER,
             "-p", f"{KALI_PORT}:5000",
+            "-p", "1080:1080",          # SOCKS5 proxy (chisel reverse tunnel)
+            "-p", "8888:8888",          # chisel server listener
+            "-p", "8889:8889",          # python HTTP server (file transfer to targets)
             "--rm",
             "--cap-add=NET_RAW",
             "--cap-add=NET_ADMIN",

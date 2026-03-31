@@ -171,6 +171,16 @@ RUN echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.
 # Pinned versions for when the build succeeds on compatible platforms.
 RUN pip3 install --no-cache-dir prowler==5.22.0 scoutsuite==5.14.0 --break-system-packages || true
 
+# Layer 13: pivoting — chisel TCP/UDP tunnel over HTTP/WebSocket
+# Pinned to v1.10.1 — update explicitly when needed
+RUN ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') \
+    && CHISEL_VERSION=1.10.1 \
+    && curl -fsSL "https://github.com/jpillora/chisel/releases/download/v${CHISEL_VERSION}/chisel_${CHISEL_VERSION}_linux_${ARCH}.gz" \
+        -o /tmp/chisel.gz \
+    && gunzip /tmp/chisel.gz \
+    && mv /tmp/chisel /usr/local/bin/chisel \
+    && chmod +x /usr/local/bin/chisel
+
 # Decompress rockyou wordlist (needed by hydra, john, etc.)
 RUN gzip -d /usr/share/wordlists/rockyou.txt.gz 2>/dev/null || true
 

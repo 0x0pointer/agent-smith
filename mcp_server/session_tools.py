@@ -205,7 +205,7 @@ def _suspect_na_cells(cells: list[dict], bypass_types: dict) -> list[str]:
     return suspect
 
 
-def _do_complete(opts):
+async def _do_complete(opts):
     notes = opts.get("notes", "")
     blockers: list[str] = []
 

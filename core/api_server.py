@@ -212,7 +212,46 @@ async def api_clear() -> JSONResponse:
         "findings": [],
         "diagrams": [],
     })
+    # Also kill any active tunnels
+    await _cleanup_tunnels()
     return JSONResponse({"ok": True})
+
+
+@app.delete("/api/tunnels")
+async def api_cleanup_tunnels() -> JSONResponse:
+    """Kill chisel tunnels in Kali. Remote clients disconnect automatically."""
+    result = await _cleanup_tunnels()
+    return JSONResponse({"ok": True, "message": result})
+
+
+async def _cleanup_tunnels() -> str:
+    """Kill chisel server in the Kali container.
+
+    When the server dies, remote chisel clients lose their connection
+    and exit on their own — no need to reach back into the target.
+    """
+    import asyncio
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "docker", "inspect", "--format={{.State.Running}}", "pentest-kali",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        stdout, _ = await proc.communicate()
+        if stdout.strip() != b"true":
+            return "no kali container running"
+
+        proc = await asyncio.create_subprocess_exec(
+            "docker", "exec", "pentest-kali",
+            "sh", "-c", "pkill -f 'chisel server' 2>/dev/null && echo 'chisel stopped' || echo 'no chisel running'",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        stdout, _ = await proc.communicate()
+        return stdout.decode().strip()
+    except Exception as exc:
+        return f"cleanup error: {exc}"
 
 
 @app.get("/api/logs")

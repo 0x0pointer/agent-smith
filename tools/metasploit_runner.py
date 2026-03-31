@@ -73,6 +73,9 @@ async def ensure_running() -> tuple[bool, str]:
             "docker", "run", "-d",
             "--name", MSF_CONTAINER,
             "-p", f"{MSF_PORT}:5000",
+            "-p", "4444:4444",          # meterpreter handler
+            "-p", "4445:4445",          # secondary handler
+            "-p", "1081:1081",          # MSF socks_proxy module
             "--rm",
             "--cap-add=NET_RAW",
             "--cap-add=NET_ADMIN",
