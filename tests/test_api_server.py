@@ -297,12 +297,112 @@ def test_api_clear_resets_findings(tmp_path, monkeypatch):
     findings_file = tmp_path / "findings.json"
     findings_file.write_text(json.dumps({"meta": {}, "findings": [{"id": "1"}], "diagrams": [{"id": "2"}]}))
     monkeypatch.setattr(findings_mod, "FINDINGS_FILE", findings_file)
-    response = client.delete("/api/clear")
+    with patch("core.api_server._cleanup_tunnels", new_callable=AsyncMock, return_value="mocked"):
+        response = client.delete("/api/clear")
     assert response.status_code == 200
     assert response.json()["ok"] is True
     data = json.loads(findings_file.read_text())
     assert data["findings"] == []
     assert data["diagrams"] == []
+
+
+def test_api_clear_calls_cleanup_tunnels(tmp_path, monkeypatch):
+    from core import findings as findings_mod
+    findings_file = tmp_path / "findings.json"
+    findings_file.write_text(json.dumps({"meta": {}, "findings": [], "diagrams": []}))
+    monkeypatch.setattr(findings_mod, "FINDINGS_FILE", findings_file)
+    with patch("core.api_server._cleanup_tunnels", new_callable=AsyncMock, return_value="chisel stopped") as mock_cleanup:
+        client.delete("/api/clear")
+    mock_cleanup.assert_awaited_once()
+
+
+# ── DELETE /api/tunnels ──────────────────────────────────────────────────────
+
+def test_api_tunnels_returns_ok():
+    with patch("core.api_server._cleanup_tunnels", new_callable=AsyncMock, return_value="chisel stopped"):
+        response = client.delete("/api/tunnels")
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert response.json()["message"] == "chisel stopped"
+
+
+def test_api_tunnels_returns_no_kali():
+    with patch("core.api_server._cleanup_tunnels", new_callable=AsyncMock, return_value="no kali container running"):
+        response = client.delete("/api/tunnels")
+    assert response.status_code == 200
+    assert response.json()["message"] == "no kali container running"
+
+
+# ── _cleanup_tunnels ─────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_cleanup_tunnels_no_kali_container():
+    from core.api_server import _cleanup_tunnels
+
+    mock_proc = AsyncMock()
+    mock_proc.communicate.return_value = (b"false", b"")
+
+    with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, return_value=mock_proc):
+        result = await _cleanup_tunnels()
+    assert result == "no kali container running"
+
+
+@pytest.mark.asyncio
+async def test_cleanup_tunnels_chisel_stopped():
+    from core.api_server import _cleanup_tunnels
+
+    # First call: docker inspect returns "true" (container running)
+    inspect_proc = AsyncMock()
+    inspect_proc.communicate.return_value = (b"true", b"")
+
+    # Second call: docker exec pkill returns "chisel stopped"
+    exec_proc = AsyncMock()
+    exec_proc.communicate.return_value = (b"chisel stopped", b"")
+
+    call_count = 0
+    async def fake_subprocess_exec(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return inspect_proc
+        return exec_proc
+
+    with patch("asyncio.create_subprocess_exec", side_effect=fake_subprocess_exec):
+        result = await _cleanup_tunnels()
+    assert result == "chisel stopped"
+
+
+@pytest.mark.asyncio
+async def test_cleanup_tunnels_no_chisel_running():
+    from core.api_server import _cleanup_tunnels
+
+    inspect_proc = AsyncMock()
+    inspect_proc.communicate.return_value = (b"true", b"")
+
+    exec_proc = AsyncMock()
+    exec_proc.communicate.return_value = (b"no chisel running", b"")
+
+    call_count = 0
+    async def fake_subprocess_exec(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return inspect_proc
+        return exec_proc
+
+    with patch("asyncio.create_subprocess_exec", side_effect=fake_subprocess_exec):
+        result = await _cleanup_tunnels()
+    assert result == "no chisel running"
+
+
+@pytest.mark.asyncio
+async def test_cleanup_tunnels_exception_handling():
+    from core.api_server import _cleanup_tunnels
+
+    with patch("asyncio.create_subprocess_exec", side_effect=OSError("docker not found")):
+        result = await _cleanup_tunnels()
+    assert "cleanup error" in result
+    assert "docker not found" in result
 
 
 # ── lifecycle helpers ─────────────────────────────────────────────────────────
