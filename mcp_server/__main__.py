@@ -20,6 +20,8 @@ import platform
 import sys
 import traceback
 from datetime import datetime, timezone
+
+import anyio
 from pathlib import Path
 
 # ── Crash log setup ───────────────────────────────────────────────────────────
@@ -207,20 +209,31 @@ except BaseException:
 # Verify all tool images exist locally before the server starts.
 # Missing images get a warning — they'll be pulled on first use, but the
 # user sees upfront which tools are ready vs. need a pull.
+#
+# IMPORTANT: This must complete fast. Claude Code kills MCP servers that take
+# too long to start. Checks run in parallel with a 10-second hard timeout.
+
+_PREFLIGHT_TIMEOUT = 10  # seconds — must be well under Claude Code's startup timeout
 
 _phase("DOCKER IMAGE PREFLIGHT CHECK")
 try:
     from tools import REGISTRY
     from tools.docker_runner import image_exists
 
+    async def _check_one(img: str) -> tuple[str, bool]:
+        try:
+            return (img, await asyncio.wait_for(image_exists(img), timeout=5))
+        except (asyncio.TimeoutError, Exception):
+            return (img, False)
+
     async def _preflight():
-        ready, missing = [], []
-        for tool in REGISTRY.values():
-            img = tool.image
-            if await image_exists(img):
-                ready.append(img)
-            else:
-                missing.append(img)
+        images = [tool.image for tool in REGISTRY.values()]
+        results = await asyncio.wait_for(
+            asyncio.gather(*[_check_one(img) for img in images]),
+            timeout=_PREFLIGHT_TIMEOUT,
+        )
+        ready = [img for img, ok in results if ok]
+        missing = [img for img, ok in results if not ok]
         return ready, missing
 
     _ready, _missing = asyncio.run(_preflight())
@@ -239,18 +252,54 @@ try:
         )
     else:
         _phase(f"PREFLIGHT: all {len(_ready)} tool images ready")
-except BaseException:
-    _phase("PREFLIGHT CHECK FAILED (non-fatal)")
+except (asyncio.TimeoutError, BaseException):
+    _phase("PREFLIGHT CHECK FAILED (non-fatal — Docker may be slow)")
     traceback.print_exc(file=sys.stderr)
     # Non-fatal — server can still start, images will pull on demand.
+
+
+# ── Monkey-patch: suppress ClosedResourceError in MCP message handling ────────
+# MCP SDK v1.26.0 bug: _handle_request (server.py:781) calls message.respond()
+# OUTSIDE its try/except, so if the client disconnects while a response is
+# being sent, ClosedResourceError propagates through TaskGroups and crashes
+# mcp.run().  This patch wraps _handle_message to catch the exception cleanly.
+
+_phase("PATCHING MCP SDK for ClosedResourceError resilience")
+try:
+    _orig_handle_message = mcp._mcp_server._handle_message  # bound method
+
+    async def _safe_handle_message(message, session, lifespan_context, raise_exceptions=False):
+        try:
+            return await _orig_handle_message(message, session, lifespan_context, raise_exceptions)
+        except (anyio.ClosedResourceError, anyio.BrokenResourceError):
+            sys.stderr.write(
+                f"\n[WARN {_ts()}] Client disconnected mid-response — "
+                f"ClosedResourceError suppressed (not a bug)\n"
+            )
+            sys.stderr.flush()
+
+    mcp._mcp_server._handle_message = _safe_handle_message
+    _phase("MCP SDK patched OK")
+except BaseException:
+    _phase("MCP SDK PATCH FAILED (non-fatal)")
+    traceback.print_exc(file=sys.stderr)
 
 
 # ── Start MCP server ──────────────────────────────────────────────────────────
 
 _phase("CALLING mcp.run()  — server handshake begins now")
 try:
-    mcp.run()
-    _phase("mcp.run() returned normally")
+    try:
+        mcp.run()
+        _phase("mcp.run() returned normally")
+    except* (anyio.ClosedResourceError, anyio.BrokenResourceError):
+        # Safety net: if ClosedResourceError escapes despite the monkey-patch
+        # (e.g. from the stdio transport layer itself), treat it as a normal
+        # client disconnect rather than a crash.
+        _phase("mcp.run() exited — client disconnected (ClosedResourceError suppressed)")
+except (anyio.ClosedResourceError, anyio.BrokenResourceError):
+    # Bare (non-grouped) ClosedResourceError — same treatment.
+    _phase("mcp.run() exited — client disconnected (ClosedResourceError suppressed)")
 except BaseException:
     _phase("CRASHED inside mcp.run()")
     traceback.print_exc(file=sys.stderr)
