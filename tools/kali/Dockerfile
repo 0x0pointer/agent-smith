@@ -172,10 +172,19 @@ RUN echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.
 RUN pip3 install --no-cache-dir prowler==5.22.0 scoutsuite==5.14.0 --break-system-packages || true
 
 # Layer 13: pivoting — ligolo-ng (TUN-based, primary) + chisel (HTTP/WS, fallback)
-# ligolo-ng: full network transparency via TUN interface — all tools work natively
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ligolo-ng \
-    && rm -rf /var/lib/apt/lists/*
+# ligolo-ng proxy + agent from GitHub release (avoids broken third-party apt repos)
+# Pinned to v0.8.2 — update explicitly when needed
+RUN ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') \
+    && LIGOLO_VERSION=0.8.2 \
+    && curl -fsSL "https://github.com/nicocha30/ligolo-ng/releases/download/v${LIGOLO_VERSION}/ligolo-ng_proxy_${LIGOLO_VERSION}_linux_${ARCH}.tar.gz" \
+        -o /tmp/ligolo-proxy.tar.gz \
+    && tar xzf /tmp/ligolo-proxy.tar.gz -C /usr/local/bin/ ligolo-proxy \
+    && chmod +x /usr/local/bin/ligolo-proxy \
+    && curl -fsSL "https://github.com/nicocha30/ligolo-ng/releases/download/v${LIGOLO_VERSION}/ligolo-ng_agent_${LIGOLO_VERSION}_linux_${ARCH}.tar.gz" \
+        -o /tmp/ligolo-agent.tar.gz \
+    && tar xzf /tmp/ligolo-agent.tar.gz -C /usr/local/bin/ ligolo-agent \
+    && chmod +x /usr/local/bin/ligolo-agent \
+    && rm -f /tmp/ligolo-proxy.tar.gz /tmp/ligolo-agent.tar.gz
 
 # chisel: fallback for HTTP-only egress or when TUN creation fails
 # Pinned to v1.10.1 — update explicitly when needed
