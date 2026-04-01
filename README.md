@@ -8,7 +8,6 @@
 
 An AI-driven penetration testing agent. Claude acts as the orchestrator — it decides which tools to run, in what order, and when to stop. Security tools run inside ephemeral Docker containers or a persistent Kali Linux container. Results stream into a live dashboard.
 
-Licensed under the [MIT License](LICENSE).
 
 ---
 
