@@ -363,3 +363,128 @@ def test_step_persisted_to_file(tmp_path, monkeypatch):
     core.session.set_step("5_ffuf")
     data = json.loads((tmp_path / "session.json").read_text())
     assert data["current_step"] == "5_ffuf"
+
+
+# ---------------------------------------------------------------------------
+# Gate tracking
+# ---------------------------------------------------------------------------
+
+def test_start_initialises_empty_gates():
+    sess = core.session.start("example.com")
+    assert sess["gates"] == []
+
+
+def test_trigger_gate_adds_pending_gate():
+    core.session.start("example.com")
+    core.session.trigger_gate("post_exploit_rce", "RCE confirmed", ["post-exploit"])
+    gates = core.session.get()["gates"]
+    assert len(gates) == 1
+    assert gates[0]["id"] == "post_exploit_rce"
+    assert gates[0]["status"] == "pending"
+    assert gates[0]["required_skills"] == ["post-exploit"]
+    assert gates[0]["satisfied_skills"] == []
+
+
+def test_trigger_gate_idempotent():
+    core.session.start("example.com")
+    core.session.trigger_gate("post_exploit_rce", "RCE confirmed", ["post-exploit"])
+    core.session.trigger_gate("post_exploit_rce", "RCE confirmed again", ["post-exploit"])
+    gates = core.session.get()["gates"]
+    assert len(gates) == 1
+
+
+def test_trigger_gate_merges_new_skills():
+    core.session.start("example.com")
+    core.session.trigger_gate("post_exploit_rce", "RCE confirmed", ["post-exploit"])
+    core.session.trigger_gate("post_exploit_rce", "K8s detected", ["container-k8s-security"])
+    gates = core.session.get()["gates"]
+    assert len(gates) == 1
+    assert set(gates[0]["required_skills"]) == {"post-exploit", "container-k8s-security"}
+
+
+def test_trigger_gate_returns_none_without_session():
+    core.session._current = None
+    assert core.session.trigger_gate("x", "y", ["z"]) is None
+
+
+def test_trigger_gate_noop_after_complete():
+    core.session.start("example.com")
+    core.session.complete("done")
+    assert core.session.trigger_gate("x", "y", ["z"]) is None
+
+
+def test_satisfy_gate_marks_skill():
+    core.session.start("example.com")
+    core.session.trigger_gate("post_exploit_rce", "RCE", ["post-exploit", "container-k8s-security"])
+    core.session.satisfy_gate("post_exploit_rce", "post-exploit")
+    gate = core.session.get()["gates"][0]
+    assert "post-exploit" in gate["satisfied_skills"]
+    assert gate["status"] == "pending"  # not all satisfied yet
+
+
+def test_satisfy_gate_flips_to_satisfied_when_all_done():
+    core.session.start("example.com")
+    core.session.trigger_gate("post_exploit_rce", "RCE", ["post-exploit", "container-k8s-security"])
+    core.session.satisfy_gate("post_exploit_rce", "post-exploit")
+    core.session.satisfy_gate("post_exploit_rce", "container-k8s-security")
+    gate = core.session.get()["gates"][0]
+    assert gate["status"] == "satisfied"
+
+
+def test_satisfy_gate_idempotent():
+    core.session.start("example.com")
+    core.session.trigger_gate("g1", "test", ["skill-a"])
+    core.session.satisfy_gate("g1", "skill-a")
+    core.session.satisfy_gate("g1", "skill-a")
+    gate = core.session.get()["gates"][0]
+    assert gate["satisfied_skills"] == ["skill-a"]
+
+
+def test_satisfy_gate_nonexistent_gate_is_noop():
+    core.session.start("example.com")
+    result = core.session.satisfy_gate("nonexistent", "skill-a")
+    assert result is not None  # returns _current, no crash
+
+
+def test_pending_gates_returns_unsatisfied_only():
+    core.session.start("example.com")
+    core.session.trigger_gate("g1", "test1", ["skill-a"])
+    core.session.trigger_gate("g2", "test2", ["skill-b"])
+    core.session.satisfy_gate("g1", "skill-a")
+    pending = core.session.pending_gates()
+    assert len(pending) == 1
+    assert pending[0]["id"] == "g2"
+
+
+def test_pending_gates_empty_when_all_satisfied():
+    core.session.start("example.com")
+    core.session.trigger_gate("g1", "test", ["skill-a"])
+    core.session.satisfy_gate("g1", "skill-a")
+    assert core.session.pending_gates() == []
+
+
+def test_pending_gates_empty_without_session():
+    core.session._current = None
+    assert core.session.pending_gates() == []
+
+
+def test_gates_persisted_to_file(tmp_path, monkeypatch):
+    import json
+    monkeypatch.setattr(core.session, "_SESSION_FILE", tmp_path / "session.json")
+    core.session.start("example.com")
+    core.session.trigger_gate("post_exploit_rce", "RCE confirmed", ["post-exploit"])
+    data = json.loads((tmp_path / "session.json").read_text())
+    assert len(data["gates"]) == 1
+    assert data["gates"][0]["id"] == "post_exploit_rce"
+
+
+def test_gate_merge_reopens_satisfied_gate():
+    """If a satisfied gate gets new required skills merged, it reopens as pending."""
+    core.session.start("example.com")
+    core.session.trigger_gate("g1", "test", ["skill-a"])
+    core.session.satisfy_gate("g1", "skill-a")
+    assert core.session.get()["gates"][0]["status"] == "satisfied"
+    # Merge a new skill — should reopen
+    core.session.trigger_gate("g1", "expanded", ["skill-b"])
+    assert core.session.get()["gates"][0]["status"] == "pending"
+    assert set(core.session.get()["gates"][0]["required_skills"]) == {"skill-a", "skill-b"}

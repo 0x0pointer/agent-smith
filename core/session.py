@@ -115,6 +115,7 @@ def start(
         "skill_history": [skill] if skill else [],
         "tools_called":  [],
         "current_step":  None,
+        "gates":         [],          # triggered gates that block completion
     }
     _flush()
     return _current
@@ -207,6 +208,71 @@ def set_step(step: str) -> dict | None:
     _current["current_step"] = step
     _flush()
     return _current
+
+
+# ── Gate tracking ────────────────────────────────────────────────────────────
+# Gates are conditions triggered by events (e.g. RCE confirmed, auth service
+# detected) that make certain skills mandatory before scan completion.
+# Each gate lists required_skills; _do_complete() blocks until all are satisfied.
+
+def trigger_gate(gate_id: str, trigger: str, required_skills: list[str]) -> dict | None:
+    """Register a mandatory gate — required skills must run before completion.
+
+    Idempotent: re-triggering the same gate_id is a no-op. If the gate already
+    exists but new required_skills are provided that weren't in the original,
+    they are merged in.
+    """
+    global _current
+    if _current is None or _current["status"] != "running":
+        return None
+
+    gates = _current.setdefault("gates", [])
+    for gate in gates:
+        if gate["id"] == gate_id:
+            # Merge any new required skills into existing gate
+            for skill in required_skills:
+                if skill not in gate["required_skills"]:
+                    gate["required_skills"].append(skill)
+                    gate["status"] = "pending"  # re-open if new skills added
+            _flush()
+            return _current
+
+    gates.append({
+        "id":               gate_id,
+        "trigger":          trigger,
+        "required_skills":  required_skills,
+        "satisfied_skills": [],
+        "status":           "pending",   # pending | satisfied
+        "triggered_at":     datetime.now(timezone.utc).isoformat(),
+    })
+    _flush()
+    return _current
+
+
+def satisfy_gate(gate_id: str, skill_name: str) -> dict | None:
+    """Mark a skill as satisfied within a gate.
+
+    When all required_skills are satisfied, the gate status flips to 'satisfied'.
+    """
+    global _current
+    if _current is None:
+        return None
+    for gate in _current.get("gates", []):
+        if gate["id"] == gate_id:
+            if skill_name not in gate["satisfied_skills"]:
+                gate["satisfied_skills"].append(skill_name)
+            if set(gate["required_skills"]).issubset(set(gate["satisfied_skills"])):
+                gate["status"] = "satisfied"
+            _flush()
+            return _current
+    return _current
+
+
+def pending_gates() -> list[dict]:
+    """Return all unsatisfied gates."""
+    if _current is None:
+        return []
+    return [g for g in _current.get("gates", []) if g.get("status") == "pending"]
 
 
 def remaining(cost_summary: dict) -> dict:

@@ -6,7 +6,43 @@ from typing import Any
 
 from core import findings as findings_store
 from core import logger as log
+from core import session as scan_session
 from mcp_server._app import mcp
+
+
+# ── Gate auto-triggers ────────────────────────────────────────────────────────
+# Keywords in finding titles/descriptions that indicate RCE — triggers post-exploit gate.
+_RCE_KEYWORDS = (
+    "command injection", "rce", "remote code execution", "code execution",
+    "ssti", "server-side template injection", "deserialization",
+    "os command", "shell injection", "eval injection",
+)
+
+# Keywords in notes that indicate container/K8s environment — triggers container gate.
+_K8S_KEYWORDS = (
+    "kubernetes", "kubepods", "/.dockerenv", "dockerenv",
+    "sa token", "serviceaccount", "k8s", "containerd", "cri-o",
+)
+
+# Keywords in notes that indicate cloud metadata access — triggers cloud gate.
+_CLOUD_KEYWORDS = (
+    "169.254.169.254", "metadata", "imds", "cloud metadata",
+    "iam role", "instance profile",
+)
+
+# Keywords in notes that indicate internal network discovery — triggers network gate.
+_INTERNAL_NET_KEYWORDS = (
+    "internal subnet", "internal network", "live hosts on 10.",
+    "live hosts on 172.", "live hosts on 192.168.",
+    "non-public subnet", "pivot",
+)
+
+# Keywords that indicate auth services — triggers credential-audit gate.
+_AUTH_KEYWORDS = (
+    "ssh", "ftp", "smb", "rdp", "vnc", "telnet",
+    "login form", "basic auth", "admin panel", "management console",
+    "mysql", "postgres", "mssql", "mongodb", "redis", "ldap",
+)
 
 
 @mcp.tool()
@@ -75,7 +111,42 @@ async def _do_finding(data):
         escalation_leads=data.get("escalation_leads"),
     )
     log.finding(severity, title, target)
-    return f"Finding logged: [{severity.upper()}] {title}"
+
+    # ── Auto-trigger gates based on finding content ──────────────────────────
+    gates_triggered = _auto_trigger_finding_gates(title, severity, data.get("description", ""))
+    msg = f"Finding logged: [{severity.upper()}] {title}"
+    if gates_triggered:
+        msg += f"\n\nGATE(S) TRIGGERED: {', '.join(gates_triggered)}. These skills are now mandatory before completion."
+    return msg
+
+
+def _auto_trigger_finding_gates(title: str, severity: str, description: str) -> list[str]:
+    """Check finding content and trigger appropriate gates. Returns list of triggered gate IDs."""
+    triggered: list[str] = []
+    text = f"{title} {description}".lower()
+
+    # RCE-class finding → post-exploit is mandatory
+    if severity in ("critical", "high") and any(kw in text for kw in _RCE_KEYWORDS):
+        scan_session.trigger_gate(
+            "post_exploit_rce",
+            f"RCE confirmed: {title}",
+            ["post-exploit"],
+        )
+        triggered.append("post_exploit_rce")
+
+    # Auth service finding → credential-audit is mandatory
+    if any(kw in text for kw in _AUTH_KEYWORDS):
+        current = scan_session.get()
+        depth = current.get("depth", "standard") if current else "standard"
+        if depth in ("standard", "thorough"):
+            scan_session.trigger_gate(
+                "credential_audit",
+                f"Auth service detected: {title}",
+                ["credential-audit"],
+            )
+            triggered.append("credential_audit")
+
+    return triggered
 
 
 async def _do_diagram(data):
@@ -89,7 +160,63 @@ async def _do_diagram(data):
 def _do_note(data):
     message = data.get("message", "")
     log.note(message)
+
+    # ── Auto-trigger gates based on note content ─────────────────────────────
+    gates_triggered = _auto_trigger_note_gates(message)
+    if gates_triggered:
+        return f"Logged.\n\nGATE(S) TRIGGERED: {', '.join(gates_triggered)}. These skills are now mandatory before completion."
     return "Logged."
+
+
+def _auto_trigger_note_gates(message: str) -> list[str]:
+    """Check note content and trigger environment-specific gates. Returns list of triggered gate IDs."""
+    triggered: list[str] = []
+    text = message.lower()
+
+    # Only trigger environment gates if an RCE gate already exists (we have access)
+    rce_gate_exists = any(g["id"] == "post_exploit_rce" for g in (scan_session.get() or {}).get("gates", []))
+
+    if rce_gate_exists:
+        # K8s/container indicators → container-k8s-security mandatory
+        if any(kw in text for kw in _K8S_KEYWORDS):
+            scan_session.trigger_gate(
+                "container_k8s",
+                "Container/K8s environment detected",
+                ["container-k8s-security"],
+            )
+            triggered.append("container_k8s")
+
+        # Cloud metadata indicators → cloud-security mandatory
+        if any(kw in text for kw in _CLOUD_KEYWORDS):
+            scan_session.trigger_gate(
+                "cloud_pivot",
+                "Cloud metadata service reachable",
+                ["cloud-security"],
+            )
+            triggered.append("cloud_pivot")
+
+        # Internal network indicators → network-assess mandatory
+        if any(kw in text for kw in _INTERNAL_NET_KEYWORDS):
+            scan_session.trigger_gate(
+                "internal_network",
+                "Internal network reachable from compromised host",
+                ["network-assess"],
+            )
+            triggered.append("internal_network")
+
+    # Auth service indicators in notes (e.g. from nmap service detection)
+    if any(kw in text for kw in _AUTH_KEYWORDS):
+        current = scan_session.get()
+        depth = current.get("depth", "standard") if current else "standard"
+        if depth in ("standard", "thorough"):
+            scan_session.trigger_gate(
+                "credential_audit",
+                f"Auth service detected in recon",
+                ["credential-audit"],
+            )
+            triggered.append("credential_audit")
+
+    return triggered
 
 
 async def _do_dashboard(data):
