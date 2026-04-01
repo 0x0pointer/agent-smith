@@ -84,9 +84,11 @@ async def ensure_running() -> tuple[bool, str]:
             "-p", "1080:1080",          # SOCKS5 proxy (chisel reverse tunnel)
             "-p", "8888:8888",          # chisel server listener
             "-p", "8889:8889",          # python HTTP server (file transfer to targets)
+            "-p", "11601:11601",        # ligolo-ng proxy listener
             "--rm",
             "--cap-add=NET_RAW",
             "--cap-add=NET_ADMIN",
+            "--device=/dev/net/tun:/dev/net/tun",
             "--add-host=host.docker.internal:host-gateway",
             *env_flags,
             KALI_IMAGE,

@@ -171,7 +171,13 @@ RUN echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.
 # Pinned versions for when the build succeeds on compatible platforms.
 RUN pip3 install --no-cache-dir prowler==5.22.0 scoutsuite==5.14.0 --break-system-packages || true
 
-# Layer 13: pivoting — chisel TCP/UDP tunnel over HTTP/WebSocket
+# Layer 13: pivoting — ligolo-ng (TUN-based, primary) + chisel (HTTP/WS, fallback)
+# ligolo-ng: full network transparency via TUN interface — all tools work natively
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ligolo-ng \
+    && rm -rf /var/lib/apt/lists/*
+
+# chisel: fallback for HTTP-only egress or when TUN creation fails
 # Pinned to v1.10.1 — update explicitly when needed
 RUN ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') \
     && CHISEL_VERSION=1.10.1 \
