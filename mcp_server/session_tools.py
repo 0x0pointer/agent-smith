@@ -46,7 +46,7 @@ async def session(action: str, options: dict | None = None) -> str:
     if action == "start":
         return _do_start(opts)
     elif action == "complete":
-        return _do_complete(opts)
+        return await _do_complete(opts)
     elif action == "status":
         return _do_status()
     elif action == "set_skill":
