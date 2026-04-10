@@ -62,7 +62,7 @@ mcp["pentest-agent"] = {
     "type":    "local",
     "command": ["poetry", "-C", str(repo_dir), "run", "python", "-m", "mcp_server"],
     "enabled": True,
-    "timeout": 30000,
+    "timeout": 660000,   # 11 minutes — 10% above the kali() tool's default 600 s command timeout
 }
 
 # Add CLAUDE.md to global instructions (avoid duplicates)
@@ -120,7 +120,8 @@ _install_skill "network-assess"         "$REPO_DIR/skills/network-assess/SKILL.m
 _install_skill "osint"                  "$REPO_DIR/skills/osint/SKILL.md"
 _install_skill "post-exploit"           "$REPO_DIR/skills/post-exploit/SKILL.md"
 _install_skill "ssl-tls-audit"          "$REPO_DIR/skills/ssl-tls-audit/SKILL.md"
-ok "20 skill commands installed"
+_install_skill "request-cves"           "$REPO_DIR/skills/request-cves/SKILL.md"
+ok "21 skill commands installed"
 
 # ── Install web-exploit reference files (lazy-loaded per injection type) ─────
 echo ""

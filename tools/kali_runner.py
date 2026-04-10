@@ -156,8 +156,8 @@ async def exec_command(command: str, timeout: int = 600) -> str:
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 f"{KALI_API}/api/command",
-                json={"command": command},
-                timeout=aiohttp.ClientTimeout(total=timeout + 5),
+                json={"command": command, "timeout": timeout},
+                timeout=aiohttp.ClientTimeout(total=timeout + 30),
             ) as resp:
                 data      = await resp.json()
                 stdout    = data.get("stdout", "")

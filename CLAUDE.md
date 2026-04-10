@@ -57,6 +57,35 @@ Scan lifecycle and infrastructure.
 - `action="pull_images"` — pre-pull all Docker images
 - `action="set_codebase"` — options: `{path}` — set local codebase for semgrep/trufflehog
 
+## Available Skills
+
+Skills are slash commands that contain full structured workflows. In Claude Code they appear via `/skill-name`; in opencode they appear as `/command-name`. Always prefer invoking a skill over improvising a workflow from scratch — the skill files contain all chaining rules, tool sequences, and completion gates.
+
+| Command | Purpose | Invoke when |
+|---------|---------|-------------|
+| `/pentester` | Full pentest orchestrator — recon → exploitation → report | General web/network pentest request |
+| `/web-exploit` | Deep injection, auth, logic, and business-logic exploitation | Web app confirmed; systematic endpoint testing needed |
+| `/codebase` | OWASP ASVS 5.0 white-box source code review | Local codebase path provided |
+| `/ai-redteam` | OWASP LLM Top 10 red-team — prompt injection, jailbreaks, data extraction | AI/chatbot/LLM target |
+| `/cloud-security` | AWS/Azure/GCP IAM, storage, serverless posture assessment | Cloud account target |
+| `/ad-assessment` | Active Directory — trusts, GPO, ACL, ADCS (ESC1-8), delegation | Domain controller / Windows AD environment |
+| `/network-assess` | VLAN hopping, ARP, LLMNR/NBT-NS, SNMP, NFS, segmentation | Internal LAN/network target |
+| `/lateral-movement` | Pass-the-hash, Kerberoasting, NTLM relay, WMI/WinRM, pivoting | Post-initial-access; need to move laterally |
+| `/credential-audit` | Brute-force, spraying, MFA bypass, OAuth/OIDC, session entropy | Authentication surface testing |
+| `/post-exploit` | Privesc (Linux/Windows), persistence, credential harvesting, pivoting | Shell access obtained |
+| `/container-k8s-security` | Container escape, Docker socket, K8s RBAC, pod security, etcd | Docker / Kubernetes target |
+| `/osint` | Subdomain enumeration, email harvest, Shodan, CT logs, Wayback | External recon phase; passive information gathering |
+| `/ssl-tls-audit` | TLS protocol versions, cipher suites, cert chain, POODLE/BEAST/Heartbleed | Any HTTPS/TLS endpoint |
+| `/email-security` | SPF/DKIM/DMARC, open relay, spoofing, SMTP security, MTA-STS | Domain email infrastructure |
+| `/metasploit` | Exploit validation and exploitation via Metasploit Framework | CVE to exploit; need controlled exploitation |
+| `/reverse-shell` | Reverse shell payload generation and listener management | Need shell on target system |
+| `/analyze-cve` | CVE exploitability analysis, code path tracing, Burp PoC generation | Known CVE in a dependency |
+| `/threat-model` | PASTA framework + 4-question threat model | Architecture or design review |
+| `/aikido-triage` | Triage Aikido security CSV against local codebase; verdict each finding | Aikido CSV scan results provided |
+| `/gh-export` | Format all confirmed findings as GitHub issue markdown blocks | End of pentest; ready to file issues |
+| `/remediate` | Fix vulnerabilities in source code | Post-finding code remediation needed |
+| `/request-cves` | Generate MITRE CVE request packages and GitHub Security Advisory drafts | Novel vulnerability discovered; need CVE disclosure |
+
 ## Project layout
 - `mcp_server/__main__.py` — entry point, crash logging, module imports
 - `mcp_server/_app.py` — FastMCP singleton, `_run()` dispatcher, `_clip()` helper

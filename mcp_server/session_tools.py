@@ -151,6 +151,14 @@ def _do_start(opts):
         "",
         f"Proceed with the {depth} scan workflow.",
         "Stop and call session(action='complete') when finished or when a limit is hit.",
+        "",
+        "Skills available (invoke these instead of improvising workflows):",
+        "  /pentester /web-exploit /codebase /ai-redteam /cloud-security /ad-assessment",
+        "  /network-assess /lateral-movement /credential-audit /post-exploit",
+        "  /container-k8s-security /osint /ssl-tls-audit /email-security /metasploit",
+        "  /reverse-shell /analyze-cve /threat-model /aikido-triage /gh-export",
+        "  /remediate /request-cves",
+        "  See CLAUDE.md for full skill descriptions and trigger conditions.",
     ]
     return "\n".join(lines)
 

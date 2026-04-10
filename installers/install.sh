@@ -138,6 +138,10 @@ mkdir -p "$HOME/.claude/skills/ssl-tls-audit"
 cp "$REPO_DIR/skills/ssl-tls-audit/SKILL.md" "$HOME/.claude/skills/ssl-tls-audit/SKILL.md"
 ok "/ssl-tls-audit skill installed"
 
+mkdir -p "$HOME/.claude/skills/request-cves"
+cp "$REPO_DIR/skills/request-cves/SKILL.md" "$HOME/.claude/skills/request-cves/SKILL.md"
+ok "/request-cves skill installed"
+
 # ── AI testing API keys (FuzzyAI + PyRIT) ────────────────────────────────────
 echo ""
 echo "AI testing tools (FuzzyAI + PyRIT) use LLM APIs for attacks and scoring."
