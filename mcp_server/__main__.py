@@ -277,6 +277,14 @@ try:
                 f"ClosedResourceError suppressed (not a bug)\n"
             )
             sys.stderr.flush()
+        except AssertionError as exc:
+            if "already responded" in str(exc):
+                sys.stderr.write(
+                    f"\n[WARN {_ts()}] Double-respond suppressed (MCP SDK 1.26 bug): {exc}\n"
+                )
+                sys.stderr.flush()
+            else:
+                raise
 
     mcp._mcp_server._handle_message = _safe_handle_message
     _phase("MCP SDK patched OK")
@@ -292,11 +300,10 @@ try:
     try:
         mcp.run()
         _phase("mcp.run() returned normally")
-    except* (anyio.ClosedResourceError, anyio.BrokenResourceError):
-        # Safety net: if ClosedResourceError escapes despite the monkey-patch
-        # (e.g. from the stdio transport layer itself), treat it as a normal
-        # client disconnect rather than a crash.
-        _phase("mcp.run() exited — client disconnected (ClosedResourceError suppressed)")
+    except* (anyio.ClosedResourceError, anyio.BrokenResourceError, AssertionError):
+        # Safety net: if these escape despite the monkey-patch (e.g. from the
+        # stdio transport layer itself), treat them as non-fatal.
+        _phase("mcp.run() exited — suppressed transport/SDK error (ClosedResourceError or double-respond)")
 except (anyio.ClosedResourceError, anyio.BrokenResourceError):
     # Bare (non-grouped) ClosedResourceError — same treatment.
     _phase("mcp.run() exited — client disconnected (ClosedResourceError suppressed)")

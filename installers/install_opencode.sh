@@ -22,7 +22,8 @@ echo ""
 # ── Prerequisites ─────────────────────────────────────────────────────────────
 command -v docker   >/dev/null 2>&1 || die "docker not found — install Docker Desktop first."
 command -v poetry   >/dev/null 2>&1 || die "poetry not found — install with: curl -sSL https://install.python-poetry.org | python3 -"
-command -v opencode >/dev/null 2>&1 || die "opencode not found — install from: https://opencode.ai"
+command -v opencode >/dev/null 2>&1 || command -v opencode-cli >/dev/null 2>&1 || die "opencode not found — install from: https://opencode.ai"
+command -v node    >/dev/null 2>&1 || warn "node not found — Mermaid diagrams will render client-side (install Node.js v18+ for server-side pre-rendering)"
 
 ok "Prerequisites satisfied (docker, poetry, opencode)"
 
@@ -59,9 +60,9 @@ except Exception:
 mcp = data.setdefault("mcp", {})
 mcp["pentest-agent"] = {
     "type":    "local",
-    "command": ["poetry", "-C", str(repo_dir), "run", "python", "mcp_server.py"],
+    "command": ["poetry", "-C", str(repo_dir), "run", "python", "-m", "mcp_server"],
     "enabled": True,
-    "timeout": 30000,
+    "timeout": 660000,   # 11 minutes — 10% above the kali() tool's default 600 s command timeout
 }
 
 # Add CLAUDE.md to global instructions (avoid duplicates)
@@ -121,7 +122,8 @@ _install_skill "network-assess"         "$REPO_DIR/skills/network-assess/SKILL.m
 _install_skill "osint"                  "$REPO_DIR/skills/osint/SKILL.md"
 _install_skill "post-exploit"           "$REPO_DIR/skills/post-exploit/SKILL.md"
 _install_skill "ssl-tls-audit"          "$REPO_DIR/skills/ssl-tls-audit/SKILL.md"
-ok "22 skill commands installed"
+_install_skill "request-cves"           "$REPO_DIR/skills/request-cves/SKILL.md"
+ok "23 skill commands installed"
 
 # ── Install web-exploit reference files (lazy-loaded per injection type) ─────
 echo ""
@@ -137,22 +139,119 @@ else
     warn "web-exploit/refs/ not found — refs will be read from repo at runtime"
 fi
 
-# ── Next steps ────────────────────────────────────────────────────────────────
+# ── AI testing API keys (FuzzyAI + PyRIT) ────────────────────────────────────
 echo ""
-echo "  Done! Optional next steps:"
+echo "AI testing tools (FuzzyAI + PyRIT) use LLM APIs for attacks and scoring."
+echo "Keys are stored in $REPO_DIR/.env (mode 600) and loaded automatically."
+echo "Press Enter to skip any key you don't need right now."
 echo ""
-echo "  1. Pre-pull lightweight tool images (recommended, ~2 min):"
-echo "     Start opencode and ask it to: call the pull_images tool"
-echo "     Or manually:"
-echo "     docker pull instrumentisto/nmap projectdiscovery/naabu projectdiscovery/httpx \\"
-echo "                projectdiscovery/nuclei projectdiscovery/subfinder \\"
-echo "                semgrep/semgrep trufflesecurity/trufflehog"
+
+ENV_FILE="$REPO_DIR/.env"
+if [ ! -f "$ENV_FILE" ] && [ -f "$REPO_DIR/.env.example" ]; then
+    cp "$REPO_DIR/.env.example" "$ENV_FILE"
+else
+    touch "$ENV_FILE"
+fi
+chmod 600 "$ENV_FILE"
+
+_ask_key() {
+    local key="$1"
+    local desc="$2"
+    local value=""
+    local existing
+    existing=$(grep -E "^${key}=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2-) || true
+    if [[ -n "$existing" ]]; then
+        printf "  %s already set. New value (Enter to keep): " "$key"
+    else
+        printf "  %s — %s\n  Value (Enter to skip): " "$key" "$desc"
+    fi
+    IFS= read -r -s value </dev/tty || true
+    echo ""
+    if [[ -n "$value" ]]; then
+        python3 -c "
+import pathlib, sys
+p = pathlib.Path(sys.argv[1])
+lines = [l for l in p.read_text().splitlines() if not l.startswith(sys.argv[2] + '=')]
+lines.append(sys.argv[2] + '=' + sys.argv[3])
+p.write_text('\n'.join(lines) + '\n')
+" "$ENV_FILE" "$key" "$value"
+        ok "$key saved"
+    elif [[ -n "$existing" ]]; then
+        ok "$key unchanged"
+    else
+        warn "$key skipped"
+    fi
+}
+
+_ask_key "OPENAI_API_KEY"       "OpenAI key — FuzzyAI (openai provider) + PyRIT attacker/scorer"
+_ask_key "ANTHROPIC_API_KEY"    "Anthropic key — FuzzyAI (anthropic provider)"
+_ask_key "AZURE_OPENAI_API_KEY" "Azure OpenAI key — FuzzyAI (azure provider)"
+
+# ── Docker images ─────────────────────────────────────────────────────────────
 echo ""
-echo "  2. Build the Kali image (optional, ~10 min — required for kali_exec):"
-echo "     docker build -t pentest-agent/kali-mcp $REPO_DIR/tools/kali/"
+echo "  Docker images"
+echo "  ─────────────"
 echo ""
-echo "  3. Build the Metasploit image (optional, ~5 min — required for /metasploit):"
-echo "     docker build -t pentest-agent/metasploit $REPO_DIR/tools/metasploit/"
+
+_SCANNER_IMAGES=(
+    "instrumentisto/nmap"
+    "projectdiscovery/naabu"
+    "projectdiscovery/httpx"
+    "projectdiscovery/nuclei"
+    "projectdiscovery/subfinder"
+    "semgrep/semgrep"
+    "trufflesecurity/trufflehog"
+)
+printf "  Pull lightweight scanner images? (~2 min) [Y/n]: "
+read -r _pull_answer || true
+if [[ "${_pull_answer:-Y}" =~ ^[Yy]$ ]]; then
+    for img in "${_SCANNER_IMAGES[@]}"; do
+        if docker pull "$img" >/dev/null 2>&1; then
+            ok "Pulled $img"
+        else
+            warn "Failed to pull $img (will auto-pull on first use)"
+        fi
+    done
+else
+    warn "Scanner image pull skipped — images will auto-pull on first use"
+fi
+
+echo ""
+
+printf "  Build Kali image? (~10 min — required for most skills) [Y/n]: "
+read -r _kali_answer || true
+if [[ "${_kali_answer:-Y}" =~ ^[Yy]$ ]]; then
+    echo "  Building pentest-agent/kali-mcp (this may take a while)..."
+    if docker build -t pentest-agent/kali-mcp "$REPO_DIR/tools/kali/" 2>&1 | tail -5; then
+        ok "Kali image built: pentest-agent/kali-mcp"
+    else
+        warn "Kali build failed — run manually: docker build -t pentest-agent/kali-mcp $REPO_DIR/tools/kali/"
+    fi
+else
+    warn "Kali build skipped — run later: docker build -t pentest-agent/kali-mcp $REPO_DIR/tools/kali/"
+fi
+
+echo ""
+
+printf "  Build Metasploit image? (~5 min — required for /metasploit skill) [Y/n]: "
+read -r _msf_answer || true
+if [[ "${_msf_answer:-Y}" =~ ^[Yy]$ ]]; then
+    echo "  Building pentest-agent/metasploit..."
+    if docker build -t pentest-agent/metasploit "$REPO_DIR/tools/metasploit/" 2>&1 | tail -5; then
+        ok "Metasploit image built: pentest-agent/metasploit"
+    else
+        warn "Metasploit build failed — run manually: docker build -t pentest-agent/metasploit $REPO_DIR/tools/metasploit/"
+    fi
+else
+    warn "Metasploit build skipped — run later: docker build -t pentest-agent/metasploit $REPO_DIR/tools/metasploit/"
+fi
+
+# ── Done ──────────────────────────────────────────────────────────────────────
+echo ""
+echo "  Install complete!"
+echo ""
+warn "Tool approvals: opencode has no auto-approve mechanism. Each MCP tool will prompt"
+warn "for confirmation on first use in a session — this is expected behaviour."
 echo ""
 echo "  Available commands:"
 echo "    /pentester scan https://target.com       — full pentest"
@@ -167,4 +266,8 @@ echo "    /ad-assessment 10.0.0.1 domain=CORP.LOCAL  — Active Directory securi
 echo "    /email-security example.com              — email SPF/DKIM/DMARC audit"
 echo "    /metasploit 10.0.0.5 cve=CVE-2017-0144   — Metasploit exploit validation"
 echo "    /gh-export                               — export findings as GitHub issue blocks"
+echo ""
+echo "  To rebuild images after adding new skills:"
+echo "    docker build -t pentest-agent/kali-mcp $REPO_DIR/tools/kali/"
+echo "    docker build -t pentest-agent/metasploit $REPO_DIR/tools/metasploit/"
 echo ""
