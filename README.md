@@ -11,9 +11,8 @@ You bring the LLM. agent-smith brings the tools, the skills, and the methodology
 
 > ⚠️ **Authorized testing only.** Use against systems you own or have explicit written permission to test. Unauthorized access is illegal.
 
-<!-- TODO: add hero gif — full /pentester run end-to-end -->
 <p align="center">
-  <img src="docs/gifs/hero-pentester.gif" alt="agent-smith running a full /pentester scan from recon through reporting" width="900">
+  <img src="docs/gifs/pen-final.gif" alt="agent-smith running a full /pentester scan from recon through reporting" width="900">
 </p>
 
 ---
