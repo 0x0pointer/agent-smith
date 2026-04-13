@@ -15,9 +15,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Layer 3: web scanning + exploit-db + php (for running PHP exploits)
+# wpscan — WordPress plugin/theme/core CVE scanner (the authoritative source
+#   for WordPress plugin vulnerabilities — nuclei templates are incomplete)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     nikto sqlmap whatweb wafw00f wapiti commix xsser davtest skipfish \
-    zaproxy exploitdb php-cli \
+    zaproxy exploitdb php-cli wpscan \
     && rm -rf /var/lib/apt/lists/*
 
 # Layer 4: web fuzzing / discovery
