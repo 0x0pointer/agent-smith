@@ -163,13 +163,32 @@ def _do_start(opts):
     return "\n".join(lines)
 
 
-def _coverage_blockers(cov: dict) -> list[str]:
-    """Return coverage-related completion blockers for the given matrix state."""
+def _coverage_blockers(cov: dict, ctf_mode: bool = False) -> list[str]:
+    """Return coverage-related completion blockers for the given matrix state.
+
+    For non-CTF runs, an empty matrix is a hard blocker if web testing happened —
+    the agent must register endpoints in the matrix so the methodology is auditable
+    and so re-spidering picks up new endpoints later. CTF mode bypasses this because
+    benchmarks have a single flag goal where matrix bookkeeping is overhead.
+    """
     from core.coverage import _BYPASS_REQUIRED_TYPES  # local import to avoid circularity
     blockers: list[str] = []
     meta = cov.get("meta", {})
     total = meta.get("total_cells", 0)
+
+    # Empty matrix gate — only enforced for non-CTF runs where web work happened.
+    web_work_done = any(t in _session_tools_called for t in ("httpx", "spider", "ffuf", "nuclei"))
     if total == 0:
+        if not ctf_mode and web_work_done:
+            blockers.append(
+                "EMPTY COVERAGE MATRIX: web tools were run (httpx/spider/ffuf/nuclei) "
+                "but no endpoints were registered. For non-CTF pentests you MUST register "
+                "every discovered endpoint with report(action='coverage', data={'type': 'endpoint', "
+                "'path': '/...', 'method': 'GET', 'params': [...], 'discovered_by': 'spider'}). "
+                "The matrix is the audit trail of what was tested — without it, coverage gaps "
+                "are invisible and re-spider can't deduplicate. See /web-exploit Phase 1 for the "
+                "full registration pattern."
+            )
         return blockers
 
     addressed = meta.get("tested", 0) + meta.get("not_applicable", 0) + meta.get("skipped", 0)
@@ -278,7 +297,7 @@ async def _do_complete(opts):
         )
 
     from core.coverage import get_matrix
-    blockers.extend(_coverage_blockers(get_matrix()))
+    blockers.extend(_coverage_blockers(get_matrix(), ctf_mode=_has_ctf_flag(data)))
 
     if blockers:
         msg = "complete BLOCKED — fix the following first:\n\n"
@@ -324,6 +343,22 @@ def _do_status():
         "skipped": meta.get("skipped", 0),
         "endpoints": len(cov.get("endpoints", [])),
     }
+    # Mid-scan warning when the matrix is empty but web work has happened
+    # — only shown when not in CTF mode (CTF runs intentionally skip the matrix).
+    web_work_done = any(t in _session_tools_called for t in ("httpx", "spider", "ffuf", "nuclei"))
+    if (
+        meta.get("total_cells", 0) == 0
+        and web_work_done
+        and not _has_ctf_flag(data)
+    ):
+        result["coverage_warning"] = (
+            "MATRIX EMPTY: web tools have run but no endpoints are registered. "
+            "Register every discovered endpoint with report(action='coverage', "
+            "data={'type': 'endpoint', 'path': ..., 'method': ..., 'params': [...], "
+            "'discovered_by': 'spider'}). The matrix drives Phase 2's systematic "
+            "per-cell testing and prevents you from forgetting which params you tested. "
+            "complete_scan will be blocked until at least one endpoint is registered."
+        )
     if remaining:
         result["remaining"] = {
             "cost_usd": remaining.get("cost_remaining_usd", 0),
