@@ -61,6 +61,10 @@ Scan lifecycle and infrastructure.
 
 Skills are slash commands that contain full structured workflows. In Claude Code they appear via `/skill-name`; in opencode they appear as `/command-name`. Always prefer invoking a skill over improvising a workflow from scratch — the skill files contain all chaining rules, tool sequences, and completion gates.
 
+**Skill chaining (how to invoke a sub-skill mid-workflow):**
+- **Claude Code**: use the Skill tool — `skill: "<name>", args: "<arguments>"`
+- **opencode / other clients**: read the skill command file at `~/.config/opencode/commands/<name>.md` and follow its workflow inline with the provided arguments
+
 | Command | Purpose | Invoke when |
 |---------|---------|-------------|
 | `/pentester` | Full pentest orchestrator — recon → exploitation → report | General web/network pentest request |

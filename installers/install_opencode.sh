@@ -94,10 +94,18 @@ cp "$REPO_DIR/skills/pentester.md" "$OPENCODE_COMMANDS_DIR/pentester.md"
 ok "/pentester command installed"
 
 # Skill commands — each gets its own file
+_SKILL_MISSING=()
+_SKILL_OK=0
 _install_skill() {
     local name="$1"
     local src="$2"
+    if [ ! -f "$src" ]; then
+        warn "Skill /${name} source not found: $src (skipping)"
+        _SKILL_MISSING+=("$name")
+        return
+    fi
     cp "$src" "$OPENCODE_COMMANDS_DIR/${name}.md"
+    _SKILL_OK=$((_SKILL_OK + 1))
 }
 
 _install_skill "analyze-cve"            "$REPO_DIR/skills/analyze-cve/SKILL.md"
@@ -123,7 +131,10 @@ _install_skill "osint"                  "$REPO_DIR/skills/osint/SKILL.md"
 _install_skill "post-exploit"           "$REPO_DIR/skills/post-exploit/SKILL.md"
 _install_skill "ssl-tls-audit"          "$REPO_DIR/skills/ssl-tls-audit/SKILL.md"
 _install_skill "request-cves"           "$REPO_DIR/skills/request-cves/SKILL.md"
-ok "23 skill commands installed"
+ok "$_SKILL_OK skill commands installed"
+if [ ${#_SKILL_MISSING[@]} -gt 0 ]; then
+    warn "Missing skills (run \`git submodule update --init --recursive\` to fetch): ${_SKILL_MISSING[*]}"
+fi
 
 # ── Install web-exploit reference files (lazy-loaded per injection type) ─────
 echo ""
