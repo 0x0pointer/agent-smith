@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shlex
 
 KALI_IMAGE     = "pentest-agent/kali-mcp"
 KALI_CONTAINER = "pentest-kali"
@@ -139,13 +140,36 @@ def _host_rewrite(command: str) -> str:
     return command
 
 
+def _force_bash(command: str) -> str:
+    """Wrap the command in `bash -c` so bash-only syntax works.
+
+    kali-server-mcp executes commands via /bin/sh, which on Kali/Debian is
+    dash — it does NOT support `[[ ]]`, arrays, `<(...)`, brace expansion,
+    `==` in test, and other bashisms. Agents routinely produce bash-shaped
+    one-liners, and without this wrapper every such command hits
+    `[[: not found` and silently returns a partial or empty result.
+
+    The command is quoted with `shlex.quote` so inner quotes, `$`, and
+    backslashes survive intact. Already-wrapped commands (`bash -c '...'`)
+    end up double-wrapped, which is harmless: the outer bash invokes the
+    inner bash.
+    """
+    if not command.strip():
+        return command
+    return f"bash -c {shlex.quote(command)}"
+
+
 async def exec_command(command: str, timeout: int = 600) -> str:
     """
     Run a shell command via the kali-server-mcp HTTP API.
     Auto-starts the container if it isn't already running.
     localhost/127.0.0.1 are transparently rewritten to host.docker.internal.
+    Commands are wrapped in `bash -c` so bashisms like `[[`, arrays, and
+    process substitution work (the upstream /bin/sh is dash, which does not
+    support any of these).
     """
     command = _host_rewrite(command)
+    command = _force_bash(command)
     import aiohttp
 
     ok, msg = await ensure_running()

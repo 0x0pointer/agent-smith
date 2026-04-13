@@ -121,6 +121,14 @@ RUN (apt-get update && apt-get install -y --no-install-recommends nodejs npm \
     && rm -rf /var/lib/apt/lists/* \
     && npm install -g promptfoo@0.121.2) || true
 
+# Exploitation payload generators
+# phpggc — PHP deserialization gadget-chain generator (Laravel, Symfony,
+# Twig, Monolog, Guzzle, SwiftMailer, Yii, ...). Used for exploiting
+# PHP unserialize / phar:// sinks. Ships `phpggc` binary + a chains/
+# directory with every supported framework/version combination.
+RUN git clone --depth=1 https://github.com/ambionics/phpggc /opt/phpggc \
+    && ln -s /opt/phpggc/phpggc /usr/local/bin/phpggc
+
 # Layer 11: container & K8s security
 # trivy — container image vulnerability scanner
 # kube-bench — CIS Kubernetes Benchmark auditor
