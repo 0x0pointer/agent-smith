@@ -38,7 +38,15 @@ jobs:
             --cov-report=term-missing \
             -v
 
+      # Skip SonarCloud on Dependabot PRs: Dependabot-triggered workflows run
+      # in an isolated security context and cannot read repository secrets
+      # (including SONAR_TOKEN), so the scan fails with "Project not found".
+      # The alternative fix — adding a Dependabot-specific SONAR_TOKEN secret
+      # in repo settings — is cleaner but requires manual admin action. Until
+      # that's set up, skip the scan on Dependabot PRs entirely so dependency
+      # bumps don't block on a failing quality gate.
       - name: SonarCloud Scan
+        if: github.actor != 'dependabot[bot]'
         uses: SonarSource/sonarcloud-github-action@ba3875ecf642b2129de2b589510c81a8b53dbf4e # master
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
