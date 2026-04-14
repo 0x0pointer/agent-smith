@@ -32,6 +32,8 @@ async def session(action: str, options: dict | None = None) -> str:
 
     set_skill options:
       skill= (name of the active skill, e.g. "pentester", "ai-redteam")
+      reason= (why this skill was chosen — shown in logs)
+      chained_from= (parent skill name when chaining, omit for first skill)
 
     set_step options:
       step= (current workflow step, e.g. "5_nuclei_scan")
@@ -411,7 +413,11 @@ def _determine_resume_step(current: dict, tools_run: set[str]) -> str:
     }
     for step, tools in step_tools.items():
         if step == "6a":
-            if "web-exploit" not in current.get("skill_history", []):
+            skill_names = [
+                (s["skill"] if isinstance(s, dict) else s)
+                for s in current.get("skill_history", [])
+            ]
+            if "web-exploit" not in skill_names:
                 return "6a (chain /web-exploit with endpoint inventory)"
         elif tools and not any(t in tools_run for t in tools):
             return f"{step} ({', '.join(tools)})"
@@ -587,9 +593,10 @@ def _do_pre_chain(opts):
     meta = cov.get("meta", {})
     data = findings_store._load()
 
-    # Set the new skill
-    scan_session.set_skill(next_skill)
-    log.note(f"Pre-chain checkpoint: {prev_skill} -> {next_skill}")
+    # Set the new skill and log the chain decision
+    chain_reason = f"chained from /{prev_skill}"
+    scan_session.set_skill(next_skill, reason=chain_reason, chained_from=prev_skill)
+    log.skill_start(next_skill, reason=chain_reason, chained_from=prev_skill)
 
     result = {
         "action": "pre_chain",
@@ -617,9 +624,11 @@ def _do_pre_chain(opts):
 
 def _do_set_skill(opts):
     skill_name = opts.get("skill", "")
+    reason = opts.get("reason", "")
+    chained_from = opts.get("chained_from", "")
     if not skill_name:
         return "Error: 'skill' option is required"
-    result = scan_session.set_skill(skill_name)
+    result = scan_session.set_skill(skill_name, reason=reason, chained_from=chained_from)
     if result is None:
         return "No active running session — cannot set skill."
 
@@ -630,10 +639,10 @@ def _do_set_skill(opts):
             scan_session.satisfy_gate(gate["id"], skill_name)
             satisfied_gates.append(gate["id"])
 
-    msg = f"Active skill set to: {skill_name}"
+    log.skill_start(skill_name, reason=reason, chained_from=chained_from)
+    msg = f"Skill '{skill_name}' logged"
     if satisfied_gates:
         msg += f" (satisfied gate(s): {', '.join(satisfied_gates)})"
-    log.note(msg)
     return msg
 
 

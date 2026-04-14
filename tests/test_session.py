@@ -228,10 +228,24 @@ def test_start_resets_cost_tracker():
 # Skill tracking
 # ---------------------------------------------------------------------------
 
+def _skill_names(sess):
+    """Extract ordered list of skill names from the rich skill_history."""
+    return [e["skill"] for e in sess["skill_history"]]
+
+
 def test_start_with_skill():
     sess = core.session.start("example.com", skill="pentester")
     assert sess["skill"] == "pentester"
-    assert sess["skill_history"] == ["pentester"]
+    assert _skill_names(sess) == ["pentester"]
+
+
+def test_start_skill_history_entry_has_required_keys():
+    sess = core.session.start("example.com", skill="pentester")
+    entry = sess["skill_history"][0]
+    assert entry["skill"] == "pentester"
+    assert entry["reason"] == "session start"
+    assert entry["chained_from"] is None
+    assert "timestamp" in entry
 
 
 def test_start_without_skill():
@@ -249,14 +263,43 @@ def test_set_skill_updates_active():
 def test_set_skill_appends_to_history():
     core.session.start("example.com", skill="pentester")
     core.session.set_skill("ai-redteam")
-    assert core.session.get()["skill_history"] == ["pentester", "ai-redteam"]
+    assert _skill_names(core.session.get()) == ["pentester", "ai-redteam"]
 
 
 def test_set_skill_no_duplicates_in_history():
     core.session.start("example.com", skill="pentester")
     core.session.set_skill("ai-redteam")
     core.session.set_skill("pentester")
-    assert core.session.get()["skill_history"] == ["pentester", "ai-redteam"]
+    assert _skill_names(core.session.get()) == ["pentester", "ai-redteam"]
+
+
+def test_set_skill_stores_reason():
+    core.session.start("example.com")
+    core.session.set_skill("web-exploit", reason="web app confirmed; systematic testing needed")
+    entry = core.session.get()["skill_history"][0]
+    assert entry["reason"] == "web app confirmed; systematic testing needed"
+
+
+def test_set_skill_stores_chained_from():
+    core.session.start("example.com", skill="pentester")
+    core.session.set_skill("web-exploit", reason="endpoints found", chained_from="pentester")
+    entry = core.session.get()["skill_history"][1]
+    assert entry["chained_from"] == "pentester"
+
+
+def test_set_skill_chained_from_none_when_omitted():
+    core.session.start("example.com")
+    core.session.set_skill("pentester", reason="initial skill")
+    entry = core.session.get()["skill_history"][0]
+    assert entry["chained_from"] is None
+
+
+def test_set_skill_history_entry_has_timestamp():
+    core.session.start("example.com")
+    core.session.set_skill("pentester")
+    entry = core.session.get()["skill_history"][0]
+    assert "timestamp" in entry
+    assert entry["timestamp"]  # non-empty
 
 
 def test_set_skill_returns_none_without_session():
@@ -275,7 +318,8 @@ def test_skill_persisted_to_file(tmp_path, monkeypatch):
     core.session.start("example.com", skill="pentester")
     data = json.loads((tmp_path / "session.json").read_text())
     assert data["skill"] == "pentester"
-    assert data["skill_history"] == ["pentester"]
+    assert data["skill_history"][0]["skill"] == "pentester"
+    assert data["skill_history"][0]["reason"] == "session start"
 
 
 # ---------------------------------------------------------------------------

@@ -11,6 +11,7 @@ tool_result(name, result)    — tool returned
 finding(severity, title, target)
 diagram(title)
 note(message)                — explicit reasoning / decision note from Claude
+skill_start(name, reason, chained_from)  — skill selected (SKILL_START) or chained (SKILL_CHAIN)
 """
 from __future__ import annotations
 
@@ -82,3 +83,18 @@ def diagram(title: str) -> None:
 def note(message: str) -> None:
     """Log a reasoning note or decision written explicitly by Claude."""
     _log.info("NOTE         %s", message)
+
+
+def skill_start(name: str, reason: str = "", chained_from: str = "") -> None:
+    """Log a skill invocation decision with reasoning and optional chain context.
+
+    Writes SKILL_CHAIN when the agent is chaining from a parent skill, or
+    SKILL_START for the initial skill selection.
+    """
+    if chained_from:
+        _log.info(
+            "SKILL_CHAIN  %-20s  chained_from=%-20s  reason=%s",
+            name, chained_from, reason,
+        )
+    else:
+        _log.info("SKILL_START  %-20s  reason=%s", name, reason)

@@ -112,7 +112,14 @@ def start(
         "stop_reason":  None,
         "limits":       limits,
         "skill":         skill,
-        "skill_history": [skill] if skill else [],
+        "skill_history": [
+            {
+                "skill":        skill,
+                "reason":       "session start",
+                "chained_from": None,
+                "timestamp":    datetime.now(timezone.utc).isoformat(),
+            }
+        ] if skill else [],
         "tools_called":  [],
         "current_step":  None,
         "gates":         [],          # triggered gates that block completion
@@ -179,14 +186,29 @@ def get() -> dict | None:
     return _current
 
 
-def set_skill(skill_name: str) -> dict | None:
-    """Update the active skill (e.g. when chaining skills during a session)."""
+def set_skill(
+    skill_name: str,
+    reason: str = "",
+    chained_from: str = "",
+) -> dict | None:
+    """Update the active skill (e.g. when chaining skills during a session).
+
+    Each call appends a rich entry to skill_history with the reason for the
+    choice and the parent skill when chaining.  Duplicate skill names are
+    silently skipped so re-invoking the same skill mid-session is idempotent.
+    """
     global _current
     if _current is None or _current["status"] != "running":
         return None
     _current["skill"] = skill_name
-    if skill_name not in _current["skill_history"]:
-        _current["skill_history"].append(skill_name)
+    existing_skills = [e["skill"] for e in _current["skill_history"]]
+    if skill_name not in existing_skills:
+        _current["skill_history"].append({
+            "skill":        skill_name,
+            "reason":       reason,
+            "chained_from": chained_from or None,
+            "timestamp":    datetime.now(timezone.utc).isoformat(),
+        })
     _flush()
     return _current
 

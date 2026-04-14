@@ -55,7 +55,22 @@ Scan lifecycle and infrastructure.
 - `action="start_kali"` / `action="stop_kali"` — Kali container lifecycle
 - `action="start_metasploit"` / `action="stop_metasploit"` — Metasploit container lifecycle
 - `action="pull_images"` — pre-pull all Docker images
+- `action="set_skill"` — options: `{skill, reason, chained_from}` — log skill selection with reasoning; **call this before invoking any skill** via the Skill tool
 - `action="set_codebase"` — options: `{path}` — set local codebase for semgrep/trufflehog
+
+## Skill Logging (mandatory)
+
+Before invoking **any** skill via the Skill tool, always call:
+
+```
+session(action="set_skill", options={
+  "skill": "<skill-name>",
+  "reason": "<1–2 sentences explaining why you chose this skill>",
+  "chained_from": "<parent skill name when chaining; omit for the first skill>"
+})
+```
+
+This writes a `SKILL_START` or `SKILL_CHAIN` entry to `pentest.log` and enriches `session.json`'s `skill_history` with the decision context. It is mandatory — always call it immediately before the Skill tool invocation.
 
 ## Available Skills
 
