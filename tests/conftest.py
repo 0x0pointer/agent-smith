@@ -8,11 +8,31 @@ Key concerns handled here:
 - File writes from cost/session modules are redirected to tmp_path so the repo root stays clean.
 """
 import asyncio
+import logging
 import pytest
 import core.cost
 import core.session
 import core.findings
 import core.coverage
+
+
+@pytest.fixture(autouse=True)
+def isolate_logger():
+    """Remove the file handler from the pentest logger during tests.
+
+    Without this, every test that calls core.logger.* writes to the real
+    logs/pentest.log, polluting it with test entries that look like live
+    pentest activity — making the Logs and Skills tabs misleading.
+    Tests that need to assert log output should use pytest's caplog fixture,
+    which captures in-memory records regardless of this change.
+    """
+    logger = logging.getLogger("pentest")
+    file_handlers = [h for h in logger.handlers if isinstance(h, logging.FileHandler)]
+    for h in file_handlers:
+        logger.removeHandler(h)
+    yield
+    for h in file_handlers:
+        logger.addHandler(h)
 
 
 @pytest.fixture(autouse=True)
