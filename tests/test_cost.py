@@ -123,3 +123,93 @@ def test_multiple_tools_total_raw_tokens():
     core.cost.finish(id2, "x" * 80)   # 20 tokens
     summary = core.cost.get_summary()
     assert summary["total_output_tokens"] == 30
+
+
+# ---------------------------------------------------------------------------
+# flush() — public alias
+# ---------------------------------------------------------------------------
+
+def test_flush_is_callable():
+    """flush() is a public API; calling it should not raise."""
+    core.cost.start("nmap")
+    core.cost.flush()  # must not raise
+
+
+def test_flush_writes_current_state(tmp_path, monkeypatch):
+    monkeypatch.setattr(core.cost, "_COST_FILE", tmp_path / "cost.json")
+    call_id = core.cost.start("tool")
+    core.cost.flush()
+    data = json.loads((tmp_path / "cost.json").read_text())
+    running = [c for c in data["breakdown"] if c["status"] == "running"]
+    assert len(running) == 1
+    assert running[0]["tool"] == "tool"
+
+    core.cost.finish(call_id, "done")
+    core.cost.flush()
+    data = json.loads((tmp_path / "cost.json").read_text())
+    assert data["tool_calls_done"] == 1
+
+
+# ---------------------------------------------------------------------------
+# _load_from_file() — MCP restart recovery
+# ---------------------------------------------------------------------------
+
+def test_load_from_file_no_file_is_noop(tmp_path, monkeypatch):
+    """Missing session_cost.json leaves module state clean."""
+    monkeypatch.setattr(core.cost, "_COST_FILE", tmp_path / "nonexistent.json")
+    monkeypatch.setattr(core.cost, "_calls", [])
+    core.cost._load_from_file()
+    assert core.cost._calls == []
+
+
+def test_load_from_file_restores_calls(tmp_path, monkeypatch):
+    """Persisted breakdown is loaded back into _calls."""
+    cost_file = tmp_path / "session_cost.json"
+    monkeypatch.setattr(core.cost, "_COST_FILE", cost_file)
+
+    # Write a snapshot with one done call
+    snapshot = {
+        "session_started": "2025-01-01T00:00:00+00:00",
+        "breakdown": [
+            {
+                "id": "aaa",
+                "tool": "nmap",
+                "status": "done",
+                "chars": 100,
+                "tokens": 25,
+                "started": "2025-01-01T00:00:01+00:00",
+                "finished": "2025-01-01T00:00:02+00:00",
+            }
+        ],
+    }
+    cost_file.write_text(json.dumps(snapshot))
+
+    monkeypatch.setattr(core.cost, "_calls", [])
+    monkeypatch.setattr(core.cost, "_session_start", "placeholder")
+    core.cost._load_from_file()
+
+    assert len(core.cost._calls) == 1
+    assert core.cost._calls[0]["tool"] == "nmap"
+    assert core.cost._session_start == "2025-01-01T00:00:00+00:00"
+
+
+def test_load_from_file_empty_breakdown_is_noop(tmp_path, monkeypatch):
+    """Empty breakdown leaves _calls unchanged (fresh session)."""
+    cost_file = tmp_path / "session_cost.json"
+    monkeypatch.setattr(core.cost, "_COST_FILE", cost_file)
+    cost_file.write_text(json.dumps({"session_started": "x", "breakdown": []}))
+
+    monkeypatch.setattr(core.cost, "_calls", [])
+    core.cost._load_from_file()
+    assert core.cost._calls == []
+
+
+def test_load_from_file_corrupt_json_is_noop(tmp_path, monkeypatch):
+    """Corrupt JSON is silently ignored — _calls stays empty."""
+    cost_file = tmp_path / "session_cost.json"
+    monkeypatch.setattr(core.cost, "_COST_FILE", cost_file)
+    cost_file.write_text("not valid json {{{{")
+
+    monkeypatch.setattr(core.cost, "_calls", [])
+    core.cost._load_from_file()
+    assert core.cost._calls == []
