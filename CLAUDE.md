@@ -99,7 +99,7 @@ Skills are slash commands that contain full structured workflows. In Claude Code
 | `/metasploit` | Exploit validation and exploitation via Metasploit Framework | CVE to exploit; need controlled exploitation |
 | `/reverse-shell` | Reverse shell payload generation and listener management | Need shell on target system |
 | `/analyze-cve` | CVE exploitability analysis, code path tracing, Burp PoC generation | Known CVE in a dependency |
-| `/threat-model` | PASTA framework + 4-question threat model | Architecture or design review |
+| `/threat-modeling` | PASTA framework + 4-question threat model | Architecture or design review |
 | `/aikido-triage` | Triage Aikido security CSV against local codebase; verdict each finding | Aikido CSV scan results provided |
 | `/gh-export` | Format all confirmed findings as GitHub issue markdown blocks | End of pentest; ready to file issues |
 | `/remediate` | Fix vulnerabilities in source code | Post-finding code remediation needed |
