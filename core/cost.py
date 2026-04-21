@@ -120,5 +120,35 @@ def get_summary() -> dict:
 
 # ── Internal ──────────────────────────────────────────────────────────────────
 
+def flush() -> None:
+    """Persist current call state to disk (public alias for use by other modules)."""
+    _flush()
+
+
 def _flush() -> None:
     _COST_FILE.write_text(json.dumps(get_summary(), indent=2))
+
+
+def _load_from_file() -> None:
+    """Restore call state from session_cost.json after an MCP process restart.
+
+    Called once at module load time.  Only restores if the persisted file
+    has a non-empty breakdown — a fresh MCP start with no prior session is a
+    no-op.  This keeps limit-checking accurate even when the process restarts
+    mid-scan (without this, cost appears $0 after restart and limits are never
+    hit).
+    """
+    global _session_start, _calls
+    try:
+        if not _COST_FILE.exists():
+            return
+        data = json.loads(_COST_FILE.read_text())
+        breakdown = data.get("breakdown", [])
+        if breakdown:
+            _session_start = data.get("session_started", _session_start)
+            _calls = breakdown
+    except Exception:
+        pass  # silently ignore — fresh in-memory state is safe
+
+
+_load_from_file()

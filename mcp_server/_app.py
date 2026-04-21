@@ -63,6 +63,30 @@ def _record(tool_name: str) -> None:
     scan_session.add_tool_called(tool_name)
 
 
+def _rehydrate_tools() -> None:
+    """Repopulate _session_tools_called from session.json after an MCP process restart.
+
+    Without this, all in-memory tool tracking is lost on restart and completion
+    gates (httpx→spider, coverage matrix checks) would incorrectly report that
+    no web tools were run, even for an active scan.
+    """
+    import json as _json
+    import os as _os
+    _session_file = _os.path.join(_os.path.dirname(_os.path.dirname(__file__)), "session.json")
+    try:
+        if not _os.path.isfile(_session_file):
+            return
+        data = _json.loads(open(_session_file).read())
+        if data.get("status") == "running":
+            for tool in data.get("tools_called", []):
+                _session_tools_called.add(tool)
+    except Exception:
+        pass  # silently ignore — fresh set is safe
+
+
+_rehydrate_tools()
+
+
 # ── Parameter coercion ────────────────────────────────────────────────────
 
 def _ensure_dict(value):

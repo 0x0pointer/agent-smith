@@ -308,6 +308,41 @@
     .cov-tooltip strong { color: #f0f6fc; }
     .cov-tooltip .cov-tt-status { text-transform: uppercase; font-size: 0.7rem; font-weight: 700; }
 
+    /* ── Skills tab ── */
+    .skills-summary {
+      display: flex; gap: 0.6rem; flex-wrap: wrap; margin-bottom: 1rem; align-items: center;
+    }
+    .skills-grid {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 0.6rem;
+    }
+    .skills-group-header {
+      font-size: 0.72rem; font-weight: 600; color: #6e7681; text-transform: uppercase;
+      letter-spacing: .06em; margin: 1rem 0 0.4rem; padding-bottom: 0.25rem;
+      border-bottom: 1px solid #21262d; grid-column: 1 / -1;
+    }
+    .skill-card {
+      background: #161b22; border: 1px solid #30363d; border-radius: 6px;
+      padding: 0.7rem 0.9rem; display: flex; align-items: flex-start; gap: 0.6rem;
+      transition: border-color .15s;
+    }
+    .skill-card.invoked  { border-color: #238636; }
+    .skill-card.required { border-color: #d29922; }
+    .skill-card.invoked.required { border-color: #238636; }
+    .skill-status { font-size: 1rem; flex-shrink: 0; margin-top: 0.05rem; line-height: 1; }
+    .skill-body   { flex: 1; min-width: 0; }
+    .skill-name   { font-family: monospace; font-size: 0.85rem; font-weight: 600; color: #58a6ff; }
+    .skill-name.invoked-name { color: #3fb950; }
+    .skill-desc   { font-size: 0.77rem; color: #8b949e; margin-top: 0.2rem; line-height: 1.4; }
+    .skill-invoked-at { font-size: 0.71rem; color: #3fb950; margin-top: 0.3rem; }
+    .skill-reason     { font-size: 0.71rem; color: #8b949e; margin-top: 0.1rem; font-style: italic; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .skill-chained    { font-size: 0.71rem; color: #6e7681; margin-top: 0.05rem; }
+    .skill-required-badge {
+      display: inline-block; padding: 0.1rem 0.35rem; border-radius: 3px;
+      font-size: 0.63rem; font-weight: 700; background: rgba(210,153,34,.2);
+      color: #d29922; margin-top: 0.3rem; margin-right: 0.3rem;
+    }
+    .skill-gate-reason { font-size: 0.71rem; color: #d29922; margin-top: 0.1rem; }
+
     /* ── Logs tab ── */
     #log-toolbar {
       display: flex; align-items: center; gap: 1rem; margin-bottom: 0.75rem;
@@ -362,6 +397,7 @@
   <button class="tab-btn"        onclick="switchTab('topology')">Topology</button>
   <button class="tab-btn"        onclick="switchTab('components')">Components</button>
   <button class="tab-btn"        onclick="switchTab('coverage')" id="tab-btn-coverage">Coverage</button>
+  <button class="tab-btn"        onclick="switchTab('skills')" id="tab-btn-skills">Skills</button>
   <button class="tab-btn"        onclick="switchTab('threat-model')" id="tab-btn-threat-model">Threat Model</button>
   <button class="tab-btn"        onclick="switchTab('logs')">Logs</button>
 </nav>
@@ -390,6 +426,12 @@
   <div id="coverage-wrap"><div class="empty-placeholder">No coverage data yet — run a scan with web-exploit.</div></div>
 </div>
 <div id="cov-tooltip" class="cov-tooltip" style="display:none"></div>
+
+<!-- ── Tab: Skills ───────────────────────────────────────────────────────── -->
+<div id="tab-skills" class="tab-content">
+  <div id="skills-summary"></div>
+  <div id="skills-wrap"><div class="empty-placeholder">No active scan session — start a scan to track skill usage.</div></div>
+</div>
 
 <!-- ── Tab: Threat Model ─────────────────────────────────────────────────── -->
 <div id="tab-threat-model" class="tab-content">
@@ -465,7 +507,7 @@
   let _logLines  = [];
 
   // ── Tab switching ─────────────────────────────────────────────────────────
-  const TAB_NAMES = ['findings', 'topology', 'components', 'coverage', 'threat-model', 'logs'];
+  const TAB_NAMES = ['findings', 'topology', 'components', 'coverage', 'skills', 'threat-model', 'logs'];
 
   function switchTab(name) {
     _activeTab = name;
@@ -477,6 +519,7 @@
     if (name === 'topology')     renderTopology(allData.diagrams || []);
     if (name === 'components')   renderComponentMap(allData.findings || []);
     if (name === 'coverage')     pollCoverage();
+    if (name === 'skills')       pollSkills();
     if (name === 'threat-model') pollThreatModel();
     if (name === 'logs')         pollLogs();
   }
@@ -1238,10 +1281,152 @@
       .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
 
+  // ── Skills tab ────────────────────────────────────────────────────────────
+  const SKILLS_CATALOG = [
+    // Orchestration
+    { name: 'pentester',              group: 'Orchestration',  desc: 'Full pentest orchestrator — recon, exploitation, reporting' },
+    // Reconnaissance
+    { name: 'osint',                  group: 'Recon',          desc: 'OSINT — subdomain enum, email harvest, Shodan, CT logs, Wayback' },
+    { name: 'ssl-tls-audit',          group: 'Recon',          desc: 'TLS/SSL audit — protocol versions, ciphers, certificate chain' },
+    { name: 'email-security',         group: 'Recon',          desc: 'Email security — SPF/DKIM/DMARC, open relay, spoofing' },
+    // Exploitation
+    { name: 'web-exploit',            group: 'Exploitation',   desc: 'Web exploitation — SQLi, XSS, SSTI, SSRF, auth bypass, business logic' },
+    { name: 'codebase',               group: 'Exploitation',   desc: 'White-box OWASP ASVS 5.0 source code review' },
+    { name: 'ai-redteam',             group: 'Exploitation',   desc: 'AI/LLM red-team — OWASP LLM Top 10, prompt injection, jailbreaks' },
+    { name: 'credential-audit',       group: 'Exploitation',   desc: 'Credential testing — brute-force, spraying, MFA bypass, JWT attacks' },
+    { name: 'analyze-cve',            group: 'Exploitation',   desc: 'CVE exploitability analysis — code path tracing, Burp PoC' },
+    { name: 'metasploit',             group: 'Exploitation',   desc: 'Exploit validation and exploitation via Metasploit Framework' },
+    { name: 'aikido-triage',          group: 'Exploitation',   desc: 'Triage Aikido security CSV against local codebase' },
+    // Post-Exploitation
+    { name: 'post-exploit',           group: 'Post-Exploit',   desc: 'Privesc (Linux/Windows), persistence, credential harvesting, pivot' },
+    { name: 'reverse-shell',          group: 'Post-Exploit',   desc: 'Reverse shell payload generation and listener management' },
+    { name: 'lateral-movement',       group: 'Post-Exploit',   desc: 'Pass-the-hash, Kerberoasting, NTLM relay, WMI/WinRM abuse' },
+    { name: 'container-k8s-security', group: 'Post-Exploit',   desc: 'Container escape, K8s RBAC, pod security, etcd, secret enumeration' },
+    { name: 'cloud-security',         group: 'Post-Exploit',   desc: 'AWS/Azure/GCP — IAM escalation, public storage, serverless, IMDS' },
+    { name: 'ad-assessment',          group: 'Post-Exploit',   desc: 'Active Directory — GPO, ADCS (ESC1-8), BloodHound paths, trusts' },
+    { name: 'network-assess',         group: 'Post-Exploit',   desc: 'VLAN hopping, ARP spoofing, LLMNR/NBT-NS, SNMP, NFS, segmentation' },
+    // Reporting
+    { name: 'threat-modeling',        group: 'Reporting',      desc: 'PASTA framework + 4-question threat model with STRIDE analysis' },
+    { name: 'remediate',              group: 'Reporting',      desc: 'Fix vulnerabilities in source code with patch generation' },
+    { name: 'request-cves',           group: 'Reporting',      desc: 'Generate MITRE CVE request packages and GitHub Security Advisory drafts' },
+    { name: 'gh-export',              group: 'Reporting',      desc: 'Format all confirmed findings as GitHub issue markdown blocks' },
+  ];
+
+  let _skillsSession = null;
+
+  async function pollSkills() {
+    if (scanDone) return;
+    try {
+      const r = await fetch(`/api/session?_=${Date.now()}`);
+      if (!r.ok) return;
+      _skillsSession = await r.json();
+      renderSkills();
+      // Update tab badge
+      const history = _skillsSession.skill_history || [];
+      const invokedNames = new Set(history.map(h => h.skill).filter(Boolean));
+      const btn = document.getElementById('tab-btn-skills');
+      if (btn) btn.textContent = `Skills (${invokedNames.size}/${SKILLS_CATALOG.length})`;
+    } catch { /* ignore */ }
+  }
+
+  function renderSkills() {
+    const wrap   = document.getElementById('skills-wrap');
+    const sumWrap = document.getElementById('skills-summary');
+    const s = _skillsSession;
+
+    if (!s || !s.target) {
+      wrap.innerHTML = '<div class="empty-placeholder">No active scan session — start a scan to track skill usage.</div>';
+      sumWrap.innerHTML = '';
+      return;
+    }
+
+    // Build invoked-skills map: name → first history entry
+    const history = s.skill_history || [];
+    const invokedMap = {};
+    for (const h of history) {
+      if (h.skill && !invokedMap[h.skill]) invokedMap[h.skill] = h;
+    }
+
+    // Build required-skills map: name → gate info
+    const requiredMap = {};
+    for (const gate of (s.gates || [])) {
+      if (gate.status === 'pending') {
+        for (const skill of (gate.required_skills || [])) {
+          if (!requiredMap[skill]) requiredMap[skill] = gate;
+        }
+      }
+    }
+
+    const invokedCount  = Object.keys(invokedMap).length;
+    const requiredCount = Object.keys(requiredMap).length;
+
+    sumWrap.innerHTML = [
+      `<span class="cov-stat cov-tested">${invokedCount} / ${SKILLS_CATALOG.length} invoked</span>`,
+      requiredCount
+        ? `<span class="cov-stat cov-vulnerable">${requiredCount} gate-required</span>`
+        : '',
+      `<span style="font-size:.8rem;color:#6e7681;align-self:center">active skill: <strong style="color:#f0f6fc">${s.skill ? '/'+s.skill : '—'}</strong></span>`,
+    ].join('');
+
+    // Group skills
+    const groups = {};
+    for (const sk of SKILLS_CATALOG) {
+      if (!groups[sk.group]) groups[sk.group] = [];
+      groups[sk.group].push(sk);
+    }
+
+    let html = '<div class="skills-grid">';
+    for (const [groupName, skills] of Object.entries(groups)) {
+      html += `<div class="skills-group-header">${esc(groupName)}</div>`;
+      for (const sk of skills) {
+        const inv  = invokedMap[sk.name];
+        const req  = requiredMap[sk.name];
+        const isActive = s.skill === sk.name;
+        let cardClass = 'skill-card';
+        if (inv)  cardClass += ' invoked';
+        if (req && !inv) cardClass += ' required';
+
+        const statusIcon = inv
+          ? '<span class="skill-status" style="color:#3fb950">&#10003;</span>'
+          : req
+            ? '<span class="skill-status" style="color:#d29922">&#9888;</span>'
+            : '<span class="skill-status" style="color:#30363d">&#9711;</span>';
+
+        const nameClass = inv ? 'skill-name invoked-name' : 'skill-name';
+        const activeDot = isActive ? ' <span style="font-size:.65rem;color:#58a6ff;background:rgba(88,166,255,.15);padding:.1rem .3rem;border-radius:3px;font-style:normal">ACTIVE</span>' : '';
+
+        let meta = '';
+        if (inv) {
+          const ts = inv.timestamp ? new Date(inv.timestamp).toLocaleTimeString() : '';
+          const chainedFrom = inv.chained_from ? `<div class="skill-chained">chained from /${esc(inv.chained_from)}</div>` : '';
+          const reason = inv.reason && inv.reason !== 'session start'
+            ? `<div class="skill-reason">${esc(inv.reason)}</div>`
+            : '';
+          meta = `<div class="skill-invoked-at">Invoked${ts ? ' at ' + ts : ''}</div>${reason}${chainedFrom}`;
+        } else if (req) {
+          meta = `<div><span class="skill-required-badge">GATE REQUIRED</span></div>
+                  <div class="skill-gate-reason">${esc(req.trigger)}</div>`;
+        }
+
+        html += `<div class="${cardClass}">
+          ${statusIcon}
+          <div class="skill-body">
+            <div class="${nameClass}">/${esc(sk.name)}${activeDot}</div>
+            <div class="skill-desc">${esc(sk.desc)}</div>
+            ${meta}
+          </div>
+        </div>`;
+      }
+    }
+    html += '</div>';
+    wrap.innerHTML = html;
+  }
+
   // ── Polling intervals ─────────────────────────────────────────────────────
   setInterval(pollFindings,    POLL_MS);
   setInterval(pollSession,     POLL_MS);
   setInterval(pollCoverage,    POLL_MS);
+  setInterval(pollSkills,      POLL_MS);
   setInterval(pollThreatModel, POLL_MS);
   setInterval(() => { if (!scanDone && lastOk && _activeTab === 'findings') renderFindings(); }, 1000);
   setInterval(() => { if (!scanDone && _activeTab === 'logs') pollLogs(); }, 3000);
@@ -1250,6 +1435,7 @@
   pollFindings();
   pollSession();
   pollCoverage();
+  pollSkills();
   pollThreatModel();
   pollLogs();
 </script>

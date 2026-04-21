@@ -4,12 +4,46 @@ Consolidated session tool — replaces scan.py and infra.py
 import asyncio
 import json
 import os
+import re
 
 from core import cost as cost_tracker
 from core import findings as findings_store
 from core import logger as log
 from core import session as scan_session
 from mcp_server._app import mcp, _ensure_dict, _session_tools_called
+
+
+# ── CTF flag pattern (e.g. CTF{...}, flag{...}, HTB{...}) ─────────────────────
+_FLAG_RE = re.compile(r'[A-Za-z0-9_]{2,10}\{[A-Za-z0-9_\-!@#$%^&*()+=,.?]{4,}\}')
+
+
+def _has_ctf_flag(data: dict) -> bool:
+    """Return True when this looks like a CTF/benchmark run.
+
+    CTF/benchmark runs are allowed to skip coverage matrix population because
+    the goal is flag extraction, not methodology auditability.  Detection:
+      1. Session explicitly started with ctf=True in session.json.
+      2. A finding contains a recognisable CTF flag pattern (e.g. CTF{...}).
+    """
+    current = scan_session.get() or {}
+    if current.get("ctf"):
+        return True
+    for f in data.get("findings", []):
+        text = f"{f.get('title', '')} {f.get('evidence', '')} {f.get('description', '')}"
+        if _FLAG_RE.search(text):
+            return True
+    return False
+
+
+def _effective_tools() -> set[str]:
+    """Return the union of in-memory tracked tools and tools persisted in session.json.
+
+    Using only _session_tools_called loses tool history after an MCP process
+    restart; using only session.json misses tools added in the current process
+    before the next flush.  Merging both gives the correct picture in all cases.
+    """
+    current = scan_session.get() or {}
+    return _session_tools_called | set(current.get("tools_called", []))
 
 
 @mcp.tool()
@@ -158,7 +192,7 @@ def _do_start(opts):
         "  /pentester /web-exploit /codebase /ai-redteam /cloud-security /ad-assessment",
         "  /network-assess /lateral-movement /credential-audit /post-exploit",
         "  /container-k8s-security /osint /ssl-tls-audit /email-security /metasploit",
-        "  /reverse-shell /analyze-cve /threat-model /aikido-triage /gh-export",
+        "  /reverse-shell /analyze-cve /threat-modeling /aikido-triage /gh-export",
         "  /remediate /request-cves",
         "  See CLAUDE.md for full skill descriptions and trigger conditions.",
     ]
@@ -179,7 +213,7 @@ def _coverage_blockers(cov: dict, ctf_mode: bool = False) -> list[str]:
     total = meta.get("total_cells", 0)
 
     # Empty matrix gate — only enforced for non-CTF runs where web work happened.
-    web_work_done = any(t in _session_tools_called for t in ("httpx", "spider", "ffuf", "nuclei"))
+    web_work_done = any(t in _effective_tools() for t in ("httpx", "spider", "ffuf", "nuclei"))
     if total == 0:
         if not ctf_mode and web_work_done:
             blockers.append(
@@ -281,7 +315,8 @@ async def _do_complete(opts):
             "application architecture before completing."
         )
 
-    if "httpx" in _session_tools_called and "spider" not in _session_tools_called:
+    effective = _effective_tools()
+    if "httpx" in effective and "spider" not in effective:
         blockers.append(
             "NO SPIDER: httpx confirmed web targets but spider was never called. "
             "Run scan(tool='spider', target=url) to crawl the application before completing."
@@ -318,9 +353,7 @@ def _do_status():
     data = findings_store._load()
     current = scan_session.get() or {}
     remaining = scan_session.remaining(summary) if current else {}
-    # Merge in-memory + persisted tool tracking for resilience
-    persisted_tools = set(current.get("tools_called", []))
-    all_tools = sorted(_session_tools_called | persisted_tools)
+    all_tools = sorted(_effective_tools())
     result = {
         "target": current.get("target", ""),
         "depth": current.get("depth", ""),
@@ -347,7 +380,7 @@ def _do_status():
     }
     # Mid-scan warning when the matrix is empty but web work has happened
     # — only shown when not in CTF mode (CTF runs intentionally skip the matrix).
-    web_work_done = any(t in _session_tools_called for t in ("httpx", "spider", "ffuf", "nuclei"))
+    web_work_done = any(t in _effective_tools() for t in ("httpx", "spider", "ffuf", "nuclei"))
     if (
         meta.get("total_cells", 0) == 0
         and web_work_done
@@ -494,7 +527,7 @@ def _do_recovery():
                 "pending_leads": [l["lead"] for l in leads],
             })
 
-    tools_run = set(_session_tools_called)
+    tools_run = _effective_tools()
     resume_step = _determine_resume_step(current, tools_run)
     integrity_warnings = _check_coverage_integrity(cov.get("matrix", []), tools_run)
 
@@ -513,7 +546,7 @@ def _do_recovery():
         "depth": current.get("depth", ""),
         "skill": current.get("skill"),
         "resume_from_step": resume_step,
-        "tools_already_run": sorted(tools_run),
+        "tools_already_run": sorted(tools_run),  # merged: in-memory + session.json
         "findings_count": len(data.get("findings", [])),
         "cost_usd": summary.get("est_cost_usd", 0),
         "remaining": remaining,
