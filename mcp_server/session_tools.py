@@ -48,15 +48,29 @@ def _effective_tools() -> set[str]:
 
 @mcp.tool()
 async def session(action: str, options: dict | None = None) -> str:
-    """Scan lifecycle management.
+    """Scan lifecycle and infrastructure management.
 
-    action  : start | complete | status | recovery | artifact
+    action  : start | complete | status | recovery | artifact | start_kali | stop_kali | start_metasploit | stop_metasploit | set_skill | set_codebase
 
-    start options: target, depth=standard (recon|standard|thorough)
+    start options:
+      target, depth=standard (recon|standard|thorough), scope=[],
+      out_of_scope=[], max_cost_usd=, max_time_minutes=, max_tool_calls=
+
     complete options: notes=
-    status: current scan state
-    recovery: resume brief after context compaction — call this after compaction
-    artifact options: id=, mode=summary (summary|head|tail|grep|full), max_chars=4000, pattern=
+
+    status: returns current scan state (target, tools run, findings, cost)
+
+    recovery: returns compact recovery brief after context compaction — tells you
+              exactly what to do next. Call this if you lost context.
+
+    artifact options:
+      id= (artifact ID from tool response), mode=summary (summary|head|tail|grep|full),
+      max_chars=4000, pattern= (regex for grep mode)
+
+    start_kali, stop_kali: Kali container lifecycle
+    start_metasploit, stop_metasploit: Metasploit container lifecycle
+    set_skill options: skill=, reason=, chained_from=
+    set_codebase options: path= (absolute path to local codebase)
     """
     opts = _ensure_dict(options) or {}
 
