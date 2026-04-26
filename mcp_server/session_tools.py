@@ -465,7 +465,16 @@ def _do_recovery():
     """Compact recovery brief — one call gives the agent everything to resume."""
     current = scan_session.get() or {}
     if not current or current.get("status") != "running":
-        return json.dumps({"error": "No active scan session to recover."})
+        # No session exists — tell the model to start one
+        return json.dumps({
+            "EXECUTE_NOW": "session(action='start', options={\"target\": \"<TARGET_URL>\", \"depth\": \"thorough\"})",
+            "status": "no_session",
+            "TOOLS": (
+                "Only use these 5 MCP tools. Do NOT use Skill or Read tools. "
+                "scan(tool, target) | kali(command) | http(action, url) | "
+                "report(action, data) | session(action)"
+            ),
+        }, indent=2)
 
     summary = cost_tracker.get_summary()
     remaining = scan_session.remaining(summary)
