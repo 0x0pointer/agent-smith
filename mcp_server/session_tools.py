@@ -182,13 +182,17 @@ def _do_start(opts):
         "Scan started.",
         f"  Target: {target} | Depth: {cfg['depth_label']} | Limits: ${lim['max_cost_usd']}/{lim['max_time_minutes']}min/{call_limit_str}",
         "",
-        "YOUR NEXT ACTION (execute immediately, do not ask questions):",
+        "EXECUTE NOW (do not ask questions, do not output text):",
         f"  scan(tool='httpx', target='{target}')",
         "",
-        "After httpx completes, run these in order:",
-        f"  scan(tool='naabu', target='{target}')  — port scan",
-        f"  scan(tool='spider', target='{target}')  — crawl endpoints",
-        f"  Then register endpoints → scan(tool='nuclei', target='{target}') → test each cell",
+        "Then in order:",
+        f"  scan(tool='naabu', target='{target}')",
+        f"  scan(tool='spider', target='{target}')",
+        f"  Register endpoints with report(action='coverage', data=...)",
+        f"  scan(tool='nuclei', target='{target}')",
+        f"  Test each coverage cell with http() or kali()",
+        "",
+        "TOOLS: Only use scan(), kali(), http(), report(), session(). Do NOT use Skill or Read.",
     ]
     return "\n".join(lines)
 
@@ -552,6 +556,11 @@ def _do_recovery():
         "coverage": f"{meta.get('tested', 0)}/{meta.get('total_cells', 0)}",
         "findings": len(data.get("findings", [])),
         "action_required": action_list,
+        "TOOLS": (
+            "Only use these 5 MCP tools. Do NOT use Skill or Read tools. "
+            "scan(tool, target) | kali(command) | http(action, url) | "
+            "report(action, data) | session(action)"
+        ),
     }
 
     return json.dumps(result, indent=2)

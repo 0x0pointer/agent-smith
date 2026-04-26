@@ -134,6 +134,6 @@ def test_effective_tools_no_session_returns_in_memory_only(monkeypatch):
 def test_do_start_returns_directive_response(coverage_file):
     """Start message must include a concrete next action, not a skill menu."""
     result = _do_start({"target": "example.com", "depth": "recon"})
-    assert "YOUR NEXT ACTION" in result
+    assert "EXECUTE NOW" in result
     assert "scan(tool='httpx'" in result
     assert "example.com" in result
