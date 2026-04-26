@@ -853,6 +853,16 @@
           scanDone = false;  // resume polling for the next scan
           renderStats([]);
           renderFindingsTable([]);
+          // Clear coverage tab
+          document.getElementById('coverage-summary').innerHTML = '';
+          document.getElementById('coverage-wrap').innerHTML =
+            '<div class="empty-placeholder">No coverage data yet — run a scan with web-exploit.</div>';
+          // Clear skills tab
+          document.getElementById('tab-skills').innerHTML =
+            '<div class="empty-placeholder">No skill data yet — start a scan.</div>';
+          // Clear topology tab
+          document.getElementById('diagrams-wrap').innerHTML =
+            '<div class="empty-placeholder">No diagrams yet.</div>';
           document.getElementById('status').innerHTML =
             '<span class="dot"></span>Live · refreshes every 5 s';
         }

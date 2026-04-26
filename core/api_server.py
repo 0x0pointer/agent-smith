@@ -226,13 +226,28 @@ async def api_delete_finding(finding_id: str) -> JSONResponse:
 
 @app.delete("/api/clear")
 async def api_clear() -> JSONResponse:
-    """Reset findings.json to empty state — clears all findings, diagrams, and session data."""
-    from core.findings import FINDINGS_FILE, _save
-    _save({
+    """Reset all scan state — findings, coverage matrix, session, cost, and threat models."""
+    from core.findings import _save as _save_findings
+    from core.coverage import reset as _reset_coverage
+
+    _save_findings({
         "meta": {"created": "", "target": ""},
         "findings": [],
         "diagrams": [],
     })
+    await _reset_coverage()
+
+    # Reset session and cost files
+    for f in (_SESSION_FILE, _COST_FILE):
+        if f.exists():
+            f.write_text("{}")
+
+    # Clear threat-model files
+    if _THREAT_MODEL_DIR.exists():
+        for f in _THREAT_MODEL_DIR.iterdir():
+            if f.is_file():
+                f.unlink()
+
     # Also kill any active tunnels
     await _cleanup_tunnels()
     return JSONResponse({"ok": True})
