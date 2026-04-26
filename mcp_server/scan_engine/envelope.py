@@ -60,9 +60,18 @@ def wrap(tool: str, raw_output: str, context: dict | None = None) -> str:
     merged_recommended = plan["recommended"] + result.recommended
     warnings = plan["warnings"]
 
-    # 4. Build envelope
+    # 4. Build envelope — prepend first required action to summary so models see it
+    summary = result.summary
+    if merged_required:
+        # Skip planner "Start scan" directives if session is already running
+        actionable = [r for r in merged_required if not r.startswith("Start scan:")]
+        if actionable:
+            summary += f"\n\nEXECUTE NEXT: {actionable[0]}"
+            if len(actionable) > 1:
+                summary += f"\n(then {len(actionable) - 1} more required action(s) in next.required)"
+
     env = Envelope(
-        summary=result.summary,
+        summary=summary,
         facts=result.facts,
         anomalies=result.anomalies,
         evidence=result.evidence,
