@@ -48,38 +48,15 @@ def _effective_tools() -> set[str]:
 
 @mcp.tool()
 async def session(action: str, options: dict | None = None) -> str:
-    """Scan lifecycle and infrastructure management.
+    """Scan lifecycle management.
 
-    action  : start | complete | status | recovery | artifact | set_skill | set_step | start_kali | stop_kali | start_metasploit | stop_metasploit | pull_images | set_codebase
+    action  : start | complete | status | recovery | artifact
 
-    start options:
-      target, depth=standard (recon|standard|thorough), scope=[],
-      out_of_scope=[], max_cost_usd=, max_time_minutes=, max_tool_calls=, skill=
-
-    complete options:
-      notes=
-
-    status: returns current scan state (target, tools run, findings, cost, skill)
-
-    recovery: returns compact recovery brief after context compaction — resume step,
-              in-progress cells with technique notes, pending escalation leads, action list
-
-    artifact options:
-      id= (artifact ID from tool response), mode=summary (summary|head|tail|grep|full),
-      max_chars=4000, pattern= (regex for grep mode)
-
-    set_skill options:
-      skill= (name of the active skill, e.g. "pentester", "ai-redteam")
-      reason= (why this skill was chosen — shown in logs)
-      chained_from= (parent skill name when chaining, omit for first skill)
-
-    set_step options:
-      step= (current workflow step, e.g. "5_nuclei_scan")
-
-    set_codebase options:
-      path= (absolute path to local codebase)
-
-    start_kali, stop_kali, start_metasploit, stop_metasploit, pull_images: no options needed
+    start options: target, depth=standard (recon|standard|thorough)
+    complete options: notes=
+    status: current scan state
+    recovery: resume brief after context compaction — call this after compaction
+    artifact options: id=, mode=summary (summary|head|tail|grep|full), max_chars=4000, pattern=
     """
     opts = _ensure_dict(options) or {}
 
