@@ -330,6 +330,12 @@ async def scan(tool: str, target: str, flags: str = "", options: dict | None = N
     """
     options = _ensure_dict(options) or {}
 
+    # Auto-start session if model skipped session(action="start")
+    current = scan_session.get()
+    if not current or current.get("status") != "running":
+        scan_session.start(target=target, depth="thorough")
+        log.note(f"Auto-started session for target={target} (model skipped session start)")
+
     handler = _DISPATCH.get(tool)
     if not handler:
         return f"Unknown tool '{tool}'. Available: {', '.join(_DISPATCH)}"
