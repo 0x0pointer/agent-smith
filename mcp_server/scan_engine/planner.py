@@ -104,10 +104,11 @@ def _add_testing_actions(required: list[str], recommended: list[str], target: st
     path = ep.get("path", "?")
     method = ep.get("method", "?")
     param = best["param"]
+    param_type = best.get("param_type", "query")
     inj = best["injection_type"]
 
     # Build concrete tool call for each injection type
-    test_cmd = _concrete_test_command(inj, target, path, method, param)
+    test_cmd = _concrete_test_command(inj, target, path, method, param, param_type)
     required.append(f"{test_cmd} (cell {best['id']})")
 
     total = len(pending)
@@ -115,19 +116,48 @@ def _add_testing_actions(required: list[str], recommended: list[str], target: st
         recommended.append(f"{total - 1} more pending cells after this one")
 
 
-def _concrete_test_command(inj: str, target: str, path: str, method: str, param: str) -> str:
+def _resolve_url(target: str, path: str, param: str, param_type: str, payload: str) -> str:
+    """Build the test URL, handling path vs query params correctly."""
+    import re
+    if param_type == "path":
+        # Replace {id} or {param_name} in path with payload
+        resolved = re.sub(r'\{[^}]+\}', payload, path, count=1)
+        return f"{target}{resolved}"
+    if param == "_endpoint":
+        # Endpoint-level test (no specific param) — just use the URL
+        return f"{target}{path}"
+    # Query param
+    return f"{target}{path}?{param}={payload}"
+
+
+def _concrete_test_command(inj: str, target: str, path: str, method: str, param: str, param_type: str = "query") -> str:
     """Return an exact tool call string for the given injection type."""
     url = f"{target}{path}"
     if inj == "sqli":
-        return f"kali(command=\"sqlmap -u '{url}?{param}=test' --batch --level=2\")"
+        if param_type == "path":
+            test_url = _resolve_url(target, path, param, param_type, "1*")
+            return f"kali(command=\"sqlmap -u '{test_url}' --batch --level=2\")"
+        return f"kali(command=\"sqlmap -u '{_resolve_url(target, path, param, param_type, 'test')}' --batch --level=2\")"
     if inj == "xss":
-        return f"http(action='request', url='{url}?{param}=<script>alert(1)</script>', method='{method}')"
+        test_url = _resolve_url(target, path, param, param_type, "<script>alert(1)</script>")
+        return f"http(action='request', url='{test_url}', method='{method}')"
     if inj == "ssti":
-        return f"http(action='request', url='{url}?{param}={{{{7*7}}}}', method='{method}')"
+        test_url = _resolve_url(target, path, param, param_type, "{{7*7}}")
+        return f"http(action='request', url='{test_url}', method='{method}')"
     if inj == "cmdi":
-        return f"http(action='request', url='{url}?{param}=;id', method='{method}')"
+        test_url = _resolve_url(target, path, param, param_type, ";id")
+        return f"http(action='request', url='{test_url}', method='{method}')"
     if inj == "ssrf":
-        return f"http(action='request', url='{url}?{param}=http://127.0.0.1:80', method='{method}')"
+        test_url = _resolve_url(target, path, param, param_type, "http://127.0.0.1:80")
+        return f"http(action='request', url='{test_url}', method='{method}')"
+    if inj == "idor":
+        # Test IDOR by accessing another user's resource
+        test_url = _resolve_url(target, path, param, param_type, "1")
+        test_url2 = _resolve_url(target, path, param, param_type, "2")
+        return f"http(action='request', url='{test_url}', method='{method}') then compare with url='{test_url2}'"
+    if inj == "traversal":
+        test_url = _resolve_url(target, path, param, param_type, "....//....//etc/passwd")
+        return f"http(action='request', url='{test_url}', method='{method}')"
     if inj == "cors":
         return f"http(action='request', url='{url}', method='GET', headers={{\"Origin\": \"https://evil.com\"}})"
     if inj == "security_headers":
