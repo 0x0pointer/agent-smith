@@ -82,7 +82,9 @@ async def _do_request(url, method, headers, body, opts):
         })
     cost_tracker.finish(call_id, result)
     log.tool_result("http_request", result)
-    return result
+
+    from mcp_server.scan_engine import wrap
+    return wrap("http_request", result, {"url": url, "method": method})
 
 
 def _do_save_poc(url, method, headers, body, opts):

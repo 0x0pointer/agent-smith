@@ -1,9 +1,11 @@
 """
 Tests for mcp_server.kali_tools — _record() call and session limit enforcement.
 """
+import json
 import pytest
 from unittest.mock import AsyncMock, patch, MagicMock
 import mcp_server._app as _app
+import mcp_server.scan_engine.artifacts as art_mod
 from mcp_server.kali_tools import kali
 
 
@@ -62,8 +64,9 @@ async def test_kali_does_not_record_when_limit_hit():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_kali_clips_long_output():
-    """Output longer than 8000 chars is clipped."""
+async def test_kali_clips_long_output(tmp_path, monkeypatch):
+    """Output longer than 8000 chars returns a budget-capped envelope."""
+    monkeypatch.setattr(art_mod, "_ARTIFACTS_DIR", tmp_path / "artifacts")
     long_output = "x" * 20_000
 
     with patch("mcp_server.kali_tools.scan_session") as mock_session, \
@@ -77,13 +80,17 @@ async def test_kali_clips_long_output():
 
         result = await kali("cat /etc/passwd")
 
+    # Result is now a scan_engine envelope, not raw output
+    parsed = json.loads(result)
+    assert "summary" in parsed
+    assert "artifact" in parsed
     assert len(result) < len(long_output)
-    assert "clipped" in result
 
 
 @pytest.mark.asyncio
-async def test_kali_returns_output_unchanged_when_short():
-    """Short output is returned verbatim."""
+async def test_kali_returns_envelope_for_short_output(tmp_path, monkeypatch):
+    """Short output is wrapped in a scan_engine envelope."""
+    monkeypatch.setattr(art_mod, "_ARTIFACTS_DIR", tmp_path / "artifacts")
     short_output = "uid=0(root) gid=0(root)\n"
 
     with patch("mcp_server.kali_tools.scan_session") as mock_session, \
@@ -97,4 +104,7 @@ async def test_kali_returns_output_unchanged_when_short():
 
         result = await kali("id")
 
-    assert result == short_output
+    parsed = json.loads(result)
+    assert "summary" in parsed
+    assert "uid=0(root)" in parsed["facts"][0]
+    assert parsed["artifact"] is not None

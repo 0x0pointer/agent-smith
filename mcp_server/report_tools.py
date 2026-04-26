@@ -89,8 +89,15 @@ async def report(action: str, data: Any) -> str:
 
       reset — clear the entire matrix (no additional fields)
     """
-    if isinstance(data, str):
-        data = json.loads(data)
+    try:
+        if isinstance(data, str):
+            data = json.loads(data)
+    except (json.JSONDecodeError, TypeError) as exc:
+        log.note(f"report({action}) data parse error: {exc} — raw: {str(data)[:200]}")
+        return f"Error: could not parse data as JSON: {exc}"
+    if not isinstance(data, dict):
+        log.note(f"report({action}) data is not a dict: {type(data).__name__}")
+        return f"Error: data must be a JSON object/dict, got {type(data).__name__}"
     if action == "finding":
         return await _do_finding(data)
     elif action == "update_finding":
@@ -274,19 +281,54 @@ async def _do_coverage(data):
     from core import coverage as cov
 
     cov_type = data.get("type", "")
+    log.note(f"coverage({cov_type}): {json.dumps(data)[:300]}")
+
+    # --- Resilience: auto-detect type from data shape ---
+    if not cov_type:
+        if "path" in data:
+            cov_type = "endpoint"
+        elif "cell_id" in data:
+            cov_type = "tested"
+        elif "updates" in data:
+            cov_type = "bulk_tested"
 
     if cov_type == "endpoint":
+        path = data.get("path", "")
+        if not path:
+            return "Error: 'path' is required for endpoint registration. Example: report(action='coverage', data={type:'endpoint', path:'/login', method:'GET', params:[{name:'q', type:'query', value_hint:'string'}]})"
+
+        # Resilience: coerce params from various model formats
+        params = data.get("params", [])
+        if isinstance(params, str):
+            try:
+                params = json.loads(params)
+            except json.JSONDecodeError:
+                params = []
+        if not isinstance(params, list):
+            params = []
+        # Ensure each param has the required fields
+        clean_params = []
+        for p in params:
+            if isinstance(p, str):
+                clean_params.append({"name": p, "type": "query", "value_hint": "string"})
+            elif isinstance(p, dict):
+                clean_params.append({
+                    "name": p.get("name", p.get("param", "")),
+                    "type": p.get("type", p.get("param_type", "query")),
+                    "value_hint": p.get("value_hint", p.get("hint", "string")),
+                })
+
         result = await cov.add_endpoint(
-            path=data.get("path", ""),
+            path=path,
             method=data.get("method", "GET"),
-            params=data.get("params", []),
+            params=clean_params,
             discovered_by=data.get("discovered_by", "spider"),
             auth_context=data.get("auth_context", "none"),
         )
         if result["dedup"]:
-            return f"Endpoint already registered (dedup): {data.get('path')} {data.get('method', 'GET')}"
+            return f"Endpoint already registered (dedup): {path} {data.get('method', 'GET')}"
         return (
-            f"Endpoint registered: {data.get('method', 'GET')} {data.get('path')} — "
+            f"Endpoint registered: {data.get('method', 'GET')} {path} — "
             f"{result['new_cells']} test cells auto-generated"
         )
 
@@ -318,4 +360,8 @@ async def _do_coverage(data):
         return "Coverage matrix reset."
 
     else:
-        return f"Unknown coverage type '{cov_type}'. Use: endpoint, tested, bulk_tested, reset"
+        return (
+            f"Unknown coverage type '{cov_type}'. Use: endpoint, tested, bulk_tested, reset. "
+            f"Example: report(action='coverage', data={{type:'endpoint', path:'/login', method:'GET', "
+            f"params:[{{name:'user', type:'query', value_hint:'string'}}]}})"
+        )

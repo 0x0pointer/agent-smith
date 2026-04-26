@@ -128,11 +128,12 @@ def test_effective_tools_no_session_returns_in_memory_only(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# _do_start — skill name list must contain /threat-modeling not /threat-model
+# _do_start — must return directive response with concrete next action
 # ---------------------------------------------------------------------------
 
-def test_do_start_lists_threat_modeling_skill(coverage_file):
-    """Skill name /threat-modeling (not /threat-model) must appear in start message."""
+def test_do_start_returns_directive_response(coverage_file):
+    """Start message must include a concrete next action, not a skill menu."""
     result = _do_start({"target": "example.com", "depth": "recon"})
-    assert "/threat-modeling" in result
-    assert "/threat-model" not in result.replace("/threat-modeling", "")
+    assert "YOUR NEXT ACTION" in result
+    assert "scan(tool='httpx'" in result
+    assert "example.com" in result

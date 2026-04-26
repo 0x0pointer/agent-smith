@@ -50,7 +50,7 @@ def _effective_tools() -> set[str]:
 async def session(action: str, options: dict | None = None) -> str:
     """Scan lifecycle and infrastructure management.
 
-    action  : start | complete | status | recovery | set_skill | set_step | start_kali | stop_kali | start_metasploit | stop_metasploit | pull_images | set_codebase
+    action  : start | complete | status | recovery | artifact | set_skill | set_step | start_kali | stop_kali | start_metasploit | stop_metasploit | pull_images | set_codebase
 
     start options:
       target, depth=standard (recon|standard|thorough), scope=[],
@@ -63,6 +63,10 @@ async def session(action: str, options: dict | None = None) -> str:
 
     recovery: returns compact recovery brief after context compaction — resume step,
               in-progress cells with technique notes, pending escalation leads, action list
+
+    artifact options:
+      id= (artifact ID from tool response), mode=summary (summary|head|tail|grep|full),
+      max_chars=4000, pattern= (regex for grep mode)
 
     set_skill options:
       skill= (name of the active skill, e.g. "pentester", "ai-redteam")
@@ -105,8 +109,10 @@ async def session(action: str, options: dict | None = None) -> str:
         return _do_recovery()
     elif action == "pre_chain":
         return _do_pre_chain(opts)
+    elif action == "artifact":
+        return _do_artifact(opts)
     else:
-        return f"Unknown action '{action}'. Use: start, complete, status, recovery, pre_chain, set_skill, set_step, start_kali, stop_kali, start_metasploit, stop_metasploit, pull_images, set_codebase"
+        return f"Unknown action '{action}'. Use: start, complete, status, recovery, artifact, pre_chain, set_skill, set_step, start_kali, stop_kali, start_metasploit, stop_metasploit, pull_images, set_codebase"
 
 
 def _do_start(opts):
@@ -171,30 +177,18 @@ def _do_start(opts):
         f"Scan started — target={target}  depth={depth}  "
         f"limits: ${lim['max_cost_usd']} / {lim['max_time_minutes']}min / {lim['max_tool_calls']} calls"
     )
-    lines = [
-        "Scan session started.",
-        f"  Target      : {target}",
-        f"  Depth       : {cfg['depth_label']} — {cfg['description']}",
-        f"  Scope       : {', '.join(cfg['scope'])}",
-    ]
-    if cfg["out_of_scope"]:
-        lines.append(f"  Out-of-scope: {', '.join(cfg['out_of_scope'])}")
     call_limit_str = f"{lim['max_tool_calls']} tool calls" if lim['max_tool_calls'] > 0 else "unlimited"
-    lines += [
-        f"  Cost limit  : ${lim['max_cost_usd']}",
-        f"  Time limit  : {lim['max_time_minutes']} min",
-        f"  Call limit  : {call_limit_str}",
+    lines = [
+        "Scan started.",
+        f"  Target: {target} | Depth: {cfg['depth_label']} | Limits: ${lim['max_cost_usd']}/{lim['max_time_minutes']}min/{call_limit_str}",
         "",
-        f"Proceed with the {depth} scan workflow.",
-        "Stop and call session(action='complete') when finished or when a limit is hit.",
+        "YOUR NEXT ACTION (execute immediately, do not ask questions):",
+        f"  scan(tool='httpx', target='{target}')",
         "",
-        "Skills available (invoke these instead of improvising workflows):",
-        "  /pentester /web-exploit /codebase /ai-redteam /cloud-security /ad-assessment",
-        "  /network-assess /lateral-movement /credential-audit /post-exploit",
-        "  /container-k8s-security /osint /ssl-tls-audit /email-security /metasploit",
-        "  /reverse-shell /analyze-cve /threat-modeling /aikido-triage /gh-export",
-        "  /remediate /request-cves",
-        "  See CLAUDE.md for full skill descriptions and trigger conditions.",
+        "After httpx completes, run these in order:",
+        f"  scan(tool='naabu', target='{target}')  — port scan",
+        f"  scan(tool='spider', target='{target}')  — crawl endpoints",
+        f"  Then register endpoints → scan(tool='nuclei', target='{target}') → test each cell",
     ]
     return "\n".join(lines)
 
@@ -541,28 +535,47 @@ def _do_recovery():
         for g in scan_session.pending_gates()
     ]
 
+    target = current.get("target", "")
+    action_list = _build_action_list(
+        integrity_warnings, in_progress_cells, pending_escalations,
+        resume_step, unsatisfied_gates,
+    )
+
+    # Build a concrete next tool call so the model doesn't have to decide
+    next_call = _concrete_next_call(target, tools_run, in_progress_cells, pending_count)
+
     result = {
-        "target": current.get("target", ""),
-        "depth": current.get("depth", ""),
-        "skill": current.get("skill"),
-        "resume_from_step": resume_step,
-        "tools_already_run": sorted(tools_run),  # merged: in-memory + session.json
-        "findings_count": len(data.get("findings", [])),
-        "cost_usd": summary.get("est_cost_usd", 0),
-        "remaining": remaining,
-        "pending_gates": unsatisfied_gates,
-        "coverage_in_progress": in_progress_cells,
-        "coverage_pending_cells": pending_count,
-        "coverage_tested": meta.get("tested", 0),
-        "pending_escalations": pending_escalations,
-        "integrity_warnings": integrity_warnings,
-        "action_required": _build_action_list(
-            integrity_warnings, in_progress_cells, pending_escalations,
-            resume_step, unsatisfied_gates,
-        ),
+        "EXECUTE_NOW": next_call,
+        "target": target,
+        "phase": resume_step,
+        "tools_already_run": sorted(tools_run),
+        "coverage": f"{meta.get('tested', 0)}/{meta.get('total_cells', 0)}",
+        "findings": len(data.get("findings", [])),
+        "action_required": action_list,
     }
 
     return json.dumps(result, indent=2)
+
+
+def _concrete_next_call(target: str, tools_run: set, in_progress: list, pending_count: int) -> str:
+    """Return a single concrete tool call string the model should execute next."""
+    if in_progress:
+        cell = in_progress[0]
+        return (
+            f"Continue testing {cell['injection']} on {cell['endpoint']} param={cell['param']} "
+            f"(cell {cell['cell_id']})"
+        )
+    if "httpx" not in tools_run:
+        return f"scan(tool='httpx', target='{target}')"
+    if "naabu" not in tools_run:
+        return f"scan(tool='naabu', target='{target}')"
+    if "spider" not in tools_run:
+        return f"scan(tool='spider', target='{target}')"
+    if "nuclei" not in tools_run:
+        return f"scan(tool='nuclei', target='{target}')"
+    if pending_count > 0:
+        return f"Test the next pending coverage cell — {pending_count} cells remaining"
+    return "session(action='complete', options={\"notes\": \"all testing complete\"})"
 
 
 def _build_action_list(
@@ -602,6 +615,18 @@ def _build_action_list(
     if not actions:
         actions.append(f"Resume from step {resume_step}")
     return actions
+
+
+def _do_artifact(opts):
+    """Retrieve raw tool output stored by the scan engine."""
+    from mcp_server.scan_engine.artifacts import retrieve_artifact
+    artifact_id = opts.get("id", "")
+    if not artifact_id:
+        return "Error: 'id' option is required"
+    mode = opts.get("mode", "summary")
+    max_chars = opts.get("max_chars", 4000)
+    pattern = opts.get("pattern", "")
+    return retrieve_artifact(artifact_id, mode=mode, max_chars=max_chars, pattern=pattern)
 
 
 def _do_pre_chain(opts):

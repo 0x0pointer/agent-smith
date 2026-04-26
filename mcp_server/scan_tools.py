@@ -9,31 +9,55 @@ from core import session as scan_session
 from mcp_server._app import mcp, _clip, _ensure_dict, _record, _run
 
 
+def _strip_scheme(target: str) -> str:
+    """Strip http(s):// and trailing path — models often pass URLs to host-only tools."""
+    from urllib.parse import urlparse
+    if target.startswith(("http://", "https://")):
+        return urlparse(target).hostname or target
+    return target
+
+
 async def _handle_nmap(target, flags, options):
-    return await _run("nmap", host=target, ports=options.get("ports", "top-1000"), flags=flags)
+    _record("nmap")
+    raw = await _run("nmap", host=_strip_scheme(target), ports=options.get("ports", "top-1000"), flags=flags)
+    from mcp_server.scan_engine import wrap
+    return wrap("nmap", raw, {"host": _strip_scheme(target)})
 
 
 async def _handle_naabu(target, flags, options):
-    return await _run("naabu", host=target, ports=options.get("ports", "top-100"), flags=flags)
+    _record("naabu")
+    raw = await _run("naabu", host=_strip_scheme(target), ports=options.get("ports", "top-100"), flags=flags)
+    from mcp_server.scan_engine import wrap
+    return wrap("naabu", raw, {"host": _strip_scheme(target)})
 
 
 async def _handle_subfinder(target, flags, options):
-    return await _run("subfinder", domain=target, flags=flags)
+    _record("subfinder")
+    raw = await _run("subfinder", domain=_strip_scheme(target), flags=flags)
+    from mcp_server.scan_engine import wrap
+    return wrap("subfinder", raw, {"domain": _strip_scheme(target)})
 
 
 async def _handle_httpx(target, flags, options):
     _record("httpx")
-    return await _run("httpx", url=target, flags=flags)
+    raw = await _run("httpx", url=target, flags=flags)
+    if options.get("_raw"):
+        return raw
+    from mcp_server.scan_engine import wrap
+    return wrap("httpx", raw, {"url": target})
 
 
 async def _handle_nuclei(target, flags, options):
+    _record("nuclei")
     if "-rate-limit" not in flags:
         flags = f"-rate-limit 50 {flags}".strip()
-    return await _run(
+    raw = await _run(
         "nuclei", url=target,
         templates=options.get("templates", "cve,exposure,misconfig,default-login"),
         flags=flags,
     )
+    from mcp_server.scan_engine import wrap
+    return wrap("nuclei", raw, {"url": target})
 
 
 def _build_ffuf_cmd(
@@ -63,10 +87,12 @@ async def _handle_ffuf(target, flags, options):
 
     log.tool_call("ffuf", {"url": target, "wordlist": wordlist, "extensions": extensions, "flags": flags})
     call_id = cost_tracker.start("ffuf")
-    result = _clip(await kali_runner.exec_command(cmd, timeout=900), 8_000)
-    cost_tracker.finish(call_id, result)
-    log.tool_result("ffuf", result)
-    return result
+    raw = _clip(await kali_runner.exec_command(cmd, timeout=900), 8_000)
+    _record("ffuf")
+    cost_tracker.finish(call_id, raw)
+    log.tool_result("ffuf", raw)
+    from mcp_server.scan_engine import wrap
+    return wrap("ffuf", raw, {"url": target})
 
 
 async def _handle_spider(target, flags, options):
@@ -83,11 +109,12 @@ async def _handle_spider(target, flags, options):
 
     log.tool_call("spider", {"url": target, "depth": depth, "flags": flags})
     call_id = cost_tracker.start("spider")
-    result = _clip(await kali_runner.exec_command(cmd, timeout=900), 8_000)
+    raw = _clip(await kali_runner.exec_command(cmd, timeout=900), 8_000)
     _record("spider")
-    cost_tracker.finish(call_id, result)
-    log.tool_result("spider", result)
-    return result
+    cost_tracker.finish(call_id, raw)
+    log.tool_result("spider", raw)
+    from mcp_server.scan_engine import wrap
+    return wrap("spider", raw, {"url": target})
 
 
 async def _handle_semgrep(target, flags, options):

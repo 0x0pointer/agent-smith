@@ -5,6 +5,7 @@ coverage_matrix.json
 session.json
 session_cost.json
 pocs/
+artifacts/
 gh-issues.md
 threat-model/
 
