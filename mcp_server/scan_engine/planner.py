@@ -106,28 +106,46 @@ def _add_testing_actions(required: list[str], recommended: list[str], target: st
     param = best["param"]
     inj = best["injection_type"]
 
-    # Build concrete action
-    if inj == "sqli":
-        required.append(
-            f"Mark in_progress then test SQLi: "
-            f"kali(command=\"sqlmap -u '{target}{path}?{param}=test' --batch --dbs\") "
-            f"(cell {best['id']})"
-        )
-    elif inj == "xss":
-        required.append(
-            f"Mark in_progress then test XSS: "
-            f"http(action='request', url='{target}{path}?{param}=<script>alert(1)</script>', method='{method}') "
-            f"(cell {best['id']})"
-        )
-    else:
-        required.append(
-            f"Mark in_progress then test {inj} on {method} {path} param={param} "
-            f"(cell {best['id']})"
-        )
+    # Build concrete tool call for each injection type
+    test_cmd = _concrete_test_command(inj, target, path, method, param)
+    required.append(f"{test_cmd} (cell {best['id']})")
 
     total = len(pending)
     if total > 1:
         recommended.append(f"{total - 1} more pending cells after this one")
+
+
+def _concrete_test_command(inj: str, target: str, path: str, method: str, param: str) -> str:
+    """Return an exact tool call string for the given injection type."""
+    url = f"{target}{path}"
+    if inj == "sqli":
+        return f"kali(command=\"sqlmap -u '{url}?{param}=test' --batch --level=2\")"
+    if inj == "xss":
+        return f"http(action='request', url='{url}?{param}=<script>alert(1)</script>', method='{method}')"
+    if inj == "ssti":
+        return f"http(action='request', url='{url}?{param}={{{{7*7}}}}', method='{method}')"
+    if inj == "cmdi":
+        return f"http(action='request', url='{url}?{param}=;id', method='{method}')"
+    if inj == "ssrf":
+        return f"http(action='request', url='{url}?{param}=http://127.0.0.1:80', method='{method}')"
+    if inj == "cors":
+        return f"http(action='request', url='{url}', method='GET', headers={{\"Origin\": \"https://evil.com\"}})"
+    if inj == "security_headers":
+        return f"http(action='request', url='{url}', method='GET')"
+    if inj == "csrf":
+        return f"http(action='request', url='{url}', method='POST', headers={{\"Content-Type\": \"application/x-www-form-urlencoded\"}}, body='test=1')"
+    if inj == "method_tampering":
+        return f"http(action='request', url='{url}', method='PUT')"
+    if inj == "rate_limit":
+        return f"http(action='request', url='{url}', method='GET')"
+    if inj == "jwt":
+        return f"http(action='request', url='{url}', method='GET')"
+    if inj == "cache":
+        return f"http(action='request', url='{url}', method='GET', headers={{\"X-Forwarded-Host\": \"evil.com\"}})"
+    if inj == "race":
+        return f"http(action='request', url='{url}', method='GET')"
+    # Fallback
+    return f"http(action='request', url='{url}', method='{method}')"
 
 
 # ---------------------------------------------------------------------------

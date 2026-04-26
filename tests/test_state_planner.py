@@ -223,7 +223,7 @@ class TestPlannerTesting:
         plan = compute_next("spider", state)
         # sqli should be picked first (higher priority than xss)
         required_text = " ".join(plan["required"]).lower()
-        assert "sqli" in required_text
+        assert "sqlmap" in required_text
 
     def test_testing_continues_in_progress(self, monkeypatch):
         _set_session(monkeypatch, {
