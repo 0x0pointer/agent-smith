@@ -57,7 +57,7 @@ Log findings, diagrams, notes, and coverage matrix updates.
 
 ### `session(action, options)`
 Scan lifecycle and infrastructure.
-- `action="start"` — options: `{target, depth, scope, out_of_scope, max_cost_usd, max_time_minutes, max_tool_calls}`
+- `action="start"` — options: `{target, depth, scope, out_of_scope, max_cost_usd, max_time_minutes, max_tool_calls, model_profile}` (model_profile: full|medium|small)
 - `action="complete"` — options: `{notes}`
 - `action="status"` — returns current scan state (tools run, findings count, cost, remaining calls)
 - `action="recovery"` — returns what to do next after context compaction

@@ -485,7 +485,7 @@ def _summarize_generic(raw: str, ctx: dict) -> SummaryResult:
     tool = ctx.get("_tool", "tool")
 
     result.summary = f"{tool} returned {len(lines)} line(s) of output"
-    result.facts = [l.strip() for l in lines[:5] if l.strip()]
+    result.facts = [l.strip()[:300] for l in lines[:5] if l.strip()]
     if len(lines) > 5:
         result.facts.append(f"... and {len(lines) - 5} more line(s)")
     result.evidence = {"total_lines": len(lines), "total_chars": len(raw)}

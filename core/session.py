@@ -84,6 +84,7 @@ def start(
     max_time_minutes: int   | None = None,
     max_tool_calls:   int   | None = None,
     skill:            str   | None = None,
+    model_profile:    str        = "full",
 ) -> dict:
     """Initialise a new scan session and write session.json."""
     global _current
@@ -123,6 +124,13 @@ def start(
         "tools_called":  [],
         "current_step":  None,
         "gates":         [],          # triggered gates that block completion
+        "model_profile": model_profile,
+        "tool_invocations": [],
+        "known_assets": {
+            "domains": [], "ips": [], "ports": [],
+            "technologies": [], "endpoints": [],
+        },
+        "context_chars_sent": 0,
     }
     _flush()
     return _current
@@ -295,6 +303,71 @@ def pending_gates() -> list[dict]:
     if _current is None:
         return []
     return [g for g in _current.get("gates", []) if g.get("status") == "pending"]
+
+
+def add_tool_invocation(tool: str, target: str, summary: str, options_hash: str = "") -> None:
+    """Record a tool invocation with summary for dedup and recovery."""
+    if not _current or _current.get("status") != "running":
+        return
+    invocations = _current.setdefault("tool_invocations", [])
+    if options_hash and any(i.get("options_hash") == options_hash for i in invocations):
+        return  # Duplicate — already recorded
+    invocations.append({
+        "seq": len(invocations) + 1,
+        "tool": tool,
+        "target": target,
+        "options_hash": options_hash,
+        "summary": summary[:200],
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    })
+    if len(invocations) > 100:
+        _current["tool_invocations"] = invocations[-100:]
+    _flush()
+
+
+def update_known_assets(asset_type: str, items: list) -> None:
+    """Accumulate discovered assets into session.json['known_assets']."""
+    if not _current or _current.get("status") != "running" or not items:
+        return
+    assets = _current.setdefault("known_assets", {
+        "domains": [], "ips": [], "ports": [],
+        "technologies": [], "endpoints": [],
+    })
+    if asset_type == "ports":
+        existing = {(p.get("host", ""), p.get("port", 0)) for p in assets.get("ports", [])}
+        for item in items:
+            if isinstance(item, dict):
+                key = (item.get("host", ""), item.get("port", 0))
+                if key not in existing:
+                    assets.setdefault("ports", []).append(item)
+                    existing.add(key)
+    else:
+        target_list = assets.setdefault(asset_type, [])
+        existing = set(target_list)
+        for item in items:
+            val = item if isinstance(item, str) else str(item)
+            if val and val not in existing:
+                target_list.append(val)
+                existing.add(val)
+    _flush()
+
+
+def charge_context(chars: int) -> None:
+    """Track cumulative response chars sent to the model."""
+    if _current and _current.get("status") == "running":
+        _current["context_chars_sent"] = _current.get("context_chars_sent", 0) + chars
+        _flush()
+
+
+def get_context_pressure(profile: dict) -> float:
+    """Return context pressure as 0.0-1.0 ratio. Returns 0.0 if no budget set."""
+    if _current is None:
+        return 0.0
+    budget = profile.get("context_budget_chars")
+    if not budget:
+        return 0.0
+    sent = _current.get("context_chars_sent", 0)
+    return min(1.0, sent / budget)
 
 
 def remaining(cost_summary: dict) -> dict:

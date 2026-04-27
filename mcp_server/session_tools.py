@@ -54,7 +54,8 @@ async def session(action: str, options: dict | None = None) -> str:
 
     start options:
       target, depth=standard (recon|standard|thorough), scope=[],
-      out_of_scope=[], max_cost_usd=, max_time_minutes=, max_tool_calls=
+      out_of_scope=[], max_cost_usd=, max_time_minutes=, max_tool_calls=,
+      model_profile=full (full|medium|small) — controls output verbosity
 
     complete options: notes=
 
@@ -162,6 +163,7 @@ def _do_start(opts):
         max_time_minutes=opts.get("max_time_minutes"),
         max_tool_calls=opts.get("max_tool_calls"),
         skill=opts.get("skill"),
+        model_profile=opts.get("model_profile", "full"),
     )
     lim = cfg["limits"]
     log.note(
@@ -490,6 +492,10 @@ def _do_recovery():
             ),
         }, indent=2)
 
+    # P0 — Profile-aware recovery
+    from mcp_server.scan_engine.budget import get_profile
+    profile = get_profile(current.get("model_profile", "full"))
+
     summary = cost_tracker.get_summary()
     remaining = scan_session.remaining(summary)
 
@@ -510,6 +516,13 @@ def _do_recovery():
         for c in cov.get("matrix", [])
         if c["status"] == "in_progress"
     ]
+
+    # P3 — Tiered recovery: limit cells shown by profile
+    max_cells = profile.get("recovery_cells_shown")
+    extra_cells = 0
+    if max_cells and len(in_progress_cells) > max_cells:
+        extra_cells = len(in_progress_cells) - max_cells
+        in_progress_cells = in_progress_cells[:max_cells]
 
     pending_count = sum(1 for c in cov.get("matrix", []) if c["status"] == "pending")
 
@@ -562,6 +575,24 @@ def _do_recovery():
             "report(action, data) | session(action)"
         ),
     }
+
+    # P2 — Include known assets summary
+    known_assets = current.get("known_assets", {})
+    compact_assets = {k: v[:10] for k, v in known_assets.items() if v}
+    if compact_assets:
+        result["known_assets"] = compact_assets
+
+    # P1 — Include recent tool invocations for context
+    invocations = current.get("tool_invocations", [])
+    if invocations:
+        result["recent_tools"] = [
+            {"tool": i["tool"], "summary": i["summary"]}
+            for i in invocations[-5:]
+        ]
+
+    # P3 — Note truncated cells
+    if extra_cells > 0:
+        result["more_in_progress_cells"] = extra_cells
 
     return json.dumps(result, indent=2)
 
