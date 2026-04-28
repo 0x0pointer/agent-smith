@@ -6,6 +6,7 @@ When given a target URL, execute this workflow in order:
 
 ```
 session(action="start", options={"target": "TARGET", "depth": "thorough"})
+report(action="dashboard", data={"port": 5000})
 scan(tool="httpx", target="TARGET")
 scan(tool="naabu", target="TARGET")
 scan(tool="spider", target="TARGET")
@@ -49,6 +50,7 @@ Log findings, diagrams, notes, and coverage matrix updates.
 - `action="finding"` — data: `{title, severity, target, description, evidence, tool_used, cve}`
 - `action="diagram"` — data: `{title, mermaid}`
 - `action="note"` — data: `{message}`
+- `action="dashboard"` — data: `{port: 5000}` — start the live dashboard
 - `action="coverage"` — data: `{type, ...}` — manage the coverage matrix:
   - `type="endpoint"` — register endpoint + auto-generate cells: `{path, method, params=[{name, type, value_hint}], discovered_by, auth_context}`
   - `type="tested"` — mark cell tested: `{cell_id, status (tested_clean|vulnerable|not_applicable|skipped), notes, finding_id}`
