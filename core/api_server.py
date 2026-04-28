@@ -248,6 +248,11 @@ async def api_clear() -> JSONResponse:
             if f.is_file():
                 f.unlink()
 
+    # Clear log file
+    from core.logger import log_path as _log_path
+    if _log_path.exists():
+        _log_path.write_text("")
+
     # Also kill any active tunnels
     await _cleanup_tunnels()
     return JSONResponse({"ok": True})

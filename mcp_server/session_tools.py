@@ -16,6 +16,11 @@ from mcp_server._app import mcp, _ensure_dict, _session_tools_called
 # ── CTF flag pattern (e.g. CTF{...}, flag{...}, HTB{...}) ─────────────────────
 _FLAG_RE = re.compile(r'[A-Za-z0-9_]{2,10}\{[A-Za-z0-9_\-!@#$%^&*()+=,.?]{4,}\}')
 
+# Track completion attempts to break infinite loops in small models
+_complete_attempts = 0
+_MAX_COMPLETE_ATTEMPTS = 3
+_force_completed = False
+
 
 def _has_ctf_flag(data: dict) -> bool:
     """Return True when this looks like a CTF/benchmark run.
@@ -108,6 +113,13 @@ async def session(action: str, options: dict | None = None) -> str:
 
 
 def _do_start(opts):
+    global _complete_attempts, _force_completed
+    if _force_completed:
+        return (
+            "BLOCKED: Scan was already force-completed. "
+            "STOP — do not call any more tools. The scan is done."
+        )
+    _complete_attempts = 0
     _session_tools_called.clear()
     target = opts.get("target", "")
 
@@ -220,10 +232,39 @@ def _coverage_blockers(cov: dict, ctf_mode: bool = False) -> list[str]:
 
     addressed = meta.get("tested", 0) + meta.get("not_applicable", 0) + meta.get("skipped", 0)
     pct = (addressed / total) * 100
-    if pct < 80:
+
+    # Model-profile-aware: only enforce 80% coverage threshold for "full" profile.
+    # Medium/small models can't invoke /web-exploit and end up with dozens of
+    # auto-generated cells they can't address, causing completion loops.
+    from mcp_server.scan_engine.budget import get_profile
+    profile = get_profile()
+    if not profile.get("enforce_budget", True):
+        # "full" profile — enforce coverage
+        coverage_enforced = True
+    else:
+        # "medium"/"small" profile — skip coverage enforcement
+        coverage_enforced = False
+
+    if coverage_enforced and pct < 80:
+        # Include pending cell IDs so the model can actually address them
+        all_cells = cov.get("matrix", [])
+        pending = [c["cell_id"] for c in all_cells
+                   if c.get("status", "pending") == "pending"]
+        pending_sample = pending[:20]
+        hint = (
+            f"Use bulk_tested to address them:\n"
+            f'  report(action="coverage", data={{"type": "bulk_tested", "updates": ['
+        )
+        hint += ", ".join(
+            f'{{"cell_id": "{cid}", "status": "skipped", "notes": "not tested"}}'
+            for cid in pending_sample[:10]
+        )
+        if len(pending) > 10:
+            hint += f", ... ({len(pending) - 10} more)"
+        hint += "]})"
         blockers.append(
             f"LOW COVERAGE: only {addressed}/{total} matrix cells addressed ({pct:.0f}%). "
-            f"Review pending cells in the coverage matrix — test, skip with reason, or mark N/A."
+            f"{len(pending)} pending cell(s). {hint}"
         )
 
     all_cells = cov.get("matrix", [])
@@ -290,6 +331,8 @@ def _escalation_lead_blockers(data: dict) -> list[str]:
 
 
 async def _do_complete(opts):
+    global _complete_attempts
+    _complete_attempts += 1
     notes = opts.get("notes", "")
     blockers: list[str] = []
 
@@ -328,15 +371,28 @@ async def _do_complete(opts):
     blockers.extend(_coverage_blockers(get_matrix(), ctf_mode=_has_ctf_flag(data)))
 
     if blockers:
-        msg = "complete BLOCKED — fix the following first:\n\n"
+        # Force-complete after max attempts to break model loops
+        if _complete_attempts >= _MAX_COMPLETE_ATTEMPTS:
+            attempts = _complete_attempts
+            _force_completed = True
+            log.note(f"Force-completing after {attempts} blocked attempts. Remaining blockers: {'; '.join(blockers)}")
+            cfg = scan_session.complete(f"{notes} [FORCE-COMPLETED: {len(blockers)} blocker(s) unresolved after {attempts} attempts]")
+            _complete_attempts = 0
+            return (
+                f"Scan FORCE-COMPLETED (exceeded {attempts} attempt limit). "
+                f"{len(blockers)} blocker(s) were unresolved. session.json updated. "
+                f"STOP — do not call any more tools. The scan is done."
+            )
+        msg = f"complete BLOCKED (attempt {_complete_attempts}/{_MAX_COMPLETE_ATTEMPTS}) — fix the following first:\n\n"
         msg += "\n\n".join(f"  [{i+1}] {b}" for i, b in enumerate(blockers))
-        log.note(f"complete blocked: {'; '.join(blockers)}")
+        log.note(f"complete blocked (attempt {_complete_attempts}): {'; '.join(blockers)}")
         return msg
 
     cfg = scan_session.complete(notes)
     status = cfg.get("status", "complete")
     log.note(f"Scan complete — {notes}")
-    return f"Scan marked {status}. session.json updated."
+    _complete_attempts = 0
+    return f"Scan marked {status}. session.json updated. STOP — do not call any more tools. The scan is done."
 
 
 def _do_status():

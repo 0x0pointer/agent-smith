@@ -356,6 +356,15 @@ async def _do_coverage(data):
         return msg
 
     elif cov_type == "reset":
+        current = scan_session.get()
+        if current and current.get("status") == "running":
+            log.note("coverage reset BLOCKED — scan is active. Do NOT reset the matrix mid-scan.")
+            return (
+                "BLOCKED: Cannot reset coverage matrix while a scan is running. "
+                "The matrix tracks your testing progress — resetting it mid-scan destroys that state. "
+                "If you need to re-register endpoints, just call coverage(type='endpoint') again — "
+                "duplicates are automatically ignored."
+            )
         await cov.reset()
         return "Coverage matrix reset."
 
