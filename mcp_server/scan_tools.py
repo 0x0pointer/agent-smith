@@ -71,19 +71,34 @@ async def _handle_ffuf(target, flags, options):
 
 async def _handle_spider(target, flags, options):
     from tools import kali_runner
+    import json as _json
 
+    mode = options.get("mode", "fast")
     depth = str(max(1, options.get("depth", 3)))
-    safe_url = shlex.quote(target)
-    safe_flags = shlex.join(shlex.split(flags)) if flags else ""
+    timeout = options.get("timeout", 900)
 
-    rate_flag = "" if "-rate-limit" in flags else "-rate-limit 50"
-    cmd = f"katana -u {safe_url} -d {depth} -silent -no-color {rate_flag}".strip()
-    if safe_flags:
-        cmd += f" {safe_flags}"
-
-    log.tool_call("spider", {"url": target, "depth": depth, "flags": flags})
+    log.tool_call("spider", {"url": target, "depth": depth, "mode": mode, "flags": flags})
     call_id = cost_tracker.start("spider")
-    result = _clip(await kali_runner.exec_command(cmd, timeout=900), 8_000)
+
+    if mode == "playwright":
+        cookies = options.get("cookies", {})
+        max_pages = str(options.get("max_pages", 200))
+        safe_url = shlex.quote(target)
+        safe_cookies = shlex.quote(_json.dumps(cookies))
+        cmd = (
+            f"playwright-spider --url {safe_url} --cookies {safe_cookies} "
+            f"--depth {depth} --max-pages {max_pages}"
+        )
+    else:
+        # Default: katana (fast mode)
+        safe_url = shlex.quote(target)
+        safe_flags = shlex.join(shlex.split(flags)) if flags else ""
+        rate_flag = "" if "-rate-limit" in flags else "-rate-limit 50"
+        cmd = f"katana -u {safe_url} -d {depth} -silent -no-color {rate_flag}".strip()
+        if safe_flags:
+            cmd += f" {safe_flags}"
+
+    result = _clip(await kali_runner.exec_command(cmd, timeout=timeout), 8_000)
     _record("spider")
     cost_tracker.finish(call_id, result)
     log.tool_result("spider", result)
@@ -292,7 +307,7 @@ async def scan(tool: str, target: str, flags: str = "", options: dict | None = N
     | httpx      | URL         |                                                   |
     | nuclei     | URL         | templates=cve,exposure,misconfig,default-login    |
     | ffuf       | URL         | wordlist=common.txt, extensions=                  |
-    | spider     | URL         | depth=3                                           |
+    | spider     | URL         | depth=3, mode=fast|playwright, cookies={}, max_pages=200 |
     | semgrep    | path        |                                                   |
     | trufflehog | path        |                                                   |
     | fuzzyai    | URL         | attack=jailbreak, provider=openai, model=         |
