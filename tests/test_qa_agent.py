@@ -137,6 +137,13 @@ async def test_cycle_captures_smith_actions_in_history(tmp_path, monkeypatch):
     monkeypatch.setattr(core.qa_agent, "_SESSION_FILE", session_file)
 
     qa_state = tmp_path / "qa_state.json"
+    # Seed a previous cycle so prev_cycle_ts is set and read_since() can capture
+    # actions that happen during the LLM call (the scenario under test).
+    qa_state.write_text(json.dumps({
+        "ts": "2025-12-31T00:00:00+00:00",
+        "alerts": [],
+        "history": [{"ts": "2025-12-31T00:00:00+00:00", "summary_sent": "prev", "alerts": [], "smith_actions": []}],
+    }))
     monkeypatch.setattr(core.qa_agent, "_QA_STATE_FILE", qa_state)
 
     test_log = QuickLog(path=tmp_path / "quick_log.json")
@@ -157,8 +164,8 @@ async def test_cycle_captures_smith_actions_in_history(tmp_path, monkeypatch):
         await daemon._cycle()
 
     data = json.loads(qa_state.read_text())
-    assert len(data["history"]) == 1
-    smith_actions = data["history"][0]["smith_actions"]
+    assert len(data["history"]) == 2
+    smith_actions = data["history"][-1]["smith_actions"]
     assert any(a.get("name") == "nuclei" for a in smith_actions)
 
 

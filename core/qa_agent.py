@@ -235,6 +235,15 @@ class QADaemon:
         alerts = result.get("alerts", [])
 
         # Hard deduplication: if all new alert messages match previous ones exactly, skip
+        # Guard against malformed LLM output (alerts not a list of dicts).
+        if not isinstance(alerts, list) or not all(isinstance(a, dict) for a in alerts):
+            _QA_STATE_FILE.write_text(json.dumps({
+                "ts":      datetime.now(timezone.utc).isoformat(),
+                "alerts":  alerts,
+                "history": [],
+            }))
+            return
+
         new_msgs  = sorted(a.get("message", "") for a in alerts)
         prev_msgs = sorted(a.get("message", "") for a in previous_alerts)
         if new_msgs and new_msgs == prev_msgs:

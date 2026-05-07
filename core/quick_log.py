@@ -155,7 +155,8 @@ class QuickLog:
             try:
                 cov_dt = datetime.fromisoformat(last_cov["ts"])
                 cov_elapsed = round((now - cov_dt).total_seconds() / 60)
-                lines.append(f"Coverage last updated: {cov_elapsed} minutes ago")
+                stale = f"WARNING: coverage stale ({cov_elapsed} min — {pending} cells still pending, run web-exploit)" if cov_elapsed >= 30 else f"Coverage last updated: {cov_elapsed} minutes ago"
+                lines.append(stale)
             except Exception:
                 pass
 

@@ -253,7 +253,7 @@ async def test_summarize_includes_poc_file_count(tmp_path, monkeypatch):
     await log.append({"type": "FINDING", "severity": "high", "ts": _recent_ts()})
     summary = log.summarize()
     assert "PoC files saved: 2" in summary
-    assert "high/critical findings: 1" in summary
+    assert "1 high/critical findings" in summary
 
 
 @pytest.mark.asyncio
