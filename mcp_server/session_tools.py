@@ -5,12 +5,15 @@ import asyncio
 import json
 import os
 import re
+from typing import Any
 
 from core import cost as cost_tracker
 from core import findings as findings_store
 from core import logger as log
 from core import session as scan_session
 from mcp_server._app import mcp, _ensure_dict, _session_tools_called
+
+_background_tasks: set[asyncio.Task] = set()  # keeps fire-and-forget tasks alive
 
 
 # ── CTF flag pattern (e.g. CTF{...}, flag{...}, HTB{...}) ─────────────────────
@@ -693,14 +696,15 @@ def _do_set_skill(opts):
 
     # Append SKILL entry to quick_log (fire-and-forget via asyncio)
     try:
-        import asyncio as _asyncio
         from core.quick_log import quick_log as _qlog
-        _asyncio.create_task(_qlog.append({
+        _t = asyncio.create_task(_qlog.append({
             "type":         "SKILL",
             "name":         skill_name,
             "reason":       reason,
             "chained_from": chained_from or None,
         }))
+        _background_tasks.add(_t)
+        _t.add_done_callback(_background_tasks.discard)
     except Exception:
         pass
 

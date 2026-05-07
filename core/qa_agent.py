@@ -174,6 +174,37 @@ def _session_is_running() -> bool:
         return False
 
 
+def _read_qa_state() -> dict:
+    if not _QA_STATE_FILE.exists():
+        return {}
+    try:
+        return json.loads(_QA_STATE_FILE.read_text())
+    except Exception:
+        return {}
+
+
+def _build_context_summary(summary: str, previous_alerts: list[dict]) -> str:
+    if not previous_alerts:
+        return summary
+    prev_lines = "\n".join(f"- [{a['urgency']}] {a['message']}" for a in previous_alerts)
+    return summary + f"\n\nPreviously flagged (last cycle):\n{prev_lines}"
+
+
+def _sanitize_history(raw: list) -> list[dict]:
+    """Reconstruct history entries from known fields, breaking the taint chain from disk reads."""
+    result = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        result.append({
+            "ts":            str(entry.get("ts", ""))[:50],
+            "summary_sent":  str(entry.get("summary_sent", "")),
+            "alerts":        [a for a in entry.get("alerts", []) if isinstance(a, dict)][:10],
+            "smith_actions": [a for a in entry.get("smith_actions", []) if isinstance(a, dict)][:50],
+        })
+    return result
+
+
 class QADaemon:
     def __init__(self):
         self._graph = None
@@ -207,25 +238,9 @@ class QADaemon:
         if not summary.strip() or summary == "No activity logged yet.":
             return
 
-        # Load existing state for deduplication and context injection
-        existing: dict = {}
-        if _QA_STATE_FILE.exists():
-            try:
-                existing = json.loads(_QA_STATE_FILE.read_text())
-            except Exception:
-                pass
-
+        existing = _read_qa_state()
         previous_alerts: list[dict] = existing.get("alerts", [])
-
-        # Inject previous alerts so the model knows what it already flagged
-        if previous_alerts:
-            prev_lines = "\n".join(
-                f"- [{a['urgency']}] {a['message']}" for a in previous_alerts
-            )
-            summary_with_ctx = summary + f"\n\nPreviously flagged (last cycle):\n{prev_lines}"
-        else:
-            summary_with_ctx = summary
-
+        summary_with_ctx = _build_context_summary(summary, previous_alerts)
         ts_before = datetime.now(timezone.utc).isoformat()
 
         result = await asyncio.to_thread(
@@ -234,7 +249,6 @@ class QADaemon:
         )
         alerts = result.get("alerts", [])
 
-        # Hard deduplication: if all new alert messages match previous ones exactly, skip
         # Guard against malformed LLM output (alerts not a list of dicts).
         if not isinstance(alerts, list) or not all(isinstance(a, dict) for a in alerts):
             _QA_STATE_FILE.write_text(json.dumps({
@@ -250,18 +264,9 @@ class QADaemon:
             _log.info("QA Daemon: alerts unchanged — skipping write")
             return
 
-        # Re-read history after the LLM call so a Clear All that fired during inference
-        # is respected — otherwise we'd write the old cycles back and undo the clear.
-        post_existing: dict = {}
-        if _QA_STATE_FILE.exists():
-            try:
-                post_existing = json.loads(_QA_STATE_FILE.read_text())
-            except Exception:
-                pass
-
-        # smith_actions: what Smith did *since the previous cycle* — captures his response
-        # to the last set of alerts, not what happened during this LLM inference window.
-        history: list[dict] = post_existing.get("history", [])
+        # Re-read after LLM call so a Clear All during inference is respected.
+        post_existing = _read_qa_state()
+        history = _sanitize_history(post_existing.get("history", []))
         prev_cycle_ts = history[-1]["ts"] if history else ""
         smith_actions = quick_log.read_since(prev_cycle_ts) if prev_cycle_ts else []
 

@@ -153,10 +153,37 @@ def _clip(text: str, limit: int = 8_000) -> str:
 
 # ── Docker tool runner ────────────────────────────────────────────────────────
 
+async def _append_quick_log(name: str, kwargs: dict, result: str, elapsed: float) -> None:
+    """Append a TOOL or SPIDER entry to quick_log after a successful tool run."""
+    import re as _re
+    from core.quick_log import quick_log as _qlog
+    if name == "spider":
+        m = _re.search(r'(\d+)\s+(?:endpoint|url|path|route|link)', result, _re.IGNORECASE)
+        ep_count = int(m.group(1)) if m else 0
+        opts = kwargs.get("options") or {}
+        if isinstance(opts, str):
+            try:
+                opts = json.loads(opts)
+            except Exception:
+                opts = {}
+        await _qlog.append({
+            "type": "SPIDER",
+            "target": kwargs.get("target", ""),
+            "endpoints_found": ep_count,
+            "mode": opts.get("mode", "katana"),
+        })
+    else:
+        await _qlog.append({
+            "type": "TOOL",
+            "name": name,
+            "target": kwargs.get("target", kwargs.get("url", "")),
+            "duration_s": elapsed,
+        })
+
+
 async def _run(name: str, **kwargs) -> str:
     """Run a lightweight Docker tool from the registry with logging + cost tracking."""
     import time
-    import re as _re
     from core import logger as log
     from tools import REGISTRY
     from tools.docker_runner import run_container
@@ -201,31 +228,8 @@ async def _run(name: str, **kwargs) -> str:
 
         result = _inject_qa_alerts(result)
 
-        # ── Quick log ─────────────────────────────────────────────────────────
         try:
-            from core.quick_log import quick_log as _qlog
-            if name == "spider":
-                m = _re.search(r'(\d+)\s+(?:endpoint|url|path|route|link)', result, _re.IGNORECASE)
-                ep_count = int(m.group(1)) if m else 0
-                opts = kwargs.get("options") or {}
-                if isinstance(opts, str):
-                    try:
-                        opts = json.loads(opts)
-                    except Exception:
-                        opts = {}
-                await _qlog.append({
-                    "type": "SPIDER",
-                    "target": kwargs.get("target", ""),
-                    "endpoints_found": ep_count,
-                    "mode": opts.get("mode", "katana"),
-                })
-            else:
-                await _qlog.append({
-                    "type": "TOOL",
-                    "name": name,
-                    "target": kwargs.get("target", kwargs.get("url", "")),
-                    "duration_s": elapsed,
-                })
+            await _append_quick_log(name, kwargs, result, elapsed)
         except Exception:
             pass  # quick_log failures must never crash tool dispatch
 

@@ -1,6 +1,7 @@
 """
 Consolidated report tool — replaces reporting.py
 """
+import asyncio
 import json
 from typing import Any
 
@@ -8,6 +9,8 @@ from core import findings as findings_store
 from core import logger as log
 from core import session as scan_session
 from mcp_server._app import mcp
+
+_background_tasks: set[asyncio.Task] = set()  # keeps fire-and-forget tasks alive
 
 
 # ── Gate auto-triggers ────────────────────────────────────────────────────────
@@ -129,14 +132,15 @@ async def _do_finding(data):
 
     # Append FINDING entry to quick_log
     try:
-        import asyncio as _asyncio
         from core.quick_log import quick_log as _qlog
-        _asyncio.create_task(_qlog.append({
+        _t = asyncio.create_task(_qlog.append({
             "type":     "FINDING",
             "severity": severity,
             "title":    title,
             "target":   target,
         }))
+        _background_tasks.add(_t)
+        _t.add_done_callback(_background_tasks.discard)
     except Exception:
         pass
 

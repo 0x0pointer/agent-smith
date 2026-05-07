@@ -45,13 +45,16 @@ from fastapi.responses import FileResponse, JSONResponse
 
 app = FastAPI(title="pentest-agent")
 
+_qa_task: asyncio.Task | None = None  # kept alive to prevent GC
+
 
 @app.on_event("startup")
 async def _start_qa_daemon() -> None:
+    global _qa_task
     from mcp_server._app import _load_dotenv
     _load_dotenv()
     from core.qa_agent import qa_daemon
-    asyncio.create_task(qa_daemon.run(interval_s=120))
+    _qa_task = asyncio.create_task(qa_daemon.run(interval_s=120))
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
