@@ -31,4 +31,7 @@ async def kali(command: str, timeout: int = 600) -> str:
     result = _clip(raw_output, 8_000)
     cost_tracker.finish(call_id, result)
     log.tool_result("kali", result)
-    return _inject_qa_alerts(result)
+
+    from mcp_server.scan_engine import wrap
+    tool_key = "kali_sqlmap" if command.strip().startswith("sqlmap") else "kali"
+    return _inject_qa_alerts(wrap(tool_key, raw_output, {"command": command, "_tool": tool_key}))

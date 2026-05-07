@@ -1,4 +1,5 @@
 # ── Scan output ──────────────────────────────────────────────────────────────
+artifacts/
 logs/
 findings.json
 coverage_matrix.json
@@ -7,6 +8,8 @@ session_cost.json
 pocs/
 gh-issues.md
 threat-model/
+quick_log.json
+qa_state.json
 
 # ── Test coverage ────────────────────────────────────────────────────────────
 coverage.xml

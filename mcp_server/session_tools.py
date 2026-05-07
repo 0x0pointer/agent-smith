@@ -15,6 +15,11 @@ from mcp_server._app import mcp, _ensure_dict, _session_tools_called
 
 _background_tasks: set[asyncio.Task] = set()  # keeps fire-and-forget tasks alive
 
+# Track completion attempts to break infinite loops in small models
+_complete_attempts = 0
+_MAX_COMPLETE_ATTEMPTS = 5
+_force_completed = False
+
 
 # ── CTF flag pattern (e.g. CTF{...}, flag{...}, HTB{...}) ─────────────────────
 _FLAG_RE = re.compile(r'[A-Za-z0-9_]{2,10}\{[A-Za-z0-9_\-!@#$%^&*()+=,.?]{4,}\}')
@@ -53,19 +58,23 @@ def _effective_tools() -> set[str]:
 async def session(action: str, options: dict | None = None) -> str:
     """Scan lifecycle and infrastructure management.
 
-    action  : start | complete | status | recovery | set_skill | set_step | start_kali | stop_kali | start_metasploit | stop_metasploit | pull_images | set_codebase
+    action  : start | complete | status | recovery | artifact | set_skill | set_step | start_kali | stop_kali | start_metasploit | stop_metasploit | pull_images | set_codebase
 
     start options:
       target, depth=standard (recon|standard|thorough), scope=[],
-      out_of_scope=[], max_cost_usd=, max_time_minutes=, max_tool_calls=, skill=
+      out_of_scope=[], max_cost_usd=, max_time_minutes=, max_tool_calls=,
+      model_profile=full (full|medium|small) — controls output verbosity
 
-    complete options:
-      notes=
+    complete options: notes=
 
-    status: returns current scan state (target, tools run, findings, cost, skill)
+    status: returns current scan state (target, tools run, findings, cost)
 
-    recovery: returns compact recovery brief after context compaction — resume step,
-              in-progress cells with technique notes, pending escalation leads, action list
+    recovery: returns compact recovery brief after context compaction — tells you
+              exactly what to do next. Call this if you lost context.
+
+    artifact options:
+      id= (artifact ID from tool response), mode=summary (summary|head|tail|grep|full),
+      max_chars=4000, pattern= (regex for grep mode)
 
     set_skill options:
       skill= (name of the active skill, e.g. "pentester", "ai-redteam")
@@ -106,13 +115,22 @@ async def session(action: str, options: dict | None = None) -> str:
         return _do_set_codebase(opts)
     elif action == "recovery":
         return _do_recovery()
+    elif action == "artifact":
+        return _do_artifact(opts)
     elif action == "pre_chain":
         return _do_pre_chain(opts)
     else:
-        return f"Unknown action '{action}'. Use: start, complete, status, recovery, pre_chain, set_skill, set_step, start_kali, stop_kali, start_metasploit, stop_metasploit, pull_images, set_codebase"
+        return f"Unknown action '{action}'. Use: start, complete, status, recovery, artifact, pre_chain, set_skill, set_step, start_kali, stop_kali, start_metasploit, stop_metasploit, pull_images, set_codebase"
 
 
 def _do_start(opts):
+    global _complete_attempts, _force_completed
+    if _force_completed:
+        return (
+            "BLOCKED: Scan was already force-completed. "
+            "STOP — do not call any more tools. The scan is done."
+        )
+    _complete_attempts = 0
     _session_tools_called.clear()
     target = opts.get("target", "")
 
@@ -171,30 +189,30 @@ def _do_start(opts):
         max_time_minutes=opts.get("max_time_minutes"),
         max_tool_calls=opts.get("max_tool_calls"),
         skill=opts.get("skill"),
+        model_profile=opts.get("model_profile", "full"),
     )
     lim = cfg["limits"]
     log.note(
         f"Scan started — target={target}  depth={depth}  "
         f"limits: ${lim['max_cost_usd']} / {lim['max_time_minutes']}min / {lim['max_tool_calls']} calls"
     )
-    lines = [
-        "Scan session started.",
-        f"  Target      : {target}",
-        f"  Depth       : {cfg['depth_label']} — {cfg['description']}",
-        f"  Scope       : {', '.join(cfg['scope'])}",
-    ]
-    if cfg["out_of_scope"]:
-        lines.append(f"  Out-of-scope: {', '.join(cfg['out_of_scope'])}")
     call_limit_str = f"{lim['max_tool_calls']} tool calls" if lim['max_tool_calls'] > 0 else "unlimited"
-    lines += [
-        f"  Cost limit  : ${lim['max_cost_usd']}",
-        f"  Time limit  : {lim['max_time_minutes']} min",
-        f"  Call limit  : {call_limit_str}",
+    lines = [
+        "Scan started.",
+        f"  Target: {target} | Depth: {cfg['depth_label']} | Limits: ${lim['max_cost_usd']}/{lim['max_time_minutes']}min/{call_limit_str}",
         "",
-        f"Proceed with the {depth} scan workflow.",
-        "Stop and call session(action='complete') when finished or when a limit is hit.",
+        "EXECUTE NOW (do not ask questions, do not output text):",
+        f"  report(action='dashboard', data={{'port': 5000}})",
+        f"  scan(tool='httpx', target='{target}')",
         "",
-        "Skills available (invoke these instead of improvising workflows):",
+        "Then in order:",
+        f"  scan(tool='naabu', target='{target}')",
+        f"  scan(tool='spider', target='{target}')",
+        f"  Register endpoints with report(action='coverage', data=...)",
+        f"  scan(tool='nuclei', target='{target}')",
+        f"  Test each coverage cell with http() or kali()",
+        "",
+        "Skills available for full workflow automation (invoke instead of improvising):",
         "  /pentester /web-exploit /codebase /ai-redteam /cloud-security /ad-assessment",
         "  /network-assess /lateral-movement /credential-audit /post-exploit",
         "  /container-k8s-security /osint /ssl-tls-audit /email-security /metasploit",
@@ -235,10 +253,31 @@ def _coverage_blockers(cov: dict, ctf_mode: bool = False) -> list[str]:
 
     addressed = meta.get("tested", 0) + meta.get("not_applicable", 0) + meta.get("skipped", 0)
     pct = (addressed / total) * 100
-    if pct < 80:
+
+    # Model-profile-aware: only enforce 80% coverage threshold for "full" profile.
+    # Medium/small models can't invoke /web-exploit and end up with dozens of
+    # auto-generated cells they can't address, causing completion loops.
+    from mcp_server.scan_engine.budget import get_profile
+    profile = get_profile()
+    coverage_enforced = not profile.get("enforce_budget", True)  # full=enforce, medium/small=skip
+
+    if coverage_enforced and pct < 80:
+        all_cells_tmp = cov.get("matrix", [])
+        pending = [c["id"] for c in all_cells_tmp if c.get("status", "pending") == "pending"]
+        hint = (
+            f"Use bulk_tested to address them:\n"
+            f'  report(action="coverage", data={{"type": "bulk_tested", "updates": ['
+        )
+        hint += ", ".join(
+            f'{{"cell_id": "{cid}", "status": "skipped", "notes": "not tested"}}'
+            for cid in pending[:10]
+        )
+        if len(pending) > 10:
+            hint += f", ... ({len(pending) - 10} more)"
+        hint += "]})"
         blockers.append(
             f"LOW COVERAGE: only {addressed}/{total} matrix cells addressed ({pct:.0f}%). "
-            f"Review pending cells in the coverage matrix — test, skip with reason, or mark N/A."
+            f"{len(pending)} pending cell(s). {hint}"
         )
 
     all_cells = cov.get("matrix", [])
@@ -305,6 +344,8 @@ def _escalation_lead_blockers(data: dict) -> list[str]:
 
 
 async def _do_complete(opts):
+    global _complete_attempts
+    _complete_attempts += 1
     notes = opts.get("notes", "")
     blockers: list[str] = []
 
@@ -343,15 +384,29 @@ async def _do_complete(opts):
     blockers.extend(_coverage_blockers(get_matrix(), ctf_mode=_has_ctf_flag(data)))
 
     if blockers:
-        msg = "complete BLOCKED — fix the following first:\n\n"
+        # Force-complete after max attempts to break model loops
+        if _complete_attempts >= _MAX_COMPLETE_ATTEMPTS:
+            global _force_completed
+            attempts = _complete_attempts
+            _force_completed = True
+            log.note(f"Force-completing after {attempts} blocked attempts. Remaining blockers: {'; '.join(blockers)}")
+            cfg = scan_session.complete(f"{notes} [FORCE-COMPLETED: {len(blockers)} blocker(s) unresolved after {attempts} attempts]")
+            _complete_attempts = 0
+            return (
+                f"Scan FORCE-COMPLETED (exceeded {attempts} attempt limit). "
+                f"{len(blockers)} blocker(s) were unresolved. session.json updated. "
+                f"STOP — do not call any more tools. The scan is done."
+            )
+        msg = f"complete BLOCKED (attempt {_complete_attempts}/{_MAX_COMPLETE_ATTEMPTS}) — fix the following first:\n\n"
         msg += "\n\n".join(f"  [{i+1}] {b}" for i, b in enumerate(blockers))
-        log.note(f"complete blocked: {'; '.join(blockers)}")
+        log.note(f"complete blocked (attempt {_complete_attempts}): {'; '.join(blockers)}")
         return msg
 
     cfg = scan_session.complete(notes)
     status = cfg.get("status", "complete")
     log.note(f"Scan complete — {notes}")
-    return f"Scan marked {status}. session.json updated."
+    _complete_attempts = 0
+    return f"Scan marked {status}. session.json updated. STOP — do not call any more tools. The scan is done."
 
 
 def _do_status():
@@ -510,7 +565,16 @@ def _do_recovery():
     """Compact recovery brief — one call gives the agent everything to resume."""
     current = scan_session.get() or {}
     if not current or current.get("status") != "running":
-        return json.dumps({"error": "No active scan session to recover."})
+        # No session exists — tell the model to start one
+        return json.dumps({
+            "EXECUTE_NOW": "session(action='start', options={\"target\": \"<TARGET_URL>\", \"depth\": \"thorough\"})",
+            "status": "no_session",
+            "TOOLS": (
+                "Only use these 5 MCP tools. Do NOT use Skill or Read tools. "
+                "scan(tool, target) | kali(command) | http(action, url) | "
+                "report(action, data) | session(action)"
+            ),
+        }, indent=2)
 
     summary = cost_tracker.get_summary()
     remaining = scan_session.remaining(summary)
@@ -561,28 +625,95 @@ def _do_recovery():
         for g in scan_session.pending_gates()
     ]
 
+    # Profile-aware: limit cells shown in recovery for small models
+    from mcp_server.scan_engine.budget import get_profile
+    profile = get_profile(current.get("model_profile", "full"))
+    max_cells = profile.get("recovery_cells_shown")
+    extra_cells = 0
+    if max_cells and len(in_progress_cells) > max_cells:
+        extra_cells = len(in_progress_cells) - max_cells
+        in_progress_cells = in_progress_cells[:max_cells]
+
+    target = current.get("target", "")
+    action_list = _build_action_list(
+        integrity_warnings, in_progress_cells, pending_escalations,
+        resume_step, unsatisfied_gates,
+    )
+    next_call = _concrete_next_call(target, tools_run, in_progress_cells, pending_count)
+
     result = {
-        "target": current.get("target", ""),
-        "depth": current.get("depth", ""),
-        "skill": current.get("skill"),
-        "resume_from_step": resume_step,
-        "tools_already_run": sorted(tools_run),  # merged: in-memory + session.json
-        "findings_count": len(data.get("findings", [])),
-        "cost_usd": summary.get("est_cost_usd", 0),
-        "remaining": remaining,
-        "pending_gates": unsatisfied_gates,
-        "coverage_in_progress": in_progress_cells,
-        "coverage_pending_cells": pending_count,
-        "coverage_tested": meta.get("tested", 0),
-        "pending_escalations": pending_escalations,
-        "integrity_warnings": integrity_warnings,
-        "action_required": _build_action_list(
-            integrity_warnings, in_progress_cells, pending_escalations,
-            resume_step, unsatisfied_gates,
+        "EXECUTE_NOW": next_call,
+        "target": target,
+        "phase": resume_step,
+        "tools_already_run": sorted(tools_run),
+        "coverage": f"{meta.get('tested', 0)}/{meta.get('total_cells', 0)}",
+        "findings": len(data.get("findings", [])),
+        "action_required": action_list,
+        "TOOLS": (
+            "Only use these 5 MCP tools. Do NOT use Skill or Read tools. "
+            "scan(tool, target) | kali(command) | http(action, url) | "
+            "report(action, data) | session(action)"
         ),
     }
 
+    # Include known assets summary
+    known_assets = current.get("known_assets", {})
+    compact_assets = {k: v[:10] for k, v in known_assets.items() if v}
+    if compact_assets:
+        result["known_assets"] = compact_assets
+
+    # Include recent tool invocations for context
+    invocations = current.get("tool_invocations", [])
+    if invocations:
+        result["recent_tools"] = [
+            {"tool": i["tool"], "summary": i["summary"]}
+            for i in invocations[-5:]
+        ]
+
+    if extra_cells > 0:
+        result["more_in_progress_cells"] = extra_cells
+
+    if unsatisfied_gates:
+        result["pending_gates"] = unsatisfied_gates
+    if pending_escalations:
+        result["pending_escalations"] = pending_escalations
+    if integrity_warnings:
+        result["integrity_warnings"] = integrity_warnings
+
     return json.dumps(result, indent=2)
+
+
+def _concrete_next_call(target: str, tools_run: set, in_progress: list, pending_count: int) -> str:
+    """Return a single concrete tool call string the model should execute next."""
+    if in_progress:
+        cell = in_progress[0]
+        return (
+            f"Continue testing {cell['injection']} on {cell['endpoint']} param={cell['param']} "
+            f"(cell {cell['cell_id']})"
+        )
+    if "httpx" not in tools_run:
+        return f"scan(tool='httpx', target='{target}')"
+    if "naabu" not in tools_run:
+        return f"scan(tool='naabu', target='{target}')"
+    if "spider" not in tools_run:
+        return f"scan(tool='spider', target='{target}')"
+    if "nuclei" not in tools_run:
+        return f"scan(tool='nuclei', target='{target}')"
+    if pending_count > 0:
+        return f"Test the next pending coverage cell — {pending_count} cells remaining"
+    return "session(action='complete', options={\"notes\": \"all testing complete\"})"
+
+
+def _do_artifact(opts):
+    """Retrieve raw tool output stored by the scan engine."""
+    from mcp_server.scan_engine.artifacts import retrieve_artifact
+    artifact_id = opts.get("id", "")
+    if not artifact_id:
+        return "Error: 'id' option is required"
+    mode = opts.get("mode", "summary")
+    max_chars = opts.get("max_chars", 4000)
+    pattern = opts.get("pattern", "")
+    return retrieve_artifact(artifact_id, mode=mode, max_chars=max_chars, pattern=pattern)
 
 
 def _build_action_list(
