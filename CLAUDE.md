@@ -17,7 +17,7 @@ Run any security scanner.
 | httpx | URL | |
 | nuclei | URL | templates=cve,exposure,misconfig,default-login |
 | ffuf | URL | wordlist=common.txt, extensions= |
-| spider | URL | depth=3 |
+| spider | URL | depth=3, mode=fast\|playwright, cookies={}, max_pages=200 |
 | semgrep | path | |
 | trufflehog | path | |
 | fuzzyai | URL | attack=jailbreak, provider=openai, model= |
@@ -48,10 +48,11 @@ Log findings, diagrams, notes, and coverage matrix updates.
 
 ### `session(action, options)`
 Scan lifecycle and infrastructure.
-- `action="start"` — options: `{target, depth, scope, out_of_scope, max_cost_usd, max_time_minutes, max_tool_calls}`
+- `action="start"` — options: `{target, depth, scope, out_of_scope, max_cost_usd, max_time_minutes, max_tool_calls, model_profile=full}` (model_profile: full|medium|small)
 - `action="complete"` — options: `{notes}`
 - `action="status"` — returns current scan state (tools run, findings count, cost, remaining calls)
-- `action="recovery"` — returns compact recovery brief after context compaction
+- `action="recovery"` — returns compact recovery brief after context compaction; includes `EXECUTE_NOW` with the next concrete tool call
+- `action="artifact"` — options: `{id, mode=summary, max_chars=4000, pattern=}` — retrieve raw tool output stored by the scan engine
 - `action="start_kali"` / `action="stop_kali"` — Kali container lifecycle
 - `action="start_metasploit"` / `action="stop_metasploit"` — Metasploit container lifecycle
 - `action="pull_images"` — pre-pull all Docker images

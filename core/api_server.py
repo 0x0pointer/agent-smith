@@ -245,6 +245,13 @@ async def api_clear() -> JSONResponse:
     # findings.json
     _save({"meta": {"created": "", "target": ""}, "findings": [], "diagrams": []})
 
+    # Reset in-memory coverage state before unlinking the file
+    try:
+        from core.coverage import reset as _reset_coverage
+        await _reset_coverage()
+    except Exception:
+        pass
+
     # session.json, coverage_matrix.json, quick_log.json, qa_state.json, session_cost.json
     for path in (_SESSION_FILE, _COVERAGE_FILE, _QUICK_LOG_FILE, _QA_STATE_FILE, _COST_FILE):
         try:
