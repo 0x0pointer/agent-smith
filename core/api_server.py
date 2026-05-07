@@ -378,7 +378,7 @@ def _write_pid(pid: int) -> None:
 
 def _pid_alive(pid: int) -> bool:
     try:
-        os.kill(pid, 0)
+        os.kill(pid, 0)  # NOSONAR - signal 0 is a POSIX liveness probe, not a real signal
         return True
     except OSError:
         return False
@@ -406,7 +406,7 @@ async def serve(port: int = 5000) -> str:
     # Old process died or never existed — clean up stale PID on port
     if saved_pid and _pid_alive(saved_pid):
         try:
-            os.kill(saved_pid, signal.SIGTERM)
+            os.kill(saved_pid, signal.SIGTERM)  # NOSONAR - SIGTERM sent only to our own spawned dashboard child process
             await asyncio.sleep(0.3)
         except OSError:
             pass

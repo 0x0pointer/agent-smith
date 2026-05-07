@@ -62,13 +62,14 @@ async def test_kali_does_not_record_when_limit_hit():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_kali_clips_long_output():
-    """Output longer than 8000 chars is clipped."""
+async def test_kali_passes_output_to_wrap():
+    """kali() passes raw output to wrap() and returns its result."""
     long_output = "x" * 20_000
 
     with patch("mcp_server.kali_tools.scan_session") as mock_session, \
          patch("mcp_server.kali_tools.cost_tracker") as mock_cost, \
          patch("mcp_server.kali_tools.log"), \
+         patch("mcp_server.scan_engine.wrap", return_value="wrapped") as mock_wrap, \
          patch("tools.kali_runner.exec_command", new_callable=AsyncMock, return_value=long_output):
 
         mock_session.check_limits.return_value = None
@@ -77,18 +78,19 @@ async def test_kali_clips_long_output():
 
         result = await kali("cat /etc/passwd")
 
-    assert len(result) < len(long_output)
-    assert "clipped" in result
+    mock_wrap.assert_called_once()
+    assert result == "wrapped"
 
 
 @pytest.mark.asyncio
 async def test_kali_returns_output_unchanged_when_short():
-    """Short output is returned verbatim."""
+    """Short output is passed through wrap() and returned."""
     short_output = "uid=0(root) gid=0(root)\n"
 
     with patch("mcp_server.kali_tools.scan_session") as mock_session, \
          patch("mcp_server.kali_tools.cost_tracker") as mock_cost, \
          patch("mcp_server.kali_tools.log"), \
+         patch("mcp_server.scan_engine.wrap", side_effect=lambda tool, raw, ctx: raw), \
          patch("tools.kali_runner.exec_command", new_callable=AsyncMock, return_value=short_output):
 
         mock_session.check_limits.return_value = None

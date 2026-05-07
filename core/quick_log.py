@@ -23,7 +23,7 @@ _REPO_ROOT = Path(__file__).parent.parent
 _QUICK_LOG_FILE = _REPO_ROOT / "quick_log.json"
 
 _SEV_ORDER = ["critical", "high", "medium", "low", "info"]
-_DOCKER_ALIASES = {"host.docker.internal", "172.17.0.1", "172.18.0.1"}
+_DOCKER_ALIASES = {"host.docker.internal", "172.17.0.1", "172.18.0.1"}  # NOSONAR - Docker default bridge gateway IPs, not sensitive endpoints
 
 
 def _norm_target(t: str) -> str:
