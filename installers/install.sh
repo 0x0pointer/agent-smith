@@ -150,10 +150,9 @@ mkdir -p "$HOME/.claude/skills/request-cves"
 cp "$REPO_DIR/skills/request-cves/SKILL.md" "$HOME/.claude/skills/request-cves/SKILL.md"
 ok "/request-cves skill installed"
 
-# ── AI testing API keys (FuzzyAI + PyRIT) ────────────────────────────────────
+# ── API keys (QA agent + AI testing tools) ───────────────────────────────────
 echo ""
-echo "AI testing tools (FuzzyAI + PyRIT) use LLM APIs for attacks and scoring."
-echo "Keys are stored in $REPO_DIR/.env (mode 600) and loaded automatically."
+echo "API keys are stored in $REPO_DIR/.env (mode 600) and loaded automatically."
 echo "Press Enter to skip any key you don't need right now."
 echo ""
 
@@ -197,9 +196,99 @@ p.write_text('\n'.join(lines) + '\n')
     fi
 }
 
-_ask_key "OPENAI_API_KEY"      "OpenAI key — FuzzyAI (openai provider) + PyRIT attacker/scorer"
-_ask_key "ANTHROPIC_API_KEY"   "Anthropic key — FuzzyAI (anthropic provider)"
-_ask_key "AZURE_OPENAI_API_KEY" "Azure OpenAI key — FuzzyAI (azure provider)"
+_set_value() {
+    # Write a plain value (not secret — echoed to screen, no -s)
+    local key="$1"
+    local value="$2"
+    python3 -c "
+import pathlib, sys
+p = pathlib.Path(sys.argv[1])
+lines = [l for l in p.read_text().splitlines() if not l.startswith(sys.argv[2] + '=')]
+lines.append(sys.argv[2] + '=' + sys.argv[3])
+p.write_text('\n'.join(lines) + '\n')
+" "$ENV_FILE" "$key" "$value"
+}
+
+# ── QA agent model selection ──────────────────────────────────────────────────
+echo "  QA Agent — a second LLM that watches the pentest in real time and"
+echo "  surfaces gaps every 2 minutes: stalled coverage, pending gates,"
+echo "  missing PoCs, scope drift, late skill chaining, etc."
+echo ""
+echo "  The QA agent needs its own LLM provider. This is separate from the"
+echo "  Claude Code / opencode session running the actual pentest."
+echo ""
+echo "  Note: if you access Claude through a Claude.ai plan that does NOT"
+echo "  include Anthropic API keys (sk-ant-...), pick option 1 (OpenAI),"
+echo "  option 3 (Ollama — fully local, no account needed), or skip for now."
+echo ""
+echo "  Choose a provider:"
+echo "    1) openai:gpt-4o-mini                   (recommended — fast, cheap)"
+echo "    2) anthropic:claude-haiku-4-5-20251001  (requires a separate Anthropic API key)"
+echo "    3) ollama:llama3                        (local — no API key, needs Ollama installed)"
+echo "    4) custom                               (enter model string manually)"
+echo "    5) skip                                 (disable QA agent for now)"
+echo ""
+
+_existing_qa_model=$(grep -E "^QA_MODEL=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2-) || true
+if [[ -n "$_existing_qa_model" ]]; then
+    printf "  QA_MODEL already set to '%s'. New choice (Enter to keep): " "$_existing_qa_model"
+else
+    printf "  Choice [1-5, Enter for openai:gpt-4o-mini]: "
+fi
+
+IFS= read -r _qa_choice </dev/tty || true
+echo ""
+
+_qa_model=""
+case "${_qa_choice:-1}" in
+    1|"") _qa_model="openai:gpt-4o-mini" ;;
+    2)    _qa_model="anthropic:claude-haiku-4-5-20251001" ;;
+    3)
+        _qa_model="ollama:qwen2.5:7b"
+        echo "  Ollama selected (qwen2.5:7b — best JSON reliability for the QA agent)."
+        echo "  Make sure Ollama is installed and the model is pulled:"
+        echo "    brew install ollama"
+        echo "    ollama pull qwen2.5:7b"
+        echo "  Apple Silicon with 16 GB+ RAM runs this at ~80 tok/s — plenty for a 2-min cycle."
+        echo "  The QA agent will fail silently if Ollama is not reachable at localhost:11434."
+        echo ""
+        ;;
+    4)
+        printf "  Enter model string (e.g. openai:gpt-4o, anthropic:claude-opus-4-7): "
+        IFS= read -r _qa_model </dev/tty || true
+        echo ""
+        ;;
+    5)
+        warn "QA agent skipped — set QA_MODEL in $ENV_FILE later to enable it"
+        ;;
+    *)
+        if [[ -n "$_existing_qa_model" ]]; then
+            _qa_model="$_existing_qa_model"
+        else
+            _qa_model="openai:gpt-4o-mini"
+        fi
+        ;;
+esac
+
+if [[ -n "$_qa_model" ]]; then
+    _set_value "QA_MODEL" "$_qa_model"
+    ok "QA_MODEL set to $_qa_model"
+fi
+echo ""
+
+# ── Provider API keys ─────────────────────────────────────────────────────────
+echo "  API keys — enter the key for your chosen QA model provider."
+echo "  The same keys are also used by FuzzyAI and PyRIT for AI red-team testing."
+echo "  Skip any key you don't have — the QA agent will simply not start until"
+echo "  a valid key for the selected provider is present."
+echo ""
+
+_ask_key "OPENAI_API_KEY" \
+    "Required if QA_MODEL=openai:* — also powers FuzzyAI and PyRIT scoring"
+_ask_key "ANTHROPIC_API_KEY" \
+    "Required if QA_MODEL=anthropic:* — note: this is an API key (sk-ant-...), NOT your Claude.ai login"
+_ask_key "AZURE_OPENAI_API_KEY" \
+    "Required if QA_MODEL=azure:* or using FuzzyAI with azure provider"
 
 # ── Auto-approve pentest-agent MCP tools ──────────────────────────────────────
 echo ""
@@ -297,6 +386,35 @@ fi
 echo ""
 echo "  Install complete!"
 echo ""
+_qa_summary=$(grep -E "^QA_MODEL=" "$ENV_FILE" 2>/dev/null | cut -d= -f2- || echo "not configured")
+echo "  QA Agent: ${_qa_summary}"
+echo "    Runs every 2 min during scans. Change provider: set QA_MODEL in $ENV_FILE"
+echo ""
+
+# ── Ollama post-install steps (only shown when Ollama is selected) ────────────
+if [[ "$_qa_summary" == ollama:* ]]; then
+    _ollama_model="${_qa_summary#ollama:}"
+    echo "  ┌─────────────────────────────────────────────────────────┐"
+    echo "  │  Ollama setup — required before the QA agent will work  │"
+    echo "  └─────────────────────────────────────────────────────────┘"
+    echo ""
+    echo "  Step 1 — Install Ollama (skip if already installed):"
+    echo "    brew install ollama"
+    echo ""
+    echo "  Step 2 — Pull the model (one-time download, ~5 GB):"
+    echo "    ollama pull ${_ollama_model}"
+    echo ""
+    echo "  Step 3 — Start the Ollama server (must be running during scans):"
+    echo "    ollama serve"
+    echo ""
+    echo "  Tip: add Ollama to your login items so it starts automatically,"
+    echo "  or run it as a background service:"
+    echo "    brew services start ollama"
+    echo ""
+    echo "  Once 'ollama serve' is running and the model is pulled, the QA"
+    echo "  agent will pick it up automatically — no restart of Smith needed."
+    echo ""
+fi
 echo "  Available commands:"
 echo "    /pentester scan https://target.com       — full pentest"
 echo "    /api-security https://api.example.com    — OWASP API Top 10 (BOLA, BFLA, mass assignment, ...)"

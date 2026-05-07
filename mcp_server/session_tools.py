@@ -5,12 +5,15 @@ import asyncio
 import json
 import os
 import re
+from typing import Any
 
 from core import cost as cost_tracker
 from core import findings as findings_store
 from core import logger as log
 from core import session as scan_session
 from mcp_server._app import mcp, _ensure_dict, _session_tools_called
+
+_background_tasks: set[asyncio.Task] = set()  # keeps fire-and-forget tasks alive
 
 
 # ── CTF flag pattern (e.g. CTF{...}, flag{...}, HTB{...}) ─────────────────────
@@ -126,13 +129,16 @@ def _do_start(opts):
     has_data = len(cov.get("matrix", [])) > 0
 
     if prev_target and prev_target != target and has_data:
-        # Different target — archive the old matrix before resetting
+        # Different target — archive the old matrix and wipe quick_log + qa_state
         ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         archive_dir = COVERAGE_FILE.parent / "logs"
         archive_dir.mkdir(exist_ok=True)
         archive_path = archive_dir / f"coverage_matrix_{ts}.json"
         shutil.copy2(COVERAGE_FILE, archive_path)
         log.note(f"Coverage matrix archived to {archive_path.name} (previous target: {prev_target})")
+        for stale in ("quick_log.json", "qa_state.json"):
+            p = COVERAGE_FILE.parent / stale
+            p.unlink(missing_ok=True)
         _cov_save({
             "meta": {
                 "created": datetime.now(timezone.utc).isoformat(),
@@ -419,6 +425,20 @@ def _do_status():
             f"If you lost context, re-invoke the /{current['skill']} skill "
             f"to reload its workflow.{step_msg}"
         )
+
+    # QA alerts — injected from qa_state.json so Smith can self-correct
+    import os as _os
+    _qa_path = _os.path.join(_os.path.dirname(_os.path.dirname(__file__)), "qa_state.json")
+    try:
+        if _os.path.exists(_qa_path):
+            _qa = json.loads(open(_qa_path).read())
+            result["qa_alerts"] = _qa.get("alerts", [])
+            result["qa_last_check"] = _qa.get("ts", "")
+        else:
+            result["qa_alerts"] = []
+    except Exception:
+        result["qa_alerts"] = []
+
     return json.dumps(result, indent=2)
 
 
@@ -673,6 +693,21 @@ def _do_set_skill(opts):
             satisfied_gates.append(gate["id"])
 
     log.skill_start(skill_name, reason=reason, chained_from=chained_from)
+
+    # Append SKILL entry to quick_log (fire-and-forget via asyncio)
+    try:
+        from core.quick_log import quick_log as _qlog
+        _t = asyncio.create_task(_qlog.append({
+            "type":         "SKILL",
+            "name":         skill_name,
+            "reason":       reason,
+            "chained_from": chained_from or None,
+        }))
+        _background_tasks.add(_t)
+        _t.add_done_callback(_background_tasks.discard)
+    except Exception:
+        pass
+
     msg = f"Skill '{skill_name}' logged"
     if satisfied_gates:
         msg += f" (satisfied gate(s): {', '.join(satisfied_gates)})"

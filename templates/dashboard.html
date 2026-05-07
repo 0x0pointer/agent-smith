@@ -221,6 +221,57 @@
       border: 1px dashed var(--border); border-radius: 6px;
     }
 
+    /* ── Finding cards ── */
+    .finding-cards { display: flex; flex-direction: column; gap: 0.75rem; }
+    .finding-card {
+      background: linear-gradient(135deg, rgba(45,43,85,0.45), rgba(26,24,64,0.85));
+      border: 1px solid var(--border); border-radius: 8px;
+      padding: 1rem 1.15rem; position: relative; overflow: hidden;
+      transition: border-color .2s;
+    }
+    .finding-card:hover { border-color: rgba(123,120,255,0.45); }
+    .finding-card.sev-critical { border-left: 3px solid #ff4d4f; }
+    .finding-card.sev-high     { border-left: 3px solid #fa8c16; }
+    .finding-card.sev-medium   { border-left: 3px solid #faad14; }
+    .finding-card.sev-low      { border-left: 3px solid var(--green); }
+    .finding-card.sev-info     { border-left: 3px solid var(--purple); }
+    .finding-card::before {
+      content: ''; position: absolute; inset: 0 0 auto 0; height: 1px;
+      background: linear-gradient(90deg, transparent, rgba(123,120,255,0.3) 60%, transparent);
+    }
+    .finding-header {
+      display: flex; align-items: flex-start; gap: 0.75rem; margin-bottom: 0.6rem;
+    }
+    .finding-title-group { flex: 1; min-width: 0; }
+    .finding-title {
+      font-family: 'Chakra Petch', sans-serif; font-size: 0.95rem; font-weight: 600;
+      color: #fff; line-height: 1.3; word-break: break-word;
+    }
+    .finding-meta-row {
+      display: flex; align-items: center; gap: 0.75rem; margin-top: 0.35rem; flex-wrap: wrap;
+    }
+    .finding-ts-meta { font-size: 0.72rem; color: var(--text-dim); font-family: 'IBM Plex Mono', monospace; }
+    .finding-impact {
+      display: flex; align-items: flex-start; gap: 0.6rem;
+      background: rgba(250,173,20,0.07); border: 1px solid rgba(250,173,20,0.2);
+      border-radius: 5px; padding: 0.5rem 0.75rem;
+      margin-bottom: 0.6rem; font-size: 0.83rem;
+    }
+    .finding-impact-icon { font-size: 0.9rem; flex-shrink: 0; margin-top: 0.05rem; }
+    .finding-impact-label {
+      font-family: 'IBM Plex Mono', monospace; font-size: 0.68rem; font-weight: 700;
+      color: #faad14; text-transform: uppercase; letter-spacing: .05em;
+      white-space: nowrap; padding-top: 0.1rem;
+    }
+    .finding-impact-text { color: var(--text); line-height: 1.5; }
+    .finding-desc {
+      font-size: 0.84rem; color: var(--text-muted); line-height: 1.6;
+      margin-bottom: 0.6rem;
+    }
+    .finding-footer {
+      display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;
+    }
+
     /* ── Topology (diagrams) ── */
     .diagram-card {
       background: linear-gradient(135deg, rgba(45,43,85,0.55), rgba(26,24,64,0.9));
@@ -437,6 +488,104 @@
     }
     .skill-gate-reason { font-size: 0.7rem; color: #faad14; margin-top: 0.1rem; }
 
+    /* ── QA Agent tab ── */
+    .qa-topbar {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 1rem; padding-bottom: 0.6rem; border-bottom: 1px solid var(--border-subtle);
+    }
+    .qa-topbar-left { display: flex; align-items: center; gap: 0.6rem; }
+    .qa-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--green); box-shadow: 0 0 6px var(--green);
+      animation: pulse-dot 2s ease-in-out infinite;
+    }
+    @keyframes pulse-dot { 0%,100%{opacity:1} 50%{opacity:.4} }
+    .qa-label {
+      font-family: 'Chakra Petch', monospace; font-size: 0.88rem; font-weight: 600; color: #fff;
+    }
+    .qa-last-check {
+      font-family: 'IBM Plex Mono', monospace; font-size: 0.7rem; color: var(--text-dim);
+    }
+    .qa-alert {
+      display: flex; gap: 0.75rem; align-items: flex-start;
+      background: var(--bg-card); border-radius: 4px;
+      border-left: 3px solid var(--border);
+      padding: 0.65rem 0.9rem; margin-bottom: 0.4rem;
+      font-size: 0.84rem;
+    }
+    .qa-alert.urgency-high   { border-left-color: #ff4d6d; background: rgba(255,77,109,0.05); }
+    .qa-alert.urgency-medium { border-left-color: #ffd166; background: rgba(255,209,102,0.04); }
+    .qa-alert.urgency-low    { border-left-color: var(--green); }
+    .qa-urgency {
+      font-family: 'IBM Plex Mono', monospace; font-size: 0.67rem; font-weight: 700;
+      white-space: nowrap; padding: 0.1rem 0.35rem; border-radius: 3px; text-transform: uppercase;
+    }
+    .qa-urgency.high   { background: rgba(255,77,109,0.18);  color: #ff4d6d; }
+    .qa-urgency.medium { background: rgba(255,209,102,0.15); color: #ffd166; }
+    .qa-urgency.low    { background: rgba(91,242,155,0.1);   color: var(--green); }
+    .qa-msg { color: var(--text); line-height: 1.5; flex: 1; }
+    .qa-divider {
+      font-family: 'IBM Plex Mono', monospace; font-size: 0.68rem; color: var(--text-dim);
+      text-transform: uppercase; letter-spacing: 0.1em;
+      margin: 1.2rem 0 0.5rem; display: flex; align-items: center; gap: 0.6rem;
+    }
+    .qa-divider::after { content:''; flex:1; height:1px; background:var(--border-subtle); }
+
+    /* Quick Log timeline */
+    .ql-entry {
+      display: flex; gap: 0.6rem; align-items: baseline;
+      font-family: 'IBM Plex Mono', monospace; font-size: 0.77rem;
+      padding: 0.28rem 0.4rem; border-radius: 3px;
+    }
+    .ql-entry:hover { background: rgba(123,120,255,0.06); }
+    .ql-time  { color: var(--text-dim); white-space: nowrap; min-width: 5rem; }
+    .ql-icon  { min-width: 1.2rem; text-align: center; }
+    .ql-body  { color: var(--text); }
+    .ql-type  { font-weight: 600; }
+    .ql-type.SKILL    { color: var(--purple); }
+    .ql-type.TOOL     { color: var(--text-muted); }
+    .ql-type.SPIDER   { color: var(--green); }
+    .ql-type.FINDING  { color: #ff4d6d; }
+    .ql-type.COVERAGE { color: #ffd166; }
+
+    /* ── Conversation tab ── */
+    #conversation-wrap {
+      display: flex; flex-direction: column; gap: 0.5rem;
+      padding-bottom: 1rem;
+      max-height: calc(100vh - 180px); overflow-y: auto;
+    }
+    .chat-ts-chip {
+      text-align: center;
+      font-family: 'IBM Plex Mono', monospace; font-size: 0.65rem; color: var(--text-dim);
+      margin: 0.5rem 0 0.2rem;
+    }
+    .chat-bubble {
+      max-width: 78%; padding: 0.55rem 0.8rem;
+      border-radius: 10px; font-size: 0.82rem; line-height: 1.55;
+    }
+    .chat-bubble.qa {
+      align-self: flex-start;
+      background: rgba(160,120,255,0.1); border: 1px solid rgba(160,120,255,0.2);
+    }
+    .chat-bubble.smith {
+      align-self: flex-end;
+      background: rgba(91,242,155,0.08); border: 1px solid rgba(91,242,155,0.18);
+    }
+    .chat-sender {
+      font-size: 0.63rem; font-weight: 700; font-family: 'IBM Plex Mono', monospace;
+      margin-bottom: 0.3rem; text-transform: uppercase; letter-spacing: 0.05em;
+    }
+    .chat-bubble.qa  .chat-sender { color: var(--purple); }
+    .chat-bubble.smith .chat-sender { color: var(--green); }
+    .chat-alert-row { display: flex; gap: 0.5rem; align-items: flex-start; margin-bottom: 0.25rem; }
+    .chat-alert-row:last-child { margin-bottom: 0; }
+    .chat-smith-action {
+      font-family: 'IBM Plex Mono', monospace; font-size: 0.75rem; color: var(--text-dim);
+      margin-bottom: 0.2rem;
+    }
+    .chat-smith-action:last-child { margin-bottom: 0; }
+    .chat-ok { font-size: 0.8rem; color: var(--text-dim); font-style: italic; }
+
     /* ── Logs tab ── */
     #log-toolbar { display: flex; align-items: center; gap: 1rem; margin-bottom: 0.75rem; font-size: 0.8rem; }
     #log-file-name { color: var(--text-dim); font-family: 'IBM Plex Mono', monospace; }
@@ -476,7 +625,7 @@
   </div>
   <div class="header-buttons">
     <button class="tunnel-btn" onclick="cleanupTunnels()" title="Kill chisel tunnels and Meterpreter sessions">Cleanup Tunnels</button>
-    <button class="clear-btn" onclick="clearFindings()" title="Clear all findings, diagrams, and session data">Clear All</button>
+    <button class="clear-btn" onclick="clearFindings()" title="Wipe all scan data — findings, session, coverage, logs, QA state">Clear All</button>
   </div>
 </div>
 <div id="status"><span class="dot"></span>Connecting…</div>
@@ -496,6 +645,8 @@
   <button class="tab-btn"        onclick="switchTab('components')">Components</button>
   <button class="tab-btn"        onclick="switchTab('coverage')" id="tab-btn-coverage">Coverage</button>
   <button class="tab-btn"        onclick="switchTab('skills')" id="tab-btn-skills">Skills</button>
+  <button class="tab-btn"        onclick="switchTab('qa')" id="tab-btn-qa">QA Agent</button>
+  <button class="tab-btn"        onclick="switchTab('conversation')" id="tab-btn-conversation">Conversation</button>
   <button class="tab-btn"        onclick="switchTab('threat-model')" id="tab-btn-threat-model">Threat Model</button>
   <button class="tab-btn"        onclick="switchTab('logs')">Logs</button>
 </nav>
@@ -537,6 +688,38 @@
   </p>
   <div id="skills-summary"></div>
   <div id="skills-wrap"><div class="empty-placeholder">No active scan session — start a scan to track skill usage.</div></div>
+</div>
+
+<!-- ── Tab: QA Agent ──────────────────────────────────────────────────────── -->
+<div id="tab-qa" class="tab-content">
+  <div class="qa-topbar">
+    <div class="qa-topbar-left">
+      <div class="qa-dot"></div>
+      <span class="qa-label">QA Agent</span>
+    </div>
+    <span id="qa-last-check" class="qa-last-check"></span>
+  </div>
+  <div id="qa-alerts-wrap">
+    <div class="empty-placeholder">Waiting for first QA cycle — runs every 30 s during an active scan.</div>
+  </div>
+  <div class="qa-divider">Activity log</div>
+  <div id="quicklog-wrap">
+    <div class="empty-placeholder">No tool activity yet.</div>
+  </div>
+</div>
+
+<!-- ── Tab: Conversation ──────────────────────────────────────────────────── -->
+<div id="tab-conversation" class="tab-content">
+  <div class="qa-topbar">
+    <div class="qa-topbar-left">
+      <div class="qa-dot" style="background:var(--purple);box-shadow:0 0 6px var(--purple)"></div>
+      <span class="qa-label">QA ↔ Smith</span>
+    </div>
+    <span class="qa-last-check">cycle history</span>
+  </div>
+  <div id="conversation-wrap">
+    <div class="empty-placeholder">No cycles yet — QA starts 30 s after scan begins.</div>
+  </div>
 </div>
 
 <!-- ── Tab: Threat Model ─────────────────────────────────────────────────── -->
@@ -613,7 +796,7 @@
   let _logLines  = [];
 
   // ── Tab switching ─────────────────────────────────────────────────────────
-  const TAB_NAMES = ['findings', 'topology', 'components', 'coverage', 'skills', 'threat-model', 'logs'];
+  const TAB_NAMES = ['findings', 'topology', 'components', 'coverage', 'skills', 'qa', 'conversation', 'threat-model', 'logs'];
 
   function switchTab(name) {
     _activeTab = name;
@@ -622,12 +805,14 @@
     });
     document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
     document.getElementById(`tab-${name}`).classList.add('active');
-    if (name === 'topology')     renderTopology(allData.diagrams || []);
-    if (name === 'components')   renderComponentMap(allData.findings || []);
-    if (name === 'coverage')     pollCoverage();
-    if (name === 'skills')       pollSkills();
-    if (name === 'threat-model') pollThreatModel();
-    if (name === 'logs')         pollLogs();
+    if (name === 'topology')      renderTopology(allData.diagrams || []);
+    if (name === 'components')    renderComponentMap(allData.findings || []);
+    if (name === 'coverage')      pollCoverage();
+    if (name === 'skills')        pollSkills();
+    if (name === 'qa')            pollQA();
+    if (name === 'conversation')  pollQA();
+    if (name === 'threat-model')  pollThreatModel();
+    if (name === 'logs')          pollLogs();
   }
 
   // ── Session strip ─────────────────────────────────────────────────────────
@@ -714,9 +899,7 @@
     }
     const openIds = new Set();
     wrap.querySelectorAll('details[open]').forEach(el => openIds.add(el.dataset.id));
-    wrap.innerHTML = `<table><thead><tr>
-      <th>Severity</th><th>Finding</th><th>Target</th><th>Tool</th><th>Time</th>
-    </tr></thead><tbody>${filtered.map(f => rowHTML(f, openIds)).join('')}</tbody></table>`;
+    wrap.innerHTML = `<div class="finding-cards">${filtered.map(f => cardHTML(f, openIds)).join('')}</div>`;
     // Restore open fix panels after DOM rebuild
     _openFixPanels.forEach(id => {
       const el = document.getElementById('fix-' + id);
@@ -724,13 +907,16 @@
     });
   }
 
-  function rowHTML(f, openIds) {
-    const isNew  = freshIds.has(f.id);
-    const isOpen = openIds.has(f.id);
-    const ts     = new Date(f.timestamp).toLocaleTimeString();
+  function cardHTML(f, openIds) {
+    const isNew    = freshIds.has(f.id);
+    const isOpen   = openIds.has(f.id);
+    const ts       = new Date(f.timestamp).toLocaleTimeString();
     const newBadge = isNew ? '<span class="new-badge">NEW</span>' : '';
-    const cve      = f.cve ? `<div class="cve">CVE: ${esc(f.cve)}</div>` : '';
-    const ghBtn    = f.gh_issue
+    const cve      = f.cve ? `<span class="cve">CVE: ${esc(f.cve)}</span>` : '';
+    const statusBadge = f.status === 'false_positive'
+      ? `<span class="badge" style="background:rgba(107,104,144,.2);color:var(--text-dim);margin-left:.4rem">false positive</span>`
+      : '';
+    const ghBtn = f.gh_issue
       ? `<button class="copy-gh-btn" onclick="copyGhIssue(this,'${f.id}')" title="Copy GitHub issue">
            <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
              <path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"/><path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"/>
@@ -744,23 +930,38 @@
     const fixBtn = f.remediation
       ? `<button class="fix-btn" onclick="toggleFix('${f.id}')" title="Show remediation">&#128295; Fix</button>`
       : '';
-    const fixDetail = f.remediation ? buildFixDetail(f) : '';
-    return `<tr>
-      <td><span class="badge badge-${f.severity}">${f.severity}</span></td>
-      <td>
-        <div class="desc"><strong>${esc(f.title)}</strong>${newBadge}${replayBtn}${fixBtn}${ghBtn}</div>
-        <div style="margin-top:.3rem;color:#8b949e;font-size:.82rem">${esc(f.description)}</div>
-        ${cve}
-        ${fixDetail}
-        ${f.evidence ? `<details ${isOpen?'open':''} data-id="${f.id}">
+    const fixDetail  = f.remediation ? buildFixDetail(f) : '';
+    const impactHtml = f.business_impact
+      ? `<div class="finding-impact">
+           <span class="finding-impact-icon">&#9888;</span>
+           <span class="finding-impact-label">Business impact&nbsp;&nbsp;</span>
+           <span class="finding-impact-text">${esc(f.business_impact)}</span>
+         </div>`
+      : '';
+    return `<div class="finding-card sev-${f.severity}">
+      <div class="finding-header">
+        <span class="badge badge-${f.severity}">${f.severity}</span>${statusBadge}
+        <div class="finding-title-group">
+          <div class="finding-title">${esc(f.title)}${newBadge}</div>
+          <div class="finding-meta-row">
+            <span class="target">${esc(f.target)}</span>
+            ${f.tool_used ? `<span class="tool">${esc(f.tool_used)}</span>` : ''}
+            ${cve}
+            <span class="finding-ts-meta">${ts}</span>
+          </div>
+        </div>
+      </div>
+      ${impactHtml}
+      ${f.description ? `<div class="finding-desc">${esc(f.description)}</div>` : ''}
+      ${fixDetail}
+      <div class="finding-footer">
+        ${replayBtn}${fixBtn}${ghBtn}
+        ${f.evidence ? `<details ${isOpen?'open':''} data-id="${f.id}" style="width:100%;margin-top:${(replayBtn||fixBtn||ghBtn)?'0.4rem':'0'}">
           <summary></summary>
           <pre class="evidence">${esc(f.evidence)}</pre>
         </details>` : ''}
-      </td>
-      <td><span class="target">${esc(f.target)}</span></td>
-      <td><span class="tool">${esc(f.tool_used)}</span></td>
-      <td><span class="ts">${ts}</span></td>
-    </tr>`;
+      </div>
+    </div>`;
   }
 
   // ── GH Issue clipboard copy ────────────────────────────────────────────────
@@ -844,17 +1045,72 @@
 
   // ── Clear all findings ──────────────────────────────────────────────────
   function clearFindings() {
-    if (!confirm('Clear all findings, diagrams, and session data? This also kills any active tunnels. This cannot be undone.')) return;
+    if (!confirm('Clear ALL scan data? This wipes findings, session, coverage, skills, logs, QA state, and kills any active tunnels. This cannot be undone.')) return;
     fetch('/api/clear', { method: 'DELETE' })
       .then(r => r.json())
       .then(d => {
-        if (d.ok) {
-          allData = { findings: [], diagrams: [] };
-          scanDone = false;  // resume polling for the next scan
-          renderStats([]);
-          renderFindingsTable([]);
-          document.getElementById('status').innerHTML =
-            '<span class="dot"></span>Live · refreshes every 5 s';
+        if (!d.ok) return;
+
+        // ── In-memory state ──────────────────────────────────────────────
+        allData  = { findings: [], diagrams: [] };
+        scanDone = false;
+        seenIds  = new Set();
+        freshIds = new Set();
+        filter   = 'all';
+        _logLines = [];
+
+        // ── Status bar ───────────────────────────────────────────────────
+        document.getElementById('status').innerHTML =
+          '<span class="dot"></span>Live · refreshes every 5 s';
+
+        // ── Session strip ─────────────────────────────────────────────────
+        const strip = document.getElementById('session-strip');
+        strip.classList.remove('visible');
+        ['s-target','s-depth','s-scope','s-status'].forEach(id => {
+          document.getElementById(id).textContent = '—';
+        });
+
+        // ── Findings tab ──────────────────────────────────────────────────
+        renderStats([]);
+        document.getElementById('findings-wrap').innerHTML =
+          '<div class="empty-placeholder">No findings yet — run a scan.</div>';
+
+        // ── Topology tab ──────────────────────────────────────────────────
+        document.getElementById('diagrams-wrap').innerHTML =
+          '<div class="empty-placeholder">No diagrams yet — Claude calls report_diagram during a scan.</div>';
+
+        // ── Components tab ────────────────────────────────────────────────
+        document.getElementById('components-wrap').innerHTML = '';
+
+        // ── Coverage tab ──────────────────────────────────────────────────
+        document.getElementById('coverage-summary').innerHTML = '';
+        document.getElementById('coverage-wrap').innerHTML =
+          '<div class="empty-placeholder">No coverage data yet — run a scan with web-exploit.</div>';
+
+        // ── Skills tab ────────────────────────────────────────────────────
+        document.getElementById('skills-summary').innerHTML = '';
+        document.getElementById('skills-wrap').innerHTML =
+          '<div class="empty-placeholder">No active scan session — start a scan to track skill usage.</div>';
+
+        // ── QA + Conversation tabs ────────────────────────────────────────
+        document.getElementById('qa-last-check').textContent = '';
+        document.getElementById('qa-alerts-wrap').innerHTML =
+          '<div class="empty-placeholder">Waiting for first QA cycle (runs every 2 min during an active scan).</div>';
+        document.getElementById('quicklog-wrap').innerHTML =
+          '<div class="empty-placeholder">No tool activity yet — start a scan.</div>';
+        _qaData = null;
+        _convRenderedCount = 0;
+        document.getElementById('conversation-wrap').innerHTML =
+          '<div class="empty-placeholder">No cycles yet — QA starts 30 s after scan begins.</div>';
+
+        // ── Logs tab ──────────────────────────────────────────────────────
+        document.getElementById('log-output').innerHTML = '';
+
+        // ── Threat model tab ──────────────────────────────────────────────
+        const tmWrap = document.getElementById('threat-model-wrap');
+        if (tmWrap) {
+          tmWrap.className = 'empty';
+          tmWrap.innerHTML = 'No threat model yet — run the threat-modeling in <code>/pentester</code>';
         }
       })
       .catch(() => alert('Failed to clear — is the dashboard API running?'));
@@ -1528,12 +1784,163 @@
     wrap.innerHTML = html;
   }
 
+  // ── QA Agent tab ──────────────────────────────────────────────────────────
+  let _qaData = null;
+
+  const QL_ICONS = { SKILL: '🎯', TOOL: '🔧', SPIDER: '🕷', FINDING: '🔍', COVERAGE: '📋' };
+  const QL_LABELS = { SKILL: 'SKILL', TOOL: 'TOOL', SPIDER: 'SPIDER', FINDING: 'FINDING', COVERAGE: 'COVERAGE' };
+
+  function _qlTime(ts) {
+    try { return new Date(ts).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}); }
+    catch { return ''; }
+  }
+
+  function _qlDesc(e) {
+    if (e.type === 'SKILL')    return `<span class="ql-type SKILL">${esc(e.name)}</span>${e.reason ? ' — ' + esc(e.reason) : ''}`;
+    if (e.type === 'TOOL')     return `<span class="ql-type TOOL">${esc(e.name)}</span>${e.target ? ' → ' + esc(e.target) : ''}${e.duration_s != null ? ' (' + e.duration_s + 's)' : ''}`;
+    if (e.type === 'SPIDER')   return `<span class="ql-type SPIDER">SPIDER</span> ${e.endpoints_found ?? '?'} endpoints found${e.target ? ' — ' + esc(e.target) : ''}`;
+    if (e.type === 'FINDING')  return `<span class="ql-type FINDING">${esc(e.severity?.toUpperCase() || 'FINDING')}</span> ${esc(e.title || '')}`;
+    if (e.type === 'COVERAGE') return `<span class="ql-type COVERAGE">COVERAGE</span> ${e.registered ?? '?'} endpoints · ${e.tested ?? 0} tested · ${e.pending ?? 0} pending`;
+    return esc(JSON.stringify(e));
+  }
+
+  function renderQA() {
+    const qa = _qaData || {};
+
+    // ── Alerts panel ──
+    const alertsWrap = document.getElementById('qa-alerts-wrap');
+    const alerts = qa.alerts || [];
+    const lastCheck = document.getElementById('qa-last-check');
+    if (lastCheck && qa.ts) {
+      lastCheck.textContent = 'Last check: ' + _qlTime(qa.ts);
+    }
+
+    if (!alerts.length) {
+      alertsWrap.innerHTML = '<div class="empty-placeholder">No alerts — QA agent found no workflow gaps, or cycle has not run yet.</div>';
+    } else {
+      alertsWrap.innerHTML = alerts.map(a => `
+        <div class="qa-alert urgency-${a.urgency || 'low'}">
+          <span class="qa-urgency ${a.urgency || 'low'}">${esc(a.urgency || 'low')}</span>
+          <span class="qa-msg">${esc(a.message || '')}</span>
+        </div>`).join('');
+    }
+
+    // ── Quick Log ──
+    // fetch separately since it's a different endpoint
+  }
+
+  async function renderQuickLog() {
+    try {
+      const r = await fetch(`/api/quicklog?_=${Date.now()}`);
+      if (!r.ok) return;
+      const entries = await r.json();
+      const wrap = document.getElementById('quicklog-wrap');
+      if (!wrap) return;
+      if (!entries.length) {
+        wrap.innerHTML = '<div class="empty-placeholder">No tool activity yet — start a scan.</div>';
+        return;
+      }
+      const reversed = [...entries].reverse();
+      wrap.innerHTML = reversed.map(e => `
+        <div class="ql-entry">
+          <span class="ql-time">${_qlTime(e.ts)}</span>
+          <span class="ql-icon">${QL_ICONS[e.type] || '·'}</span>
+          <span class="ql-body">${_qlDesc(e)}</span>
+        </div>`).join('');
+    } catch { /* ignore */ }
+  }
+
+  let _convRenderedCount = 0;
+
+  function renderConversation() {
+    const wrap = document.getElementById('conversation-wrap');
+    if (!wrap) return;
+    const qa = _qaData || {};
+    const history = qa.history || [];
+
+    // Remove placeholder if we now have data
+    const placeholder = wrap.querySelector('.empty-placeholder');
+    if (placeholder && history.length) placeholder.remove();
+    if (!history.length) {
+      if (!wrap.querySelector('.empty-placeholder'))
+        wrap.innerHTML = '<div class="empty-placeholder">No cycles yet — QA starts 30 s after scan begins.</div>';
+      return;
+    }
+
+    // Append-only: only render cycles we haven't rendered yet
+    const newCycles = history.slice(_convRenderedCount);
+    if (!newCycles.length) return;
+
+    const frag = document.createDocumentFragment();
+
+    newCycles.forEach(cycle => {
+      // Timestamp chip
+      const tsEl = document.createElement('div');
+      tsEl.className = 'chat-ts-chip';
+      tsEl.textContent = _qlTime(cycle.ts);
+      frag.appendChild(tsEl);
+
+      // Smith bubble — session summary sent to QA (the trigger)
+      const summaryLines = (cycle.summary_sent || '').split('\n').filter(l => l.trim());
+      if (summaryLines.length) {
+        const smithCtxDiv = document.createElement('div');
+        smithCtxDiv.className = 'chat-bubble smith';
+        smithCtxDiv.innerHTML = `<div class="chat-sender">Smith → QA</div>${summaryLines.map(l => `<div class="chat-smith-action">${esc(l)}</div>`).join('')}`;
+        frag.appendChild(smithCtxDiv);
+      }
+
+      // QA bubble — alerts (the response)
+      const qaDiv = document.createElement('div');
+      qaDiv.className = 'chat-bubble qa';
+      const alerts = cycle.alerts || [];
+      const alertsInner = alerts.length
+        ? alerts.map(a => `<div class="chat-alert-row"><span class="qa-urgency ${a.urgency||'low'}">${esc(a.urgency||'low')}</span><span class="qa-msg">${esc(a.message||'')}</span></div>`).join('')
+        : '<span class="chat-ok">All clear — no issues this cycle.</span>';
+      qaDiv.innerHTML = `<div class="chat-sender">QA Agent</div>${alertsInner}`;
+      frag.appendChild(qaDiv);
+
+      // Smith follow-up bubble — what Smith did after receiving the alerts
+      const actions = cycle.smith_actions || [];
+      if (actions.length) {
+        const smithActDiv = document.createElement('div');
+        smithActDiv.className = 'chat-bubble smith';
+        const actionsInner = actions.map(e =>
+          `<div class="chat-smith-action">${QL_ICONS[e.type]||'·'} ${esc(_qlDesc(e))}</div>`
+        ).join('');
+        smithActDiv.innerHTML = `<div class="chat-sender">Smith ← response</div>${actionsInner}`;
+        frag.appendChild(smithActDiv);
+      }
+    });
+
+    wrap.appendChild(frag);
+    _convRenderedCount = history.length;
+
+    // Auto-scroll to bottom so newest message is visible
+    wrap.scrollTop = wrap.scrollHeight;
+  }
+
+  async function pollQA() {
+    try {
+      const r = await fetch(`/api/qa?_=${Date.now()}`);
+      if (!r.ok) return;
+      _qaData = await r.json();
+      if (_activeTab === 'qa')           { renderQA(); renderQuickLog(); }
+      if (_activeTab === 'conversation') renderConversation();
+
+      // Badge: show alert count on QA tab button
+      const btn = document.getElementById('tab-btn-qa');
+      const alerts = (_qaData.alerts || []);
+      if (btn) btn.textContent = alerts.length ? `QA Agent (${alerts.length})` : 'QA Agent';
+    } catch { /* ignore */ }
+  }
+
   // ── Polling intervals ─────────────────────────────────────────────────────
   setInterval(pollFindings,    POLL_MS);
   setInterval(pollSession,     POLL_MS);
   setInterval(pollCoverage,    POLL_MS);
   setInterval(pollSkills,      POLL_MS);
   setInterval(pollThreatModel, POLL_MS);
+  setInterval(pollQA,          POLL_MS);
   setInterval(() => { if (!scanDone && lastOk && _activeTab === 'findings') renderFindings(); }, 1000);
   setInterval(() => { if (!scanDone && _activeTab === 'logs') pollLogs(); }, 3000);
 
@@ -1544,6 +1951,7 @@
   pollSkills();
   pollThreatModel();
   pollLogs();
+  pollQA();
 </script>
 </body>
 </html>

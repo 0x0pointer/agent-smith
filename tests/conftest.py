@@ -15,6 +15,17 @@ import core.session
 import core.findings
 import core.coverage
 
+# ── MCP tool decorator shim ───────────────────────────────────────────────────
+# FastMCP.add_tool() calls pydantic.create_model(result=<class 'str'>) which
+# raises PydanticUserError on pydantic v2.10+ (unannotated field). This patch
+# replaces FastMCP.tool() with a no-op BEFORE any mcp_server module is
+# imported during test collection, so the underlying _do_* helpers are
+# importable and testable without triggering the decorator machinery.
+from unittest.mock import patch as _patch
+from mcp.server.fastmcp import FastMCP as _FastMCP
+_mcp_tool_shim = _patch.object(_FastMCP, "tool", side_effect=lambda **kw: lambda f: f)
+_mcp_tool_shim.start()
+
 
 @pytest.fixture(autouse=True)
 def isolate_logger():

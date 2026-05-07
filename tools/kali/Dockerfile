@@ -121,6 +121,12 @@ RUN (apt-get update && apt-get install -y --no-install-recommends nodejs npm \
     && rm -rf /var/lib/apt/lists/* \
     && npm install -g promptfoo@0.121.2) || true
 
+# Web spider: Playwright + headless Chromium for JavaScript-aware crawling
+# (required for Hotwire/Turbo Frame apps where katana misses lazy-loaded content)
+# Pinned to 1.49.0 — update explicitly when needed
+RUN pip3 install --no-cache-dir playwright==1.49.0 --break-system-packages \
+    && playwright install chromium --with-deps
+
 # Exploitation payload generators
 # phpggc — PHP deserialization gadget-chain generator (Laravel, Symfony,
 # Twig, Monolog, Guzzle, SwiftMailer, Yii, ...). Used for exploiting
@@ -210,6 +216,9 @@ RUN ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') \
 
 # Decompress rockyou wordlist (needed by hydra, john, etc.)
 RUN gzip -d /usr/share/wordlists/rockyou.txt.gz 2>/dev/null || true
+
+COPY playwright_spider.py /usr/local/bin/playwright-spider
+RUN chmod +x /usr/local/bin/playwright-spider
 
 EXPOSE 5000
 
