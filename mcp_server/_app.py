@@ -106,32 +106,12 @@ _last_qa_shown_ts: str = ""   # ISO timestamp of last alert batch shown to Smith
 
 def _inject_qa_alerts(result: str) -> str:
     """
-    Append any new high or medium QA alerts to a tool result so Smith sees them inline.
-    Only fires when the qa_state.json has been updated since the last injection.
-    Low-urgency alerts are skipped — they're informational for the dashboard only.
+    DEPRECATED: QA alert injection now happens inside scan_engine.wrap() where
+    alerts are placed into the structured envelope (warnings[] + summary) rather
+    than appended as plaintext. This function is kept for import compatibility
+    only and is a no-op pass-through.
     """
-    global _last_qa_shown_ts
-    try:
-        if not os.path.isfile(_QA_STATE_FILE):
-            return result
-        raw = open(_QA_STATE_FILE).read()
-        state = json.loads(raw)
-        ts = state.get("ts", "")
-        if not ts or ts <= _last_qa_shown_ts:
-            return result   # nothing new
-        alerts = [a for a in state.get("alerts", []) if a.get("urgency") in ("high", "medium")]
-        if not alerts:
-            _last_qa_shown_ts = ts
-            return result
-        _last_qa_shown_ts = ts
-        lines = ["\n\n--- QA AGENT ---"]
-        for a in alerts:
-            lines.append(f"[{a['urgency'].upper()}] {a['message']}")
-        lines.append("(Address these before continuing or call session(action='status') to review.)")
-        lines.append("----------------")
-        return result + "\n".join(lines)
-    except Exception:
-        return result   # never break tool dispatch
+    return result  # no-op — logic lives in scan_engine/envelope.py _inject_qa_alerts_into_envelope()
 
 
 # ── Output clipping ───────────────────────────────────────────────────────────
@@ -154,35 +134,9 @@ def _clip(text: str, limit: int = 8_000) -> str:
 # ── Docker tool runner ────────────────────────────────────────────────────────
 
 async def _append_quick_log(name: str, kwargs: dict, result: str, elapsed: float) -> None:
-    """Append a TOOL or SPIDER entry to quick_log after a successful tool run."""
-    import re as _re
-    from core.quick_log import quick_log as _qlog
-    if name == "spider":
-        m = None
-        for _kw in ("endpoint", "url", "path", "route", "link"):
-            m = _re.search(r'(\d+)\s+' + _kw, result, _re.IGNORECASE)
-            if m:
-                break
-        ep_count = int(m.group(1)) if m else 0
-        opts = kwargs.get("options") or {}
-        if isinstance(opts, str):
-            try:
-                opts = json.loads(opts)
-            except Exception:
-                opts = {}
-        await _qlog.append({
-            "type": "SPIDER",
-            "target": kwargs.get("target", ""),
-            "endpoints_found": ep_count,
-            "mode": opts.get("mode", "katana"),
-        })
-    else:
-        await _qlog.append({
-            "type": "TOOL",
-            "name": name,
-            "target": kwargs.get("target", kwargs.get("url", "")),
-            "duration_s": elapsed,
-        })
+    """DEPRECATED: Quick log now fires inside scan_engine.wrap() via _quick_log_tool().
+    Kept as no-op for import compatibility only."""
+    pass
 
 
 async def _run(name: str, **kwargs) -> str:
@@ -230,12 +184,10 @@ async def _run(name: str, **kwargs) -> str:
         cost_tracker.finish(call_id, result)
         log.tool_result(name, result)
 
-        result = _inject_qa_alerts(result)
-
-        try:
-            await _append_quick_log(name, kwargs, result, elapsed)
-        except Exception:
-            pass  # quick_log failures must never crash tool dispatch
+        # QA alerts and quick_log are now handled inside scan_engine.wrap(),
+        # which every tool handler calls after _run() returns raw output.
+        # Do NOT re-add _inject_qa_alerts or _append_quick_log here — that
+        # would pollute artifacts with QA text and double-log to quick_log.
 
         return result
 
