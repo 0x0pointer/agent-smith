@@ -7,6 +7,7 @@ Raw output lives in artifacts, referenced by artifact_id.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field, asdict
 from typing import Any
 
@@ -15,6 +16,11 @@ from mcp_server.scan_engine.budget import enforce_budget, get_tool_budget, get_p
 from mcp_server.scan_engine.planner import compute_next
 from mcp_server.scan_engine.state import get_state
 from mcp_server.scan_engine.summarizers import summarize
+
+_QA_STATE_FILE = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "qa_state.json"
+)
+_last_qa_shown_ts: str = ""  # ISO timestamp of last alert batch shown to the model
 
 
 @dataclass
@@ -90,6 +96,12 @@ def wrap(tool: str, raw_output: str, context: dict | None = None) -> str:
     # 5. Enforce budget (profile-aware) — may truncate facts/evidence
     budget = get_tool_budget(tool)
     enforced = enforce_budget(env, budget, artifact_id)
+
+    # 5.5. QA alerts — inject into warnings (high urgency also prepended to summary)
+    _inject_qa_alerts_into_envelope(enforced)
+
+    # 5.6. Quick log — fire-and-forget, does not block
+    _quick_log_tool(tool, ctx, result.summary)
 
     # 6. Context tracking (P4) — charge and check pressure
     json_str = enforced.to_json()
@@ -168,3 +180,80 @@ def _check_context_pressure(env: Envelope, json_str: str) -> str:
         )
         return env.to_json()
     return json_str
+
+
+# ---------------------------------------------------------------------------
+# P5 — QA alert injection
+# ---------------------------------------------------------------------------
+
+def _inject_qa_alerts_into_envelope(env: Envelope) -> None:
+    """Read qa_state.json and inject new alerts into the envelope.
+
+    High urgency  → appended to env.warnings AND prepended to env.summary.
+                    The model sees it whether it reads summary or warnings.
+    Medium urgency → env.warnings only (dashboard-visible, not summary-loud).
+    Low urgency   → skipped entirely (dashboard-only, not model-facing).
+
+    Uses a module-level timestamp so each alert is shown exactly once across
+    consecutive tool calls, not repeated on every response.
+    """
+    global _last_qa_shown_ts
+    try:
+        if not os.path.isfile(_QA_STATE_FILE):
+            return
+        state = json.loads(open(_QA_STATE_FILE).read())
+        ts = state.get("ts", "")
+        if not ts or ts <= _last_qa_shown_ts:
+            return
+        alerts = [a for a in state.get("alerts", []) if a.get("urgency") in ("high", "medium")]
+        if not alerts:
+            _last_qa_shown_ts = ts
+            return
+        _last_qa_shown_ts = ts
+
+        # Structured entries into warnings[]
+        for a in alerts:
+            env.warnings.append(f"[QA {a['urgency'].upper()}] {a['message']}")
+
+        # High urgency: also surface in summary so no model misses it
+        high = [a for a in alerts if a.get("urgency") == "high"]
+        if high:
+            alert_text = " | ".join(a["message"] for a in high)
+            env.summary = (
+                f"⚠ QA ALERT: {alert_text}\n"
+                f"(Address before continuing or call session(action='status') to review.)\n\n"
+                + env.summary
+            )
+    except Exception:
+        pass  # never break tool dispatch
+
+
+# ---------------------------------------------------------------------------
+# P6 — Quick log
+# ---------------------------------------------------------------------------
+
+def _quick_log_tool(tool: str, ctx: dict, summarizer_summary: str) -> None:
+    """Fire-and-forget quick_log entry. Called from within an async tool handler
+    so asyncio.get_running_loop() is always available.
+
+    Uses the summarizer's summary (before QA injection) so the log reflects
+    what the tool actually found, not the alert state.
+    """
+    import asyncio
+    import re as _re
+    try:
+        from core.quick_log import quick_log as _qlog
+        target = ctx.get("url", ctx.get("host", ctx.get("domain", ctx.get("path", ""))))
+        if tool == "spider":
+            m = _re.search(r'(\d+)\s+unique\s+endpoint', summarizer_summary, _re.IGNORECASE)
+            entry: dict = {
+                "type": "SPIDER",
+                "target": target,
+                "endpoints_found": int(m.group(1)) if m else 0,
+            }
+        else:
+            entry = {"type": "TOOL", "name": tool, "target": target}
+        loop = asyncio.get_running_loop()
+        loop.create_task(_qlog.append(entry))
+    except Exception:
+        pass  # quick_log failures must never affect tool dispatch

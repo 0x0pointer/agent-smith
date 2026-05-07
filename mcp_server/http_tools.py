@@ -7,7 +7,7 @@ from typing import Any
 
 from core import cost as cost_tracker
 from core import logger as log
-from mcp_server._app import mcp, _ensure_dict, _inject_qa_alerts
+from mcp_server._app import mcp, _ensure_dict
 
 
 @mcp.tool()
@@ -84,7 +84,7 @@ async def _do_request(url, method, headers, body, opts):
     log.tool_result("http_request", result)
 
     from mcp_server.scan_engine import wrap
-    return _inject_qa_alerts(wrap("http_request", result, {"url": url, "method": method}))
+    return wrap("http_request", result, {"url": url, "method": method})
 
 
 def _do_save_poc(url, method, headers, body, opts):
