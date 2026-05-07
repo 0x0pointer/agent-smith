@@ -4,7 +4,7 @@ Consolidated kali tool — replaces the kali_exec part of exploitation.py
 from core import cost as cost_tracker
 from core import logger as log
 from core import session as scan_session
-from mcp_server._app import mcp, _clip, _record, _inject_qa_alerts
+from mcp_server._app import mcp, _clip, _record
 
 
 @mcp.tool()
