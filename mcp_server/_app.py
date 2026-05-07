@@ -98,6 +98,42 @@ def _ensure_dict(value):
     return value
 
 
+# ── QA alert injection ────────────────────────────────────────────────────────
+
+_QA_STATE_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "qa_state.json")
+_last_qa_shown_ts: str = ""   # ISO timestamp of last alert batch shown to Smith
+
+
+def _inject_qa_alerts(result: str) -> str:
+    """
+    Append any new high or medium QA alerts to a tool result so Smith sees them inline.
+    Only fires when the qa_state.json has been updated since the last injection.
+    Low-urgency alerts are skipped — they're informational for the dashboard only.
+    """
+    global _last_qa_shown_ts
+    try:
+        if not os.path.isfile(_QA_STATE_FILE):
+            return result
+        raw = open(_QA_STATE_FILE).read()
+        state = json.loads(raw)
+        ts = state.get("ts", "")
+        if not ts or ts <= _last_qa_shown_ts:
+            return result   # nothing new
+        alerts = [a for a in state.get("alerts", []) if a.get("urgency") in ("high", "medium")]
+        if not alerts:
+            _last_qa_shown_ts = ts
+            return result
+        _last_qa_shown_ts = ts
+        lines = ["\n\n--- QA AGENT ---"]
+        for a in alerts:
+            lines.append(f"[{a['urgency'].upper()}] {a['message']}")
+        lines.append("(Address these before continuing or call session(action='status') to review.)")
+        lines.append("----------------")
+        return result + "\n".join(lines)
+    except Exception:
+        return result   # never break tool dispatch
+
+
 # ── Output clipping ───────────────────────────────────────────────────────────
 
 def _clip(text: str, limit: int = 8_000) -> str:
@@ -119,6 +155,8 @@ def _clip(text: str, limit: int = 8_000) -> str:
 
 async def _run(name: str, **kwargs) -> str:
     """Run a lightweight Docker tool from the registry with logging + cost tracking."""
+    import time
+    import re as _re
     from core import logger as log
     from tools import REGISTRY
     from tools.docker_runner import run_container
@@ -135,6 +173,7 @@ async def _run(name: str, **kwargs) -> str:
         mount   = os.environ.get("PENTEST_TARGET_PATH", os.getcwd()) if tool.needs_mount else None
         env_vars = {k: os.environ[k] for k in tool.forward_env if k in os.environ} or None
 
+        t_start = time.monotonic()
         try:
             stdout, stderr, _ = await run_container(
                 tool.image, args, timeout=tool.default_timeout,
@@ -146,6 +185,7 @@ async def _run(name: str, **kwargs) -> str:
             cost_tracker.finish(call_id, result)
             log.tool_result(name, result)
             return result
+        elapsed = round(time.monotonic() - t_start, 1)
 
         # Log full verbose output before any clipping
         log.tool_result_verbose(name, stdout, stderr)
@@ -158,6 +198,37 @@ async def _run(name: str, **kwargs) -> str:
 
         cost_tracker.finish(call_id, result)
         log.tool_result(name, result)
+
+        result = _inject_qa_alerts(result)
+
+        # ── Quick log ─────────────────────────────────────────────────────────
+        try:
+            from core.quick_log import quick_log as _qlog
+            if name == "spider":
+                m = _re.search(r'(\d+)\s+(?:endpoint|url|path|route|link)', result, _re.IGNORECASE)
+                ep_count = int(m.group(1)) if m else 0
+                opts = kwargs.get("options") or {}
+                if isinstance(opts, str):
+                    try:
+                        opts = json.loads(opts)
+                    except Exception:
+                        opts = {}
+                await _qlog.append({
+                    "type": "SPIDER",
+                    "target": kwargs.get("target", ""),
+                    "endpoints_found": ep_count,
+                    "mode": opts.get("mode", "katana"),
+                })
+            else:
+                await _qlog.append({
+                    "type": "TOOL",
+                    "name": name,
+                    "target": kwargs.get("target", kwargs.get("url", "")),
+                    "duration_s": elapsed,
+                })
+        except Exception:
+            pass  # quick_log failures must never crash tool dispatch
+
         return result
 
     except BaseException as exc:

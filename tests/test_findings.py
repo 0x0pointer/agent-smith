@@ -330,3 +330,50 @@ async def test_delete_finding_creates_archived_key_if_missing(findings_file):
     data = json.loads(findings_file.read_text())
     assert "archived" in data
     assert len(data["archived"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# business_impact
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_add_finding_with_business_impact_stores_it(findings_file):
+    entry = await core.findings.add_finding(
+        title="SQLi", severity="critical", target="t", description="d", evidence="e",
+        business_impact="Attacker can read all patient records.",
+    )
+    assert entry["business_impact"] == "Attacker can read all patient records."
+    data = json.loads(findings_file.read_text())
+    assert data["findings"][0]["business_impact"] == "Attacker can read all patient records."
+
+
+@pytest.mark.asyncio
+async def test_add_finding_without_business_impact_omits_field(findings_file):
+    entry = await core.findings.add_finding(
+        title="XSS", severity="medium", target="t", description="d", evidence="e",
+    )
+    assert "business_impact" not in entry
+    data = json.loads(findings_file.read_text())
+    assert "business_impact" not in data["findings"][0]
+
+
+@pytest.mark.asyncio
+async def test_add_finding_empty_business_impact_omits_field(findings_file):
+    entry = await core.findings.add_finding(
+        title="XSS", severity="medium", target="t", description="d", evidence="e",
+        business_impact="",
+    )
+    assert "business_impact" not in entry
+
+
+@pytest.mark.asyncio
+async def test_update_finding_business_impact(findings_file):
+    entry = await core.findings.add_finding(
+        title="IDOR", severity="high", target="t", description="d", evidence="e",
+    )
+    ok = await core.findings.update_finding(
+        entry["id"], business_impact="Exposes all user profiles to unauthenticated access."
+    )
+    assert ok
+    data = json.loads(findings_file.read_text())
+    assert data["findings"][0]["business_impact"] == "Exposes all user profiles to unauthenticated access."

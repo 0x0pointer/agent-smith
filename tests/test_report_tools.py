@@ -1,11 +1,11 @@
 """
-Tests for mcp_server.report_tools — update_finding and delete_finding actions.
+Tests for mcp_server.report_tools — update_finding, delete_finding, and finding actions.
 """
 import json
 import pytest
 from unittest.mock import AsyncMock, patch
 
-from mcp_server.report_tools import _do_update_finding, _do_delete_finding, report
+from mcp_server.report_tools import _do_update_finding, _do_delete_finding, _do_finding, report
 
 
 # ── _do_update_finding ───────────────────────────────────────────────────────
@@ -97,3 +97,61 @@ async def test_report_unknown_action():
     assert "Unknown action" in result
     assert "update_finding" in result
     assert "delete_finding" in result
+
+
+# ── _do_finding — business_impact ───────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_do_finding_passes_business_impact(findings_file):
+    import core.findings
+    result = await _do_finding({
+        "title": "SQLi in /search",
+        "severity": "high",
+        "target": "https://example.com/search",
+        "description": "Blind time-based injection",
+        "evidence": "sleep(5) triggered",
+        "tool_used": "sqlmap",
+        "business_impact": "Full database read access, including PII.",
+    })
+    assert "Finding logged" in result
+    data = json.loads(findings_file.read_text())
+    f = data["findings"][0]
+    assert f["business_impact"] == "Full database read access, including PII."
+
+
+@pytest.mark.asyncio
+async def test_do_finding_without_business_impact_omits_field(findings_file):
+    import core.findings
+    await _do_finding({
+        "title": "XSS",
+        "severity": "medium",
+        "target": "https://example.com",
+        "description": "Reflected XSS",
+        "evidence": "<script>alert(1)</script>",
+    })
+    data = json.loads(findings_file.read_text())
+    assert "business_impact" not in data["findings"][0]
+
+
+@pytest.mark.asyncio
+async def test_do_finding_rejects_invalid_severity(findings_file):
+    result = await _do_finding({
+        "title": "T", "severity": "extreme", "target": "t",
+        "description": "d", "evidence": "e",
+    })
+    assert "Invalid severity" in result
+
+
+@pytest.mark.asyncio
+async def test_report_finding_action_with_business_impact(findings_file):
+    result = await report("finding", {
+        "title": "IDOR",
+        "severity": "high",
+        "target": "https://api.example.com/users/123",
+        "description": "Unauthenticated access to other user profiles",
+        "evidence": "HTTP 200 returned profile of user 456",
+        "business_impact": "Any user can read all other user profiles without authentication.",
+    })
+    assert "Finding logged" in result
+    data = json.loads(findings_file.read_text())
+    assert data["findings"][0]["business_impact"] == "Any user can read all other user profiles without authentication."

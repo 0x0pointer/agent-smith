@@ -33,8 +33,10 @@ _FINDINGS_FILE     = _REPO_ROOT / "findings.json"
 _SESSION_FILE      = _REPO_ROOT / "session.json"
 _COST_FILE         = _REPO_ROOT / "session_cost.json"
 _COVERAGE_FILE     = _REPO_ROOT / "coverage_matrix.json"
+_QA_STATE_FILE     = _REPO_ROOT / "qa_state.json"
+_QUICK_LOG_FILE    = _REPO_ROOT / "quick_log.json"
 _TEMPLATES_DIR     = _REPO_ROOT / "templates"
-_THREAT_MODEL_DIR = _REPO_ROOT / "threat-model"
+_THREAT_MODEL_DIR  = _REPO_ROOT / "threat-model"
 
 # ── FastAPI app ───────────────────────────────────────────────────────────────
 
@@ -42,6 +44,14 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 
 app = FastAPI(title="pentest-agent")
+
+
+@app.on_event("startup")
+async def _start_qa_daemon() -> None:
+    from mcp_server._app import _load_dotenv
+    _load_dotenv()
+    from core.qa_agent import qa_daemon
+    asyncio.create_task(qa_daemon.run(interval_s=120))
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -226,14 +236,42 @@ async def api_delete_finding(finding_id: str) -> JSONResponse:
 
 @app.delete("/api/clear")
 async def api_clear() -> JSONResponse:
-    """Reset findings.json to empty state — clears all findings, diagrams, and session data."""
-    from core.findings import FINDINGS_FILE, _save
-    _save({
-        "meta": {"created": "", "target": ""},
-        "findings": [],
-        "diagrams": [],
-    })
-    # Also kill any active tunnels
+    """Wipe all scan state — findings, session, coverage, logs, quick_log, qa_state."""
+    from core.findings import _save
+
+    # findings.json
+    _save({"meta": {"created": "", "target": ""}, "findings": [], "diagrams": []})
+
+    # session.json, coverage_matrix.json, quick_log.json, qa_state.json, session_cost.json
+    for path in (_SESSION_FILE, _COVERAGE_FILE, _QUICK_LOG_FILE, _QA_STATE_FILE, _COST_FILE):
+        try:
+            path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    # log files in logs/
+    try:
+        from core.logger import _LOG_DIR
+        for log_file in _LOG_DIR.glob("*.log"):
+            try:
+                log_file.write_text("")
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # pocs/ — clear .http files so PoC count doesn't bleed between sessions
+    try:
+        pocs_dir = _REPO_ROOT / "pocs"
+        if pocs_dir.exists():
+            for poc_file in pocs_dir.glob("*.http"):
+                try:
+                    poc_file.unlink()
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
     await _cleanup_tunnels()
     return JSONResponse({"ok": True})
 
@@ -273,6 +311,26 @@ async def _cleanup_tunnels() -> str:
         return stdout.decode().strip()
     except Exception as exc:
         return f"cleanup error: {exc}"
+
+
+@app.get("/api/qa")
+async def api_qa() -> JSONResponse:
+    return JSONResponse(_read_json(_QA_STATE_FILE))
+
+
+@app.get("/api/quicklog")
+async def api_quicklog() -> JSONResponse:
+    if not _QUICK_LOG_FILE.exists():
+        return JSONResponse([])
+    entries: list[dict] = []
+    for line in _QUICK_LOG_FILE.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line:
+            try:
+                entries.append(json.loads(line))
+            except Exception:
+                pass
+    return JSONResponse(entries)
 
 
 @app.get("/api/logs")

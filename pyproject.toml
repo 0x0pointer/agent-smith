@@ -11,9 +11,17 @@ aiohttp = "==3.13.4"
 mcp = "==1.26.0"
 fastapi = {extras = ["standard"], version = "==0.135.1"}
 sentry-sdk = {version = "==2.54.0", optional = true}
+langgraph = ">=0.2"
+langchain-core = ">=0.2"
+langchain-openai = ">=0.1"
+langchain-anthropic = {version = ">=0.1", optional = true}
+langchain-ollama = {version = ">=0.1", optional = true}
 
 [tool.poetry.extras]
 monitoring = ["sentry-sdk"]
+qa-openai    = ["langchain-openai"]
+qa-anthropic = ["langchain-anthropic"]
+qa-ollama    = ["langchain-ollama"]
 
 [tool.poetry.group.dev.dependencies]
 pytest = "==9.0.3"

@@ -55,7 +55,7 @@ async def report(action: str, data: Any) -> str:
 
     finding data:
       title, severity (critical|high|medium|low|info), target,
-      description, evidence, tool_used=, cve=,
+      description, evidence, tool_used=, cve=, business_impact=,
       reproduction= {type: http|command|script|manual, command: "...", expected: "..."}
 
     update_finding data:
@@ -121,10 +121,24 @@ async def _do_finding(data):
         evidence=data.get("evidence", ""),
         tool_used=data.get("tool_used", ""),
         cve=data.get("cve", ""),
+        business_impact=data.get("business_impact", ""),
         reproduction=data.get("reproduction"),
         escalation_leads=data.get("escalation_leads"),
     )
     log.finding(severity, title, target)
+
+    # Append FINDING entry to quick_log
+    try:
+        import asyncio as _asyncio
+        from core.quick_log import quick_log as _qlog
+        _asyncio.create_task(_qlog.append({
+            "type":     "FINDING",
+            "severity": severity,
+            "title":    title,
+            "target":   target,
+        }))
+    except Exception:
+        pass
 
     # ── Auto-trigger gates based on finding content ──────────────────────────
     gates_triggered = _auto_trigger_finding_gates(title, severity, data.get("description", ""))
@@ -285,6 +299,8 @@ async def _do_coverage(data):
         )
         if result["dedup"]:
             return f"Endpoint already registered (dedup): {data.get('path')} {data.get('method', 'GET')}"
+        # Emit COVERAGE event after endpoint registration
+        await _emit_coverage_event()
         return (
             f"Endpoint registered: {data.get('method', 'GET')} {data.get('path')} — "
             f"{result['new_cells']} test cells auto-generated"
@@ -307,6 +323,8 @@ async def _do_coverage(data):
 
     elif cov_type == "bulk_tested":
         result = await cov.bulk_update(data.get("updates", []))
+        # Emit COVERAGE event after bulk update
+        await _emit_coverage_event()
         msg = f"Bulk update: {result['updated']} cell(s) updated"
         if result["warnings"]:
             msg += f"\n\nINTEGRITY WARNINGS ({len(result['warnings'])}):\n"
@@ -319,3 +337,21 @@ async def _do_coverage(data):
 
     else:
         return f"Unknown coverage type '{cov_type}'. Use: endpoint, tested, bulk_tested, reset"
+
+
+async def _emit_coverage_event() -> None:
+    """Append a COVERAGE entry to quick_log with current matrix totals."""
+    try:
+        from core.quick_log import quick_log as _qlog
+        from core import coverage as _cov
+        matrix = _cov.get_matrix()
+        meta   = matrix.get("meta", {})
+        await _qlog.append({
+            "type":       "COVERAGE",
+            "registered": len(matrix.get("endpoints", [])),
+            "pending":    sum(1 for c in matrix.get("matrix", []) if c["status"] == "pending"),
+            "tested":     meta.get("tested", 0),
+            "vulnerable": meta.get("vulnerable", 0),
+        })
+    except Exception:
+        pass

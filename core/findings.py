@@ -76,6 +76,7 @@ async def add_finding(
     cve:         str = "",
     reproduction: dict | None = None,
     escalation_leads: list[dict] | None = None,
+    business_impact: str = "",
 ) -> dict:
     """Append a vulnerability finding. Returns the stored entry."""
     entry = {
@@ -89,6 +90,8 @@ async def add_finding(
         "tool_used":   tool_used,
         "cve":         cve,
     }
+    if business_impact:
+        entry["business_impact"] = business_impact
     if reproduction:
         entry["reproduction"] = reproduction
     if escalation_leads:
@@ -102,7 +105,7 @@ async def add_finding(
 
 _UPDATABLE_FIELDS = {
     "severity", "title", "description", "evidence", "status",
-    "gh_issue", "remediation", "reproduction", "escalation_leads",
+    "gh_issue", "remediation", "reproduction", "escalation_leads", "business_impact",
 }
 
 

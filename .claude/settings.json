@@ -11,5 +11,18 @@
         ]
       }
     ]
+  },
+  "permissions": {
+    "allow": [
+      "Bash(ps aux*)",
+      "Bash(curl -s *)",
+      "Bash(curl -s*)",
+      "Bash(wc -*)",
+      "Bash(lsof -i *)",
+      "Bash(poetry env info*)",
+      "Bash(poetry env list*)",
+      "Bash(ping -c *)",
+      "Bash(open *)"
+    ]
   }
 }
