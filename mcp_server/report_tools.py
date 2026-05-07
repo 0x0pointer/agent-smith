@@ -36,10 +36,18 @@ _CLOUD_KEYWORDS = (
 _CLOUD_METADATA_PREFIX = "169.254."
 
 # Keywords in notes that indicate internal network discovery — triggers network gate.
+# Deliberately broad: agents write notes in many styles ("172.18.0.0/24", "host at 10.",
+# "docker network", "reachable from DB container", etc.) — all should fire the gate.
 _INTERNAL_NET_KEYWORDS = (
-    "internal subnet", "internal network", "live hosts on 10.",
-    "live hosts on 172.", "live hosts on 192.168.",
-    "non-public subnet", "pivot",
+    # Explicit phrasing
+    "internal subnet", "internal network", "non-public subnet",
+    "live hosts on 10.", "live hosts on 172.", "live hosts on 192.168.",
+    # Natural phrasing agents actually write
+    "docker network", "container network", "host at 10.", "host at 172.",
+    "hosts at 10.", "hosts at 172.", "hosts at 192.168.",
+    "reachable from", "pivot", "10.0.", "10.1.", "10.2.", "10.10.",
+    "172.16.", "172.17.", "172.18.", "172.19.", "172.20.",
+    "192.168.", "subnet /24", "subnet /16",
 )
 
 # Keywords that indicate auth services — triggers credential-audit gate.
@@ -92,8 +100,15 @@ async def report(action: str, data: Any) -> str:
 
       reset — clear the entire matrix (no additional fields)
     """
-    if isinstance(data, str):
-        data = json.loads(data)
+    try:
+        if isinstance(data, str):
+            data = json.loads(data)
+    except (json.JSONDecodeError, TypeError) as exc:
+        log.note(f"report({action}) data parse error: {exc} — raw: {str(data)[:200]}")
+        return f"Error: could not parse data as JSON: {exc}"
+    if not isinstance(data, dict):
+        log.note(f"report({action}) data is not a dict: {type(data).__name__}")
+        return f"Error: data must be a JSON object/dict, got {type(data).__name__}"
     if action == "finding":
         return await _do_finding(data)
     elif action == "update_finding":
@@ -292,21 +307,59 @@ async def _do_coverage(data):
     from core import coverage as cov
 
     cov_type = data.get("type", "")
+    log.note(f"coverage({cov_type}): {json.dumps(data)[:300]}")
+
+    # --- Resilience: auto-detect type from data shape ---
+    if not cov_type:
+        if "path" in data:
+            cov_type = "endpoint"
+        elif "cell_id" in data:
+            cov_type = "tested"
+        elif "updates" in data:
+            cov_type = "bulk_tested"
 
     if cov_type == "endpoint":
+        path = data.get("path", "")
+        if not path:
+            return (
+                "Error: 'path' is required for endpoint registration. "
+                "Example: report(action='coverage', data={type:'endpoint', path:'/login', "
+                "method:'GET', params:[{name:'q', type:'query', value_hint:'string'}]})"
+            )
+
+        # Resilience: coerce params from various model formats
+        params = data.get("params", [])
+        if isinstance(params, str):
+            try:
+                params = json.loads(params)
+            except json.JSONDecodeError:
+                params = []
+        if not isinstance(params, list):
+            params = []
+        clean_params = []
+        for p in params:
+            if isinstance(p, str):
+                clean_params.append({"name": p, "type": "query", "value_hint": "string"})
+            elif isinstance(p, dict):
+                clean_params.append({
+                    "name": p.get("name", p.get("param", "")),
+                    "type": p.get("type", p.get("param_type", "query")),
+                    "value_hint": p.get("value_hint", p.get("hint", "string")),
+                })
+
         result = await cov.add_endpoint(
-            path=data.get("path", ""),
+            path=path,
             method=data.get("method", "GET"),
-            params=data.get("params", []),
+            params=clean_params,
             discovered_by=data.get("discovered_by", "spider"),
             auth_context=data.get("auth_context", "none"),
         )
         if result["dedup"]:
-            return f"Endpoint already registered (dedup): {data.get('path')} {data.get('method', 'GET')}"
+            return f"Endpoint already registered (dedup): {path} {data.get('method', 'GET')}"
         # Emit COVERAGE event after endpoint registration
         await _emit_coverage_event()
         return (
-            f"Endpoint registered: {data.get('method', 'GET')} {data.get('path')} — "
+            f"Endpoint registered: {data.get('method', 'GET')} {path} — "
             f"{result['new_cells']} test cells auto-generated"
         )
 
@@ -336,11 +389,24 @@ async def _do_coverage(data):
         return msg
 
     elif cov_type == "reset":
+        current = scan_session.get()
+        if current and current.get("status") == "running":
+            log.note("coverage reset BLOCKED — scan is active. Do NOT reset the matrix mid-scan.")
+            return (
+                "BLOCKED: Cannot reset coverage matrix while a scan is running. "
+                "The matrix tracks your testing progress — resetting it mid-scan destroys that state. "
+                "If you need to re-register endpoints, just call coverage(type='endpoint') again — "
+                "duplicates are automatically ignored."
+            )
         await cov.reset()
         return "Coverage matrix reset."
 
     else:
-        return f"Unknown coverage type '{cov_type}'. Use: endpoint, tested, bulk_tested, reset"
+        return (
+            f"Unknown coverage type '{cov_type}'. Use: endpoint, tested, bulk_tested, reset. "
+            f"Example: report(action='coverage', data={{type:'endpoint', path:'/login', method:'GET', "
+            f"params:[{{name:'user', type:'query', value_hint:'string'}}]}})"
+        )
 
 
 async def _emit_coverage_event() -> None:
