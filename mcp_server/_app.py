@@ -158,7 +158,11 @@ async def _append_quick_log(name: str, kwargs: dict, result: str, elapsed: float
     import re as _re
     from core.quick_log import quick_log as _qlog
     if name == "spider":
-        m = _re.search(r'(\d+)\s+(?:endpoint|url|path|route|link)', result, _re.IGNORECASE)
+        m = None
+        for _kw in ("endpoint", "url", "path", "route", "link"):
+            m = _re.search(r'(\d+)\s+' + _kw, result, _re.IGNORECASE)
+            if m:
+                break
         ep_count = int(m.group(1)) if m else 0
         opts = kwargs.get("options") or {}
         if isinstance(opts, str):
