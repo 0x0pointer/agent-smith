@@ -179,13 +179,23 @@ def check_limits(cost_summary: dict) -> str | None:
     return None
 
 
-def complete(notes: str = "", stop_reason: str | None = None) -> dict:
-    """Mark the scan as done (called by Claude when finished)."""
+def complete(
+    notes: str = "",
+    stop_reason: str | None = None,
+    quality_gate: str | None = None,
+) -> dict:
+    """Mark the scan as done (called by Claude when finished).
+
+    quality_gate="failed" sets status to "incomplete_with_unresolved_blockers"
+    so dashboards and exports can distinguish a force-completed scan from a clean one.
+    """
     global _current
     if _current and _current["status"] == "running":
-        _current["status"]   = "complete"
+        _current["status"]   = "incomplete_with_unresolved_blockers" if quality_gate == "failed" else "complete"
         _current["finished"] = datetime.now(timezone.utc).isoformat()
         _current["notes"]    = notes
+        if quality_gate:
+            _current["quality_gate"] = quality_gate
         if stop_reason is not None:
             _current["stop_reason"] = stop_reason
         _flush()

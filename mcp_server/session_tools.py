@@ -260,7 +260,9 @@ def _coverage_blockers(cov: dict, ctf_mode: bool = False) -> list[str]:
 
     # skipped cells do NOT count toward coverage — they are deferrals, not evidence.
     # Only tested_clean, vulnerable, and not_applicable are real coverage signals.
-    addressed = meta.get("tested", 0) + meta.get("not_applicable", 0)
+    # Use the pre-computed "addressed" counter from _recount(); fall back to the sum for
+    # matrices written before this field existed.
+    addressed = meta.get("addressed", meta.get("tested", 0) + meta.get("not_applicable", 0))
     pct = (addressed / total) * 100
 
     # Model-profile-aware: only enforce 80% coverage threshold for "full" profile.
@@ -308,6 +310,38 @@ def _coverage_blockers(cov: dict, ctf_mode: bool = False) -> list[str]:
             f"INTEGRITY: {len(suspect_na)} cell(s) marked N/A without testing bypass "
             f"techniques: {sample}. Test the bypass before marking N/A."
         )
+
+    _WAF_KEYWORDS = ("403", "429", "waf", "blocked", "rate limit", "firewall")
+    skipped_no_evidence = [
+        c for c in all_cells
+        if c["status"] == "skipped"
+        and not any(kw in c.get("notes", "").lower() for kw in _WAF_KEYWORDS)
+    ]
+    if skipped_no_evidence:
+        sample = ", ".join(c["id"] for c in skipped_no_evidence[:5])
+        if len(skipped_no_evidence) > 5:
+            sample += f" ... ({len(skipped_no_evidence) - 5} more)"
+        blockers.append(
+            f"INTEGRITY: {len(skipped_no_evidence)} cell(s) marked skipped without WAF block "
+            f"evidence (403/429/WAF) in notes: {sample}. "
+            f"'skipped' is only valid when a WAF blocked the request — add the response evidence or re-test."
+        )
+
+    na_untooled = [
+        c for c in all_cells
+        if c["status"] == "not_applicable"
+        and not c.get("tested_by")
+        and c.get("injection_type") in _BYPASS_REQUIRED_TYPES
+    ]
+    if na_untooled:
+        sample = ", ".join(f"{c['id']} ({c['injection_type']})" for c in na_untooled[:5])
+        if len(na_untooled) > 5:
+            sample += f" ... ({len(na_untooled) - 5} more)"
+        blockers.append(
+            f"INTEGRITY: {len(na_untooled)} injection-type N/A cell(s) have no tested_by tool "
+            f"recorded: {sample}. Run the bypass technique and record tested_by before marking N/A."
+        )
+
     return blockers
 
 
@@ -323,6 +357,22 @@ def _suspect_na_cells(cells: list[dict], bypass_types: dict) -> list[str]:
         if not any(kw in cell_notes.lower() for kw in keywords) and len(cell_notes) < 40:
             suspect.append(f"{c['id']} ({c['injection_type']})")
     return suspect
+
+
+def _qa_blockers() -> list[str]:
+    """Return completion blockers from open high-urgency, blocking QA alerts."""
+    qa_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "qa_state.json")
+    try:
+        if os.path.exists(qa_path):
+            qa = json.loads(open(qa_path).read())
+            return [
+                f"QA BLOCKER [{a.get('code', '?')}]: {a.get('message', '')}"
+                for a in qa.get("alerts", [])
+                if isinstance(a, dict) and a.get("blocking") and a.get("urgency") == "high"
+            ]
+    except Exception:
+        pass
+    return []
 
 
 def _gate_blockers() -> list[str]:
@@ -364,6 +414,7 @@ async def _do_complete(opts):
     data = findings_store._load()
 
     blockers.extend(_gate_blockers())
+    blockers.extend(_qa_blockers())
     blockers.extend(_escalation_lead_blockers(data))
 
     # ── Existing checks ──────────────────────────────────────────────────────
@@ -381,48 +432,58 @@ async def _do_complete(opts):
             "Run scan(tool='spider', target=url) to crawl the application before completing."
         )
 
-    repo_root = os.path.dirname(os.path.dirname(__file__))
-    pocs_dir = os.path.join(repo_root, "pocs")
-    poc_files = set(os.listdir(pocs_dir)) if os.path.isdir(pocs_dir) else set()
     high_findings = [f for f in data.get("findings", []) if f.get("severity") in ("high", "critical")]
-    if high_findings and not poc_files:
-        titles = ", ".join(f["title"] for f in high_findings)
+    missing_poc = [f for f in high_findings if not f.get("poc_files")]
+    if missing_poc:
+        titles = ", ".join(f["title"] for f in missing_poc[:5])
+        if len(missing_poc) > 5:
+            titles += f" (+{len(missing_poc) - 5} more)"
         blockers.append(
-            f"NO POC FILES: {len(high_findings)} high/critical finding(s) have no Burp PoC. "
-            f"Call http(action='request', poc=true) + http(action='save_poc') for each: {titles}"
+            f"NO POC FILES: {len(missing_poc)} high/critical finding(s) have no linked PoC. "
+            f"Call http(action='save_poc', options={{finding_id: '<id>'}}) for each: {titles}"
+        )
+
+    # ── Finding quality blockers ──────────────────────────────────────────────
+    quality_issues: list[str] = []
+    for f in high_findings:
+        missing: list[str] = []
+        if not str(f.get("evidence", "")).strip():
+            missing.append("evidence")
+        if not f.get("reproduction"):
+            missing.append("reproduction")
+        if missing:
+            quality_issues.append(f"[{f['severity'].upper()}] {f['title']}: missing {', '.join(missing)}")
+    if quality_issues:
+        sample = "\n    ".join(quality_issues[:5])
+        more   = f"\n    (+{len(quality_issues) - 5} more)" if len(quality_issues) > 5 else ""
+        blockers.append(
+            f"FINDING QUALITY: {len(quality_issues)} high/critical finding(s) missing required fields. "
+            f"Add evidence and reproduction steps before completing:\n    {sample}{more}"
         )
 
     from core.coverage import get_matrix
     blockers.extend(_coverage_blockers(get_matrix(), ctf_mode=_has_ctf_flag(data)))
 
     if blockers:
-        # Force-complete after max attempts to break model loops
+        # Force-complete after max attempts to break model loops.
+        # Marks status as "incomplete_with_unresolved_blockers" so dashboards/exports
+        # distinguish this from a clean completion.
         if _complete_attempts >= _MAX_COMPLETE_ATTEMPTS:
             global _force_completed
             attempts = _complete_attempts
             _force_completed = True
             force_reason = f"FORCE-COMPLETED: {len(blockers)} blocker(s) unresolved after {attempts} attempts: {'; '.join(blockers)}"
             log.note(f"Force-completing after {attempts} blocked attempts. Remaining blockers: {'; '.join(blockers)}")
-            cfg = scan_session.complete(notes, stop_reason=force_reason)
+            scan_session.complete(notes, stop_reason=force_reason, quality_gate="failed")
             _complete_attempts = 0
             return (
                 f"Scan FORCE-COMPLETED (exceeded {attempts} attempt limit). "
+                f"status=incomplete_with_unresolved_blockers quality_gate=failed. "
                 f"{len(blockers)} blocker(s) were unresolved. session.json updated. "
                 f"STOP — do not call any more tools. The scan is done."
             )
         msg = f"complete BLOCKED (attempt {_complete_attempts}/{_MAX_COMPLETE_ATTEMPTS}) — fix the following first:\n\n"
         msg += "\n\n".join(f"  [{i+1}] {b}" for i, b in enumerate(blockers))
-        # Surface active QA alerts so the agent sees them without calling status
-        _qa_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "qa_state.json")
-        try:
-            if os.path.exists(_qa_path):
-                _qa = json.loads(open(_qa_path).read())
-                _qa_alerts = [a for a in _qa.get("alerts", []) if isinstance(a, dict)]
-                if _qa_alerts:
-                    msg += "\n\nQA AGENT ALERTS:\n"
-                    msg += "\n".join(f"  [{a.get('urgency','?').upper()}] {a.get('message','')}" for a in _qa_alerts)
-        except Exception:
-            pass
         log.note(f"complete blocked (attempt {_complete_attempts}): {'; '.join(blockers)}")
         return msg
 
