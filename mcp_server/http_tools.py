@@ -1,6 +1,7 @@
 """
 Consolidated HTTP tool — replaces http_request and save_poc from exploitation.py
 """
+import asyncio
 import json
 import os
 from typing import Any
@@ -8,6 +9,11 @@ from typing import Any
 from core import cost as cost_tracker
 from core import logger as log
 from mcp_server._app import mcp, _ensure_dict
+
+
+def _write_text(path: str, content: str) -> None:
+    with open(path, "w") as fh:
+        fh.write(content)
 
 
 @mcp.tool()
@@ -118,10 +124,8 @@ async def _do_save_poc(url, method, headers, body, opts):
     timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
     filepath = os.path.join(pocs_dir, f"{timestamp}_{safe_title}.http")
 
-    with open(filepath, "w") as f:
-        if notes:
-            f.write(f"# {notes}\n\n")
-        f.write(raw)
+    poc_content = (f"# {notes}\n\n" if notes else "") + raw
+    await asyncio.to_thread(_write_text, filepath, poc_content)
 
     linked = False
     if finding_id:

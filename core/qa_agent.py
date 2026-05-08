@@ -122,7 +122,7 @@ def _deterministic_qa_checks(
 
     # BULK_MARKING — many N/A cells without tested_by tool
     if "Bulk-marking warning:" in summary:
-        m = re.search(r"Bulk-marking warning: (.+?)(?:\n|$)", summary)
+        m = re.search(r"Bulk-marking warning: (.+)(?:\n|$)", summary)
         detail = m.group(1).strip() if m else "N/A cells have no tested_by tool"
         alerts.append({
             "code": "BULK_MARKING", "urgency": "high", "blocking": True,
@@ -139,7 +139,7 @@ def _deterministic_qa_checks(
         })
 
     # GATE_PENDING — mandatory skill gate not yet satisfied
-    gate_m = re.search(r"Pending gates: (.+?)(?:\n|$)", summary)
+    gate_m = re.search(r"Pending gates: (.+)(?:\n|$)", summary)
     if gate_m:
         gate_info = gate_m.group(1)
         time_m    = re.search(r"triggered (\d+)min ago", gate_info)

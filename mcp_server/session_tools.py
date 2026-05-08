@@ -20,6 +20,8 @@ _complete_attempts = 0
 _MAX_COMPLETE_ATTEMPTS = 5
 _force_completed = False
 
+_QA_STATE_FILENAME = "qa_state.json"
+
 
 # ── CTF flag pattern (e.g. CTF{...}, flag{...}, HTB{...}) ─────────────────────
 _FLAG_RE = re.compile(r'[A-Za-z0-9_]{2,10}\{[A-Za-z0-9_\-!@#$%^&*()+=,.?]{4,}\}')
@@ -161,7 +163,7 @@ def _do_start(opts):
         archive_path = archive_dir / f"coverage_matrix_{ts}.json"
         shutil.copy2(COVERAGE_FILE, archive_path)
         log.note(f"Coverage matrix archived to {archive_path.name} (previous target: {prev_target})")
-        for stale in ("quick_log.json", "qa_state.json"):
+        for stale in ("quick_log.json", _QA_STATE_FILENAME):
             p = COVERAGE_FILE.parent / stale
             p.unlink(missing_ok=True)
         _cov_save({
@@ -280,7 +282,7 @@ def _coverage_blockers(cov: dict, ctf_mode: bool = False) -> list[str]:
             f"tested_by=<tool>) or mark it not_applicable if the injection type is inherently "
             f"irrelevant to the param/endpoint type (with a specific reason in notes). "
             f"Do NOT bulk-skip — skipped cells are excluded from coverage. Sample pending cells:\n"
-            f'  report(action="coverage", data={{"type": "bulk_tested", "updates": ['
+            '  report(action="coverage", data={"type": "bulk_tested", "updates": ['
         )
         hint += ", ".join(
             f'{{"cell_id": "{cid}", "status": "not_applicable", "notes": "<specific reason>"}}'
@@ -361,7 +363,7 @@ def _suspect_na_cells(cells: list[dict], bypass_types: dict) -> list[str]:
 
 def _qa_blockers() -> list[str]:
     """Return completion blockers from open high-urgency, blocking QA alerts."""
-    qa_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "qa_state.json")
+    qa_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), _QA_STATE_FILENAME)
     try:
         if os.path.exists(qa_path):
             with open(qa_path) as _fh:
@@ -579,7 +581,7 @@ def _do_status():
 
     # QA alerts — injected from qa_state.json so Smith can self-correct
     import os as _os
-    _qa_path = _os.path.join(_os.path.dirname(_os.path.dirname(__file__)), "qa_state.json")
+    _qa_path = _os.path.join(_os.path.dirname(_os.path.dirname(__file__)), _QA_STATE_FILENAME)
     try:
         if _os.path.exists(_qa_path):
             with open(_qa_path) as _fh:
