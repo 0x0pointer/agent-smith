@@ -35,6 +35,7 @@ async def http(
     save_poc options:
       title=poc        — filename label
       notes=           — description written as comment in the .http file
+      finding_id=      — finding UUID to auto-link this PoC (adds filepath to finding.poc_files)
     """
     if isinstance(body, dict):
         body = json.dumps(body)
@@ -44,7 +45,7 @@ async def http(
     if action == "request":
         return await _do_request(url, method, headers, body, opts)
     elif action == "save_poc":
-        return _do_save_poc(url, method, headers, body, opts)
+        return await _do_save_poc(url, method, headers, body, opts)
     else:
         return f"Unknown action '{action}'. Use: request, save_poc"
 
@@ -87,12 +88,13 @@ async def _do_request(url, method, headers, body, opts):
     return wrap("http_request", result, {"url": url, "method": method})
 
 
-def _do_save_poc(url, method, headers, body, opts):
+async def _do_save_poc(url, method, headers, body, opts):
     import datetime as dt
     from urllib.parse import urlparse
 
-    title = opts.get("title", "poc")
-    notes = opts.get("notes", "")
+    title      = opts.get("title", "poc")
+    notes      = opts.get("notes", "")
+    finding_id = opts.get("finding_id", "")
 
     parsed = urlparse(url)
     host = parsed.netloc
@@ -121,9 +123,15 @@ def _do_save_poc(url, method, headers, body, opts):
             f.write(f"# {notes}\n\n")
         f.write(raw)
 
+    linked = False
+    if finding_id:
+        from core import findings as findings_store
+        linked = await findings_store.link_poc(finding_id, filepath)
+
     result = json.dumps({
-        "saved": filepath,
-        "hint": "Open Burp Repeater and paste this file to load the request",
+        "saved":      filepath,
+        "linked_to":  finding_id if linked else None,
+        "hint":       "Open Burp Repeater and paste this file to load the request",
     })
     log.tool_result("save_poc", result)
     return result

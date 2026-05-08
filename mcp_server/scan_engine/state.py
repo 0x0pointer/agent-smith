@@ -33,7 +33,9 @@ def get_state() -> dict:
     cov = get_matrix()
     meta = cov.get("meta", {})
     total_cells = meta.get("total_cells", 0)
-    tested = meta.get("tested", 0) + meta.get("not_applicable", 0) + meta.get("skipped", 0)
+    # Use the pre-computed "addressed" counter so phase logic agrees with coverage blockers.
+    # skipped is not addressed — it is a deferral. See core/coverage.ADDRESSED_STATUSES.
+    tested = meta.get("addressed", meta.get("tested", 0) + meta.get("not_applicable", 0))
     vulnerable = meta.get("vulnerable", 0)
     endpoints = len(cov.get("endpoints", []))
 
