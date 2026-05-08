@@ -108,16 +108,30 @@ def _scope_drift_lines(declared_target: str, tools_all: list[dict]) -> list[str]
 def _coverage_lines(coverages: list[dict], now: datetime) -> list[str]:
     if not coverages:
         return []
-    last_cov   = coverages[-1]
-    pending    = last_cov.get("pending", 0)
-    tested     = last_cov.get("tested", 0)
-    registered = last_cov.get("registered", 0)
-    total_cells = pending + tested
-    pct = f"{round(pending / total_cells * 100)}%" if total_cells > 0 else "?"
+    last_cov       = coverages[-1]
+    pending        = last_cov.get("pending", 0)
+    tested         = last_cov.get("tested", 0)
+    registered     = last_cov.get("registered", 0)
+    not_applicable = last_cov.get("not_applicable", 0)
+    skipped        = last_cov.get("skipped", 0)
+    na_untooled    = last_cov.get("na_untooled", 0)
+    untooled       = last_cov.get("untooled", 0)
+    total_cells    = pending + tested + not_applicable + skipped
+    addressed      = tested + not_applicable
+    pct = f"{round(addressed / total_cells * 100)}%" if total_cells > 0 else "?"
     lines = [
         f"Coverage: {registered} endpoints, {total_cells} cells — "
-        f"{tested} tested, {pending} pending ({pct} pending)"
+        f"{tested} tested, {not_applicable} N/A, {skipped} skipped, {pending} pending ({pct} addressed)"
     ]
+    integrity_issues: list[str] = []
+    if untooled > 0:
+        integrity_issues.append(f"{untooled} tested/vulnerable cells have no tested_by tool")
+    if na_untooled > 10:
+        integrity_issues.append(
+            f"Bulk-marking warning: {na_untooled} N/A cells have no tested_by tool — "
+            f"cells must be tested individually, not bulk-marked without tool evidence"
+        )
+    lines.extend(integrity_issues)
     try:
         cov_dt = datetime.fromisoformat(last_cov["ts"])
         cov_elapsed = round((now - cov_dt).total_seconds() / 60)

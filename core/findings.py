@@ -106,6 +106,7 @@ async def add_finding(
 _UPDATABLE_FIELDS = {
     "severity", "title", "description", "evidence", "status",
     "gh_issue", "remediation", "reproduction", "escalation_leads", "business_impact",
+    "poc_files",
 }
 
 
@@ -124,6 +125,24 @@ async def update_finding(finding_id: str, **fields) -> bool:
         for entry in data["findings"]:
             if entry.get("id") == finding_id:
                 entry.update(updates)
+                _save(data)
+                return True
+    return False
+
+
+async def link_poc(finding_id: str, filepath: str) -> bool:
+    """Append a PoC file path to finding.poc_files[]. Creates the list if absent.
+
+    Returns True if the finding was found and updated, False otherwise.
+    """
+    async with _lock:
+        data = _load()
+        for entry in data["findings"]:
+            if entry.get("id") == finding_id:
+                if "poc_files" not in entry:
+                    entry["poc_files"] = []
+                if filepath not in entry["poc_files"]:
+                    entry["poc_files"].append(filepath)
                 _save(data)
                 return True
     return False
