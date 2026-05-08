@@ -155,7 +155,7 @@ async def test_summarize_includes_coverage_stats(log):
     assert "15 endpoints" in summary
     assert "5 tested" in summary
     assert "10 pending" in summary
-    assert "67%" in summary
+    assert "33%" in summary
 
 
 @pytest.mark.asyncio

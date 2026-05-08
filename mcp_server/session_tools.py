@@ -364,7 +364,8 @@ def _qa_blockers() -> list[str]:
     qa_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "qa_state.json")
     try:
         if os.path.exists(qa_path):
-            qa = json.loads(open(qa_path).read())
+            with open(qa_path) as _fh:
+                qa = json.loads(_fh.read())
             return [
                 f"QA BLOCKER [{a.get('code', '?')}]: {a.get('message', '')}"
                 for a in qa.get("alerts", [])
@@ -581,7 +582,8 @@ def _do_status():
     _qa_path = _os.path.join(_os.path.dirname(_os.path.dirname(__file__)), "qa_state.json")
     try:
         if _os.path.exists(_qa_path):
-            _qa = json.loads(open(_qa_path).read())
+            with open(_qa_path) as _fh:
+                _qa = json.loads(_fh.read())
             result["qa_alerts"] = _qa.get("alerts", [])
             result["qa_last_check"] = _qa.get("ts", "")
         else:
