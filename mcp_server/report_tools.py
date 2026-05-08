@@ -414,14 +414,22 @@ async def _emit_coverage_event() -> None:
     try:
         from core.quick_log import quick_log as _qlog
         from core import coverage as _cov
-        matrix = _cov.get_matrix()
-        meta   = matrix.get("meta", {})
+        matrix    = _cov.get_matrix()
+        meta      = matrix.get("meta", {})
+        all_cells = matrix.get("matrix", [])
         await _qlog.append({
-            "type":       "COVERAGE",
-            "registered": len(matrix.get("endpoints", [])),
-            "pending":    sum(1 for c in matrix.get("matrix", []) if c["status"] == "pending"),
-            "tested":     meta.get("tested", 0),
-            "vulnerable": meta.get("vulnerable", 0),
+            "type":           "COVERAGE",
+            "registered":     len(matrix.get("endpoints", [])),
+            "pending":        sum(1 for c in all_cells if c["status"] == "pending"),
+            "tested":         meta.get("tested", 0),
+            "vulnerable":     meta.get("vulnerable", 0),
+            "not_applicable": sum(1 for c in all_cells if c["status"] == "not_applicable"),
+            "skipped":        sum(1 for c in all_cells if c["status"] == "skipped"),
+            "na_untooled":    sum(1 for c in all_cells
+                                  if c["status"] == "not_applicable" and not c.get("tested_by")),
+            "untooled":       sum(1 for c in all_cells
+                                  if c["status"] in ("tested_clean", "vulnerable")
+                                  and not c.get("tested_by")),
         })
     except Exception:
         pass

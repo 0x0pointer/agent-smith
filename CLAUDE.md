@@ -50,7 +50,8 @@ Log findings, diagrams, notes, and coverage matrix updates.
 Scan lifecycle and infrastructure.
 - `action="start"` — options: `{target, depth, scope, out_of_scope, max_cost_usd, max_time_minutes, max_tool_calls, model_profile=full}` (model_profile: full|medium|small)
 - `action="complete"` — options: `{notes}`
-- `action="status"` — returns current scan state (tools run, findings count, cost, remaining calls)
+- `action="status"` — returns current scan state (tools run, findings count, cost, remaining calls). **When the response includes `qa_alerts`, immediately call `session(action="qa_reply")` with your acknowledgment before continuing.**
+- `action="qa_reply"` — options: `{message}` — log your response to the QA agent's alerts. Call this every time `session(action="status")` returns non-empty `qa_alerts`. Write one sentence per alert: what you acknowledge and what you will do. This is what the human sees in the QA ↔ Smith conversation view.
 - `action="recovery"` — returns compact recovery brief after context compaction; includes `EXECUTE_NOW` with the next concrete tool call
 - `action="artifact"` — options: `{id, mode=summary, max_chars=4000, pattern=}` — retrieve raw tool output stored by the scan engine
 - `action="start_kali"` / `action="stop_kali"` — Kali container lifecycle
@@ -85,6 +86,7 @@ Skills are slash commands that contain full structured workflows. In Claude Code
 |---------|---------|-------------|
 | `/pentester` | Full pentest orchestrator — recon → exploitation → report | General web/network pentest request |
 | `/web-exploit` | Deep injection, auth, logic, and business-logic exploitation | Web app confirmed; systematic endpoint testing needed |
+| `/business-logic` | Understanding-first BL testing: BOLA, BFLA, workflow bypass, financial logic, trust boundary, multi-tenant isolation | Financial/SaaS/transactional app; systematic BL coverage needed |
 | `/codebase` | OWASP ASVS 5.0 white-box source code review | Local codebase path provided |
 | `/ai-redteam` | OWASP LLM Top 10 red-team — prompt injection, jailbreaks, data extraction | AI/chatbot/LLM target |
 | `/cloud-security` | AWS/Azure/GCP IAM, storage, serverless posture assessment | Cloud account target |

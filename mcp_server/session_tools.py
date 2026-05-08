@@ -20,6 +20,8 @@ _complete_attempts = 0
 _MAX_COMPLETE_ATTEMPTS = 5
 _force_completed = False
 
+_QA_STATE_FILENAME = "qa_state.json"
+
 
 # ── CTF flag pattern (e.g. CTF{...}, flag{...}, HTB{...}) ─────────────────────
 _FLAG_RE = re.compile(r'[A-Za-z0-9_]{2,10}\{[A-Za-z0-9_\-!@#$%^&*()+=,.?]{4,}\}')
@@ -58,7 +60,7 @@ def _effective_tools() -> set[str]:
 async def session(action: str, options: dict | None = None) -> str:
     """Scan lifecycle and infrastructure management.
 
-    action  : start | complete | status | recovery | artifact | set_skill | set_step | start_kali | stop_kali | start_metasploit | stop_metasploit | pull_images | set_codebase
+    action  : start | complete | status | recovery | artifact | qa_reply | set_skill | set_step | start_kali | stop_kali | start_metasploit | stop_metasploit | pull_images | set_codebase
 
     start options:
       target, depth=standard (recon|standard|thorough), scope=[],
@@ -66,6 +68,11 @@ async def session(action: str, options: dict | None = None) -> str:
       model_profile=full (full|medium|small) — controls output verbosity
 
     complete options: notes=
+
+    qa_reply options:
+      message= (your response to the QA agent's alerts — what you acknowledge and what
+                you plan to do. Call this immediately after session(action="status")
+                returns qa_alerts so the QA ↔ Smith conversation log is complete.)
 
     status: returns current scan state (target, tools run, findings, cost)
 
@@ -113,6 +120,8 @@ async def session(action: str, options: dict | None = None) -> str:
         return await _do_pull_images()
     elif action == "set_codebase":
         return _do_set_codebase(opts)
+    elif action == "qa_reply":
+        return await _do_qa_reply(opts)
     elif action == "recovery":
         return _do_recovery()
     elif action == "artifact":
@@ -120,7 +129,7 @@ async def session(action: str, options: dict | None = None) -> str:
     elif action == "pre_chain":
         return _do_pre_chain(opts)
     else:
-        return f"Unknown action '{action}'. Use: start, complete, status, recovery, artifact, pre_chain, set_skill, set_step, start_kali, stop_kali, start_metasploit, stop_metasploit, pull_images, set_codebase"
+        return f"Unknown action '{action}'. Use: start, complete, status, qa_reply, recovery, artifact, pre_chain, set_skill, set_step, start_kali, stop_kali, start_metasploit, stop_metasploit, pull_images, set_codebase"
 
 
 def _do_start(opts):
@@ -154,7 +163,7 @@ def _do_start(opts):
         archive_path = archive_dir / f"coverage_matrix_{ts}.json"
         shutil.copy2(COVERAGE_FILE, archive_path)
         log.note(f"Coverage matrix archived to {archive_path.name} (previous target: {prev_target})")
-        for stale in ("quick_log.json", "qa_state.json"):
+        for stale in ("quick_log.json", _QA_STATE_FILENAME):
             p = COVERAGE_FILE.parent / stale
             p.unlink(missing_ok=True)
         _cov_save({
@@ -223,6 +232,52 @@ def _do_start(opts):
     return "\n".join(lines)
 
 
+def _low_coverage_blocker(
+    cov: dict, coverage_enforced: bool, total: int, addressed: int, pct: float
+) -> str | None:
+    if not coverage_enforced or pct >= 80:
+        return None
+    all_cells = cov.get("matrix", [])
+    pending = [c["id"] for c in all_cells if c.get("status", "pending") == "pending"]
+    hint = (
+        "For each pending cell: either test it (set status=tested_clean/vulnerable with "
+        "tested_by=<tool>) or mark it not_applicable if the injection type is inherently "
+        "irrelevant to the param/endpoint type (with a specific reason in notes). "
+        "Do NOT bulk-skip — skipped cells are excluded from coverage. Sample pending cells:\n"
+        '  report(action="coverage", data={"type": "bulk_tested", "updates": ['
+    )
+    hint += ", ".join(
+        f'{{"cell_id": "{cid}", "status": "not_applicable", "notes": "<specific reason>"}}'
+        for cid in pending[:10]
+    )
+    if len(pending) > 10:
+        hint += f", ... ({len(pending) - 10} more)"
+    hint += "]})"
+    return (
+        f"LOW COVERAGE: only {addressed}/{total} matrix cells tested or marked N/A ({pct:.0f}%). "
+        f"{len(pending)} pending cell(s). {hint}"
+    )
+
+
+def _skipped_no_evidence_blocker(all_cells: list[dict]) -> str | None:
+    _WAF_KEYWORDS = ("403", "429", "waf", "blocked", "rate limit", "firewall")
+    skipped = [
+        c for c in all_cells
+        if c["status"] == "skipped"
+        and not any(kw in c.get("notes", "").lower() for kw in _WAF_KEYWORDS)
+    ]
+    if not skipped:
+        return None
+    sample = ", ".join(c["id"] for c in skipped[:5])
+    if len(skipped) > 5:
+        sample += f" ... ({len(skipped) - 5} more)"
+    return (
+        f"INTEGRITY: {len(skipped)} cell(s) marked skipped without WAF block "
+        f"evidence (403/429/WAF) in notes: {sample}. "
+        f"'skipped' is only valid when a WAF blocked the request — add the response evidence or re-test."
+    )
+
+
 def _coverage_blockers(cov: dict, ctf_mode: bool = False) -> list[str]:
     """Return coverage-related completion blockers for the given matrix state.
 
@@ -251,7 +306,11 @@ def _coverage_blockers(cov: dict, ctf_mode: bool = False) -> list[str]:
             )
         return blockers
 
-    addressed = meta.get("tested", 0) + meta.get("not_applicable", 0) + meta.get("skipped", 0)
+    # skipped cells do NOT count toward coverage — they are deferrals, not evidence.
+    # Only tested_clean, vulnerable, and not_applicable are real coverage signals.
+    # Use the pre-computed "addressed" counter from _recount(); fall back to the sum for
+    # matrices written before this field existed.
+    addressed = meta.get("addressed", meta.get("tested", 0) + meta.get("not_applicable", 0))
     pct = (addressed / total) * 100
 
     # Model-profile-aware: only enforce 80% coverage threshold for "full" profile.
@@ -261,24 +320,9 @@ def _coverage_blockers(cov: dict, ctf_mode: bool = False) -> list[str]:
     profile = get_profile()
     coverage_enforced = not profile.get("enforce_budget", True)  # full=enforce, medium/small=skip
 
-    if coverage_enforced and pct < 80:
-        all_cells_tmp = cov.get("matrix", [])
-        pending = [c["id"] for c in all_cells_tmp if c.get("status", "pending") == "pending"]
-        hint = (
-            f"Use bulk_tested to address them:\n"
-            f'  report(action="coverage", data={{"type": "bulk_tested", "updates": ['
-        )
-        hint += ", ".join(
-            f'{{"cell_id": "{cid}", "status": "skipped", "notes": "not tested"}}'
-            for cid in pending[:10]
-        )
-        if len(pending) > 10:
-            hint += f", ... ({len(pending) - 10} more)"
-        hint += "]})"
-        blockers.append(
-            f"LOW COVERAGE: only {addressed}/{total} matrix cells addressed ({pct:.0f}%). "
-            f"{len(pending)} pending cell(s). {hint}"
-        )
+    low_cov = _low_coverage_blocker(cov, coverage_enforced, total, addressed, pct)
+    if low_cov:
+        blockers.append(low_cov)
 
     all_cells = cov.get("matrix", [])
     untooled = [c for c in all_cells
@@ -296,6 +340,26 @@ def _coverage_blockers(cov: dict, ctf_mode: bool = False) -> list[str]:
             f"INTEGRITY: {len(suspect_na)} cell(s) marked N/A without testing bypass "
             f"techniques: {sample}. Test the bypass before marking N/A."
         )
+
+    skipped_blocker = _skipped_no_evidence_blocker(all_cells)
+    if skipped_blocker:
+        blockers.append(skipped_blocker)
+
+    na_untooled = [
+        c for c in all_cells
+        if c["status"] == "not_applicable"
+        and not c.get("tested_by")
+        and c.get("injection_type") in _BYPASS_REQUIRED_TYPES
+    ]
+    if na_untooled:
+        sample = ", ".join(f"{c['id']} ({c['injection_type']})" for c in na_untooled[:5])
+        if len(na_untooled) > 5:
+            sample += f" ... ({len(na_untooled) - 5} more)"
+        blockers.append(
+            f"INTEGRITY: {len(na_untooled)} injection-type N/A cell(s) have no tested_by tool "
+            f"recorded: {sample}. Run the bypass technique and record tested_by before marking N/A."
+        )
+
     return blockers
 
 
@@ -311,6 +375,23 @@ def _suspect_na_cells(cells: list[dict], bypass_types: dict) -> list[str]:
         if not any(kw in cell_notes.lower() for kw in keywords) and len(cell_notes) < 40:
             suspect.append(f"{c['id']} ({c['injection_type']})")
     return suspect
+
+
+def _qa_blockers() -> list[str]:
+    """Return completion blockers from open high-urgency, blocking QA alerts."""
+    qa_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), _QA_STATE_FILENAME)
+    try:
+        if os.path.exists(qa_path):
+            with open(qa_path) as _fh:
+                qa = json.loads(_fh.read())
+            return [
+                f"QA BLOCKER [{a.get('code', '?')}]: {a.get('message', '')}"
+                for a in qa.get("alerts", [])
+                if isinstance(a, dict) and a.get("blocking") and a.get("urgency") == "high"
+            ]
+    except Exception:
+        pass
+    return []
 
 
 def _gate_blockers() -> list[str]:
@@ -343,6 +424,27 @@ def _escalation_lead_blockers(data: dict) -> list[str]:
     ]
 
 
+def _finding_quality_blockers(high_findings: list[dict]) -> str | None:
+    """Return a blocker string if any high/critical finding lacks evidence or reproduction."""
+    quality_issues: list[str] = []
+    for f in high_findings:
+        missing: list[str] = []
+        if not str(f.get("evidence", "")).strip():
+            missing.append("evidence")
+        if not f.get("reproduction"):
+            missing.append("reproduction")
+        if missing:
+            quality_issues.append(f"[{f['severity'].upper()}] {f['title']}: missing {', '.join(missing)}")
+    if not quality_issues:
+        return None
+    sample = "\n    ".join(quality_issues[:5])
+    more   = f"\n    (+{len(quality_issues) - 5} more)" if len(quality_issues) > 5 else ""
+    return (
+        f"FINDING QUALITY: {len(quality_issues)} high/critical finding(s) missing required fields. "
+        f"Add evidence and reproduction steps before completing:\n    {sample}{more}"
+    )
+
+
 async def _do_complete(opts):
     global _complete_attempts
     _complete_attempts += 1
@@ -352,6 +454,7 @@ async def _do_complete(opts):
     data = findings_store._load()
 
     blockers.extend(_gate_blockers())
+    blockers.extend(_qa_blockers())
     blockers.extend(_escalation_lead_blockers(data))
 
     # ── Existing checks ──────────────────────────────────────────────────────
@@ -369,31 +472,40 @@ async def _do_complete(opts):
             "Run scan(tool='spider', target=url) to crawl the application before completing."
         )
 
-    repo_root = os.path.dirname(os.path.dirname(__file__))
-    pocs_dir = os.path.join(repo_root, "pocs")
-    poc_files = set(os.listdir(pocs_dir)) if os.path.isdir(pocs_dir) else set()
     high_findings = [f for f in data.get("findings", []) if f.get("severity") in ("high", "critical")]
-    if high_findings and not poc_files:
-        titles = ", ".join(f["title"] for f in high_findings)
+    missing_poc = [f for f in high_findings if not f.get("poc_files")]
+    if missing_poc:
+        titles = ", ".join(f["title"] for f in missing_poc[:5])
+        if len(missing_poc) > 5:
+            titles += f" (+{len(missing_poc) - 5} more)"
         blockers.append(
-            f"NO POC FILES: {len(high_findings)} high/critical finding(s) have no Burp PoC. "
-            f"Call http(action='request', poc=true) + http(action='save_poc') for each: {titles}"
+            f"NO POC FILES: {len(missing_poc)} high/critical finding(s) have no linked PoC. "
+            f"Call http(action='save_poc', options={{finding_id: '<id>'}}) for each: {titles}"
         )
+
+    # ── Finding quality blockers ──────────────────────────────────────────────
+    quality_blocker = _finding_quality_blockers(high_findings)
+    if quality_blocker:
+        blockers.append(quality_blocker)
 
     from core.coverage import get_matrix
     blockers.extend(_coverage_blockers(get_matrix(), ctf_mode=_has_ctf_flag(data)))
 
     if blockers:
-        # Force-complete after max attempts to break model loops
+        # Force-complete after max attempts to break model loops.
+        # Marks status as "incomplete_with_unresolved_blockers" so dashboards/exports
+        # distinguish this from a clean completion.
         if _complete_attempts >= _MAX_COMPLETE_ATTEMPTS:
             global _force_completed
             attempts = _complete_attempts
             _force_completed = True
+            force_reason = f"FORCE-COMPLETED: {len(blockers)} blocker(s) unresolved after {attempts} attempts: {'; '.join(blockers)}"
             log.note(f"Force-completing after {attempts} blocked attempts. Remaining blockers: {'; '.join(blockers)}")
-            cfg = scan_session.complete(f"{notes} [FORCE-COMPLETED: {len(blockers)} blocker(s) unresolved after {attempts} attempts]")
+            scan_session.complete(notes, stop_reason=force_reason, quality_gate="failed")
             _complete_attempts = 0
             return (
                 f"Scan FORCE-COMPLETED (exceeded {attempts} attempt limit). "
+                f"status=incomplete_with_unresolved_blockers quality_gate=failed. "
                 f"{len(blockers)} blocker(s) were unresolved. session.json updated. "
                 f"STOP — do not call any more tools. The scan is done."
             )
@@ -407,6 +519,16 @@ async def _do_complete(opts):
     log.note(f"Scan complete — {notes}")
     _complete_attempts = 0
     return f"Scan marked {status}. session.json updated. STOP — do not call any more tools. The scan is done."
+
+
+async def _do_qa_reply(opts):
+    """Log Smith's textual response to QA alerts so the conversation record is complete."""
+    from core.quick_log import quick_log
+    message = str(opts.get("message", "")).strip()
+    if not message:
+        return "qa_reply requires a non-empty message= option."
+    await quick_log.append({"type": "QA_REPLY", "message": message})
+    return "QA reply logged."
 
 
 def _do_status():
@@ -483,10 +605,11 @@ def _do_status():
 
     # QA alerts — injected from qa_state.json so Smith can self-correct
     import os as _os
-    _qa_path = _os.path.join(_os.path.dirname(_os.path.dirname(__file__)), "qa_state.json")
+    _qa_path = _os.path.join(_os.path.dirname(_os.path.dirname(__file__)), _QA_STATE_FILENAME)
     try:
         if _os.path.exists(_qa_path):
-            _qa = json.loads(open(_qa_path).read())
+            with open(_qa_path) as _fh:
+                _qa = json.loads(_fh.read())
             result["qa_alerts"] = _qa.get("alerts", [])
             result["qa_last_check"] = _qa.get("ts", "")
         else:

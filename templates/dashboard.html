@@ -559,9 +559,28 @@
       font-family: 'IBM Plex Mono', monospace; font-size: 0.65rem; color: var(--text-dim);
       margin: 0.5rem 0 0.2rem;
     }
+    /* Collapsed scan-context block — not a Smith message, just the state QA reads */
+    .chat-context {
+      align-self: stretch;
+      background: rgba(255,255,255,0.02); border: 1px solid var(--border-subtle);
+      border-radius: 6px; font-size: 0.77rem; color: var(--text-dim);
+      font-family: 'IBM Plex Mono', monospace;
+    }
+    .chat-context summary {
+      padding: 0.35rem 0.65rem; cursor: pointer; user-select: none;
+      display: flex; align-items: center; gap: 0.5rem; list-style: none;
+    }
+    .chat-context summary::-webkit-details-marker { display: none; }
+    .chat-context summary::before { content: '▶'; font-size: 0.55rem; transition: transform 0.15s; }
+    .chat-context[open] summary::before { transform: rotate(90deg); }
+    .chat-context-headline { color: var(--text-muted); }
+    .chat-context-body {
+      padding: 0.3rem 0.65rem 0.55rem; border-top: 1px solid var(--border-subtle);
+      display: flex; flex-direction: column; gap: 0.15rem;
+    }
     .chat-bubble {
-      max-width: 78%; padding: 0.55rem 0.8rem;
-      border-radius: 10px; font-size: 0.82rem; line-height: 1.55;
+      max-width: 82%; padding: 0.6rem 0.85rem;
+      border-radius: 10px; font-size: 0.83rem; line-height: 1.55;
     }
     .chat-bubble.qa {
       align-self: flex-start;
@@ -571,17 +590,38 @@
       align-self: flex-end;
       background: rgba(91,242,155,0.08); border: 1px solid rgba(91,242,155,0.18);
     }
+    .chat-bubble.smith-idle {
+      align-self: flex-end;
+      background: transparent; border: 1px dashed rgba(91,242,155,0.15);
+    }
     .chat-sender {
       font-size: 0.63rem; font-weight: 700; font-family: 'IBM Plex Mono', monospace;
-      margin-bottom: 0.3rem; text-transform: uppercase; letter-spacing: 0.05em;
+      margin-bottom: 0.35rem; text-transform: uppercase; letter-spacing: 0.05em;
     }
-    .chat-bubble.qa  .chat-sender { color: var(--purple); }
-    .chat-bubble.smith .chat-sender { color: var(--green); }
-    .chat-alert-row { display: flex; gap: 0.5rem; align-items: flex-start; margin-bottom: 0.25rem; }
+    .chat-bubble.qa        .chat-sender { color: var(--purple); }
+    .chat-bubble.smith     .chat-sender { color: var(--green); }
+    .chat-bubble.smith-idle .chat-sender { color: rgba(91,242,155,0.4); }
+    .chat-alert-row { display: flex; gap: 0.5rem; align-items: flex-start; margin-bottom: 0.3rem; }
     .chat-alert-row:last-child { margin-bottom: 0; }
+    /* Smith narrative — readable summary of what Smith did */
+    .chat-narrative {
+      color: var(--text); margin-bottom: 0.45rem; line-height: 1.6;
+    }
+    .chat-narrative-part { margin-bottom: 0.2rem; }
+    .chat-narrative-part:last-child { margin-bottom: 0; }
+    .chat-actions-toggle {
+      font-size: 0.68rem; color: var(--text-dim); cursor: pointer;
+      font-family: 'IBM Plex Mono', monospace; margin-top: 0.3rem;
+      user-select: none;
+    }
+    .chat-actions-detail {
+      margin-top: 0.3rem; display: none;
+      border-top: 1px solid rgba(91,242,155,0.12); padding-top: 0.3rem;
+    }
+    .chat-actions-detail.open { display: block; }
     .chat-smith-action {
-      font-family: 'IBM Plex Mono', monospace; font-size: 0.75rem; color: var(--text-dim);
-      margin-bottom: 0.2rem;
+      font-family: 'IBM Plex Mono', monospace; font-size: 0.73rem; color: var(--text-dim);
+      margin-bottom: 0.18rem;
     }
     .chat-smith-action:last-child { margin-bottom: 0; }
     .chat-ok { font-size: 0.8rem; color: var(--text-dim); font-style: italic; }
@@ -1857,13 +1897,64 @@
 
   let _convRenderedCount = 0;
 
+  // Synthesise a readable narrative from Smith's raw action log
+  function _smithNarrative(actions) {
+    if (!actions.length) return [];
+    const parts = [];
+    const skills   = actions.filter(a => a.type === 'SKILL');
+    const tools    = actions.filter(a => a.type === 'TOOL');
+    const findings = actions.filter(a => a.type === 'FINDING');
+    const coverage = actions.filter(a => a.type === 'COVERAGE');
+
+    skills.forEach(s => {
+      const r = s.reason ? ` — ${s.reason}` : '';
+      parts.push(`🎯 Invoked <strong>/${esc(s.name)}</strong>${esc(r)}`);
+    });
+
+    if (tools.length) {
+      const counts = {};
+      tools.forEach(t => counts[t.name||'?'] = (counts[t.name||'?']||0) + 1);
+      const toolStr = Object.entries(counts).map(([n,c]) => c > 1 ? `${esc(n)} ×${c}` : esc(n)).join(', ');
+      parts.push(`🔧 Ran ${tools.length} tool call${tools.length > 1 ? 's' : ''} (${toolStr})`);
+    }
+
+    if (findings.length) {
+      const bySev = {};
+      findings.forEach(f => { const s = f.severity||'info'; bySev[s] = (bySev[s]||0)+1; });
+      const sevStr = ['critical','high','medium','low','info']
+        .filter(s => bySev[s]).map(s => `${bySev[s]} ${s}`).join(', ');
+      const titles = findings.slice(0,2).map(f => esc(f.title||'')).join('; ');
+      const more = findings.length > 2 ? ` +${findings.length-2} more` : '';
+      parts.push(`🔍 Logged ${findings.length} finding${findings.length>1?'s':''} (${sevStr}): ${titles}${more}`);
+    }
+
+    if (coverage.length) {
+      const c = coverage[coverage.length-1];
+      const tested = (c.tested||0) + (c.vulnerable||0);
+      parts.push(`📋 Coverage — ${c.registered||0} endpoints · ${tested} tested · ${c.pending||0} pending`);
+    }
+
+    return parts;
+  }
+
+  // Compact one-liner for the scan-context summary strip
+  function _scanContextHeadline(summary) {
+    const lines = (summary||'').split('\n');
+    const get = key => { const l = lines.find(l => l.startsWith(key)); return l ? l.slice(key.length).trim() : null; };
+    const parts = [];
+    const findings = get('Findings:');       if (findings) parts.push(`Findings: ${findings}`);
+    const coverage = get('Coverage:');       if (coverage) parts.push(coverage.split('—')[0].trim());
+    const gates    = get('Pending gates:');  if (gates)    parts.push(`Gates: ${gates.split(';')[0].trim()}`);
+    const tools    = get('Last tool call:'); if (tools)    parts.push(`Last tool: ${tools}`);
+    return parts.length ? parts.join('  ·  ') : 'Scan state';
+  }
+
   function renderConversation() {
     const wrap = document.getElementById('conversation-wrap');
     if (!wrap) return;
     const qa = _qaData || {};
     const history = qa.history || [];
 
-    // Remove placeholder if we now have data
     const placeholder = wrap.querySelector('.empty-placeholder');
     if (placeholder && history.length) placeholder.remove();
     if (!history.length) {
@@ -1872,7 +1963,6 @@
       return;
     }
 
-    // Append-only: only render cycles we haven't rendered yet
     const newCycles = history.slice(_convRenderedCount);
     if (!newCycles.length) return;
 
@@ -1885,42 +1975,74 @@
       tsEl.textContent = _qlTime(cycle.ts);
       frag.appendChild(tsEl);
 
-      // Smith bubble — session summary sent to QA (the trigger)
-      const summaryLines = (cycle.summary_sent || '').split('\n').filter(l => l.trim());
-      if (summaryLines.length) {
-        const smithCtxDiv = document.createElement('div');
-        smithCtxDiv.className = 'chat-bubble smith';
-        smithCtxDiv.innerHTML = `<div class="chat-sender">Smith → QA</div>${summaryLines.map(l => `<div class="chat-smith-action">${esc(l)}</div>`).join('')}`;
-        frag.appendChild(smithCtxDiv);
+      // Collapsible scan-context block — labelled as automated scan state, not Smith's words
+      const summary = cycle.summary_sent || '';
+      if (summary.trim()) {
+        const ctxEl = document.createElement('details');
+        ctxEl.className = 'chat-context';
+        const headline = _scanContextHeadline(summary);
+        const bodyLines = summary.split('\n').filter(l => l.trim());
+        ctxEl.innerHTML =
+          `<summary><span class="chat-context-headline">Scan state QA reviewed — ${esc(headline)}</span></summary>` +
+          `<div class="chat-context-body">${bodyLines.map(l => `<div>${esc(l)}</div>`).join('')}</div>`;
+        frag.appendChild(ctxEl);
       }
 
-      // QA bubble — alerts (the response)
+      // QA bubble — the questions / flags
       const qaDiv = document.createElement('div');
       qaDiv.className = 'chat-bubble qa';
       const alerts = cycle.alerts || [];
       const alertsInner = alerts.length
-        ? alerts.map(a => `<div class="chat-alert-row"><span class="qa-urgency ${a.urgency||'low'}">${esc(a.urgency||'low')}</span><span class="qa-msg">${esc(a.message||'')}</span></div>`).join('')
-        : '<span class="chat-ok">All clear — no issues this cycle.</span>';
+        ? alerts.map(a =>
+            `<div class="chat-alert-row">` +
+            `<span class="qa-urgency ${esc(a.urgency||'low')}">${esc(a.urgency||'low')}</span>` +
+            `<span class="qa-msg">${esc(a.message||'')}</span>` +
+            `</div>`
+          ).join('')
+        : '<span class="chat-ok">✓ No issues this cycle — all checks passed.</span>';
       qaDiv.innerHTML = `<div class="chat-sender">QA Agent</div>${alertsInner}`;
       frag.appendChild(qaDiv);
 
-      // Smith follow-up bubble — what Smith did after receiving the alerts
+      // Smith response bubble — narrative + collapsible raw actions
       const actions = cycle.smith_actions || [];
-      if (actions.length) {
-        const smithActDiv = document.createElement('div');
-        smithActDiv.className = 'chat-bubble smith';
-        const actionsInner = actions.map(e =>
-          `<div class="chat-smith-action">${QL_ICONS[e.type]||'·'} ${esc(_qlDesc(e))}</div>`
-        ).join('');
-        smithActDiv.innerHTML = `<div class="chat-sender">Smith ← response</div>${actionsInner}`;
-        frag.appendChild(smithActDiv);
+      const narrative = _smithNarrative(actions);
+      const bubbleClass = narrative.length ? 'chat-bubble smith' : 'chat-bubble smith-idle';
+      const smithDiv = document.createElement('div');
+      // Smith reply bubble — what Smith explicitly said in response to QA alerts
+      const reply = cycle.smith_reply;
+      if (reply) {
+        const replyDiv = document.createElement('div');
+        replyDiv.className = 'chat-bubble smith';
+        replyDiv.innerHTML =
+          `<div class="chat-sender">Smith — reply to QA</div>` +
+          `<div class="chat-narrative">${esc(reply)}</div>`;
+        frag.appendChild(replyDiv);
       }
+
+      smithDiv.className = bubbleClass;
+
+      let inner = `<div class="chat-sender">Smith — actions after this QA cycle</div>`;
+      if (narrative.length) {
+        inner += `<div class="chat-narrative">${narrative.map(p => `<div class="chat-narrative-part">${p}</div>`).join('')}</div>`;
+        if (actions.length) {
+          const detailId = `act-${Math.random().toString(36).slice(2)}`;
+          inner +=
+            `<div class="chat-actions-toggle" onclick="this.nextElementSibling.classList.toggle('open');this.textContent=this.nextElementSibling.classList.contains('open')?'▲ hide raw events':'▼ ${actions.length} raw events'">` +
+            `▼ ${actions.length} raw events</div>` +
+            `<div class="chat-actions-detail">` +
+            actions.map(e => `<div class="chat-smith-action">${QL_ICONS[e.type]||'·'} ${_qlDesc(e)}</div>`).join('') +
+            `</div>`;
+        }
+      } else {
+        inner += `<span class="chat-ok">No tool activity recorded between this cycle and the next.</span>`;
+      }
+
+      smithDiv.innerHTML = inner;
+      frag.appendChild(smithDiv);
     });
 
     wrap.appendChild(frag);
     _convRenderedCount = history.length;
-
-    // Auto-scroll to bottom so newest message is visible
     wrap.scrollTop = wrap.scrollHeight;
   }
 

@@ -114,17 +114,24 @@ RUN chmod +x /usr/local/bin/pyrit-runner
 # not installed here. See tools/fuzzyai.py for the image definition.
 
 # AI red-teaming: NVIDIA Garak — LLM vulnerability scanner (probe-based)
-RUN pip3 install --no-cache-dir garak==0.14.0 --break-system-packages || true
+# Installed in a venv to avoid conflicts with Debian-managed packages (no RECORD file).
+# --system-site-packages inherits system packages so only the delta is fetched.
+RUN apt-get update && apt-get install -y --no-install-recommends python3-venv \
+    && rm -rf /var/lib/apt/lists/* \
+    && python3 -m venv /opt/garak-venv --system-site-packages \
+    && /opt/garak-venv/bin/pip install --no-cache-dir garak==0.15.0 \
+    && ln -sf /opt/garak-venv/bin/garak /usr/local/bin/garak
 
 # AI red-teaming: promptfoo — LLM eval + red-team framework (npm)
-RUN (apt-get update && apt-get install -y --no-install-recommends nodejs npm \
+RUN apt-get update && apt-get install -y --no-install-recommends nodejs npm \
     && rm -rf /var/lib/apt/lists/* \
-    && npm install -g promptfoo@0.121.2) || true
+    && npm install -g promptfoo@0.121.2
 
 # Web spider: Playwright + headless Chromium for JavaScript-aware crawling
 # (required for Hotwire/Turbo Frame apps where katana misses lazy-loaded content)
-# Pinned to 1.49.0 — update explicitly when needed
-RUN pip3 install --no-cache-dir playwright==1.49.0 --break-system-packages \
+# Pinned to 1.59.0 — update explicitly when needed
+# 1.50+ uses pyee>=13.0.0 which matches the Kali system python3-pyee package
+RUN pip3 install --no-cache-dir playwright==1.59.0 --break-system-packages \
     && playwright install chromium --with-deps
 
 # Exploitation payload generators

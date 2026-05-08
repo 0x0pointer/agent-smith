@@ -161,7 +161,7 @@ async def test_update_cell_warns_on_skip_in_progress(coverage_file):
     data = json.loads(coverage_file.read_text())
     cell = data["matrix"][0]
     result = await core.coverage.update_cell(
-        cell["id"], "tested_clean", notes="No injection found"
+        cell["id"], "tested_clean", notes="No injection found", tested_by="http_request"
     )
     assert isinstance(result, str)
     assert "INTEGRITY WARNING" in result
@@ -203,7 +203,7 @@ async def test_update_cell_invalid_status_returns_false(coverage_file):
 
 @pytest.mark.asyncio
 async def test_update_cell_missing_id_returns_false(coverage_file):
-    ok = await core.coverage.update_cell("nonexistent", "tested_clean")
+    ok = await core.coverage.update_cell("nonexistent", "in_progress")
     assert ok is False
 
 
@@ -243,7 +243,7 @@ async def test_bulk_update_warns_on_skip_in_progress(coverage_file):
     )
     data = json.loads(coverage_file.read_text())
     updates = [
-        {"cell_id": c["id"], "status": "tested_clean", "notes": "OK"}
+        {"cell_id": c["id"], "status": "tested_clean", "notes": "OK", "tested_by": "http_request"}
         for c in data["matrix"][:3]
     ]
     result = await core.coverage.bulk_update(updates)
@@ -364,8 +364,8 @@ async def test_meta_counters_accurate(coverage_file):
 
     # Mark one tested, one vulnerable, one N/A
     cells = data["matrix"]
-    await core.coverage.update_cell(cells[0]["id"], "tested_clean")
-    await core.coverage.update_cell(cells[1]["id"], "vulnerable")
+    await core.coverage.update_cell(cells[0]["id"], "tested_clean", tested_by="sqlmap")
+    await core.coverage.update_cell(cells[1]["id"], "vulnerable", tested_by="sqlmap")
     await core.coverage.update_cell(cells[2]["id"], "not_applicable")
 
     data = json.loads(coverage_file.read_text())

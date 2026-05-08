@@ -1,6 +1,7 @@
 """
 Consolidated HTTP tool — replaces http_request and save_poc from exploitation.py
 """
+import asyncio
 import json
 import os
 from typing import Any
@@ -8,6 +9,11 @@ from typing import Any
 from core import cost as cost_tracker
 from core import logger as log
 from mcp_server._app import mcp, _ensure_dict
+
+
+def _write_text(path: str, content: str) -> None:
+    with open(path, "w") as fh:
+        fh.write(content)
 
 
 @mcp.tool()
@@ -35,6 +41,7 @@ async def http(
     save_poc options:
       title=poc        — filename label
       notes=           — description written as comment in the .http file
+      finding_id=      — finding UUID to auto-link this PoC (adds filepath to finding.poc_files)
     """
     if isinstance(body, dict):
         body = json.dumps(body)
@@ -44,7 +51,7 @@ async def http(
     if action == "request":
         return await _do_request(url, method, headers, body, opts)
     elif action == "save_poc":
-        return _do_save_poc(url, method, headers, body, opts)
+        return await _do_save_poc(url, method, headers, body, opts)
     else:
         return f"Unknown action '{action}'. Use: request, save_poc"
 
@@ -87,12 +94,13 @@ async def _do_request(url, method, headers, body, opts):
     return wrap("http_request", result, {"url": url, "method": method})
 
 
-def _do_save_poc(url, method, headers, body, opts):
+async def _do_save_poc(url, method, headers, body, opts):
     import datetime as dt
     from urllib.parse import urlparse
 
-    title = opts.get("title", "poc")
-    notes = opts.get("notes", "")
+    title      = opts.get("title", "poc")
+    notes      = opts.get("notes", "")
+    finding_id = opts.get("finding_id", "")
 
     parsed = urlparse(url)
     host = parsed.netloc
@@ -116,14 +124,18 @@ def _do_save_poc(url, method, headers, body, opts):
     timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
     filepath = os.path.join(pocs_dir, f"{timestamp}_{safe_title}.http")
 
-    with open(filepath, "w") as f:
-        if notes:
-            f.write(f"# {notes}\n\n")
-        f.write(raw)
+    poc_content = (f"# {notes}\n\n" if notes else "") + raw
+    await asyncio.to_thread(_write_text, filepath, poc_content)
+
+    linked = False
+    if finding_id:
+        from core import findings as findings_store
+        linked = await findings_store.link_poc(finding_id, filepath)
 
     result = json.dumps({
-        "saved": filepath,
-        "hint": "Open Burp Repeater and paste this file to load the request",
+        "saved":      filepath,
+        "linked_to":  finding_id if linked else None,
+        "hint":       "Open Burp Repeater and paste this file to load the request",
     })
     log.tool_result("save_poc", result)
     return result
