@@ -251,7 +251,9 @@ def _coverage_blockers(cov: dict, ctf_mode: bool = False) -> list[str]:
             )
         return blockers
 
-    addressed = meta.get("tested", 0) + meta.get("not_applicable", 0) + meta.get("skipped", 0)
+    # skipped cells do NOT count toward coverage — they are deferrals, not evidence.
+    # Only tested_clean, vulnerable, and not_applicable are real coverage signals.
+    addressed = meta.get("tested", 0) + meta.get("not_applicable", 0)
     pct = (addressed / total) * 100
 
     # Model-profile-aware: only enforce 80% coverage threshold for "full" profile.
@@ -265,18 +267,21 @@ def _coverage_blockers(cov: dict, ctf_mode: bool = False) -> list[str]:
         all_cells_tmp = cov.get("matrix", [])
         pending = [c["id"] for c in all_cells_tmp if c.get("status", "pending") == "pending"]
         hint = (
-            f"Use bulk_tested to address them:\n"
+            f"For each pending cell: either test it (set status=tested_clean/vulnerable with "
+            f"tested_by=<tool>) or mark it not_applicable if the injection type is inherently "
+            f"irrelevant to the param/endpoint type (with a specific reason in notes). "
+            f"Do NOT bulk-skip — skipped cells are excluded from coverage. Sample pending cells:\n"
             f'  report(action="coverage", data={{"type": "bulk_tested", "updates": ['
         )
         hint += ", ".join(
-            f'{{"cell_id": "{cid}", "status": "skipped", "notes": "not tested"}}'
+            f'{{"cell_id": "{cid}", "status": "not_applicable", "notes": "<specific reason>"}}'
             for cid in pending[:10]
         )
         if len(pending) > 10:
             hint += f", ... ({len(pending) - 10} more)"
         hint += "]})"
         blockers.append(
-            f"LOW COVERAGE: only {addressed}/{total} matrix cells addressed ({pct:.0f}%). "
+            f"LOW COVERAGE: only {addressed}/{total} matrix cells tested or marked N/A ({pct:.0f}%). "
             f"{len(pending)} pending cell(s). {hint}"
         )
 
@@ -389,8 +394,9 @@ async def _do_complete(opts):
             global _force_completed
             attempts = _complete_attempts
             _force_completed = True
+            force_reason = f"FORCE-COMPLETED: {len(blockers)} blocker(s) unresolved after {attempts} attempts: {'; '.join(blockers)}"
             log.note(f"Force-completing after {attempts} blocked attempts. Remaining blockers: {'; '.join(blockers)}")
-            cfg = scan_session.complete(f"{notes} [FORCE-COMPLETED: {len(blockers)} blocker(s) unresolved after {attempts} attempts]")
+            cfg = scan_session.complete(notes, stop_reason=force_reason)
             _complete_attempts = 0
             return (
                 f"Scan FORCE-COMPLETED (exceeded {attempts} attempt limit). "
@@ -399,6 +405,17 @@ async def _do_complete(opts):
             )
         msg = f"complete BLOCKED (attempt {_complete_attempts}/{_MAX_COMPLETE_ATTEMPTS}) — fix the following first:\n\n"
         msg += "\n\n".join(f"  [{i+1}] {b}" for i, b in enumerate(blockers))
+        # Surface active QA alerts so the agent sees them without calling status
+        _qa_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "qa_state.json")
+        try:
+            if os.path.exists(_qa_path):
+                _qa = json.loads(open(_qa_path).read())
+                _qa_alerts = [a for a in _qa.get("alerts", []) if isinstance(a, dict)]
+                if _qa_alerts:
+                    msg += "\n\nQA AGENT ALERTS:\n"
+                    msg += "\n".join(f"  [{a.get('urgency','?').upper()}] {a.get('message','')}" for a in _qa_alerts)
+        except Exception:
+            pass
         log.note(f"complete blocked (attempt {_complete_attempts}): {'; '.join(blockers)}")
         return msg
 

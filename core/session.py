@@ -179,13 +179,15 @@ def check_limits(cost_summary: dict) -> str | None:
     return None
 
 
-def complete(notes: str = "") -> dict:
+def complete(notes: str = "", stop_reason: str | None = None) -> dict:
     """Mark the scan as done (called by Claude when finished)."""
     global _current
     if _current and _current["status"] == "running":
         _current["status"]   = "complete"
         _current["finished"] = datetime.now(timezone.utc).isoformat()
         _current["notes"]    = notes
+        if stop_reason is not None:
+            _current["stop_reason"] = stop_reason
         _flush()
     return _current or {}
 
