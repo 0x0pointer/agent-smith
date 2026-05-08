@@ -102,7 +102,7 @@ ok "/reverse-shell skill installed"
 mkdir -p "$HOME/.claude/skills/web-exploit/refs"
 cp "$REPO_DIR/skills/web-exploit/SKILL.md" "$HOME/.claude/skills/web-exploit/SKILL.md"
 if [ -d "$REPO_DIR/skills/web-exploit/refs" ]; then
-    cp "$REPO_DIR/skills/web-exploit/refs/"*.md "$HOME/.claude/skills/web-exploit/refs/"
+    cp "$REPO_DIR/skills/web-exploit/refs/"* "$HOME/.claude/skills/web-exploit/refs/"
 fi
 ok "/web-exploit skill installed (with lazy-loaded injection refs)"
 
@@ -149,6 +149,17 @@ ok "/ssl-tls-audit skill installed"
 mkdir -p "$HOME/.claude/skills/request-cves"
 cp "$REPO_DIR/skills/request-cves/SKILL.md" "$HOME/.claude/skills/request-cves/SKILL.md"
 ok "/request-cves skill installed"
+
+mkdir -p "$HOME/.claude/skills/compliance/refs"
+cp "$REPO_DIR/skills/compliance/SKILL.md" "$HOME/.claude/skills/compliance/SKILL.md"
+if [ -d "$REPO_DIR/skills/compliance/refs" ]; then
+    cp "$REPO_DIR/skills/compliance/refs/"* "$HOME/.claude/skills/compliance/refs/"
+fi
+ok "/compliance skill installed (with ASVS 5.0 CSV ref)"
+
+mkdir -p "$HOME/.claude/skills/report"
+cp "$REPO_DIR/skills/report/SKILL.md" "$HOME/.claude/skills/report/SKILL.md"
+ok "/report skill installed"
 
 # ── API keys (QA agent + AI testing tools) ───────────────────────────────────
 echo ""
@@ -428,6 +439,8 @@ echo "    /ad-assessment 10.0.0.1 domain=CORP.LOCAL  — Active Directory securi
 echo "    /email-security example.com              — email SPF/DKIM/DMARC audit"
 echo "    /metasploit 10.0.0.5 cve=CVE-2017-0144   — Metasploit exploit validation"
 echo "    /gh-export                               — export findings as GitHub issue blocks"
+echo "    /compliance /path/to/app                 — full ASVS 5.0 compliance assessment"
+echo "    /report target-name                      — generate PDF pentest report from findings"
 echo ""
 echo "  To rebuild images after adding new skills:"
 echo "    docker build -t pentest-agent/kali-mcp $REPO_DIR/tools/kali/"
