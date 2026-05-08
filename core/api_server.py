@@ -237,6 +237,41 @@ async def api_delete_finding(finding_id: str) -> JSONResponse:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
 
+def _safe_unlink(path) -> None:
+    """Unlink a file, ignoring errors."""
+    try:
+        path.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def _clear_dir_files(directory) -> None:
+    """Delete all regular files inside a directory, ignoring errors."""
+    try:
+        if not directory.exists():
+            return
+        for f in directory.iterdir():
+            try:
+                if f.is_file():
+                    f.unlink()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def _clear_log_files(log_dir) -> None:
+    """Truncate all *.log files in log_dir to zero bytes."""
+    try:
+        for log_file in log_dir.glob("*.log"):
+            try:
+                log_file.write_text("")
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
 @app.delete("/api/clear")
 async def api_clear() -> JSONResponse:
     """Wipe all scan state — findings, session, coverage, logs, quick_log, qa_state."""
@@ -254,19 +289,12 @@ async def api_clear() -> JSONResponse:
 
     # session.json, coverage_matrix.json, quick_log.json, qa_state.json, session_cost.json
     for path in (_SESSION_FILE, _COVERAGE_FILE, _QUICK_LOG_FILE, _QA_STATE_FILE, _COST_FILE):
-        try:
-            path.unlink(missing_ok=True)
-        except Exception:
-            pass
+        _safe_unlink(path)
 
     # log files in logs/
     try:
         from core.logger import _LOG_DIR
-        for log_file in _LOG_DIR.glob("*.log"):
-            try:
-                log_file.write_text("")
-            except Exception:
-                pass
+        _clear_log_files(_LOG_DIR)
     except Exception:
         pass
 
@@ -275,44 +303,18 @@ async def api_clear() -> JSONResponse:
         pocs_dir = _REPO_ROOT / "pocs"
         if pocs_dir.exists():
             for poc_file in pocs_dir.glob("*.http"):
-                try:
-                    poc_file.unlink()
-                except Exception:
-                    pass
+                _safe_unlink(poc_file)
     except Exception:
         pass
 
     # artifacts/ — raw scanner output files
-    try:
-        artifacts_dir = _REPO_ROOT / "artifacts"
-        if artifacts_dir.exists():
-            for f in artifacts_dir.iterdir():
-                try:
-                    if f.is_file():
-                        f.unlink()
-                except Exception:
-                    pass
-    except Exception:
-        pass
+    _clear_dir_files(_REPO_ROOT / "artifacts")
 
     # threat-model/ — generated HTML/MD reports
-    try:
-        tm_dir = _REPO_ROOT / "threat-model"
-        if tm_dir.exists():
-            for f in tm_dir.iterdir():
-                try:
-                    if f.is_file():
-                        f.unlink()
-                except Exception:
-                    pass
-    except Exception:
-        pass
+    _clear_dir_files(_REPO_ROOT / "threat-model")
 
     # gh-issues.md — exported GitHub issue blocks
-    try:
-        (_REPO_ROOT / "gh-issues.md").unlink(missing_ok=True)
-    except Exception:
-        pass
+    _safe_unlink(_REPO_ROOT / "gh-issues.md")
 
     await _cleanup_tunnels()
     return JSONResponse({"ok": True})

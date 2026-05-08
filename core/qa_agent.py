@@ -45,6 +45,120 @@ _COVERAGE_FILE  = _REPO_ROOT / "coverage_matrix.json"
 
 # ── Deterministic checks ──────────────────────────────────────────────────────
 
+def _check_scope_drift(summary: str) -> dict | None:
+    if "Possible off-scope targets used:" not in summary:
+        return None
+    m = re.search(r"Possible off-scope targets used: (.+)", summary)
+    targets = m.group(1).strip() if m else "unknown"
+    return {"code": "SCOPE_DRIFT", "urgency": "high", "blocking": False,
+            "message": f"Scope drift: tools ran against {targets}"}
+
+
+def _check_coverage_stall(summary: str) -> dict | None:
+    stall_m   = re.search(r"WARNING: coverage stale \((\d+) min", summary)
+    pending_m = re.search(r",\s*(\d+) pending", summary)
+    if not stall_m or not pending_m:
+        return None
+    pending = int(pending_m.group(1))
+    if pending == 0:
+        return None
+    mins = int(stall_m.group(1))
+    return {"code": "COVERAGE_STALL", "urgency": "high", "blocking": False,
+            "message": f"Coverage stall — {pending} cells untested, last update {mins}min ago"}
+
+
+def _check_spider_without_coverage(summary: str, coverage_data: dict) -> dict | None:
+    if "Endpoints found:" not in summary:
+        return None
+    if coverage_data.get("meta", {}).get("total_cells", 0) != 0:
+        return None
+    m = re.search(r"Endpoints found: (\S+)", summary)
+    count = m.group(1) if m else "?"
+    return {"code": "SPIDER_WITHOUT_COVERAGE", "urgency": "high", "blocking": False,
+            "message": f"Spider found {count} endpoint(s) but coverage matrix is empty — register endpoints"}
+
+
+def _check_poc_gap(findings_data: dict) -> dict | None:
+    high_crit   = [f for f in findings_data.get("findings", [])
+                   if f.get("severity") in ("high", "critical")]
+    missing_poc = [f for f in high_crit if not f.get("poc_files")]
+    if not missing_poc:
+        return None
+    titles = ", ".join(f["title"] for f in missing_poc[:3])
+    if len(missing_poc) > 3:
+        titles += f" +{len(missing_poc) - 3} more"
+    return {"code": "POC_GAP", "urgency": "medium", "blocking": False,
+            "message": f"PoC gap: {len(missing_poc)}/{len(high_crit)} high/critical findings have no saved PoC: {titles}"}
+
+
+def _check_skill_chain_gap(summary: str) -> dict | None:
+    if "Findings:" not in summary or "web-exploit" in summary:
+        return None
+    sev_m = re.search(r"Findings: (.+)", summary)
+    if not sev_m:
+        return None
+    sev_str = sev_m.group(1)
+    if "critical" not in sev_str and " high" not in sev_str:
+        return None
+    return {"code": "SKILL_CHAIN_GAP", "urgency": "medium", "blocking": False,
+            "message": "High/critical findings but web-exploit not yet chained — run /web-exploit"}
+
+
+def _check_tool_inactivity(summary: str) -> dict | None:
+    inact_m = re.search(r"Last tool call: (\d+) minutes ago", summary)
+    if not inact_m:
+        return None
+    mins = int(inact_m.group(1))
+    if mins <= 10:
+        return None
+    return {"code": "TOOL_INACTIVITY", "urgency": "low", "blocking": False,
+            "message": f"No tool activity in {mins}min — is Smith stuck?"}
+
+
+def _check_bulk_marking(summary: str) -> dict | None:
+    if "Bulk-marking warning:" not in summary:
+        return None
+    m = re.search(r"Bulk-marking warning: (.+)(?:\n|$)", summary)
+    detail = m.group(1).strip() if m else "N/A cells have no tested_by tool"
+    return {"code": "BULK_MARKING", "urgency": "high", "blocking": True,
+            "message": f"Bulk-marking detected: {detail}"}
+
+
+def _check_coverage_integrity(summary: str) -> dict | None:
+    integ_m = re.search(r"(\d+) tested/vulnerable cells have no tested_by tool", summary)
+    if not integ_m:
+        return None
+    count = integ_m.group(1)
+    return {"code": "COVERAGE_INTEGRITY", "urgency": "high", "blocking": True,
+            "message": f"Coverage integrity: {count} tested/vulnerable cells lack tested_by tool"}
+
+
+def _check_gate_alerts(summary: str) -> list[dict]:
+    alerts: list[dict] = []
+    gate_m = re.search(r"Pending gates: (.+)(?:\n|$)", summary)
+    if not gate_m:
+        return alerts
+    gate_info = gate_m.group(1)
+    time_m  = re.search(r"triggered (\d+)min ago", gate_info)
+    elapsed = int(time_m.group(1)) if time_m else 0
+    if elapsed >= 5:
+        urgency  = "high" if elapsed >= 15 else "medium"
+        gid_m    = re.search(r"^(\S+) \(", gate_info)
+        gate_id  = gid_m.group(1) if gid_m else "unknown"
+        req_m    = re.search(r"requires: (.+?)\)", gate_info)
+        requires = req_m.group(1) if req_m else "required skill"
+        alerts.append({"code": "GATE_PENDING", "urgency": urgency, "blocking": False,
+                       "message": f"Gate {gate_id} pending {elapsed}min — chain {requires} or dismiss"})
+    if "rce" in gate_info.lower():
+        sev_m = re.search(r"Findings: (.+)", summary)
+        if sev_m:
+            sev_str = sev_m.group(1)
+            if "critical" not in sev_str and " high" not in sev_str:
+                alerts.append({"code": "RCE_GATE_FALSE_POSITIVE", "urgency": "medium", "blocking": False,
+                               "message": "RCE gate may be a false positive — verify finding severity"})
+    return alerts
+
+
 def _deterministic_qa_checks(
     summary: str,
     findings_data: dict,
@@ -54,118 +168,18 @@ def _deterministic_qa_checks(
 
     Returns a list of alert dicts: {code, urgency, blocking, message}.
     """
-    alerts: list[dict] = []
-
-    # SCOPE_DRIFT — tool ran against a target outside the declared scope
-    if "Possible off-scope targets used:" in summary:
-        m = re.search(r"Possible off-scope targets used: (.+)", summary)
-        targets = m.group(1).strip() if m else "unknown"
-        alerts.append({
-            "code": "SCOPE_DRIFT", "urgency": "high", "blocking": False,
-            "message": f"Scope drift: tools ran against {targets}",
-        })
-
-    # COVERAGE_STALL — no coverage update for >30 min and cells still pending
-    stall_m   = re.search(r"WARNING: coverage stale \((\d+) min", summary)
-    pending_m = re.search(r",\s*(\d+) pending", summary)
-    if stall_m and pending_m:
-        mins    = int(stall_m.group(1))
-        pending = int(pending_m.group(1))
-        if pending > 0:
-            alerts.append({
-                "code": "COVERAGE_STALL", "urgency": "high", "blocking": False,
-                "message": f"Coverage stall — {pending} cells untested, last update {mins}min ago",
-            })
-
-    # SPIDER_WITHOUT_COVERAGE — spider ran but matrix is still empty
-    if "Endpoints found:" in summary:
-        cov_meta = coverage_data.get("meta", {})
-        if cov_meta.get("total_cells", 0) == 0:
-            m = re.search(r"Endpoints found: (\S+)", summary)
-            count = m.group(1) if m else "?"
-            alerts.append({
-                "code": "SPIDER_WITHOUT_COVERAGE", "urgency": "high", "blocking": False,
-                "message": f"Spider found {count} endpoint(s) but coverage matrix is empty — register endpoints",
-            })
-
-    # POC_GAP — high/critical finding has no linked PoC file (per-finding check)
-    high_crit   = [f for f in findings_data.get("findings", [])
-                   if f.get("severity") in ("high", "critical")]
-    missing_poc = [f for f in high_crit if not f.get("poc_files")]
-    if missing_poc:
-        titles = ", ".join(f["title"] for f in missing_poc[:3])
-        if len(missing_poc) > 3:
-            titles += f" +{len(missing_poc) - 3} more"
-        alerts.append({
-            "code": "POC_GAP", "urgency": "medium", "blocking": False,
-            "message": f"PoC gap: {len(missing_poc)}/{len(high_crit)} high/critical findings have no saved PoC: {titles}",
-        })
-
-    # SKILL_CHAIN_GAP — high/critical findings but web-exploit skill never invoked
-    if "Findings:" in summary and "web-exploit" not in summary:
-        sev_m = re.search(r"Findings: (.+)", summary)
-        if sev_m and ("critical" in sev_m.group(1) or " high" in sev_m.group(1)):
-            alerts.append({
-                "code": "SKILL_CHAIN_GAP", "urgency": "medium", "blocking": False,
-                "message": "High/critical findings but web-exploit not yet chained — run /web-exploit",
-            })
-
-    # TOOL_INACTIVITY — no tool call for >10 min
-    inact_m = re.search(r"Last tool call: (\d+) minutes ago", summary)
-    if inact_m:
-        mins = int(inact_m.group(1))
-        if mins > 10:
-            alerts.append({
-                "code": "TOOL_INACTIVITY", "urgency": "low", "blocking": False,
-                "message": f"No tool activity in {mins}min — is Smith stuck?",
-            })
-
-    # BULK_MARKING — many N/A cells without tested_by tool
-    if "Bulk-marking warning:" in summary:
-        m = re.search(r"Bulk-marking warning: (.+)(?:\n|$)", summary)
-        detail = m.group(1).strip() if m else "N/A cells have no tested_by tool"
-        alerts.append({
-            "code": "BULK_MARKING", "urgency": "high", "blocking": True,
-            "message": f"Bulk-marking detected: {detail}",
-        })
-
-    # COVERAGE_INTEGRITY — tested/vulnerable cells with no tested_by
-    integ_m = re.search(r"(\d+) tested/vulnerable cells have no tested_by tool", summary)
-    if integ_m:
-        count = integ_m.group(1)
-        alerts.append({
-            "code": "COVERAGE_INTEGRITY", "urgency": "high", "blocking": True,
-            "message": f"Coverage integrity: {count} tested/vulnerable cells lack tested_by tool",
-        })
-
-    # GATE_PENDING — mandatory skill gate not yet satisfied
-    gate_m = re.search(r"Pending gates: (.+)(?:\n|$)", summary)
-    if gate_m:
-        gate_info = gate_m.group(1)
-        time_m    = re.search(r"triggered (\d+)min ago", gate_info)
-        elapsed   = int(time_m.group(1)) if time_m else 0
-        if elapsed >= 5:
-            urgency   = "high" if elapsed >= 15 else "medium"
-            gid_m     = re.search(r"^(\S+) \(", gate_info)
-            gate_id   = gid_m.group(1) if gid_m else "unknown"
-            req_m     = re.search(r"requires: (.+?)\)", gate_info)
-            requires  = req_m.group(1) if req_m else "required skill"
-            alerts.append({
-                "code": "GATE_PENDING", "urgency": urgency, "blocking": False,
-                "message": f"Gate {gate_id} pending {elapsed}min — chain {requires} or dismiss",
-            })
-
-    # RCE_GATE_FALSE_POSITIVE — rce gate open but only low/medium/info findings
-    if gate_m and "rce" in gate_m.group(1).lower():
-        sev_m = re.search(r"Findings: (.+)", summary)
-        if sev_m:
-            sev_str = sev_m.group(1)
-            if "critical" not in sev_str and " high" not in sev_str:
-                alerts.append({
-                    "code": "RCE_GATE_FALSE_POSITIVE", "urgency": "medium", "blocking": False,
-                    "message": "RCE gate may be a false positive — verify finding severity",
-                })
-
+    checks = [
+        _check_scope_drift(summary),
+        _check_coverage_stall(summary),
+        _check_spider_without_coverage(summary, coverage_data),
+        _check_poc_gap(findings_data),
+        _check_skill_chain_gap(summary),
+        _check_tool_inactivity(summary),
+        _check_bulk_marking(summary),
+        _check_coverage_integrity(summary),
+    ]
+    alerts = [c for c in checks if c is not None]
+    alerts.extend(_check_gate_alerts(summary))
     return alerts
 
 
@@ -366,6 +380,20 @@ class QADaemon:
             except Exception as exc:
                 _log.warning("QA Daemon cycle error: %s", exc)
 
+    async def _run_semantic_review(self, finding_text: str) -> list[dict]:
+        graph = self._get_graph()
+        if graph is None:
+            return []
+        try:
+            result = await asyncio.to_thread(
+                graph.invoke,
+                {"summary": finding_text, "raw_response": "", "alerts": []},
+            )
+            return result.get("alerts", [])
+        except Exception as exc:
+            _log.warning("QA Daemon: semantic review failed — %s", exc)
+            return []
+
     async def _cycle(self) -> None:
         if not _session_is_running():
             return
@@ -382,19 +410,8 @@ class QADaemon:
         determ_alerts = _deterministic_qa_checks(summary, findings_data, coverage_data)
 
         # Layer 2: semantic LLM review — only when there are high/critical findings
-        semantic_alerts: list[dict] = []
-        finding_text = _format_findings_for_semantic_review(findings_data)
-        if finding_text:
-            graph = self._get_graph()
-            if graph is not None:
-                try:
-                    result = await asyncio.to_thread(
-                        graph.invoke,
-                        {"summary": finding_text, "raw_response": "", "alerts": []},
-                    )
-                    semantic_alerts = result.get("alerts", [])
-                except Exception as exc:
-                    _log.warning("QA Daemon: semantic review failed — %s", exc)
+        finding_text    = _format_findings_for_semantic_review(findings_data)
+        semantic_alerts = await self._run_semantic_review(finding_text) if finding_text else []
 
         all_alerts = determ_alerts + semantic_alerts
 

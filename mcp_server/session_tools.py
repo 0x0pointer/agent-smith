@@ -232,6 +232,52 @@ def _do_start(opts):
     return "\n".join(lines)
 
 
+def _low_coverage_blocker(
+    cov: dict, coverage_enforced: bool, total: int, addressed: int, pct: float
+) -> str | None:
+    if not coverage_enforced or pct >= 80:
+        return None
+    all_cells = cov.get("matrix", [])
+    pending = [c["id"] for c in all_cells if c.get("status", "pending") == "pending"]
+    hint = (
+        "For each pending cell: either test it (set status=tested_clean/vulnerable with "
+        "tested_by=<tool>) or mark it not_applicable if the injection type is inherently "
+        "irrelevant to the param/endpoint type (with a specific reason in notes). "
+        "Do NOT bulk-skip — skipped cells are excluded from coverage. Sample pending cells:\n"
+        '  report(action="coverage", data={"type": "bulk_tested", "updates": ['
+    )
+    hint += ", ".join(
+        f'{{"cell_id": "{cid}", "status": "not_applicable", "notes": "<specific reason>"}}'
+        for cid in pending[:10]
+    )
+    if len(pending) > 10:
+        hint += f", ... ({len(pending) - 10} more)"
+    hint += "]})"
+    return (
+        f"LOW COVERAGE: only {addressed}/{total} matrix cells tested or marked N/A ({pct:.0f}%). "
+        f"{len(pending)} pending cell(s). {hint}"
+    )
+
+
+def _skipped_no_evidence_blocker(all_cells: list[dict]) -> str | None:
+    _WAF_KEYWORDS = ("403", "429", "waf", "blocked", "rate limit", "firewall")
+    skipped = [
+        c for c in all_cells
+        if c["status"] == "skipped"
+        and not any(kw in c.get("notes", "").lower() for kw in _WAF_KEYWORDS)
+    ]
+    if not skipped:
+        return None
+    sample = ", ".join(c["id"] for c in skipped[:5])
+    if len(skipped) > 5:
+        sample += f" ... ({len(skipped) - 5} more)"
+    return (
+        f"INTEGRITY: {len(skipped)} cell(s) marked skipped without WAF block "
+        f"evidence (403/429/WAF) in notes: {sample}. "
+        f"'skipped' is only valid when a WAF blocked the request — add the response evidence or re-test."
+    )
+
+
 def _coverage_blockers(cov: dict, ctf_mode: bool = False) -> list[str]:
     """Return coverage-related completion blockers for the given matrix state.
 
@@ -274,27 +320,9 @@ def _coverage_blockers(cov: dict, ctf_mode: bool = False) -> list[str]:
     profile = get_profile()
     coverage_enforced = not profile.get("enforce_budget", True)  # full=enforce, medium/small=skip
 
-    if coverage_enforced and pct < 80:
-        all_cells_tmp = cov.get("matrix", [])
-        pending = [c["id"] for c in all_cells_tmp if c.get("status", "pending") == "pending"]
-        hint = (
-            f"For each pending cell: either test it (set status=tested_clean/vulnerable with "
-            f"tested_by=<tool>) or mark it not_applicable if the injection type is inherently "
-            f"irrelevant to the param/endpoint type (with a specific reason in notes). "
-            f"Do NOT bulk-skip — skipped cells are excluded from coverage. Sample pending cells:\n"
-            '  report(action="coverage", data={"type": "bulk_tested", "updates": ['
-        )
-        hint += ", ".join(
-            f'{{"cell_id": "{cid}", "status": "not_applicable", "notes": "<specific reason>"}}'
-            for cid in pending[:10]
-        )
-        if len(pending) > 10:
-            hint += f", ... ({len(pending) - 10} more)"
-        hint += "]})"
-        blockers.append(
-            f"LOW COVERAGE: only {addressed}/{total} matrix cells tested or marked N/A ({pct:.0f}%). "
-            f"{len(pending)} pending cell(s). {hint}"
-        )
+    low_cov = _low_coverage_blocker(cov, coverage_enforced, total, addressed, pct)
+    if low_cov:
+        blockers.append(low_cov)
 
     all_cells = cov.get("matrix", [])
     untooled = [c for c in all_cells
@@ -313,21 +341,9 @@ def _coverage_blockers(cov: dict, ctf_mode: bool = False) -> list[str]:
             f"techniques: {sample}. Test the bypass before marking N/A."
         )
 
-    _WAF_KEYWORDS = ("403", "429", "waf", "blocked", "rate limit", "firewall")
-    skipped_no_evidence = [
-        c for c in all_cells
-        if c["status"] == "skipped"
-        and not any(kw in c.get("notes", "").lower() for kw in _WAF_KEYWORDS)
-    ]
-    if skipped_no_evidence:
-        sample = ", ".join(c["id"] for c in skipped_no_evidence[:5])
-        if len(skipped_no_evidence) > 5:
-            sample += f" ... ({len(skipped_no_evidence) - 5} more)"
-        blockers.append(
-            f"INTEGRITY: {len(skipped_no_evidence)} cell(s) marked skipped without WAF block "
-            f"evidence (403/429/WAF) in notes: {sample}. "
-            f"'skipped' is only valid when a WAF blocked the request — add the response evidence or re-test."
-        )
+    skipped_blocker = _skipped_no_evidence_blocker(all_cells)
+    if skipped_blocker:
+        blockers.append(skipped_blocker)
 
     na_untooled = [
         c for c in all_cells
@@ -408,6 +424,27 @@ def _escalation_lead_blockers(data: dict) -> list[str]:
     ]
 
 
+def _finding_quality_blockers(high_findings: list[dict]) -> str | None:
+    """Return a blocker string if any high/critical finding lacks evidence or reproduction."""
+    quality_issues: list[str] = []
+    for f in high_findings:
+        missing: list[str] = []
+        if not str(f.get("evidence", "")).strip():
+            missing.append("evidence")
+        if not f.get("reproduction"):
+            missing.append("reproduction")
+        if missing:
+            quality_issues.append(f"[{f['severity'].upper()}] {f['title']}: missing {', '.join(missing)}")
+    if not quality_issues:
+        return None
+    sample = "\n    ".join(quality_issues[:5])
+    more   = f"\n    (+{len(quality_issues) - 5} more)" if len(quality_issues) > 5 else ""
+    return (
+        f"FINDING QUALITY: {len(quality_issues)} high/critical finding(s) missing required fields. "
+        f"Add evidence and reproduction steps before completing:\n    {sample}{more}"
+    )
+
+
 async def _do_complete(opts):
     global _complete_attempts
     _complete_attempts += 1
@@ -447,22 +484,9 @@ async def _do_complete(opts):
         )
 
     # ── Finding quality blockers ──────────────────────────────────────────────
-    quality_issues: list[str] = []
-    for f in high_findings:
-        missing: list[str] = []
-        if not str(f.get("evidence", "")).strip():
-            missing.append("evidence")
-        if not f.get("reproduction"):
-            missing.append("reproduction")
-        if missing:
-            quality_issues.append(f"[{f['severity'].upper()}] {f['title']}: missing {', '.join(missing)}")
-    if quality_issues:
-        sample = "\n    ".join(quality_issues[:5])
-        more   = f"\n    (+{len(quality_issues) - 5} more)" if len(quality_issues) > 5 else ""
-        blockers.append(
-            f"FINDING QUALITY: {len(quality_issues)} high/critical finding(s) missing required fields. "
-            f"Add evidence and reproduction steps before completing:\n    {sample}{more}"
-        )
+    quality_blocker = _finding_quality_blockers(high_findings)
+    if quality_blocker:
+        blockers.append(quality_blocker)
 
     from core.coverage import get_matrix
     blockers.extend(_coverage_blockers(get_matrix(), ctf_mode=_has_ctf_flag(data)))
