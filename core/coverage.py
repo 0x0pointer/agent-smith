@@ -43,6 +43,14 @@ _lock = asyncio.Lock()
 
 
 # ---------------------------------------------------------------------------
+# Which statuses count as "addressed" for coverage percentage purposes.
+# skipped is intentionally excluded — it is a deferral, not evidence of testing.
+# ---------------------------------------------------------------------------
+
+ADDRESSED_STATUSES: frozenset[str] = frozenset({"tested_clean", "vulnerable", "not_applicable"})
+
+
+# ---------------------------------------------------------------------------
 # Injection types that have known bypass techniques — marking these N/A
 # requires the notes to explain WHY the bypass doesn't apply.
 # ---------------------------------------------------------------------------
@@ -68,7 +76,7 @@ _APPLICABILITY: dict[str, list[str]] = {
     "body_json/default": ["nosqli", "prototype", "mass_assignment", "sqli"],
     "header/default":    ["crlf", "xss", "ssrf", "smuggling"],
     "cookie/default":    ["sqli", "xss", "deserial"],
-    "endpoint/default":  ["cors", "csrf", "security_headers", "rate_limit", "method_tampering", "cache", "jwt", "race"],
+    "endpoint/default":  ["cors", "csrf", "security_headers", "rate_limit", "method_tampering", "cache", "jwt", "race", "bfla"],
 }
 
 # Fallback: if no specific hint matches, use param_type/default
@@ -109,12 +117,13 @@ def _save(data: dict) -> None:
 def _recount(data: dict) -> None:
     """Recompute meta counters from the matrix."""
     cells = data["matrix"]
-    data["meta"]["total_cells"] = len(cells)
-    data["meta"]["tested"] = sum(1 for c in cells if c["status"] in ("tested_clean", "vulnerable"))
-    data["meta"]["in_progress"] = sum(1 for c in cells if c["status"] == "in_progress")
-    data["meta"]["vulnerable"] = sum(1 for c in cells if c["status"] == "vulnerable")
+    data["meta"]["total_cells"]    = len(cells)
+    data["meta"]["tested"]         = sum(1 for c in cells if c["status"] in ("tested_clean", "vulnerable"))
+    data["meta"]["in_progress"]    = sum(1 for c in cells if c["status"] == "in_progress")
+    data["meta"]["vulnerable"]     = sum(1 for c in cells if c["status"] == "vulnerable")
     data["meta"]["not_applicable"] = sum(1 for c in cells if c["status"] == "not_applicable")
-    data["meta"]["skipped"] = sum(1 for c in cells if c["status"] == "skipped")
+    data["meta"]["skipped"]        = sum(1 for c in cells if c["status"] == "skipped")
+    data["meta"]["addressed"]      = sum(1 for c in cells if c["status"] in ADDRESSED_STATUSES)
 
 
 def _normalize_path(path: str) -> str:
@@ -271,12 +280,19 @@ async def update_cell(
 ) -> bool | str:
     """Update a single matrix cell.
 
-    Returns True if updated, False if cell not found, or a warning string
-    if the update was applied but violated an integrity rule.
+    Returns True if updated, False if cell not found, or a warning/rejection string
+    if the update was applied but violated an integrity rule (or was rejected).
+
+    Hard rule: tested_clean and vulnerable require a non-empty tested_by.
     """
     valid = {"pending", "in_progress", "tested_clean", "vulnerable", "not_applicable", "skipped"}
     if status not in valid:
         return False
+    if status in ("tested_clean", "vulnerable") and not tested_by.strip():
+        return (
+            f"REJECTED: status '{status}' requires a non-empty tested_by field. "
+            f"Record the tool used (e.g. tested_by='sqlmap') before marking this cell."
+        )
 
     async with _lock:
         data = _load()
@@ -319,24 +335,37 @@ def _apply_bulk_cell(cell: dict, upd: dict, warnings: list[str]) -> None:
 async def bulk_update(updates: list[dict]) -> dict:
     """Update multiple cells. Each update: {cell_id, status, notes?, finding_id?, tested_by?}.
 
-    Returns {"updated": N, "warnings": [str]} — warnings for integrity violations.
+    Returns {"updated": N, "rejected": N, "warnings": [str]}.
+
+    Hard rules (reject without applying):
+    - tested_clean or vulnerable requires a non-empty tested_by (tool that produced the result).
     """
     valid = {"pending", "in_progress", "tested_clean", "vulnerable", "not_applicable", "skipped"}
+    _TESTED_FINAL = {"tested_clean", "vulnerable"}
 
     async with _lock:
         data = _load()
         cell_map = {c["id"]: c for c in data["matrix"]}
         count = 0
+        rejected = 0
         warnings: list[str] = []
         for upd in updates:
             cid = upd.get("cell_id", "")
-            if upd.get("status", "") not in valid or cid not in cell_map:
+            st  = upd.get("status", "")
+            if st not in valid or cid not in cell_map:
+                continue
+            if st in _TESTED_FINAL and not upd.get("tested_by", "").strip():
+                warnings.append(
+                    f"REJECTED cell {cid}: status '{st}' requires a non-empty tested_by field. "
+                    f"Record the tool used (e.g. tested_by='sqlmap') before marking this cell."
+                )
+                rejected += 1
                 continue
             _apply_bulk_cell(cell_map[cid], upd, warnings)
             count += 1
         _recount(data)
         _save(data)
-    return {"updated": count, "warnings": warnings}
+    return {"updated": count, "rejected": rejected, "warnings": warnings}
 
 
 def get_matrix() -> dict:
