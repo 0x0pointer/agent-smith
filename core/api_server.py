@@ -282,6 +282,38 @@ async def api_clear() -> JSONResponse:
     except Exception:
         pass
 
+    # artifacts/ — raw scanner output files
+    try:
+        artifacts_dir = _REPO_ROOT / "artifacts"
+        if artifacts_dir.exists():
+            for f in artifacts_dir.iterdir():
+                try:
+                    if f.is_file():
+                        f.unlink()
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # threat-model/ — generated HTML/MD reports
+    try:
+        tm_dir = _REPO_ROOT / "threat-model"
+        if tm_dir.exists():
+            for f in tm_dir.iterdir():
+                try:
+                    if f.is_file():
+                        f.unlink()
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # gh-issues.md — exported GitHub issue blocks
+    try:
+        (_REPO_ROOT / "gh-issues.md").unlink(missing_ok=True)
+    except Exception:
+        pass
+
     await _cleanup_tunnels()
     return JSONResponse({"ok": True})
 
