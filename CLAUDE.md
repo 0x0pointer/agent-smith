@@ -86,6 +86,7 @@ Skills are slash commands that contain full structured workflows. In Claude Code
 |---------|---------|-------------|
 | `/pentester` | Full pentest orchestrator — recon → exploitation → report | General web/network pentest request |
 | `/web-exploit` | Deep injection, auth, logic, and business-logic exploitation | Web app confirmed; systematic endpoint testing needed |
+| `/business-logic` | Understanding-first BL testing: BOLA, BFLA, workflow bypass, financial logic, trust boundary, multi-tenant isolation | Financial/SaaS/transactional app; systematic BL coverage needed |
 | `/codebase` | OWASP ASVS 5.0 white-box source code review | Local codebase path provided |
 | `/ai-redteam` | OWASP LLM Top 10 red-team — prompt injection, jailbreaks, data extraction | AI/chatbot/LLM target |
 | `/cloud-security` | AWS/Azure/GCP IAM, storage, serverless posture assessment | Cloud account target |
