@@ -196,10 +196,12 @@ def _sanitize_history(raw: list) -> list[dict]:
     for entry in raw:
         if not isinstance(entry, dict):
             continue
+        reply = entry.get("smith_reply")
         result.append({
             "ts":            str(entry.get("ts", ""))[:50],
             "summary_sent":  str(entry.get("summary_sent", "")),
             "alerts":        [a for a in entry.get("alerts", []) if isinstance(a, dict)][:10],
+            "smith_reply":   str(reply)[:2000] if reply else None,
             "smith_actions": [a for a in entry.get("smith_actions", []) if isinstance(a, dict)][:50],
         })
     return result
@@ -268,12 +270,20 @@ class QADaemon:
         post_existing = _read_qa_state()
         history = _sanitize_history(post_existing.get("history", []))
         prev_cycle_ts = history[-1]["ts"] if history else ""
-        smith_actions = quick_log.read_since(prev_cycle_ts) if prev_cycle_ts else []
+        events_since = quick_log.read_since(prev_cycle_ts) if prev_cycle_ts else []
+
+        # Separate QA_REPLY events (Smith's words) from tool actions
+        smith_reply = " ".join(
+            e["message"] for e in events_since
+            if e.get("type") == "QA_REPLY" and e.get("message")
+        ).strip() or None
+        smith_actions = [e for e in events_since if e.get("type") != "QA_REPLY"]
 
         history.append({
             "ts":            ts_before,
             "summary_sent":  summary,
             "alerts":        alerts,
+            "smith_reply":   smith_reply,
             "smith_actions": smith_actions,
         })
 

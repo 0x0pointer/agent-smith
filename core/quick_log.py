@@ -10,6 +10,7 @@ Entry types:
   SPIDER   — spider completed (TOOL subtype with endpoint count)
   FINDING  — report(action="finding") called
   COVERAGE — coverage matrix updated (endpoint registered or bulk_tested)
+  QA_REPLY — Smith's textual response to QA alerts (session action="qa_reply")
 """
 from __future__ import annotations
 

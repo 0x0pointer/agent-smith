@@ -2008,6 +2008,17 @@
       const narrative = _smithNarrative(actions);
       const bubbleClass = narrative.length ? 'chat-bubble smith' : 'chat-bubble smith-idle';
       const smithDiv = document.createElement('div');
+      // Smith reply bubble — what Smith explicitly said in response to QA alerts
+      const reply = cycle.smith_reply;
+      if (reply) {
+        const replyDiv = document.createElement('div');
+        replyDiv.className = 'chat-bubble smith';
+        replyDiv.innerHTML =
+          `<div class="chat-sender">Smith — reply to QA</div>` +
+          `<div class="chat-narrative">${esc(reply)}</div>`;
+        frag.appendChild(replyDiv);
+      }
+
       smithDiv.className = bubbleClass;
 
       let inner = `<div class="chat-sender">Smith — actions after this QA cycle</div>`;

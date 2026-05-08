@@ -58,7 +58,7 @@ def _effective_tools() -> set[str]:
 async def session(action: str, options: dict | None = None) -> str:
     """Scan lifecycle and infrastructure management.
 
-    action  : start | complete | status | recovery | artifact | set_skill | set_step | start_kali | stop_kali | start_metasploit | stop_metasploit | pull_images | set_codebase
+    action  : start | complete | status | recovery | artifact | qa_reply | set_skill | set_step | start_kali | stop_kali | start_metasploit | stop_metasploit | pull_images | set_codebase
 
     start options:
       target, depth=standard (recon|standard|thorough), scope=[],
@@ -66,6 +66,11 @@ async def session(action: str, options: dict | None = None) -> str:
       model_profile=full (full|medium|small) — controls output verbosity
 
     complete options: notes=
+
+    qa_reply options:
+      message= (your response to the QA agent's alerts — what you acknowledge and what
+                you plan to do. Call this immediately after session(action="status")
+                returns qa_alerts so the QA ↔ Smith conversation log is complete.)
 
     status: returns current scan state (target, tools run, findings, cost)
 
@@ -113,6 +118,8 @@ async def session(action: str, options: dict | None = None) -> str:
         return await _do_pull_images()
     elif action == "set_codebase":
         return _do_set_codebase(opts)
+    elif action == "qa_reply":
+        return await _do_qa_reply(opts)
     elif action == "recovery":
         return _do_recovery()
     elif action == "artifact":
@@ -120,7 +127,7 @@ async def session(action: str, options: dict | None = None) -> str:
     elif action == "pre_chain":
         return _do_pre_chain(opts)
     else:
-        return f"Unknown action '{action}'. Use: start, complete, status, recovery, artifact, pre_chain, set_skill, set_step, start_kali, stop_kali, start_metasploit, stop_metasploit, pull_images, set_codebase"
+        return f"Unknown action '{action}'. Use: start, complete, status, qa_reply, recovery, artifact, pre_chain, set_skill, set_step, start_kali, stop_kali, start_metasploit, stop_metasploit, pull_images, set_codebase"
 
 
 def _do_start(opts):
@@ -424,6 +431,16 @@ async def _do_complete(opts):
     log.note(f"Scan complete — {notes}")
     _complete_attempts = 0
     return f"Scan marked {status}. session.json updated. STOP — do not call any more tools. The scan is done."
+
+
+async def _do_qa_reply(opts):
+    """Log Smith's textual response to QA alerts so the conversation record is complete."""
+    from core.quick_log import quick_log
+    message = str(opts.get("message", "")).strip()
+    if not message:
+        return "qa_reply requires a non-empty message= option."
+    await quick_log.append({"type": "QA_REPLY", "message": message})
+    return "QA reply logged."
 
 
 def _do_status():
