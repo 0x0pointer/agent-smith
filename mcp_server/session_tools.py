@@ -710,8 +710,6 @@ def _do_recovery():
             ),
         }, indent=2)
 
-    summary = cost_tracker.get_summary()
-
     # Coverage matrix: in_progress and pending cells
     from core.coverage import get_matrix
     cov = get_matrix()

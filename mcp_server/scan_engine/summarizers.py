@@ -216,43 +216,45 @@ def _extract_body_signals(body: str, result: SummaryResult) -> None:
 # kali_sqlmap summarizer
 # ---------------------------------------------------------------------------
 
-def _parse_sqlmap_lines(lines: list[str]) -> dict | None:
-    """Parse sqlmap output lines. Returns None if 'not injectable' is detected.
+def _process_sqlmap_line(stripped: str, state: dict) -> bool:
+    """Update state with data from one stripped sqlmap output line.
 
-    Returns a dict with keys: injectable_params, db_type, databases, tables, is_vulnerable.
+    Returns True when the 'not injectable' signal is found (caller should stop).
     """
-    injectable_params: list[str] = []
-    db_type = ""
-    databases: list[str] = []
-    tables: list[str] = []
-    is_vulnerable = False
+    if "all tested parameters do not appear to be injectable" in stripped.lower():
+        return True
+    m = re.match(r"Parameter:\s+(\S+)\s+\((\w+)\)", stripped)
+    if m:
+        state["injectable_params"].append(f"{m.group(1)} ({m.group(2)})")
+    if "is vulnerable" in stripped.lower():
+        state["is_vulnerable"] = True
+    m = re.match(r"back-end DBMS:\s+(.+)", stripped, re.I)
+    if m:
+        state["db_type"] = m.group(1).strip()
+    if re.match(r"\[\*\]\s+\w+", stripped):
+        db_name = stripped.lstrip("[*] ").strip()
+        if db_name and db_name not in state["databases"]:
+            state["databases"].append(db_name)
+    m = re.match(r"\|\s+(\w+)\s+\|", stripped)
+    if m:
+        state["tables"].append(m.group(1))
+    return False
 
+
+def _parse_sqlmap_lines(lines: list[str]) -> dict | None:
+    """Parse sqlmap output lines. Returns None if 'not injectable' is detected."""
+    state: dict = {
+        "injectable_params": [], "db_type": "", "databases": [], "tables": [], "is_vulnerable": False,
+    }
     for line in lines:
-        stripped = line.strip()
-        if "all tested parameters do not appear to be injectable" in stripped.lower():
+        if _process_sqlmap_line(line.strip(), state):
             return None
-        m = re.match(r"Parameter:\s+(\S+)\s+\((\w+)\)", stripped)
-        if m:
-            injectable_params.append(f"{m.group(1)} ({m.group(2)})")
-        if "is vulnerable" in stripped.lower():
-            is_vulnerable = True
-        m = re.match(r"back-end DBMS:\s+(.+)", stripped, re.I)
-        if m:
-            db_type = m.group(1).strip()
-        if re.match(r"\[\*\]\s+\w+", stripped):
-            db_name = stripped.lstrip("[*] ").strip()
-            if db_name and db_name not in databases:
-                databases.append(db_name)
-        m = re.match(r"\|\s+(\w+)\s+\|", stripped)
-        if m:
-            tables.append(m.group(1))
-
     return {
-        "injectable_params": injectable_params,
-        "db_type": db_type,
-        "databases": databases,
-        "tables": tables,
-        "is_vulnerable": is_vulnerable or bool(injectable_params),
+        "injectable_params": state["injectable_params"],
+        "db_type": state["db_type"],
+        "databases": state["databases"],
+        "tables": state["tables"],
+        "is_vulnerable": state["is_vulnerable"] or bool(state["injectable_params"]),
     }
 
 

@@ -164,7 +164,7 @@ def _injection_command_with_payload(inj: str, target: str, path: str, method: st
     return None
 
 
-def _injection_command_endpoint_level(inj: str, url: str, method: str) -> str | None:
+def _injection_command_endpoint_level(inj: str, url: str) -> str | None:
     """Return the tool-call string for endpoint-level injection types (no payload in URL).
 
     Returns None when the injection type is not handled here.
@@ -188,7 +188,7 @@ def _concrete_test_command(inj: str, target: str, path: str, method: str, param:
     result = _injection_command_with_payload(inj, target, path, method, param, param_type)
     if result is not None:
         return result
-    result = _injection_command_endpoint_level(inj, url, method)
+    result = _injection_command_endpoint_level(inj, url)
     if result is not None:
         return result
     # Fallback

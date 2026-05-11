@@ -158,7 +158,6 @@ async def _run(name: str, **kwargs) -> str:
         mount   = os.environ.get("PENTEST_TARGET_PATH", os.getcwd()) if tool.needs_mount else None
         env_vars = {k: os.environ[k] for k in tool.forward_env if k in os.environ} or None
 
-        t_start = time.monotonic()
         try:
             stdout, stderr, _ = await run_container(
                 tool.image, args, timeout=tool.default_timeout,
