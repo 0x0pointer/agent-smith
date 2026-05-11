@@ -1182,3 +1182,26 @@ def test_coverage_gap_financial_endpoint_flags_business_logic():
     sd = {"skill_history": []}
     alerts = _check_coverage_gap(cov, sd)
     assert any("business-logic" in a["message"] for a in alerts)
+
+
+def test_coverage_gap_import_error_returns_empty(monkeypatch):
+    """Exception during classify_endpoint import → returns []."""
+    import sys
+    # Remove core.coverage from sys.modules so the dynamic import triggers
+    # a fresh import, then patch it so it raises AttributeError on access
+    original = sys.modules.get("core.coverage")
+    # Replace core.coverage with a module-like object missing classify_endpoint
+    import types
+    broken = types.ModuleType("core.coverage")
+    # No classify_endpoint attribute → accessing it raises AttributeError
+    sys.modules["core.coverage"] = broken
+    try:
+        from core.qa_agent import _check_coverage_gap
+        cov = {"endpoints": [{"path": "/graphql"}]}
+        result = _check_coverage_gap(cov, {})
+        assert result == []
+    finally:
+        if original is not None:
+            sys.modules["core.coverage"] = original
+        else:
+            sys.modules.pop("core.coverage", None)

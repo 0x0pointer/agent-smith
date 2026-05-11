@@ -711,3 +711,29 @@ def test_open_trigger_gate_known_type_opens_gate(coverage_file):
     result = open_trigger_gate("graphql", "/graphql")
     # Returns the session state dict (not None)
     assert result is not None
+
+
+def test_check_limits_time_exceeded_returns_stop_message(coverage_file):
+    """Time limit exceeded → returns a stop message with TIME LIMIT text."""
+    import core.session
+    from datetime import datetime, timezone, timedelta
+    core.session.start("example.com", depth="recon", max_time_minutes=1)
+    # Wind back the started timestamp so elapsed >> 1 minute
+    core.session._current["started"] = (
+        datetime.now(timezone.utc) - timedelta(minutes=10)
+    ).isoformat()
+    msg = core.session.check_limits(_fake_cost())
+    assert msg is not None
+    assert "TIME LIMIT" in msg
+
+
+def test_remaining_returns_none_for_unlimited_cost_time(coverage_file):
+    """remaining() returns None for cost/time when on thorough preset (unlimited)."""
+    import core.session
+    core.session.start("example.com", depth="thorough")
+    r = core.session.remaining(_fake_cost(calls=5))
+    assert r["cost_remaining_usd"] is None
+    assert r["time_remaining_minutes"] is None
+    assert r["cost_pct"] == 0
+    assert r["time_pct"] == 0
+    assert r["calls_remaining"] == -1  # 0 = unlimited → -1
