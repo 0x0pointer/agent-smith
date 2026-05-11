@@ -133,6 +133,144 @@ def _check_coverage_integrity(summary: str) -> dict | None:
             "message": f"Coverage integrity: {count} tested/vulnerable cells lack tested_by tool"}
 
 
+def _check_endpoint_trigger_gaps(session_data: dict) -> list[dict]:
+    """Fire targeted alerts for every pending trigger gate in the session.
+
+    Unlike _check_gate_alerts (which parses the quick_log summary string),
+    this reads session.json's structured `gates` array directly so it catches
+    gates that were opened mid-scan and never escalated to a summary line.
+    """
+    alerts: list[dict] = []
+    gates = session_data.get("gates", [])
+    satisfied_skills = {e["skill"] for e in session_data.get("skill_history", [])}
+    now = datetime.now(timezone.utc)
+    for gate in gates:
+        if gate.get("status") == "satisfied":
+            continue
+        required = gate.get("required_skills", [])
+        missing   = [s for s in required if s not in satisfied_skills]
+        if not missing:
+            continue
+        try:
+            triggered_at = datetime.fromisoformat(gate["triggered_at"])
+            elapsed = int((now - triggered_at).total_seconds() / 60)
+        except Exception:
+            elapsed = 0
+        urgency = "high" if elapsed >= 15 else "medium"
+        alerts.append({
+            "code":     "ENDPOINT_TRIGGER_GAP",
+            "urgency":  urgency,
+            "blocking": False,
+            "message":  (
+                f"Gate '{gate['id']}' open {elapsed}min — "
+                f"{gate.get('trigger','?')}. "
+                f"Required skills not yet run: {', '.join(f'/{s}' for s in missing)}"
+            ),
+        })
+    return alerts
+
+
+def _check_coverage_gap(coverage_data: dict, session_data: dict) -> list[dict]:
+    """Detect high-value endpoint types that appear in the coverage matrix but
+    have no corresponding skill in skill_history.
+
+    Catches cases where an endpoint was registered + classified (so the trigger
+    gate exists) but the gate check didn't fire because session_data['gates']
+    wasn't populated yet (e.g. first scan cycle).
+    """
+    from core.session import _TRIGGER_MAP
+    # Invert trigger map: endpoint_type -> required_skill
+    _TYPE_TO_SKILL: dict[str, str] = {
+        ep_type: entry["required_skills"][0]
+        for ep_type, entry in _TRIGGER_MAP.items()
+        if entry.get("required_skills")
+    }
+
+    endpoints = coverage_data.get("endpoints", [])
+    if not endpoints:
+        return []
+
+    try:
+        from core.coverage import classify_endpoint
+    except Exception:
+        return []
+
+    skill_history_skills = {e["skill"] for e in session_data.get("skill_history", [])}
+    missing_by_type: dict[str, list[str]] = {}
+    for ep in endpoints:
+        path = ep.get("path", "")
+        ep_type = classify_endpoint(path)
+        if not ep_type or ep_type not in _TYPE_TO_SKILL:
+            continue
+        required_skill = _TYPE_TO_SKILL[ep_type]
+        if required_skill not in skill_history_skills:
+            missing_by_type.setdefault(ep_type, []).append(path)
+
+    alerts: list[dict] = []
+    for ep_type, paths in missing_by_type.items():
+        skill = _TYPE_TO_SKILL[ep_type]
+        sample = paths[:3]
+        alerts.append({
+            "code":     "COVERAGE_GAP",
+            "urgency":  "high",
+            "blocking": False,
+            "message":  (
+                f"Coverage gap: {len(paths)} {ep_type} endpoint(s) found "
+                f"({', '.join(sample)}) but /{skill} skill not yet run"
+            ),
+        })
+    return alerts
+
+
+def _check_injection_breadth(coverage_data: dict) -> dict | None:
+    """Fire when a text parameter has sqli cells but is missing xss/ssti/ssrf/cmdi cells.
+
+    This catches two failure modes:
+    1. Endpoint registered with wrong param_type (e.g. body_json before the applicability fix).
+    2. Agent bulk-marked non-sqli injection types as N/A without testing them.
+
+    Only fires when sqli cells exist AND at least one of the four breadth types is entirely
+    absent (no cell of any status) for the same endpoint+param combination.
+    """
+    _BREADTH_REQUIRED = {"xss", "ssti", "ssrf", "cmdi"}
+    _TEXT_PARAM_TYPES = {"query", "body_form", "body_json", "path", "header", "cookie"}
+
+    matrix = coverage_data.get("matrix", [])
+    if not matrix:
+        return None
+
+    # Group cells by (endpoint_id, param) for text-type params
+    from collections import defaultdict
+    by_param: dict[tuple, dict[str, list]] = defaultdict(lambda: defaultdict(list))
+    for cell in matrix:
+        if cell.get("param_type") in _TEXT_PARAM_TYPES and cell.get("param") != "_endpoint":
+            key = (cell["endpoint_id"], cell["param"])
+            by_param[key][cell["injection_type"]].append(cell)
+
+    gap_params: list[str] = []
+    for (ep_id, param), inj_map in by_param.items():
+        if "sqli" not in inj_map:
+            continue  # no sqli cell — not a text param we care about
+        missing = _BREADTH_REQUIRED - set(inj_map.keys())
+        if missing:
+            gap_params.append(f"{param} (missing: {', '.join(sorted(missing))})")
+
+    if not gap_params:
+        return None
+
+    sample = "; ".join(gap_params[:4])
+    more = f" (+{len(gap_params) - 4} more)" if len(gap_params) > 4 else ""
+    return {
+        "code": "INJECTION_BREADTH_GAP",
+        "urgency": "high",
+        "blocking": False,
+        "message": (
+            f"Injection breadth gap: {len(gap_params)} param(s) have sqli cells but "
+            f"are missing xss/ssti/ssrf/cmdi cells. Re-register these endpoints so all "
+            f"injection types are auto-generated, or add the missing cells manually: "
+            f"{sample}{more}"
+        ),
+    }
 def _check_rce_gate_alert(gate_info: str, summary: str) -> dict | None:
     if "rce" not in gate_info.lower():
         return None
@@ -172,11 +310,13 @@ def _deterministic_qa_checks(
     summary: str,
     findings_data: dict,
     coverage_data: dict,
+    session_data: dict | None = None,
 ) -> list[dict]:
     """Rule-based checks over the summary text and structured state.
 
     Returns a list of alert dicts: {code, urgency, blocking, message}.
     """
+    sd = session_data or {}
     checks = [
         _check_scope_drift(summary),
         _check_coverage_stall(summary),
@@ -186,9 +326,12 @@ def _deterministic_qa_checks(
         _check_tool_inactivity(summary),
         _check_bulk_marking(summary),
         _check_coverage_integrity(summary),
+        _check_injection_breadth(coverage_data),
     ]
     alerts = [c for c in checks if c is not None]
     alerts.extend(_check_gate_alerts(summary))
+    alerts.extend(_check_endpoint_trigger_gaps(sd))
+    alerts.extend(_check_coverage_gap(coverage_data, sd))
     return alerts
 
 
@@ -414,9 +557,10 @@ class QADaemon:
 
         findings_data = _load_json(_FINDINGS_FILE)
         coverage_data = _load_json(_COVERAGE_FILE)
+        session_data  = _load_json(_SESSION_FILE)
 
         # Layer 1: deterministic checks — always run, no LLM cost
-        determ_alerts = _deterministic_qa_checks(summary, findings_data, coverage_data)
+        determ_alerts = _deterministic_qa_checks(summary, findings_data, coverage_data, session_data)
 
         # Layer 2: semantic LLM review — only when there are high/critical findings
         finding_text    = _format_findings_for_semantic_review(findings_data)

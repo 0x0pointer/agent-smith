@@ -990,3 +990,218 @@ async def test_run_calls_cycle_and_swallows_exceptions(tmp_path, monkeypatch):
             pass
 
     assert call_count == 2
+
+
+# ── _check_injection_breadth ──────────────────────────────────────────────────
+
+def _make_cell(ep_id, param, param_type, injection_type, status="pending"):
+    return {
+        "id": f"cell-{ep_id}-{param}-{injection_type}",
+        "endpoint_id": ep_id,
+        "param": param,
+        "param_type": param_type,
+        "injection_type": injection_type,
+        "status": status,
+    }
+
+
+def test_injection_breadth_no_matrix():
+    result = core.qa_agent._check_injection_breadth({"matrix": []})
+    assert result is None
+
+
+def test_injection_breadth_no_sqli_cells():
+    """Params without sqli cells are ignored."""
+    matrix = [_make_cell("ep1", "q", "query", "xss")]
+    result = core.qa_agent._check_injection_breadth({"matrix": matrix})
+    assert result is None
+
+
+def test_injection_breadth_full_coverage():
+    """Param has sqli + all four breadth types — no alert."""
+    matrix = [
+        _make_cell("ep1", "q", "query", "sqli"),
+        _make_cell("ep1", "q", "query", "xss"),
+        _make_cell("ep1", "q", "query", "ssti"),
+        _make_cell("ep1", "q", "query", "ssrf"),
+        _make_cell("ep1", "q", "query", "cmdi"),
+    ]
+    result = core.qa_agent._check_injection_breadth({"matrix": matrix})
+    assert result is None
+
+
+def test_injection_breadth_missing_types():
+    """Param has sqli but is missing xss/ssti/ssrf/cmdi — alert fires."""
+    matrix = [_make_cell("ep1", "username", "body_json", "sqli")]
+    result = core.qa_agent._check_injection_breadth({"matrix": matrix})
+    assert result is not None
+    assert result["code"] == "INJECTION_BREADTH_GAP"
+    assert result["urgency"] == "high"
+    assert "username" in result["message"]
+    assert "xss" in result["message"]
+
+
+def test_injection_breadth_endpoint_param_skipped():
+    """_endpoint params are never checked for breadth."""
+    matrix = [
+        {"id": "c1", "endpoint_id": "ep1", "param": "_endpoint",
+         "param_type": "endpoint", "injection_type": "sqli", "status": "pending"},
+    ]
+    result = core.qa_agent._check_injection_breadth({"matrix": matrix})
+    assert result is None
+
+
+def test_injection_breadth_partial_missing():
+    """Alert message lists which types are missing."""
+    matrix = [
+        _make_cell("ep1", "id", "query", "sqli"),
+        _make_cell("ep1", "id", "query", "xss"),
+        # missing ssti, ssrf, cmdi
+    ]
+    result = core.qa_agent._check_injection_breadth({"matrix": matrix})
+    assert result is not None
+    assert "ssti" in result["message"] or "ssrf" in result["message"]
+
+
+# ---------------------------------------------------------------------------
+# _check_endpoint_trigger_gaps
+# ---------------------------------------------------------------------------
+
+from core.qa_agent import _check_endpoint_trigger_gaps, _check_coverage_gap
+from datetime import datetime, timezone, timedelta
+
+
+def _gate(gid, required, status="pending", triggered_at=None, trigger="api endpoint"):
+    return {
+        "id": gid,
+        "status": status,
+        "required_skills": required,
+        "triggered_at": triggered_at or datetime.now(timezone.utc).isoformat(),
+        "trigger": trigger,
+    }
+
+
+def test_trigger_gaps_no_gates():
+    assert _check_endpoint_trigger_gaps({}) == []
+
+
+def test_trigger_gaps_satisfied_gate_skipped():
+    sd = {"gates": [_gate("g1", ["api-security"], status="satisfied")], "skill_history": []}
+    assert _check_endpoint_trigger_gaps(sd) == []
+
+
+def test_trigger_gaps_all_skills_satisfied():
+    sd = {
+        "gates": [_gate("g1", ["api-security"])],
+        "skill_history": [{"skill": "api-security"}],
+    }
+    assert _check_endpoint_trigger_gaps(sd) == []
+
+
+def test_trigger_gaps_missing_skill_fires_alert():
+    sd = {
+        "gates": [_gate("g1", ["api-security"])],
+        "skill_history": [],
+    }
+    alerts = _check_endpoint_trigger_gaps(sd)
+    assert len(alerts) == 1
+    assert alerts[0]["code"] == "ENDPOINT_TRIGGER_GAP"
+    assert "/api-security" in alerts[0]["message"]
+
+
+def test_trigger_gaps_elapsed_over_15_is_high():
+    old_time = (datetime.now(timezone.utc) - timedelta(minutes=20)).isoformat()
+    sd = {
+        "gates": [_gate("g1", ["credential-audit"], triggered_at=old_time)],
+        "skill_history": [],
+    }
+    alerts = _check_endpoint_trigger_gaps(sd)
+    assert alerts[0]["urgency"] == "high"
+
+
+def test_trigger_gaps_elapsed_under_15_is_medium():
+    recent = datetime.now(timezone.utc).isoformat()
+    sd = {
+        "gates": [_gate("g1", ["credential-audit"], triggered_at=recent)],
+        "skill_history": [],
+    }
+    alerts = _check_endpoint_trigger_gaps(sd)
+    assert alerts[0]["urgency"] == "medium"
+
+
+def test_trigger_gaps_bad_timestamp_defaults_to_zero():
+    sd = {
+        "gates": [{"id": "g1", "status": "pending", "required_skills": ["web-exploit"],
+                   "triggered_at": "not-a-date", "trigger": "upload"}],
+        "skill_history": [],
+    }
+    alerts = _check_endpoint_trigger_gaps(sd)
+    assert len(alerts) == 1
+    assert alerts[0]["urgency"] == "medium"  # elapsed=0 < 15
+
+
+# ---------------------------------------------------------------------------
+# _check_coverage_gap
+# ---------------------------------------------------------------------------
+
+def test_coverage_gap_no_endpoints():
+    assert _check_coverage_gap({"endpoints": []}, {}) == []
+
+
+def test_coverage_gap_unclassified_endpoint_ignored():
+    cov = {"endpoints": [{"path": "/static/image.png"}]}
+    assert _check_coverage_gap(cov, {}) == []
+
+
+def test_coverage_gap_skill_already_run():
+    cov = {"endpoints": [{"path": "/graphql"}]}
+    sd = {"skill_history": [{"skill": "api-security"}]}
+    assert _check_coverage_gap(cov, sd) == []
+
+
+def test_coverage_gap_skill_missing_fires_alert():
+    cov = {"endpoints": [{"path": "/graphql"}]}
+    sd = {"skill_history": []}
+    alerts = _check_coverage_gap(cov, sd)
+    assert len(alerts) == 1
+    assert alerts[0]["code"] == "COVERAGE_GAP"
+    assert "api-security" in alerts[0]["message"]
+
+
+def test_coverage_gap_multiple_same_type_grouped():
+    cov = {"endpoints": [{"path": "/graphql"}, {"path": "/graph/query"}]}
+    sd = {"skill_history": []}
+    alerts = _check_coverage_gap(cov, sd)
+    # Both are graphql type — grouped into one alert
+    assert len(alerts) == 1
+    assert "2 graphql" in alerts[0]["message"]
+
+
+def test_coverage_gap_financial_endpoint_flags_business_logic():
+    cov = {"endpoints": [{"path": "/api/payment"}]}
+    sd = {"skill_history": []}
+    alerts = _check_coverage_gap(cov, sd)
+    assert any("business-logic" in a["message"] for a in alerts)
+
+
+def test_coverage_gap_import_error_returns_empty(monkeypatch):
+    """Exception during classify_endpoint import → returns []."""
+    import sys
+    # Remove core.coverage from sys.modules so the dynamic import triggers
+    # a fresh import, then patch it so it raises AttributeError on access
+    original = sys.modules.get("core.coverage")
+    # Replace core.coverage with a module-like object missing classify_endpoint
+    import types
+    broken = types.ModuleType("core.coverage")
+    # No classify_endpoint attribute → accessing it raises AttributeError
+    sys.modules["core.coverage"] = broken
+    try:
+        from core.qa_agent import _check_coverage_gap
+        cov = {"endpoints": [{"path": "/graphql"}]}
+        result = _check_coverage_gap(cov, {})
+        assert result == []
+    finally:
+        if original is not None:
+            sys.modules["core.coverage"] = original
+        else:
+            sys.modules.pop("core.coverage", None)

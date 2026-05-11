@@ -100,6 +100,11 @@ async def _handle_spider(target, flags, options):
     import json as _json
 
     mode = options.get("mode", "fast")
+    # Auto-upgrade to playwright for thorough scans — katana misses JS-rendered routes
+    if mode == "fast" and scan_session.get() and scan_session.get().get("depth") == "thorough":
+        mode = "playwright"
+        log.note("spider: auto-upgraded mode=fast → playwright (session depth=thorough)")
+
     depth = str(max(1, options.get("depth", 3)))
     timeout = options.get("timeout", 900)
 

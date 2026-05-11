@@ -102,11 +102,14 @@ Skills are slash commands that contain full structured workflows. In Claude Code
 | `/metasploit` | Exploit validation and exploitation via Metasploit Framework | CVE to exploit; need controlled exploitation |
 | `/reverse-shell` | Reverse shell payload generation and listener management | Need shell on target system |
 | `/analyze-cve` | CVE exploitability analysis, code path tracing, Burp PoC generation | Known CVE in a dependency |
-| `/threat-modeling` | PASTA framework + 4-question threat model | Architecture or design review |
 | `/aikido-triage` | Triage Aikido security CSV against local codebase; verdict each finding | Aikido CSV scan results provided |
-| `/gh-export` | Format all confirmed findings as GitHub issue markdown blocks | End of pentest; ready to file issues |
-| `/remediate` | Fix vulnerabilities in source code | Post-finding code remediation needed |
+| `/gh-export` | Format all confirmed findings as GitHub issue markdown blocks | **User request only** |
+| `/remediate` | Fix vulnerabilities in source code | **User request only** |
+| `/threat-modeling` | PASTA framework + 4-question threat model | **User request only** |
+| `/report` | Generate a styled PDF pentest report from findings.json | **User request only** |
 | `/request-cves` | Generate MITRE CVE request packages and GitHub Security Advisory drafts | Novel vulnerability discovered; need CVE disclosure |
+
+**NEVER auto-invoke `/report`, `/gh-export`, `/remediate`, or `/threat-modeling` — these are user-triggered only. Do not invoke them at the end of a scan unless the user explicitly asks.**
 
 ## Project layout
 - `mcp_server/__main__.py` — entry point, crash logging, module imports

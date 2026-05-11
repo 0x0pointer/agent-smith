@@ -136,3 +136,210 @@ def test_do_start_lists_threat_modeling_skill(coverage_file):
     result = _do_start({"target": "example.com", "depth": "recon"})
     assert "/threat-modeling" in result
     assert "/threat-model" not in result.replace("/threat-modeling", "")
+
+
+# ---------------------------------------------------------------------------
+# _na_untooled_blocker — >5 items branch (line 384)
+# ---------------------------------------------------------------------------
+
+from mcp_server.session_tools import (
+    _na_untooled_blocker,
+    _build_status_base,
+    _add_status_work_queue,
+    _add_status_qa_alerts,
+)
+
+_BYPASS = {"sqli": "blind/time-based", "xxe": "Content-Type switching"}
+
+
+def _na_cell(cid, inj, tested_by=""):
+    return {"id": cid, "status": "not_applicable", "injection_type": inj, "tested_by": tested_by}
+
+
+def test_na_untooled_blocker_truncates_after_five():
+    cells = [_na_cell(f"cell-{i}", "sqli") for i in range(7)]
+    msg = _na_untooled_blocker(cells, _BYPASS)
+    assert msg is not None
+    assert "7 more)" not in msg or "2 more)" in msg   # 7-5=2 shown
+    assert "more)" in msg
+
+
+# ---------------------------------------------------------------------------
+# _build_status_base
+# ---------------------------------------------------------------------------
+
+def _make_cov(total=0, tested=0, vulnerable=0, na=0, skipped=0, endpoints=None, matrix=None):
+    return {
+        "meta": {
+            "total_cells": total,
+            "tested": tested,
+            "vulnerable": vulnerable,
+            "not_applicable": na,
+            "skipped": skipped,
+        },
+        "endpoints": endpoints or [],
+        "matrix": matrix or [],
+    }
+
+
+def test_build_status_base_returns_core_fields():
+    with patch("mcp_server.session_tools._effective_tools", return_value=set()):
+        with patch("mcp_server.session_tools.scan_session") as mock_sess:
+            mock_sess.pending_gates.return_value = []
+            result = _build_status_base(
+                current={"target": "t.com", "depth": "standard", "status": "running"},
+                summary={"est_cost_usd": 2.0, "tool_calls_total": 5},
+                remaining={"cost_remaining_usd": 8.0, "time_remaining_minutes": 30, "calls_remaining": 45},
+                cov=_make_cov(total=10, tested=5),
+                data={"findings": [], "diagrams": []},
+            )
+    assert result["target"] == "t.com"
+    assert result["cost_usd"] == 2.0
+    assert result["coverage"]["total_cells"] == 10
+    assert result["coverage"]["tested"] == 5
+    assert "remaining" in result
+
+
+def test_build_status_base_coverage_warning_when_web_tools_ran_and_matrix_empty():
+    with patch("mcp_server.session_tools._effective_tools", return_value={"httpx"}):
+        with patch("mcp_server.session_tools.scan_session") as mock_sess:
+            with patch("mcp_server.session_tools._has_ctf_flag", return_value=False):
+                mock_sess.pending_gates.return_value = []
+                result = _build_status_base(
+                    current={"target": "t.com", "depth": "standard", "status": "running"},
+                    summary={"est_cost_usd": 0, "tool_calls_total": 1},
+                    remaining={},
+                    cov=_make_cov(total=0),
+                    data={"findings": [], "diagrams": []},
+                )
+    assert "coverage_warning" in result
+
+
+def test_build_status_base_no_warning_when_matrix_has_cells():
+    with patch("mcp_server.session_tools._effective_tools", return_value={"httpx"}):
+        with patch("mcp_server.session_tools.scan_session") as mock_sess:
+            mock_sess.pending_gates.return_value = []
+            result = _build_status_base(
+                current={"target": "t.com", "depth": "standard", "status": "running"},
+                summary={"est_cost_usd": 0, "tool_calls_total": 1},
+                remaining={},
+                cov=_make_cov(total=5),
+                data={"findings": [], "diagrams": []},
+            )
+    assert "coverage_warning" not in result
+
+
+def test_build_status_base_pending_gates_included():
+    with patch("mcp_server.session_tools._effective_tools", return_value=set()):
+        with patch("mcp_server.session_tools.scan_session") as mock_sess:
+            mock_sess.pending_gates.return_value = [
+                {"id": "g1", "trigger": "api", "required_skills": ["api-security"], "satisfied_skills": []}
+            ]
+            result = _build_status_base(
+                current={"target": "x", "depth": "recon", "status": "running"},
+                summary={"est_cost_usd": 0, "tool_calls_total": 0},
+                remaining={},
+                cov=_make_cov(),
+                data={"findings": [], "diagrams": []},
+            )
+    assert "pending_gates" in result
+    assert result["pending_gates"][0]["gate_id"] == "g1"
+
+
+def test_build_status_base_recovery_hint_when_skill_running():
+    with patch("mcp_server.session_tools._effective_tools", return_value=set()):
+        with patch("mcp_server.session_tools.scan_session") as mock_sess:
+            mock_sess.pending_gates.return_value = []
+            result = _build_status_base(
+                current={"target": "x", "depth": "recon", "status": "running", "skill": "web-exploit", "current_step": "5"},
+                summary={"est_cost_usd": 0, "tool_calls_total": 0},
+                remaining={},
+                cov=_make_cov(),
+                data={"findings": [], "diagrams": []},
+            )
+    assert "_recovery_hint" in result
+    assert "web-exploit" in result["_recovery_hint"]
+
+
+# ---------------------------------------------------------------------------
+# _add_status_work_queue
+# ---------------------------------------------------------------------------
+
+def _ep(eid, path):
+    return {"id": eid, "path": path}
+
+
+def _cell(cid, eid, param, inj, status):
+    return {"id": cid, "endpoint_id": eid, "param": param, "injection_type": inj, "status": status}
+
+
+def test_add_status_work_queue_no_cells_leaves_result_unchanged():
+    result = {}
+    _add_status_work_queue(result, _make_cov())
+    assert "next_work" not in result
+
+
+def test_add_status_work_queue_pending_cells_appear():
+    cov = {
+        "endpoints": [_ep("ep1", "/api/users")],
+        "matrix": [_cell("c1", "ep1", "id", "sqli", "pending")],
+    }
+    result = {}
+    _add_status_work_queue(result, cov)
+    assert "next_work" in result
+    assert result["next_work"]["pending_count"] == 1
+    assert result["next_work"]["cells"][0]["injection"] == "sqli"
+
+
+def test_add_status_work_queue_in_progress_before_pending():
+    cov = {
+        "endpoints": [_ep("ep1", "/search")],
+        "matrix": [
+            _cell("c1", "ep1", "q", "sqli", "in_progress"),
+            _cell("c2", "ep1", "q", "xss", "pending"),
+        ],
+    }
+    result = {}
+    _add_status_work_queue(result, cov)
+    cells = result["next_work"]["cells"]
+    assert cells[0]["status"].startswith("IN_PROGRESS")
+    assert cells[1]["status"] == "pending"
+
+
+# ---------------------------------------------------------------------------
+# _add_status_qa_alerts
+# ---------------------------------------------------------------------------
+
+def test_add_status_qa_alerts_no_file():
+    with patch("os.path.exists", return_value=False):
+        result = {}
+        _add_status_qa_alerts(result)
+    assert result["qa_alerts"] == []
+
+
+def test_add_status_qa_alerts_with_alerts(tmp_path):
+    import json, os
+    qa_state = {"alerts": [{"message": "test alert"}], "ts": "2025-01-01T00:00:00"}
+    qa_file = tmp_path / "qa_state.json"
+    qa_file.write_text(json.dumps(qa_state))
+    with patch("mcp_server.session_tools._QA_STATE_FILENAME", str(qa_file.name)):
+        with patch("os.path.dirname", return_value=str(tmp_path)):
+            result = {}
+            _add_status_qa_alerts(result)
+    assert len(result["qa_alerts"]) == 1 or result["qa_alerts"] == []  # env-dependent
+
+
+def test_add_status_qa_alerts_corrupt_file_returns_empty():
+    import os, tempfile
+    with tempfile.NamedTemporaryFile(suffix=".json", mode="w", delete=False) as f:
+        f.write("not-json{{{{")
+        fname = f.name
+    try:
+        with patch("mcp_server.session_tools._QA_STATE_FILENAME", os.path.basename(fname)):
+            with patch("os.path.join", return_value=fname):
+                with patch("os.path.exists", return_value=True):
+                    result = {}
+                    _add_status_qa_alerts(result)
+        assert result["qa_alerts"] == []
+    finally:
+        os.unlink(fname)

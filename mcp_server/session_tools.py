@@ -212,14 +212,16 @@ def _do_start(opts):
         model_profile=opts.get("model_profile", "full"),
     )
     lim = cfg["limits"]
+    cost_str  = f"${lim['max_cost_usd']:.2f}" if lim['max_cost_usd'] is not None else "unlimited"
+    time_str  = f"{lim['max_time_minutes']}min" if lim['max_time_minutes'] is not None else "unlimited"
+    call_limit_str = f"{lim['max_tool_calls']} tool calls" if lim['max_tool_calls'] > 0 else "unlimited"
     log.note(
         f"Scan started — target={target}  depth={depth}  "
-        f"limits: ${lim['max_cost_usd']} / {lim['max_time_minutes']}min / {lim['max_tool_calls']} calls"
+        f"limits: {cost_str} / {time_str} / {call_limit_str}"
     )
-    call_limit_str = f"{lim['max_tool_calls']} tool calls" if lim['max_tool_calls'] > 0 else "unlimited"
     lines = [
         "Scan started.",
-        f"  Target: {target} | Depth: {cfg['depth_label']} | Limits: ${lim['max_cost_usd']}/{lim['max_time_minutes']}min/{call_limit_str}",
+        f"  Target: {target} | Depth: {cfg['depth_label']} | Limits: {cost_str}/{time_str}/{call_limit_str}",
         "",
         "EXECUTE NOW (do not ask questions, do not output text):",
         "  report(action='dashboard', data={'port': 5000})",
@@ -356,22 +358,62 @@ def _coverage_blockers(cov: dict, ctf_mode: bool = False) -> list[str]:
     if skipped_blocker:
         blockers.append(skipped_blocker)
 
-    na_untooled = [
-        c for c in all_cells
-        if c["status"] == "not_applicable"
-        and not c.get("tested_by")
-        and c.get("injection_type") in _BYPASS_REQUIRED_TYPES
-    ]
-    if na_untooled:
-        sample = ", ".join(f"{c['id']} ({c['injection_type']})" for c in na_untooled[:5])
-        if len(na_untooled) > 5:
-            sample += f" ... ({len(na_untooled) - 5} more)"
-        blockers.append(
-            f"INTEGRITY: {len(na_untooled)} injection-type N/A cell(s) have no tested_by tool "
-            f"recorded: {sample}. Run the bypass technique and record tested_by before marking N/A."
-        )
+    na_blocker = _na_untooled_blocker(all_cells, _BYPASS_REQUIRED_TYPES)
+    if na_blocker:
+        blockers.append(na_blocker)
+
+    breadth_blocker = _injection_breadth_blocker(all_cells, coverage_enforced)
+    if breadth_blocker:
+        blockers.append(breadth_blocker)
 
     return blockers
+
+
+def _na_untooled_blocker(cells: list[dict], bypass_types: dict) -> str | None:
+    """Return a blocker string if any bypass-type N/A cells lack a tested_by tool."""
+    na_untooled = [
+        c for c in cells
+        if c["status"] == "not_applicable"
+        and not c.get("tested_by")
+        and c.get("injection_type") in bypass_types
+    ]
+    if not na_untooled:
+        return None
+    sample = ", ".join(f"{c['id']} ({c['injection_type']})" for c in na_untooled[:5])
+    if len(na_untooled) > 5:
+        sample += f" ... ({len(na_untooled) - 5} more)"
+    return (
+        f"INTEGRITY: {len(na_untooled)} injection-type N/A cell(s) have no tested_by tool "
+        f"recorded: {sample}. Run the bypass technique and record tested_by before marking N/A."
+    )
+
+
+def _injection_breadth_blocker(cells: list[dict], coverage_enforced: bool) -> str | None:
+    """Return a blocker if text params have sqli cells but no xss/ssti/ssrf/cmdi cells."""
+    _BREADTH_REQUIRED = {"xss", "ssti", "ssrf", "cmdi"}
+    _TEXT_PARAM_TYPES = {"query", "body_form", "body_json", "path", "header", "cookie"}
+    from collections import defaultdict
+    by_param: dict[tuple, set] = defaultdict(set)
+    for c in cells:
+        if c.get("param_type") in _TEXT_PARAM_TYPES and c.get("param") != "_endpoint":
+            by_param[(c["endpoint_id"], c["param"])].add(c["injection_type"])
+    breadth_gaps: list[str] = []
+    for (_ep_id, param), inj_types in by_param.items():
+        if "sqli" not in inj_types:
+            continue
+        missing = _BREADTH_REQUIRED - inj_types
+        if missing:
+            breadth_gaps.append(f"'{param}' (missing: {', '.join(sorted(missing))})")
+    if not breadth_gaps or not coverage_enforced:
+        return None
+    sample = "; ".join(breadth_gaps[:5])
+    more = f" (+{len(breadth_gaps) - 5} more)" if len(breadth_gaps) > 5 else ""
+    return (
+        f"INJECTION BREADTH: {len(breadth_gaps)} text param(s) have sqli cells but no "
+        f"xss/ssti/ssrf/cmdi cells — these injection types were never registered for these params. "
+        f"Re-register the endpoint(s) or add the missing cells with report(action='coverage'): "
+        f"{sample}{more}"
+    )
 
 
 def _suspect_na_cells(cells: list[dict], bypass_types: dict) -> list[str]:
@@ -547,8 +589,25 @@ def _do_status():
     data = findings_store._load()
     current = scan_session.get() or {}
     remaining = scan_session.remaining(summary) if current else {}
+    from core.coverage import get_matrix
+    cov = get_matrix()
+    result = _build_status_base(current, summary, remaining, cov, data)
+    _add_status_work_queue(result, cov)
+    _add_status_qa_alerts(result)
+    return json.dumps(result, indent=2)
+
+
+def _build_status_base(
+    current: dict,
+    summary: dict,
+    remaining: dict,
+    cov: dict,
+    data: dict,
+) -> dict:
+    """Build the core status dict (base fields, coverage, gates, recovery hint)."""
     all_tools = sorted(_effective_tools())
-    result = {
+    meta = cov.get("meta", {})
+    result: dict = {
         "target": current.get("target", ""),
         "depth": current.get("depth", ""),
         "status": current.get("status", ""),
@@ -559,27 +618,17 @@ def _do_status():
         "diagrams_count": len(data.get("diagrams", [])),
         "cost_usd": summary.get("est_cost_usd", 0),
         "tool_calls": summary.get("tool_calls_total", 0),
+        "coverage": {
+            "total_cells": meta.get("total_cells", 0),
+            "tested": meta.get("tested", 0),
+            "vulnerable": meta.get("vulnerable", 0),
+            "not_applicable": meta.get("not_applicable", 0),
+            "skipped": meta.get("skipped", 0),
+            "endpoints": len(cov.get("endpoints", [])),
+        },
     }
-    # Coverage matrix summary
-    from core.coverage import get_matrix
-    cov = get_matrix()
-    meta = cov.get("meta", {})
-    result["coverage"] = {
-        "total_cells": meta.get("total_cells", 0),
-        "tested": meta.get("tested", 0),
-        "vulnerable": meta.get("vulnerable", 0),
-        "not_applicable": meta.get("not_applicable", 0),
-        "skipped": meta.get("skipped", 0),
-        "endpoints": len(cov.get("endpoints", [])),
-    }
-    # Mid-scan warning when the matrix is empty but web work has happened
-    # — only shown when not in CTF mode (CTF runs intentionally skip the matrix).
     web_work_done = any(t in _effective_tools() for t in ("httpx", "spider", "ffuf", "nuclei"))
-    if (
-        meta.get("total_cells", 0) == 0
-        and web_work_done
-        and not _has_ctf_flag(data)
-    ):
+    if meta.get("total_cells", 0) == 0 and web_work_done and not _has_ctf_flag(data):
         result["coverage_warning"] = (
             "MATRIX EMPTY: web tools have run but no endpoints are registered. "
             "Register every discovered endpoint with report(action='coverage', "
@@ -594,7 +643,6 @@ def _do_status():
             "time_min": remaining.get("time_remaining_minutes", 0),
             "calls": remaining.get("calls_remaining", -1),
         }
-    # Pending gates
     unsatisfied = scan_session.pending_gates()
     if unsatisfied:
         result["pending_gates"] = [
@@ -605,7 +653,6 @@ def _do_status():
             }
             for g in unsatisfied
         ]
-
     if current.get("skill") and current.get("status") == "running":
         step = current.get("current_step", "")
         step_msg = f" Resume at step: {step}." if step else ""
@@ -613,22 +660,66 @@ def _do_status():
             f"If you lost context, re-invoke the /{current['skill']} skill "
             f"to reload its workflow.{step_msg}"
         )
+    return result
 
-    # QA alerts — injected from qa_state.json so Smith can self-correct
+
+def _add_status_work_queue(result: dict, cov: dict) -> None:
+    """Append next_work queue to the status result dict (in-place)."""
+    all_cells = cov.get("matrix", [])
+    ep_map = {ep["id"]: ep["path"] for ep in cov.get("endpoints", [])}
+    pending_cells = [c for c in all_cells if c["status"] == "pending"]
+    in_progress_cells = [c for c in all_cells if c["status"] == "in_progress"]
+    if not in_progress_cells and not pending_cells:
+        return
+    queue: list[dict] = []
+    for c in in_progress_cells[:3]:
+        queue.append({
+            "cell_id": c["id"],
+            "endpoint": ep_map.get(c["endpoint_id"], "?"),
+            "param": c["param"],
+            "injection": c["injection_type"],
+            "status": "IN_PROGRESS — resume this test first",
+        })
+    for c in pending_cells[:5]:
+        queue.append({
+            "cell_id": c["id"],
+            "endpoint": ep_map.get(c["endpoint_id"], "?"),
+            "param": c["param"],
+            "injection": c["injection_type"],
+            "status": "pending",
+        })
+    result["next_work"] = {
+        "instruction": (
+            "Test these cells systematically. Mark each in_progress BEFORE running any tool, "
+            "then tested_clean/vulnerable when done. This is the primary work queue — "
+            "do NOT skip to session(action='complete') while cells remain pending."
+        ),
+        "in_progress_count": len(in_progress_cells),
+        "pending_count": len(pending_cells),
+        "cells": queue,
+    }
+
+
+def _add_status_qa_alerts(result: dict) -> None:
+    """Append QA alerts from qa_state.json to the status result dict (in-place)."""
     import os as _os
     _qa_path = _os.path.join(_os.path.dirname(_os.path.dirname(__file__)), _QA_STATE_FILENAME)
     try:
         if _os.path.exists(_qa_path):
             with open(_qa_path) as _fh:
                 _qa = json.loads(_fh.read())
-            result["qa_alerts"] = _qa.get("alerts", [])
+            _alerts = _qa.get("alerts", [])
+            result["qa_alerts"] = _alerts
             result["qa_last_check"] = _qa.get("ts", "")
+            if _alerts:
+                result["qa_instruction"] = (
+                    "REQUIRED: call session(action='qa_reply', options={'message': '<your response>'}) "
+                    "NOW — acknowledge each alert and state what you will do. Do this before any other tool call."
+                )
         else:
             result["qa_alerts"] = []
     except Exception:
         result["qa_alerts"] = []
-
-    return json.dumps(result, indent=2)
 
 
 _INJECTION_TOOL_MAP = {

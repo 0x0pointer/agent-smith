@@ -34,7 +34,7 @@ def test_start_applies_preset_limits():
 
 def test_start_thorough_preset():
     sess = core.session.start("example.com", depth="thorough")
-    assert sess["limits"]["max_cost_usd"] == pytest.approx(100.00)
+    assert sess["limits"]["max_cost_usd"] is None  # unlimited
     assert sess["limits"]["max_tool_calls"] == 0  # unlimited
 
 
@@ -614,3 +614,126 @@ def test_update_known_assets_multiple_types_independent():
     assets = core.session.get()["known_assets"]
     assert "192.168.1.1" in assets["ips"]
     assert "Apache" in assets["technologies"]
+
+
+# ── _injection_breadth_blocker ────────────────────────────────────────────────
+
+from mcp_server.session_tools import _injection_breadth_blocker, _na_untooled_blocker
+
+
+def _cell(ep_id, param, param_type, inj_type, status="pending", tested_by=""):
+    return {
+        "id": f"cell-{ep_id}-{param}-{inj_type}",
+        "endpoint_id": ep_id,
+        "param": param,
+        "param_type": param_type,
+        "injection_type": inj_type,
+        "status": status,
+        "tested_by": tested_by,
+    }
+
+
+def test_injection_breadth_blocker_no_gaps():
+    cells = [
+        _cell("ep1", "q", "query", "sqli"),
+        _cell("ep1", "q", "query", "xss"),
+        _cell("ep1", "q", "query", "ssti"),
+        _cell("ep1", "q", "query", "ssrf"),
+        _cell("ep1", "q", "query", "cmdi"),
+    ]
+    assert _injection_breadth_blocker(cells, coverage_enforced=True) is None
+
+
+def test_injection_breadth_blocker_gap_enforced():
+    cells = [_cell("ep1", "username", "body_json", "sqli")]
+    result = _injection_breadth_blocker(cells, coverage_enforced=True)
+    assert result is not None
+    assert "INJECTION BREADTH" in result
+    assert "username" in result
+
+
+def test_injection_breadth_blocker_gap_not_enforced():
+    cells = [_cell("ep1", "username", "body_json", "sqli")]
+    result = _injection_breadth_blocker(cells, coverage_enforced=False)
+    assert result is None
+
+
+def test_injection_breadth_blocker_no_sqli_cells():
+    cells = [_cell("ep1", "q", "query", "xss")]
+    assert _injection_breadth_blocker(cells, coverage_enforced=True) is None
+
+
+def test_injection_breadth_blocker_endpoint_param_ignored():
+    cells = [_cell("ep1", "_endpoint", "endpoint", "sqli")]
+    assert _injection_breadth_blocker(cells, coverage_enforced=True) is None
+
+
+# ── _na_untooled_blocker ──────────────────────────────────────────────────────
+
+def test_na_untooled_blocker_no_issue():
+    cells = [_cell("ep1", "q", "query", "sqli", status="tested_clean", tested_by="sqlmap")]
+    assert _na_untooled_blocker(cells, {"sqli": "blind bypass"}) is None
+
+
+def test_na_untooled_blocker_fires():
+    cells = [_cell("ep1", "q", "query", "sqli", status="not_applicable", tested_by="")]
+    result = _na_untooled_blocker(cells, {"sqli": "blind bypass"})
+    assert result is not None
+    assert "INTEGRITY" in result
+    assert "tested_by" in result
+
+
+def test_na_untooled_blocker_with_tested_by_ok():
+    cells = [_cell("ep1", "q", "query", "sqli", status="not_applicable", tested_by="sqlmap")]
+    assert _na_untooled_blocker(cells, {"sqli": "blind bypass"}) is None
+
+
+def test_na_untooled_blocker_non_bypass_type_ignored():
+    cells = [_cell("ep1", "q", "query", "idor", status="not_applicable", tested_by="")]
+    assert _na_untooled_blocker(cells, {"sqli": "blind bypass"}) is None
+
+
+# ---------------------------------------------------------------------------
+# open_trigger_gate
+# ---------------------------------------------------------------------------
+
+from core.session import open_trigger_gate
+
+
+def test_open_trigger_gate_unknown_type_returns_none():
+    result = open_trigger_gate("unknown_endpoint_type", "/some/path")
+    assert result is None
+
+
+def test_open_trigger_gate_known_type_opens_gate(coverage_file):
+    import core.session
+    core.session.start("http://example.com")
+    result = open_trigger_gate("graphql", "/graphql")
+    # Returns the session state dict (not None)
+    assert result is not None
+
+
+def test_check_limits_time_exceeded_returns_stop_message(coverage_file):
+    """Time limit exceeded → returns a stop message with TIME LIMIT text."""
+    import core.session
+    from datetime import datetime, timezone, timedelta
+    core.session.start("example.com", depth="recon", max_time_minutes=1)
+    # Wind back the started timestamp so elapsed >> 1 minute
+    core.session._current["started"] = (
+        datetime.now(timezone.utc) - timedelta(minutes=10)
+    ).isoformat()
+    msg = core.session.check_limits(_fake_cost())
+    assert msg is not None
+    assert "TIME LIMIT" in msg
+
+
+def test_remaining_returns_none_for_unlimited_cost_time(coverage_file):
+    """remaining() returns None for cost/time when on thorough preset (unlimited)."""
+    import core.session
+    core.session.start("example.com", depth="thorough")
+    r = core.session.remaining(_fake_cost(calls=5))
+    assert r["cost_remaining_usd"] is None
+    assert r["time_remaining_minutes"] is None
+    assert r["cost_pct"] == 0
+    assert r["time_pct"] == 0
+    assert r["calls_remaining"] == -1  # 0 = unlimited → -1
