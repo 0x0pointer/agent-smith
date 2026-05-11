@@ -201,14 +201,16 @@ def _do_start(opts):
         model_profile=opts.get("model_profile", "full"),
     )
     lim = cfg["limits"]
+    cost_str  = f"${lim['max_cost_usd']:.2f}" if lim['max_cost_usd'] is not None else "unlimited"
+    time_str  = f"{lim['max_time_minutes']}min" if lim['max_time_minutes'] is not None else "unlimited"
+    call_limit_str = f"{lim['max_tool_calls']} tool calls" if lim['max_tool_calls'] > 0 else "unlimited"
     log.note(
         f"Scan started — target={target}  depth={depth}  "
-        f"limits: ${lim['max_cost_usd']} / {lim['max_time_minutes']}min / {lim['max_tool_calls']} calls"
+        f"limits: {cost_str} / {time_str} / {call_limit_str}"
     )
-    call_limit_str = f"{lim['max_tool_calls']} tool calls" if lim['max_tool_calls'] > 0 else "unlimited"
     lines = [
         "Scan started.",
-        f"  Target: {target} | Depth: {cfg['depth_label']} | Limits: ${lim['max_cost_usd']}/{lim['max_time_minutes']}min/{call_limit_str}",
+        f"  Target: {target} | Depth: {cfg['depth_label']} | Limits: {cost_str}/{time_str}/{call_limit_str}",
         "",
         "EXECUTE NOW (do not ask questions, do not output text):",
         f"  report(action='dashboard', data={{'port': 5000}})",
@@ -358,6 +360,34 @@ def _coverage_blockers(cov: dict, ctf_mode: bool = False) -> list[str]:
         blockers.append(
             f"INTEGRITY: {len(na_untooled)} injection-type N/A cell(s) have no tested_by tool "
             f"recorded: {sample}. Run the bypass technique and record tested_by before marking N/A."
+        )
+
+    # Injection breadth gate — text params must have xss/ssti/ssrf/cmdi cells, not just sqli.
+    # If these cells are absent entirely (never generated), the 80% gate can't catch the gap.
+    _BREADTH_REQUIRED = {"xss", "ssti", "ssrf", "cmdi"}
+    _TEXT_PARAM_TYPES = {"query", "body_form", "body_json", "path", "header", "cookie"}
+    from collections import defaultdict
+    by_param: dict[tuple, set] = defaultdict(set)
+    for c in all_cells:
+        if c.get("param_type") in _TEXT_PARAM_TYPES and c.get("param") != "_endpoint":
+            by_param[(c["endpoint_id"], c["param"])].add(c["injection_type"])
+
+    breadth_gaps: list[str] = []
+    for (ep_id, param), inj_types in by_param.items():
+        if "sqli" not in inj_types:
+            continue
+        missing = _BREADTH_REQUIRED - inj_types
+        if missing:
+            breadth_gaps.append(f"'{param}' (missing: {', '.join(sorted(missing))})")
+
+    if breadth_gaps and coverage_enforced:
+        sample = "; ".join(breadth_gaps[:5])
+        more = f" (+{len(breadth_gaps) - 5} more)" if len(breadth_gaps) > 5 else ""
+        blockers.append(
+            f"INJECTION BREADTH: {len(breadth_gaps)} text param(s) have sqli cells but no "
+            f"xss/ssti/ssrf/cmdi cells — these injection types were never registered for these params. "
+            f"Re-register the endpoint(s) or add the missing cells with report(action='coverage'): "
+            f"{sample}{more}"
         )
 
     return blockers
@@ -603,6 +633,41 @@ def _do_status():
             f"to reload its workflow.{step_msg}"
         )
 
+    # Active work queue — next pending matrix cells to test
+    # Shown whenever there are pending cells so the model knows its immediate work
+    all_cells = cov.get("matrix", [])
+    ep_map = {ep["id"]: ep["path"] for ep in cov.get("endpoints", [])}
+    pending_cells = [c for c in all_cells if c["status"] == "pending"]
+    in_progress_cells = [c for c in all_cells if c["status"] == "in_progress"]
+    if in_progress_cells or pending_cells:
+        queue: list[dict] = []
+        for c in in_progress_cells[:3]:
+            queue.append({
+                "cell_id": c["id"],
+                "endpoint": ep_map.get(c["endpoint_id"], "?"),
+                "param": c["param"],
+                "injection": c["injection_type"],
+                "status": "IN_PROGRESS — resume this test first",
+            })
+        for c in pending_cells[:5]:
+            queue.append({
+                "cell_id": c["id"],
+                "endpoint": ep_map.get(c["endpoint_id"], "?"),
+                "param": c["param"],
+                "injection": c["injection_type"],
+                "status": "pending",
+            })
+        result["next_work"] = {
+            "instruction": (
+                "Test these cells systematically. Mark each in_progress BEFORE running any tool, "
+                "then tested_clean/vulnerable when done. This is the primary work queue — "
+                "do NOT skip to session(action='complete') while cells remain pending."
+            ),
+            "in_progress_count": len(in_progress_cells),
+            "pending_count": len(pending_cells),
+            "cells": queue,
+        }
+
     # QA alerts — injected from qa_state.json so Smith can self-correct
     import os as _os
     _qa_path = _os.path.join(_os.path.dirname(_os.path.dirname(__file__)), _QA_STATE_FILENAME)
@@ -610,8 +675,14 @@ def _do_status():
         if _os.path.exists(_qa_path):
             with open(_qa_path) as _fh:
                 _qa = json.loads(_fh.read())
-            result["qa_alerts"] = _qa.get("alerts", [])
+            _alerts = _qa.get("alerts", [])
+            result["qa_alerts"] = _alerts
             result["qa_last_check"] = _qa.get("ts", "")
+            if _alerts:
+                result["qa_instruction"] = (
+                    "REQUIRED: call session(action='qa_reply', options={'message': '<your response>'}) "
+                    "NOW — acknowledge each alert and state what you will do. Do this before any other tool call."
+                )
         else:
             result["qa_alerts"] = []
     except Exception:
