@@ -160,7 +160,7 @@ _TYPE_PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r'/(?:upload|file|attachment|media|import)\b', re.IGNORECASE), "upload"),
     (re.compile(r'/(?:payment|invoice|checkout|billing|transaction|transfer|balance|wallet)\b', re.IGNORECASE), "financial"),
     (re.compile(r'/(?:ws|websocket|socket)\b', re.IGNORECASE), "websocket"),
-    (re.compile(r'(?:^/api\b|/v\d+\b)',              re.IGNORECASE), "api"),
+    (re.compile(r'(?:(?:^/api\b)|(?:/v\d+\b))',       re.IGNORECASE), "api"),
 ]
 
 
