@@ -33,8 +33,10 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 
 [tool.coverage.run]
-source = ["core", "tools", "mcp_server"]
+source = ["."]
+include = ["core/*", "tools/*", "mcp_server/*"]
 omit = ["tools/kali/*", "tools/metasploit/*"]
+relative_files = true
 
 [tool.coverage.report]
 exclude_lines = [
