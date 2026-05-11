@@ -223,7 +223,7 @@ try:
     async def _check_one(img: str) -> tuple[str, bool]:
         try:
             return (img, await asyncio.wait_for(image_exists(img), timeout=5))
-        except (asyncio.TimeoutError, Exception):
+        except Exception:
             return (img, False)
 
     async def _preflight():
@@ -252,7 +252,7 @@ try:
         )
     else:
         _phase(f"PREFLIGHT: all {len(_ready)} tool images ready")
-except (asyncio.TimeoutError, BaseException):
+except Exception:
     _phase("PREFLIGHT CHECK FAILED (non-fatal — Docker may be slow)")
     traceback.print_exc(file=sys.stderr)
     # Non-fatal — server can still start, images will pull on demand.
@@ -288,7 +288,7 @@ try:
 
     mcp._mcp_server._handle_message = _safe_handle_message
     _phase("MCP SDK patched OK")
-except BaseException:
+except Exception:
     _phase("MCP SDK PATCH FAILED (non-fatal)")
     traceback.print_exc(file=sys.stderr)
 

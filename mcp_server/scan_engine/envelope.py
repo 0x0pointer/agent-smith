@@ -128,28 +128,38 @@ def _record_invocation(tool: str, ctx: dict, summary: str) -> None:
 # P2 — Known assets extraction
 # ---------------------------------------------------------------------------
 
+def _persist_httpx_assets(scan_session: Any, evidence: dict) -> None:
+    """Persist tech stack and server assets from httpx evidence."""
+    tech = evidence.get("tech", [])
+    if tech:
+        scan_session.update_known_assets(
+            "technologies", tech if isinstance(tech, list) else [tech])
+    server = evidence.get("server")
+    if server:
+        scan_session.update_known_assets("technologies", [server])
+
+
+def _persist_port_scan_assets(scan_session: Any, evidence: dict, ctx: dict) -> None:
+    """Persist ports and hosts from naabu/nmap evidence."""
+    ports = evidence.get("ports", [])
+    hosts = evidence.get("hosts", [])
+    host = hosts[0] if hosts else ctx.get("host", "")
+    if ports:
+        scan_session.update_known_assets(
+            "ports", [{"host": host, "port": p} for p in ports])
+    if hosts:
+        scan_session.update_known_assets("domains", hosts)
+
+
 def _extract_and_persist_assets(tool: str, result: Any, ctx: dict) -> None:
     """Extract discovered assets from summarizer result and persist to session."""
     from core import session as scan_session
     evidence = result.evidence
 
     if tool == "httpx":
-        tech = evidence.get("tech", [])
-        if tech:
-            scan_session.update_known_assets(
-                "technologies", tech if isinstance(tech, list) else [tech])
-        server = evidence.get("server")
-        if server:
-            scan_session.update_known_assets("technologies", [server])
+        _persist_httpx_assets(scan_session, evidence)
     elif tool in ("naabu", "nmap"):
-        ports = evidence.get("ports", [])
-        hosts = evidence.get("hosts", [])
-        host = hosts[0] if hosts else ctx.get("host", "")
-        if ports:
-            scan_session.update_known_assets(
-                "ports", [{"host": host, "port": p} for p in ports])
-        if hosts:
-            scan_session.update_known_assets("domains", hosts)
+        _persist_port_scan_assets(scan_session, evidence, ctx)
     elif tool == "subfinder":
         subs = evidence.get("subdomains", [])
         if subs:

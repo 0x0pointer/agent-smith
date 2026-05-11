@@ -35,54 +35,42 @@ def summarize(tool: str, raw: str, ctx: dict) -> SummaryResult:
 # httpx summarizer
 # ---------------------------------------------------------------------------
 
-def _summarize_httpx(raw: str, ctx: dict) -> SummaryResult:
-    """Parse httpx output to extract tech stack, status, WAF, headers."""
-    result = SummaryResult()
-    lines = raw.strip().splitlines()
+def _parse_httpx_json_line(line: str, url: str) -> dict | None:
+    """Parse a single httpx JSON line. Returns parsed fields dict or None on failure."""
+    try:
+        data = json.loads(line)
+        return {
+            "status": data.get("status_code") or data.get("status-code"),
+            "tech": data.get("tech", []),
+            "title": data.get("title", ""),
+            "content_type": data.get("content_type", data.get("content-type", "")),
+            "server": data.get("webserver", data.get("server", "")),
+            "cdn_or_waf": data.get("cdn", "") or data.get("waf", ""),
+            "url": data.get("url", url),
+        }
+    except json.JSONDecodeError:
+        return None
 
-    status = None
-    tech = []
-    title = ""
-    content_type = ""
-    server = ""
-    cdn_or_waf = ""
-    url = ctx.get("url", "")
 
-    for line in lines:
-        line = line.strip()
-        # httpx JSON mode
-        if line.startswith("{"):
-            try:
-                data = json.loads(line)
-                status = data.get("status_code") or data.get("status-code")
-                tech = data.get("tech", [])
-                title = data.get("title", "")
-                content_type = data.get("content_type", data.get("content-type", ""))
-                server = data.get("webserver", data.get("server", ""))
-                cdn_or_waf = data.get("cdn", "") or data.get("waf", "")
-                url = data.get("url", url)
-                break
-            except json.JSONDecodeError:
-                pass
-        # httpx text mode: "http://target [200] [nginx] [text/html] [Title]"
-        m = re.match(r'(https?://\S+)\s+\[(\d+)\]', line)
-        if m:
-            url = m.group(1)
-            status = int(m.group(2))
-            brackets = re.findall(r'\[([^\]]+)\]', line)
-            if len(brackets) >= 2:
-                server = brackets[1] if len(brackets) > 1 else ""
-                content_type = brackets[2] if len(brackets) > 2 else ""
-                title = brackets[3] if len(brackets) > 3 else ""
+def _parse_httpx_text_line(line: str, url: str) -> dict | None:
+    """Parse a single httpx text-mode line. Returns parsed fields dict or None on no match."""
+    m = re.match(r'(https?://\S+)\s+\[(\d+)\]', line)
+    if not m:
+        return None
+    brackets = re.findall(r'\[([^\]]+)\]', line)
+    return {
+        "status": int(m.group(2)),
+        "url": m.group(1),
+        "server": brackets[1] if len(brackets) > 1 else "",
+        "content_type": brackets[2] if len(brackets) > 2 else "",
+        "title": brackets[3] if len(brackets) > 3 else "",
+        "tech": [],
+        "cdn_or_waf": "",
+    }
 
-    if status:
-        result.summary = f"{url} is live (HTTP {status})"
-        if server:
-            result.summary += f", server: {server}"
-    else:
-        result.summary = f"httpx scan of {url} — could not parse status"
-        result.anomalies.append("Could not parse httpx output format")
 
+def _build_httpx_facts(result: SummaryResult, status: Any, server: str, content_type: str, title: str, tech: Any, cdn_or_waf: str) -> None:
+    """Append extracted fields to result.facts."""
     if status:
         result.facts.append(f"Status: {status}")
     if server:
@@ -96,6 +84,48 @@ def _summarize_httpx(raw: str, ctx: dict) -> SummaryResult:
     if cdn_or_waf:
         result.facts.append(f"CDN/WAF: {cdn_or_waf}")
 
+
+def _summarize_httpx(raw: str, ctx: dict) -> SummaryResult:
+    """Parse httpx output to extract tech stack, status, WAF, headers."""
+    result = SummaryResult()
+    lines = raw.strip().splitlines()
+
+    parsed: dict | None = None
+    url = ctx.get("url", "")
+
+    for line in lines:
+        line = line.strip()
+        if line.startswith("{"):
+            parsed = _parse_httpx_json_line(line, url)
+            if parsed:
+                break
+        else:
+            parsed = _parse_httpx_text_line(line, url)
+            if parsed:
+                break
+
+    if parsed:
+        status = parsed["status"]
+        url = parsed["url"]
+        server = parsed["server"]
+        tech = parsed["tech"]
+        content_type = parsed["content_type"]
+        title = parsed["title"]
+        cdn_or_waf = parsed["cdn_or_waf"]
+    else:
+        status = None
+        server = tech = content_type = title = cdn_or_waf = ""
+
+    if status:
+        result.summary = f"{url} is live (HTTP {status})"
+        if server:
+            result.summary += f", server: {server}"
+    else:
+        result.summary = f"httpx scan of {url} — could not parse status"
+        result.anomalies.append("Could not parse httpx output format")
+
+    _build_httpx_facts(result, status, server, content_type, title, tech, cdn_or_waf)
+
     result.evidence = {
         "url": url,
         "status": status,
@@ -103,7 +133,6 @@ def _summarize_httpx(raw: str, ctx: dict) -> SummaryResult:
         "tech": tech,
     }
 
-    # Recommendations
     result.recommended.append("Run scan(tool='spider') to crawl endpoints")
     if not cdn_or_waf:
         result.recommended.append("No WAF detected — direct testing likely viable")
@@ -187,11 +216,11 @@ def _extract_body_signals(body: str, result: SummaryResult) -> None:
 # kali_sqlmap summarizer
 # ---------------------------------------------------------------------------
 
-def _summarize_kali_sqlmap(raw: str, ctx: dict) -> SummaryResult:
-    """Parse sqlmap output for injection results."""
-    result = SummaryResult()
-    lines = raw.strip().splitlines()
+def _parse_sqlmap_lines(lines: list[str]) -> dict | None:
+    """Parse sqlmap output lines. Returns None if 'not injectable' is detected.
 
+    Returns a dict with keys: injectable_params, db_type, databases, tables, is_vulnerable.
+    """
     injectable_params: list[str] = []
     db_type = ""
     databases: list[str] = []
@@ -200,63 +229,74 @@ def _summarize_kali_sqlmap(raw: str, ctx: dict) -> SummaryResult:
 
     for line in lines:
         stripped = line.strip()
-
-        # "Parameter: q (GET)" or "Parameter: id (POST)"
+        if "all tested parameters do not appear to be injectable" in stripped.lower():
+            return None
         m = re.match(r"Parameter:\s+(\S+)\s+\((\w+)\)", stripped)
         if m:
             injectable_params.append(f"{m.group(1)} ({m.group(2)})")
-
         if "is vulnerable" in stripped.lower():
             is_vulnerable = True
-
-        # "back-end DBMS: MySQL"
         m = re.match(r"back-end DBMS:\s+(.+)", stripped, re.I)
         if m:
             db_type = m.group(1).strip()
-
-        # "available databases" section
         if re.match(r"\[\*\]\s+\w+", stripped):
             db_name = stripped.lstrip("[*] ").strip()
             if db_name and db_name not in databases:
                 databases.append(db_name)
-
-        # Table names
         m = re.match(r"\|\s+(\w+)\s+\|", stripped)
         if m:
             tables.append(m.group(1))
 
-        # "not injectable" signals
-        if "all tested parameters do not appear to be injectable" in stripped.lower():
-            result.summary = f"sqlmap: no injection found"
-            result.facts.append("All tested parameters not injectable")
-            return result
+    return {
+        "injectable_params": injectable_params,
+        "db_type": db_type,
+        "databases": databases,
+        "tables": tables,
+        "is_vulnerable": is_vulnerable or bool(injectable_params),
+    }
 
-    # Finding injectable params is itself proof of vulnerability
-    is_vulnerable = is_vulnerable or bool(injectable_params)
 
-    if is_vulnerable:
-        params_str = ", ".join(injectable_params) if injectable_params else "unknown"
-        result.summary = f"SQLi CONFIRMED on parameter(s): {params_str}"
-        if db_type:
-            result.summary += f" (DBMS: {db_type})"
-        result.facts.append(f"Injectable: {params_str}")
-        if db_type:
-            result.facts.append(f"DBMS: {db_type}")
-        if databases:
-            result.facts.append(f"Databases: {', '.join(databases[:10])}")
-        if tables:
-            result.facts.append(f"Tables: {', '.join(tables[:20])}")
-        result.recommended.append("Dump credentials: kali(command='sqlmap ... --dump -T users')")
-        result.recommended.append("Try OS shell: kali(command='sqlmap ... --os-shell')")
+def _build_sqlmap_vulnerable_result(result: SummaryResult, parsed: dict) -> None:
+    """Populate result fields when sqlmap found injectable parameters."""
+    injectable_params = parsed["injectable_params"]
+    db_type = parsed["db_type"]
+    params_str = ", ".join(injectable_params) if injectable_params else "unknown"
+    result.summary = f"SQLi CONFIRMED on parameter(s): {params_str}"
+    if db_type:
+        result.summary += f" (DBMS: {db_type})"
+    result.facts.append(f"Injectable: {params_str}")
+    if db_type:
+        result.facts.append(f"DBMS: {db_type}")
+    if parsed["databases"]:
+        result.facts.append(f"Databases: {', '.join(parsed['databases'][:10])}")
+    if parsed["tables"]:
+        result.facts.append(f"Tables: {', '.join(parsed['tables'][:20])}")
+    result.recommended.append("Dump credentials: kali(command='sqlmap ... --dump -T users')")
+    result.recommended.append("Try OS shell: kali(command='sqlmap ... --os-shell')")
+
+
+def _summarize_kali_sqlmap(raw: str, ctx: dict) -> SummaryResult:
+    """Parse sqlmap output for injection results."""
+    result = SummaryResult()
+    lines = raw.strip().splitlines()
+
+    parsed = _parse_sqlmap_lines(lines)
+    if parsed is None:
+        result.summary = "sqlmap: no injection found"
+        result.facts.append("All tested parameters not injectable")
+        return result
+
+    if parsed["is_vulnerable"]:
+        _build_sqlmap_vulnerable_result(result, parsed)
     else:
-        result.summary = f"sqlmap scan completed — check artifact for details"
+        result.summary = "sqlmap scan completed — check artifact for details"
 
     result.evidence = {
-        "injectable_params": injectable_params,
-        "dbms": db_type,
-        "databases": databases[:10],
-        "tables": tables[:20],
-        "vulnerable": is_vulnerable,
+        "injectable_params": parsed["injectable_params"],
+        "dbms": parsed["db_type"],
+        "databases": parsed["databases"][:10],
+        "tables": parsed["tables"][:20],
+        "vulnerable": parsed["is_vulnerable"],
     }
 
     return result
@@ -281,7 +321,7 @@ def _summarize_naabu(raw: str, ctx: dict) -> SummaryResult:
             port = data.get("port")
             if port:
                 ports.setdefault(host, set()).add(int(port))
-        except (json.JSONDecodeError, ValueError):
+        except ValueError:
             continue
 
     if ports:
@@ -323,6 +363,30 @@ def _summarize_subfinder(raw: str, ctx: dict) -> SummaryResult:
 # nuclei summarizer
 # ---------------------------------------------------------------------------
 
+def _parse_nuclei_line(line: str) -> dict | None:
+    """Parse a single nuclei output line (JSON or text). Returns a finding dict or None."""
+    if line.startswith("{"):
+        try:
+            data = json.loads(line)
+            return {
+                "template": data.get("template-id", data.get("templateID", "?")),
+                "severity": data.get("info", {}).get("severity", "?"),
+                "name": data.get("info", {}).get("name", "?"),
+                "matched": data.get("matched-at", data.get("matched", "?")),
+            }
+        except json.JSONDecodeError:
+            return None
+    m = re.match(r'\[([^\]]+)\]\s+\[([^\]]+)\]\s+\[([^\]]+)\]\s+(.*)', line)
+    if m:
+        return {
+            "template": m.group(1),
+            "severity": m.group(2),
+            "name": m.group(1),
+            "matched": m.group(4).strip(),
+        }
+    return None
+
+
 def _summarize_nuclei(raw: str, ctx: dict) -> SummaryResult:
     """Parse nuclei output for vulnerability findings."""
     result = SummaryResult()
@@ -332,28 +396,9 @@ def _summarize_nuclei(raw: str, ctx: dict) -> SummaryResult:
         line = line.strip()
         if not line:
             continue
-        # nuclei JSON output
-        if line.startswith("{"):
-            try:
-                data = json.loads(line)
-                findings.append({
-                    "template": data.get("template-id", data.get("templateID", "?")),
-                    "severity": data.get("info", {}).get("severity", "?"),
-                    "name": data.get("info", {}).get("name", "?"),
-                    "matched": data.get("matched-at", data.get("matched", "?")),
-                })
-            except json.JSONDecodeError:
-                pass
-            continue
-        # nuclei text output: "[template-id] [severity] matched-url"
-        m = re.match(r'\[([^\]]+)\]\s+\[([^\]]+)\]\s+\[([^\]]+)\]\s+(.*)', line)
-        if m:
-            findings.append({
-                "template": m.group(1),
-                "severity": m.group(2),
-                "name": m.group(1),
-                "matched": m.group(4).strip(),
-            })
+        finding = _parse_nuclei_line(line)
+        if finding:
+            findings.append(finding)
 
     if findings:
         crit_high = [f for f in findings if f["severity"] in ("critical", "high")]
@@ -374,32 +419,39 @@ def _summarize_nuclei(raw: str, ctx: dict) -> SummaryResult:
 # ffuf summarizer
 # ---------------------------------------------------------------------------
 
+def _parse_ffuf_json(raw: str) -> list[dict] | None:
+    """Parse ffuf JSON output (-of json). Returns list of path dicts or None on parse error."""
+    try:
+        data = json.loads(raw)
+        return [
+            {"url": r.get("url", "?"), "status": r.get("status", 0), "length": r.get("length", 0)}
+            for r in data.get("results", [])
+        ]
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+
+def _parse_ffuf_text(raw: str) -> list[dict]:
+    """Parse ffuf text output. Returns list of path dicts."""
+    paths: list[dict] = []
+    for line in raw.strip().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or line.startswith("["):
+            continue
+        m = re.match(r'(\d{3})\s+\S+\s+\S+\s+(.*)', line)
+        if m:
+            paths.append({"url": m.group(2).strip(), "status": int(m.group(1)), "length": 0})
+        elif line.startswith("http"):
+            paths.append({"url": line, "status": 0, "length": 0})
+    return paths
+
+
 def _summarize_ffuf(raw: str, ctx: dict) -> SummaryResult:
     """Parse ffuf output for discovered paths."""
     result = SummaryResult()
-    paths: list[dict] = []
-
-    # Try JSON first (ffuf -of json)
-    try:
-        data = json.loads(raw)
-        for r in data.get("results", []):
-            paths.append({
-                "url": r.get("url", "?"),
-                "status": r.get("status", 0),
-                "length": r.get("length", 0),
-            })
-    except (json.JSONDecodeError, TypeError):
-        # Text output: one URL per line or "STATUS  SIZE  URL" format
-        for line in raw.strip().splitlines():
-            line = line.strip()
-            if not line or line.startswith("#") or line.startswith("["):
-                continue
-            # Try to extract URL and status
-            m = re.match(r'(\d{3})\s+\S+\s+\S+\s+(.*)', line)
-            if m:
-                paths.append({"url": m.group(2).strip(), "status": int(m.group(1)), "length": 0})
-            elif line.startswith("http"):
-                paths.append({"url": line, "status": 0, "length": 0})
+    paths = _parse_ffuf_json(raw)
+    if paths is None:
+        paths = _parse_ffuf_text(raw)
 
     if paths:
         result.summary = f"ffuf found {len(paths)} path(s)"
@@ -418,9 +470,47 @@ def _summarize_ffuf(raw: str, ctx: dict) -> SummaryResult:
 # spider summarizer
 # ---------------------------------------------------------------------------
 
+_STATIC_EXTENSIONS = {
+    ".js", ".css", ".png", ".jpg", ".jpeg", ".gif", ".svg",
+    ".ico", ".woff", ".woff2", ".ttf", ".eot", ".map",
+}
+
+
+def _extract_url_params(parsed_url: Any) -> list[dict]:
+    """Extract query and path parameters from a parsed URL object."""
+    from urllib.parse import parse_qs
+    params: list[dict] = []
+    path = parsed_url.path
+    for name in parse_qs(parsed_url.query):
+        if not name.startswith("__"):
+            params.append({"name": name, "type": "query", "value_hint": "string"})
+    for i, seg in enumerate(path.split("/")):
+        if seg.isdigit():
+            params.append({"name": f"id_{i}", "type": "path", "value_hint": "integer"})
+    return params
+
+
+def _extract_dynamic_endpoints(urls: list[str]) -> list[dict]:
+    """Filter static assets and deduplicate URL paths into unique dynamic endpoints."""
+    from urllib.parse import urlparse
+    seen_paths: set[str] = set()
+    endpoints: list[dict] = []
+    for url in urls:
+        parsed = urlparse(url)
+        path = parsed.path.rstrip("/") or "/"
+        ext = "." + path.rsplit(".", 1)[-1].lower() if "." in path.split("/")[-1] else ""
+        if ext in _STATIC_EXTENSIONS:
+            continue
+        norm = re.sub(r'/\d+', '/{id}', path)
+        if norm in seen_paths:
+            continue
+        seen_paths.add(norm)
+        endpoints.append({"path": norm, "method": "GET", "params": _extract_url_params(parsed)})
+    return endpoints
+
+
 def _summarize_spider(raw: str, ctx: dict) -> SummaryResult:
     """Parse katana/spider output — one URL per line. Extract endpoints for registration."""
-    from urllib.parse import urlparse, parse_qs
     result = SummaryResult()
     urls = [l.strip() for l in raw.strip().splitlines() if l.strip() and l.strip().startswith("http")]
 
@@ -429,41 +519,12 @@ def _summarize_spider(raw: str, ctx: dict) -> SummaryResult:
         result.evidence = {"urls": [], "count": 0}
         return result
 
-    # Extract unique dynamic endpoints (not static assets)
-    static_ext = {".js", ".css", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".woff", ".woff2", ".ttf", ".eot", ".map"}
-    seen_paths: set[str] = set()
-    endpoints: list[dict] = []
-
-    for url in urls:
-        parsed = urlparse(url)
-        path = parsed.path.rstrip("/") or "/"
-        ext = "." + path.rsplit(".", 1)[-1].lower() if "." in path.split("/")[-1] else ""
-        if ext in static_ext:
-            continue
-        # Normalize numeric path segments to {id}
-        norm = re.sub(r'/\d+', '/{id}', path)
-        if norm in seen_paths:
-            continue
-        seen_paths.add(norm)
-
-        # Extract params from query string
-        params = []
-        for name, vals in parse_qs(parsed.query).items():
-            if name.startswith("__"):  # skip debugger params
-                continue
-            params.append({"name": name, "type": "query", "value_hint": "string"})
-        # Detect path params (segments that were numeric)
-        for i, seg in enumerate(path.split("/")):
-            if seg.isdigit():
-                params.append({"name": f"id_{i}", "type": "path", "value_hint": "integer"})
-
-        endpoints.append({"path": norm, "method": "GET", "params": params})
+    endpoints = _extract_dynamic_endpoints(urls)
 
     result.summary = f"Spider crawled {len(urls)} URL(s), {len(endpoints)} unique endpoint(s)"
     result.facts = [f"{ep['path']}" + (f" params={[p['name'] for p in ep['params']]}" if ep['params'] else "") for ep in endpoints[:20]]
     result.evidence = {"endpoints": endpoints[:30], "all_urls_count": len(urls)}
 
-    # Generate concrete registration commands for top endpoints
     for ep in endpoints[:10]:
         params_json = json.dumps(ep["params"]) if ep["params"] else "[]"
         result.required.append(

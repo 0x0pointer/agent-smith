@@ -170,7 +170,6 @@ async def _run(name: str, **kwargs) -> str:
             cost_tracker.finish(call_id, result)
             log.tool_result(name, result)
             return result
-        elapsed = round(time.monotonic() - t_start, 1)
 
         # Log full verbose output before any clipping
         log.tool_result_verbose(name, stdout, stderr)

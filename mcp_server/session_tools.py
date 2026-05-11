@@ -24,7 +24,7 @@ _QA_STATE_FILENAME = "qa_state.json"
 
 
 # ── CTF flag pattern (e.g. CTF{...}, flag{...}, HTB{...}) ─────────────────────
-_FLAG_RE = re.compile(r'[A-Za-z0-9_]{2,10}\{[A-Za-z0-9_\-!@#$%^&*()+=,.?]{4,}\}')
+_FLAG_RE = re.compile(r'\w{2,10}\{[A-Za-z0-9_\-!@#$%^&*()+=,.?]{4,}\}')
 
 
 def _has_ctf_flag(data: dict) -> bool:
@@ -97,39 +97,50 @@ async def session(action: str, options: dict | None = None) -> str:
     start_kali, stop_kali, start_metasploit, stop_metasploit, pull_images: no options needed
     """
     opts = _ensure_dict(options) or {}
+    result = await _dispatch_async_action(action, opts)
+    if result is not None:
+        return result
+    return _dispatch_sync_action(action, opts)
 
+
+async def _dispatch_async_action(action: str, opts: dict) -> str | None:
+    """Handle async session actions. Returns None if action is not async."""
+    if action == "start_kali":
+        return await _do_start_kali()
+    if action == "stop_kali":
+        return await _do_stop_kali()
+    if action == "start_metasploit":
+        return await _do_start_metasploit()
+    if action == "stop_metasploit":
+        return await _do_stop_metasploit()
+    if action == "pull_images":
+        return await _do_pull_images()
+    if action == "qa_reply":
+        return await _do_qa_reply(opts)
+    return None
+
+
+def _dispatch_sync_action(action: str, opts: dict) -> str:
+    """Handle sync session actions."""
     if action == "start":
         return _do_start(opts)
-    elif action == "complete":
-        return await _do_complete(opts)
-    elif action == "status":
+    if action == "complete":
+        return _do_complete(opts)
+    if action == "status":
         return _do_status()
-    elif action == "set_skill":
+    if action == "set_skill":
         return _do_set_skill(opts)
-    elif action == "set_step":
+    if action == "set_step":
         return _do_set_step(opts)
-    elif action == "start_kali":
-        return await _do_start_kali()
-    elif action == "stop_kali":
-        return await _do_stop_kali()
-    elif action == "start_metasploit":
-        return await _do_start_metasploit()
-    elif action == "stop_metasploit":
-        return await _do_stop_metasploit()
-    elif action == "pull_images":
-        return await _do_pull_images()
-    elif action == "set_codebase":
+    if action == "set_codebase":
         return _do_set_codebase(opts)
-    elif action == "qa_reply":
-        return await _do_qa_reply(opts)
-    elif action == "recovery":
+    if action == "recovery":
         return _do_recovery()
-    elif action == "artifact":
+    if action == "artifact":
         return _do_artifact(opts)
-    elif action == "pre_chain":
+    if action == "pre_chain":
         return _do_pre_chain(opts)
-    else:
-        return f"Unknown action '{action}'. Use: start, complete, status, qa_reply, recovery, artifact, pre_chain, set_skill, set_step, start_kali, stop_kali, start_metasploit, stop_metasploit, pull_images, set_codebase"
+    return f"Unknown action '{action}'. Use: start, complete, status, qa_reply, recovery, artifact, pre_chain, set_skill, set_step, start_kali, stop_kali, start_metasploit, stop_metasploit, pull_images, set_codebase"
 
 
 def _do_start(opts):
@@ -211,15 +222,15 @@ def _do_start(opts):
         f"  Target: {target} | Depth: {cfg['depth_label']} | Limits: ${lim['max_cost_usd']}/{lim['max_time_minutes']}min/{call_limit_str}",
         "",
         "EXECUTE NOW (do not ask questions, do not output text):",
-        f"  report(action='dashboard', data={{'port': 5000}})",
+        "  report(action='dashboard', data={'port': 5000})",
         f"  scan(tool='httpx', target='{target}')",
         "",
         "Then in order:",
         f"  scan(tool='naabu', target='{target}')",
         f"  scan(tool='spider', target='{target}')",
-        f"  Register endpoints with report(action='coverage', data=...)",
+        "  Register endpoints with report(action='coverage', data=...)",
         f"  scan(tool='nuclei', target='{target}')",
-        f"  Test each coverage cell with http() or kali()",
+        "  Test each coverage cell with http() or kali()",
         "",
         "Skills available for full workflow automation (invoke instead of improvising):",
         "  /pentester /web-exploit /codebase /ai-redteam /cloud-security /ad-assessment",
@@ -318,7 +329,7 @@ def _coverage_blockers(cov: dict, ctf_mode: bool = False) -> list[str]:
     # auto-generated cells they can't address, causing completion loops.
     from mcp_server.scan_engine.budget import get_profile
     profile = get_profile()
-    coverage_enforced = not profile.get("enforce_budget", True)  # full=enforce, medium/small=skip
+    coverage_enforced = not profile.get("enforce_budget", True)  # full profile enforces; medium/small profiles skip
 
     low_cov = _low_coverage_blocker(cov, coverage_enforced, total, addressed, pct)
     if low_cov:
@@ -445,7 +456,7 @@ def _finding_quality_blockers(high_findings: list[dict]) -> str | None:
     )
 
 
-async def _do_complete(opts):
+def _do_complete(opts):
     global _complete_attempts
     _complete_attempts += 1
     notes = opts.get("notes", "")
@@ -700,7 +711,6 @@ def _do_recovery():
         }, indent=2)
 
     summary = cost_tracker.get_summary()
-    remaining = scan_session.remaining(summary)
 
     # Coverage matrix: in_progress and pending cells
     from core.coverage import get_matrix

@@ -11,6 +11,32 @@ from core import session as scan_session
 from core.coverage import get_matrix
 
 
+def _add_recon_actions(required: list[str], recommended: list[str], tools_run: set, target: str) -> None:
+    """Compute required/recommended actions for the recon phase."""
+    if "httpx" not in tools_run:
+        required.append(f"Run httpx: scan(tool='httpx', target='{target}')")
+    if "naabu" not in tools_run and "nmap" not in tools_run:
+        recommended.append(f"Port scan: scan(tool='naabu', target='{target}')")
+    if "subfinder" not in tools_run:
+        recommended.append(f"Subdomain enum: scan(tool='subfinder', target='{target}')")
+
+
+def _add_discovery_actions(required: list[str], recommended: list[str], tools_run: set, target: str) -> None:
+    """Compute required/recommended actions for the discovery phase."""
+    if "spider" not in tools_run:
+        required.append(f"Crawl endpoints: scan(tool='spider', target='{target}')")
+    else:
+        required.append(
+            "Register endpoints in coverage matrix: "
+            "report(action='coverage', data={type:'endpoint', path:'...', method:'GET', "
+            "params:[{name, type, value_hint}], discovered_by:'spider'})"
+        )
+    if "nuclei" not in tools_run:
+        recommended.append(f"Vulnerability scan: scan(tool='nuclei', target='{target}')")
+    if "ffuf" not in tools_run:
+        recommended.append(f"Directory fuzzing: scan(tool='ffuf', target='{target}')")
+
+
 def compute_next(tool: str, state: dict) -> dict:
     """Compute next actions based on current state.
 
@@ -34,30 +60,11 @@ def compute_next(tool: str, state: dict) -> dict:
 
     # --- Phase-specific next actions ---
     if phase == "recon":
-        if "httpx" not in tools_run:
-            required.append(f"Run httpx: scan(tool='httpx', target='{target}')")
-        if "naabu" not in tools_run and "nmap" not in tools_run:
-            recommended.append(f"Port scan: scan(tool='naabu', target='{target}')")
-        if "subfinder" not in tools_run:
-            recommended.append(f"Subdomain enum: scan(tool='subfinder', target='{target}')")
-
+        _add_recon_actions(required, recommended, tools_run, target)
     elif phase == "discovery":
-        if "spider" not in tools_run:
-            required.append(f"Crawl endpoints: scan(tool='spider', target='{target}')")
-        else:
-            required.append(
-                "Register endpoints in coverage matrix: "
-                "report(action='coverage', data={type:'endpoint', path:'...', method:'GET', "
-                "params:[{name, type, value_hint}], discovered_by:'spider'})"
-            )
-        if "nuclei" not in tools_run:
-            recommended.append(f"Vulnerability scan: scan(tool='nuclei', target='{target}')")
-        if "ffuf" not in tools_run:
-            recommended.append(f"Directory fuzzing: scan(tool='ffuf', target='{target}')")
-
+        _add_discovery_actions(required, recommended, tools_run, target)
     elif phase == "testing":
         _add_testing_actions(required, recommended, target)
-
     elif phase == "validation":
         recommended.append("Save PoCs: http(action='save_poc', ...) for each finding")
         recommended.append("Create architecture diagram: report(action='diagram', data={title, mermaid})")
@@ -130,50 +137,60 @@ def _resolve_url(target: str, path: str, param: str, param_type: str, payload: s
     return f"{target}{path}?{param}={payload}"
 
 
-def _concrete_test_command(inj: str, target: str, path: str, method: str, param: str, param_type: str = "query") -> str:
-    """Return an exact tool call string for the given injection type."""
-    url = f"{target}{path}"
+def _injection_command_with_payload(inj: str, target: str, path: str, method: str, param: str, param_type: str) -> str | None:
+    """Return the tool-call string for injection types that require a payload in the URL.
+
+    Returns None when the injection type is not handled here.
+    """
     if inj == "sqli":
         if param_type == "path":
             test_url = _resolve_url(target, path, param, param_type, "1*")
             return f"kali(command=\"sqlmap -u '{test_url}' --batch --level=2\")"
         return f"kali(command=\"sqlmap -u '{_resolve_url(target, path, param, param_type, 'test')}' --batch --level=2\")"
-    if inj == "xss":
-        test_url = _resolve_url(target, path, param, param_type, "<script>alert(1)</script>")
-        return f"http(action='request', url='{test_url}', method='{method}')"
-    if inj == "ssti":
-        test_url = _resolve_url(target, path, param, param_type, "{{7*7}}")
-        return f"http(action='request', url='{test_url}', method='{method}')"
-    if inj == "cmdi":
-        test_url = _resolve_url(target, path, param, param_type, ";id")
-        return f"http(action='request', url='{test_url}', method='{method}')"
-    if inj == "ssrf":
-        test_url = _resolve_url(target, path, param, param_type, "http://127.0.0.1:80")
+    payloads = {
+        "xss": "<script>alert(1)</script>",
+        "ssti": "{{7*7}}",
+        "cmdi": ";id",
+        "ssrf": "http://127.0.0.1:80",
+        "traversal": "....//....//etc/passwd",
+    }
+    if inj in payloads:
+        test_url = _resolve_url(target, path, param, param_type, payloads[inj])
         return f"http(action='request', url='{test_url}', method='{method}')"
     if inj == "idor":
-        # Test IDOR by accessing another user's resource
         test_url = _resolve_url(target, path, param, param_type, "1")
         test_url2 = _resolve_url(target, path, param, param_type, "2")
         return f"http(action='request', url='{test_url}', method='{method}') then compare with url='{test_url2}'"
-    if inj == "traversal":
-        test_url = _resolve_url(target, path, param, param_type, "....//....//etc/passwd")
-        return f"http(action='request', url='{test_url}', method='{method}')"
+    return None
+
+
+def _injection_command_endpoint_level(inj: str, url: str, method: str) -> str | None:
+    """Return the tool-call string for endpoint-level injection types (no payload in URL).
+
+    Returns None when the injection type is not handled here.
+    """
     if inj == "cors":
         return f"http(action='request', url='{url}', method='GET', headers={{\"Origin\": \"https://evil.com\"}})"
-    if inj == "security_headers":
-        return f"http(action='request', url='{url}', method='GET')"
     if inj == "csrf":
         return f"http(action='request', url='{url}', method='POST', headers={{\"Content-Type\": \"application/x-www-form-urlencoded\"}}, body='test=1')"
     if inj == "method_tampering":
         return f"http(action='request', url='{url}', method='PUT')"
-    if inj == "rate_limit":
-        return f"http(action='request', url='{url}', method='GET')"
-    if inj == "jwt":
-        return f"http(action='request', url='{url}', method='GET')"
     if inj == "cache":
         return f"http(action='request', url='{url}', method='GET', headers={{\"X-Forwarded-Host\": \"evil.com\"}})"
-    if inj == "race":
+    if inj in ("security_headers", "rate_limit", "jwt", "race"):
         return f"http(action='request', url='{url}', method='GET')"
+    return None
+
+
+def _concrete_test_command(inj: str, target: str, path: str, method: str, param: str, param_type: str = "query") -> str:
+    """Return an exact tool call string for the given injection type."""
+    url = f"{target}{path}"
+    result = _injection_command_with_payload(inj, target, path, method, param, param_type)
+    if result is not None:
+        return result
+    result = _injection_command_endpoint_level(inj, url, method)
+    if result is not None:
+        return result
     # Fallback
     return f"http(action='request', url='{url}', method='{method}')"
 

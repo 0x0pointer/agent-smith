@@ -128,7 +128,7 @@ def _host_rewrite(command: str) -> str:
     return command
 
 
-async def exec_command(command: str, timeout: int = 900) -> str:
+async def exec_command(command: str, timeout: int = 900) -> str:  # NOSONAR
     """
     Run a shell command in the Metasploit container via HTTP API.
     Auto-starts the container if it isn't already running.
@@ -155,5 +155,5 @@ async def exec_command(command: str, timeout: int = 900) -> str:
                 if timed_out:
                     output = f"[partial — command timed out]\n{output}"
                 return output or "[no output]"
-    except BaseException as exc:
+    except Exception as exc:
         return f"Error calling Metasploit API: {type(exc).__name__}: {exc}"
