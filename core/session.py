@@ -58,10 +58,10 @@ PRESETS: dict[str, dict] = {
     },
     "thorough": {
         "label":       "Thorough",
-        "description": "Standard + full Kali toolchain (nikto, sqlmap, testssl, …)",
-        "max_cost_usd":     100.00,
-        "max_time_minutes": 480,     # 8 hours
-        "max_tool_calls":   0,       # 0 = unlimited — cost and time are the constraints
+        "description": "Standard + full Kali toolchain — runs until complete (no cost/time cap)",
+        "max_cost_usd":     None,    # unlimited
+        "max_time_minutes": None,    # unlimited
+        "max_tool_calls":   0,       # 0 = unlimited
     },
 }
 
@@ -149,7 +149,7 @@ def check_limits(cost_summary: dict) -> str | None:
 
     # ── Cost ──────────────────────────────────────────────────────────────────
     spent = cost_summary.get("est_cost_usd", 0)
-    if spent >= lim["max_cost_usd"]:
+    if lim["max_cost_usd"] is not None and spent >= lim["max_cost_usd"]:
         return _stop(
             "limit_reached",
             f"COST LIMIT: ${spent:.4f} spent (limit ${lim['max_cost_usd']:.2f}). "
@@ -160,7 +160,7 @@ def check_limits(cost_summary: dict) -> str | None:
     elapsed_min = (
         datetime.now(timezone.utc) - datetime.fromisoformat(_current["started"])
     ).total_seconds() / 60
-    if elapsed_min >= lim["max_time_minutes"]:
+    if lim["max_time_minutes"] is not None and elapsed_min >= lim["max_time_minutes"]:
         return _stop(
             "limit_reached",
             f"TIME LIMIT: {elapsed_min:.0f} min elapsed (limit {lim['max_time_minutes']} min). "
@@ -317,6 +317,35 @@ def pending_gates() -> list[dict]:
     return [g for g in _current.get("gates", []) if g.get("status") == "pending"]
 
 
+# ── Endpoint-type trigger gates ───────────────────────────────────────────────
+# When an endpoint is registered with a recognised type tag, a mandatory gate
+# is opened so the model must invoke the appropriate skill before completing.
+
+_TRIGGER_MAP: dict[str, dict] = {
+    "graphql":    {"gate_id": "graphql_coverage",   "required_skills": ["api-security"]},
+    "auth":       {"gate_id": "auth_coverage",       "required_skills": ["credential-audit"]},
+    "admin":      {"gate_id": "admin_coverage",      "required_skills": ["web-exploit"]},
+    "upload":     {"gate_id": "upload_coverage",     "required_skills": ["web-exploit"]},
+    "api":        {"gate_id": "api_coverage",        "required_skills": ["api-security"]},
+    "financial":  {"gate_id": "financial_coverage",  "required_skills": ["business-logic"]},
+    "websocket":  {"gate_id": "websocket_coverage",  "required_skills": ["web-exploit"]},
+}
+
+
+def open_trigger_gate(endpoint_type: str, path: str) -> dict | None:
+    """Open a mandatory gate based on endpoint type.
+
+    Called by coverage.add_endpoint() after classifying the endpoint.
+    Idempotent — re-triggering the same gate_id with the same skills is a no-op.
+    Returns the session state or None if no gate is mapped to this type.
+    """
+    entry = _TRIGGER_MAP.get(endpoint_type)
+    if not entry:
+        return None
+    trigger_msg = f"{endpoint_type} endpoint discovered at {path}"
+    return trigger_gate(entry["gate_id"], trigger_msg, entry["required_skills"])
+
+
 def add_tool_invocation(tool: str, target: str, summary: str, options_hash: str = "") -> None:
     """Record a tool invocation with summary for dedup and recovery."""
     if not _current or _current.get("status") != "running":
@@ -393,12 +422,14 @@ def remaining(cost_summary: dict) -> dict:
     spent   = cost_summary.get("est_cost_usd", 0)
     calls   = cost_summary.get("tool_calls_total", 0)
     max_calls = lim["max_tool_calls"]
+    max_cost  = lim["max_cost_usd"]
+    max_time  = lim["max_time_minutes"]
     return {
-        "cost_remaining_usd":     round(max(0, lim["max_cost_usd"] - spent), 4),
-        "time_remaining_minutes": round(max(0, lim["max_time_minutes"] - elapsed), 1),
+        "cost_remaining_usd":     None if max_cost is None else round(max(0, max_cost - spent), 4),
+        "time_remaining_minutes": None if max_time is None else round(max(0, max_time - elapsed), 1),
         "calls_remaining":        max(0, max_calls - calls) if max_calls > 0 else -1,
-        "cost_pct":               min(100, round(spent / lim["max_cost_usd"] * 100, 1)),
-        "time_pct":               min(100, round(elapsed / lim["max_time_minutes"] * 100, 1)),
+        "cost_pct":               0 if max_cost is None else min(100, round(spent / max_cost * 100, 1)),
+        "time_pct":               0 if max_time is None else min(100, round(elapsed / max_time * 100, 1)),
         "calls_pct":              min(100, round(calls / max_calls * 100, 1)) if max_calls > 0 else 0,
     }
 

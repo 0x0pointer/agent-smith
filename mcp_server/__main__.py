@@ -138,7 +138,7 @@ sys.stderr.write(
     f"  platform    : {platform.platform()}\n"
     f"  cwd         : {os.getcwd()}\n"
     f"  __file__    : {__file__}\n"
-    f"  asyncio policy : {type(asyncio.get_event_loop_policy()).__name__}\n"
+    f"  asyncio policy : {type(asyncio.events._get_event_loop_policy()).__name__ if hasattr(asyncio.events, '_get_event_loop_policy') else 'default'}\n"
 )
 # Warn if an event loop is already running (common source of
 # 'asyncio.run() cannot be called from a running event loop' errors).
