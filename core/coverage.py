@@ -155,12 +155,12 @@ def _applicable_types(param_type: str, value_hint: str) -> list[str]:
 _TYPE_PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r'/graphql\b',                   re.IGNORECASE), "graphql"),
     (re.compile(r'/graph\b',                     re.IGNORECASE), "graphql"),
-    (re.compile(r'/(login|logout|signin|signup|register|auth|oauth|token|sso)\b', re.IGNORECASE), "auth"),
+    (re.compile(r'/(?:login|logout|signin|signup|register|auth|oauth|token|sso)\b', re.IGNORECASE), "auth"),
     (re.compile(r'/admin\b',                     re.IGNORECASE), "admin"),
-    (re.compile(r'/(upload|file|attachment|media|import)\b', re.IGNORECASE), "upload"),
-    (re.compile(r'/(payment|invoice|checkout|billing|transaction|transfer|balance|wallet)\b', re.IGNORECASE), "financial"),
+    (re.compile(r'/(?:upload|file|attachment|media|import)\b', re.IGNORECASE), "upload"),
+    (re.compile(r'/(?:payment|invoice|checkout|billing|transaction|transfer|balance|wallet)\b', re.IGNORECASE), "financial"),
     (re.compile(r'/(?:ws|websocket|socket)\b', re.IGNORECASE), "websocket"),
-    (re.compile(r'(?:^/api|/v\d+)\b',              re.IGNORECASE), "api"),
+    (re.compile(r'(?:^/api\b|/v\d+\b)',              re.IGNORECASE), "api"),
 ]
 
 
