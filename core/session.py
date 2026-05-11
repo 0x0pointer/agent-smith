@@ -59,9 +59,9 @@ PRESETS: dict[str, dict] = {
     "thorough": {
         "label":       "Thorough",
         "description": "Standard + full Kali toolchain — runs until complete (no cost/time cap)",
-        "max_cost_usd":     None,    # unlimited
-        "max_time_minutes": None,    # unlimited
-        "max_tool_calls":   0,       # 0 = unlimited
+        "max_cost_usd":     None,
+        "max_time_minutes": None,
+        "max_tool_calls":   0,
     },
 }
 

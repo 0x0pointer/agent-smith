@@ -614,3 +614,80 @@ def test_update_known_assets_multiple_types_independent():
     assets = core.session.get()["known_assets"]
     assert "192.168.1.1" in assets["ips"]
     assert "Apache" in assets["technologies"]
+
+
+# ── _injection_breadth_blocker ────────────────────────────────────────────────
+
+from mcp_server.session_tools import _injection_breadth_blocker, _na_untooled_blocker
+
+
+def _cell(ep_id, param, param_type, inj_type, status="pending", tested_by=""):
+    return {
+        "id": f"cell-{ep_id}-{param}-{inj_type}",
+        "endpoint_id": ep_id,
+        "param": param,
+        "param_type": param_type,
+        "injection_type": inj_type,
+        "status": status,
+        "tested_by": tested_by,
+    }
+
+
+def test_injection_breadth_blocker_no_gaps():
+    cells = [
+        _cell("ep1", "q", "query", "sqli"),
+        _cell("ep1", "q", "query", "xss"),
+        _cell("ep1", "q", "query", "ssti"),
+        _cell("ep1", "q", "query", "ssrf"),
+        _cell("ep1", "q", "query", "cmdi"),
+    ]
+    assert _injection_breadth_blocker(cells, coverage_enforced=True) is None
+
+
+def test_injection_breadth_blocker_gap_enforced():
+    cells = [_cell("ep1", "username", "body_json", "sqli")]
+    result = _injection_breadth_blocker(cells, coverage_enforced=True)
+    assert result is not None
+    assert "INJECTION BREADTH" in result
+    assert "username" in result
+
+
+def test_injection_breadth_blocker_gap_not_enforced():
+    cells = [_cell("ep1", "username", "body_json", "sqli")]
+    result = _injection_breadth_blocker(cells, coverage_enforced=False)
+    assert result is None
+
+
+def test_injection_breadth_blocker_no_sqli_cells():
+    cells = [_cell("ep1", "q", "query", "xss")]
+    assert _injection_breadth_blocker(cells, coverage_enforced=True) is None
+
+
+def test_injection_breadth_blocker_endpoint_param_ignored():
+    cells = [_cell("ep1", "_endpoint", "endpoint", "sqli")]
+    assert _injection_breadth_blocker(cells, coverage_enforced=True) is None
+
+
+# ── _na_untooled_blocker ──────────────────────────────────────────────────────
+
+def test_na_untooled_blocker_no_issue():
+    cells = [_cell("ep1", "q", "query", "sqli", status="tested_clean", tested_by="sqlmap")]
+    assert _na_untooled_blocker(cells, {"sqli": "blind bypass"}) is None
+
+
+def test_na_untooled_blocker_fires():
+    cells = [_cell("ep1", "q", "query", "sqli", status="not_applicable", tested_by="")]
+    result = _na_untooled_blocker(cells, {"sqli": "blind bypass"})
+    assert result is not None
+    assert "INTEGRITY" in result
+    assert "tested_by" in result
+
+
+def test_na_untooled_blocker_with_tested_by_ok():
+    cells = [_cell("ep1", "q", "query", "sqli", status="not_applicable", tested_by="sqlmap")]
+    assert _na_untooled_blocker(cells, {"sqli": "blind bypass"}) is None
+
+
+def test_na_untooled_blocker_non_bypass_type_ignored():
+    cells = [_cell("ep1", "q", "query", "idor", status="not_applicable", tested_by="")]
+    assert _na_untooled_blocker(cells, {"sqli": "blind bypass"}) is None

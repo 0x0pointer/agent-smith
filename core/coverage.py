@@ -159,12 +159,12 @@ _TYPE_PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r'/admin\b',                     re.IGNORECASE), "admin"),
     (re.compile(r'/(upload|file|attachment|media|import)\b', re.IGNORECASE), "upload"),
     (re.compile(r'/(payment|invoice|checkout|billing|transaction|transfer|balance|wallet)\b', re.IGNORECASE), "financial"),
-    (re.compile(r'/ws\b|/websocket\b|/socket\b', re.IGNORECASE), "websocket"),
+    (re.compile(r'/(?:ws|websocket|socket)\b', re.IGNORECASE), "websocket"),
     (re.compile(r'^/api\b|/v\d+\b',              re.IGNORECASE), "api"),
 ]
 
 
-def classify_endpoint(path: str, params: list[dict] | None = None) -> str | None:
+def classify_endpoint(path: str) -> str | None:
     """Return an endpoint type tag for trigger-gate routing, or None if unclassified.
 
     Checks path patterns in priority order; first match wins.
@@ -261,7 +261,7 @@ async def add_endpoint(
         _save(data)
 
     # Open a mandatory gate for high-value endpoint types (outside the lock — pure session state)
-    ep_type = classify_endpoint(path, params)
+    ep_type = classify_endpoint(path)
     if ep_type:
         from core.session import open_trigger_gate
         open_trigger_gate(ep_type, path)

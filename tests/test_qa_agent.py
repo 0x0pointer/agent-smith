@@ -990,3 +990,74 @@ async def test_run_calls_cycle_and_swallows_exceptions(tmp_path, monkeypatch):
             pass
 
     assert call_count == 2
+
+
+# ── _check_injection_breadth ──────────────────────────────────────────────────
+
+def _make_cell(ep_id, param, param_type, injection_type, status="pending"):
+    return {
+        "id": f"cell-{ep_id}-{param}-{injection_type}",
+        "endpoint_id": ep_id,
+        "param": param,
+        "param_type": param_type,
+        "injection_type": injection_type,
+        "status": status,
+    }
+
+
+def test_injection_breadth_no_matrix():
+    result = core.qa_agent._check_injection_breadth({"matrix": []})
+    assert result is None
+
+
+def test_injection_breadth_no_sqli_cells():
+    """Params without sqli cells are ignored."""
+    matrix = [_make_cell("ep1", "q", "query", "xss")]
+    result = core.qa_agent._check_injection_breadth({"matrix": matrix})
+    assert result is None
+
+
+def test_injection_breadth_full_coverage():
+    """Param has sqli + all four breadth types — no alert."""
+    matrix = [
+        _make_cell("ep1", "q", "query", "sqli"),
+        _make_cell("ep1", "q", "query", "xss"),
+        _make_cell("ep1", "q", "query", "ssti"),
+        _make_cell("ep1", "q", "query", "ssrf"),
+        _make_cell("ep1", "q", "query", "cmdi"),
+    ]
+    result = core.qa_agent._check_injection_breadth({"matrix": matrix})
+    assert result is None
+
+
+def test_injection_breadth_missing_types():
+    """Param has sqli but is missing xss/ssti/ssrf/cmdi — alert fires."""
+    matrix = [_make_cell("ep1", "username", "body_json", "sqli")]
+    result = core.qa_agent._check_injection_breadth({"matrix": matrix})
+    assert result is not None
+    assert result["code"] == "INJECTION_BREADTH_GAP"
+    assert result["urgency"] == "high"
+    assert "username" in result["message"]
+    assert "xss" in result["message"]
+
+
+def test_injection_breadth_endpoint_param_skipped():
+    """_endpoint params are never checked for breadth."""
+    matrix = [
+        {"id": "c1", "endpoint_id": "ep1", "param": "_endpoint",
+         "param_type": "endpoint", "injection_type": "sqli", "status": "pending"},
+    ]
+    result = core.qa_agent._check_injection_breadth({"matrix": matrix})
+    assert result is None
+
+
+def test_injection_breadth_partial_missing():
+    """Alert message lists which types are missing."""
+    matrix = [
+        _make_cell("ep1", "id", "query", "sqli"),
+        _make_cell("ep1", "id", "query", "xss"),
+        # missing ssti, ssrf, cmdi
+    ]
+    result = core.qa_agent._check_injection_breadth({"matrix": matrix})
+    assert result is not None
+    assert "ssti" in result["message"] or "ssrf" in result["message"]
