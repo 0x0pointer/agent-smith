@@ -559,9 +559,8 @@ def test_update_known_assets_noop_when_empty_items():
 def test_update_known_assets_accumulates_domains():
     core.session.start("example.com")
     core.session.update_known_assets("domains", ["sub.example.com", "api.example.com"])
-    assets = core.session.get()["known_assets"]
-    assert "sub.example.com" in assets["domains"]
-    assert "api.example.com" in assets["domains"]
+    domains = core.session.get()["known_assets"]["domains"]
+    assert domains == ["sub.example.com", "api.example.com"]
 
 
 def test_update_known_assets_deduplicates_scalars():
@@ -570,7 +569,7 @@ def test_update_known_assets_deduplicates_scalars():
     core.session.update_known_assets("domains", ["sub.example.com", "api.example.com"])
     domains = core.session.get()["known_assets"]["domains"]
     assert domains.count("sub.example.com") == 1
-    assert "api.example.com" in domains
+    assert domains.count("api.example.com") == 1
 
 
 def test_update_known_assets_converts_non_strings():
