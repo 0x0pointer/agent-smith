@@ -337,6 +337,28 @@ def add_tool_invocation(tool: str, target: str, summary: str, options_hash: str 
     _flush()
 
 
+def _update_ports_assets(assets: dict, items: list) -> None:
+    """Deduplicate and append port entries to known_assets['ports']."""
+    existing = {(p.get("host", ""), p.get("port", 0)) for p in assets.get("ports", [])}
+    for item in items:
+        if isinstance(item, dict):
+            key = (item.get("host", ""), item.get("port", 0))
+            if key not in existing:
+                assets.setdefault("ports", []).append(item)
+                existing.add(key)
+
+
+def _update_scalar_assets(assets: dict, asset_type: str, items: list) -> None:
+    """Deduplicate and append string/scalar entries to a known_assets list."""
+    target_list = assets.setdefault(asset_type, [])
+    existing = set(target_list)
+    for item in items:
+        val = item if isinstance(item, str) else str(item)
+        if val and val not in existing:
+            target_list.append(val)
+            existing.add(val)
+
+
 def update_known_assets(asset_type: str, items: list) -> None:
     """Accumulate discovered assets into session.json['known_assets']."""
     if not _current or _current.get("status") != "running" or not items:
@@ -346,21 +368,9 @@ def update_known_assets(asset_type: str, items: list) -> None:
         "technologies": [], "endpoints": [],
     })
     if asset_type == "ports":
-        existing = {(p.get("host", ""), p.get("port", 0)) for p in assets.get("ports", [])}
-        for item in items:
-            if isinstance(item, dict):
-                key = (item.get("host", ""), item.get("port", 0))
-                if key not in existing:
-                    assets.setdefault("ports", []).append(item)
-                    existing.add(key)
+        _update_ports_assets(assets, items)
     else:
-        target_list = assets.setdefault(asset_type, [])
-        existing = set(target_list)
-        for item in items:
-            val = item if isinstance(item, str) else str(item)
-            if val and val not in existing:
-                target_list.append(val)
-                existing.add(val)
+        _update_scalar_assets(assets, asset_type, items)
     _flush()
 
 

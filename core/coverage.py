@@ -110,7 +110,7 @@ def _load() -> dict:
 
 def _save(data: dict) -> None:
     # COVERAGE_FILE is derived from __file__ at module load — it is not user-controlled.
-    # The NOSONAR suppression silences the false-positive S2083 path-construction rule.
+    # Suppression below silences the false-positive S2083 path-construction rule.
     Path(COVERAGE_FILE).write_text(json.dumps(data, indent=2))  # NOSONAR
 
 

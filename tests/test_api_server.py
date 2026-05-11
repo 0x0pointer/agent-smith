@@ -341,7 +341,7 @@ def test_api_delete_finding_error(monkeypatch):
     monkeypatch.setattr(findings_mod, "delete_finding", AsyncMock(side_effect=Exception("db error")))
     response = client.delete("/api/findings/abc123")
     assert response.status_code == 400
-    assert "db error" in response.json()["error"]
+    assert response.json()["error"] == "Request failed"
 
 
 def test_api_clear_resets_findings(tmp_path, monkeypatch):
@@ -453,8 +453,7 @@ async def test_cleanup_tunnels_exception_handling():
 
     with patch("asyncio.create_subprocess_exec", side_effect=OSError("docker not found")):
         result = await _cleanup_tunnels()
-    assert "cleanup error" in result
-    assert "docker not found" in result
+    assert result == "cleanup error"
 
 
 # ── lifecycle helpers ─────────────────────────────────────────────────────────

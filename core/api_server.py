@@ -224,7 +224,8 @@ async def api_patch_finding(finding_id: str, request: Request) -> JSONResponse:
         )
         return JSONResponse({"ok": updated})
     except Exception as exc:
-        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+        _log.error("api_update_finding failed: %s", exc)
+        return JSONResponse({"ok": False, "error": "Request failed"}, status_code=400)
 
 
 @app.delete("/api/findings/{finding_id}")
@@ -234,7 +235,8 @@ async def api_delete_finding(finding_id: str) -> JSONResponse:
         archived = await delete_finding(finding_id)
         return JSONResponse({"ok": archived})
     except Exception as exc:
-        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+        _log.error("api_delete_finding failed: %s", exc)
+        return JSONResponse({"ok": False, "error": "Request failed"}, status_code=400)
 
 
 def _safe_unlink(path) -> None:
@@ -354,7 +356,8 @@ async def _cleanup_tunnels() -> str:
         stdout, _ = await proc.communicate()
         return stdout.decode().strip()
     except Exception as exc:
-        return f"cleanup error: {exc}"
+        _log.error("cleanup_tunnels failed: %s", exc)
+        return "cleanup error"
 
 
 @app.get("/api/qa")
