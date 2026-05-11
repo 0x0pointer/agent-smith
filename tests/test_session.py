@@ -691,3 +691,23 @@ def test_na_untooled_blocker_with_tested_by_ok():
 def test_na_untooled_blocker_non_bypass_type_ignored():
     cells = [_cell("ep1", "q", "query", "idor", status="not_applicable", tested_by="")]
     assert _na_untooled_blocker(cells, {"sqli": "blind bypass"}) is None
+
+
+# ---------------------------------------------------------------------------
+# open_trigger_gate
+# ---------------------------------------------------------------------------
+
+from core.session import open_trigger_gate
+
+
+def test_open_trigger_gate_unknown_type_returns_none():
+    result = open_trigger_gate("unknown_endpoint_type", "/some/path")
+    assert result is None
+
+
+def test_open_trigger_gate_known_type_opens_gate(coverage_file):
+    import core.session
+    core.session.start("http://example.com")
+    result = open_trigger_gate("graphql", "/graphql")
+    # Returns the session state dict (not None)
+    assert result is not None

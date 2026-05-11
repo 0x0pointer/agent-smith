@@ -1061,3 +1061,124 @@ def test_injection_breadth_partial_missing():
     result = core.qa_agent._check_injection_breadth({"matrix": matrix})
     assert result is not None
     assert "ssti" in result["message"] or "ssrf" in result["message"]
+
+
+# ---------------------------------------------------------------------------
+# _check_endpoint_trigger_gaps
+# ---------------------------------------------------------------------------
+
+from core.qa_agent import _check_endpoint_trigger_gaps, _check_coverage_gap
+from datetime import datetime, timezone, timedelta
+
+
+def _gate(gid, required, status="pending", triggered_at=None, trigger="api endpoint"):
+    return {
+        "id": gid,
+        "status": status,
+        "required_skills": required,
+        "triggered_at": triggered_at or datetime.now(timezone.utc).isoformat(),
+        "trigger": trigger,
+    }
+
+
+def test_trigger_gaps_no_gates():
+    assert _check_endpoint_trigger_gaps({}) == []
+
+
+def test_trigger_gaps_satisfied_gate_skipped():
+    sd = {"gates": [_gate("g1", ["api-security"], status="satisfied")], "skill_history": []}
+    assert _check_endpoint_trigger_gaps(sd) == []
+
+
+def test_trigger_gaps_all_skills_satisfied():
+    sd = {
+        "gates": [_gate("g1", ["api-security"])],
+        "skill_history": [{"skill": "api-security"}],
+    }
+    assert _check_endpoint_trigger_gaps(sd) == []
+
+
+def test_trigger_gaps_missing_skill_fires_alert():
+    sd = {
+        "gates": [_gate("g1", ["api-security"])],
+        "skill_history": [],
+    }
+    alerts = _check_endpoint_trigger_gaps(sd)
+    assert len(alerts) == 1
+    assert alerts[0]["code"] == "ENDPOINT_TRIGGER_GAP"
+    assert "/api-security" in alerts[0]["message"]
+
+
+def test_trigger_gaps_elapsed_over_15_is_high():
+    old_time = (datetime.now(timezone.utc) - timedelta(minutes=20)).isoformat()
+    sd = {
+        "gates": [_gate("g1", ["credential-audit"], triggered_at=old_time)],
+        "skill_history": [],
+    }
+    alerts = _check_endpoint_trigger_gaps(sd)
+    assert alerts[0]["urgency"] == "high"
+
+
+def test_trigger_gaps_elapsed_under_15_is_medium():
+    recent = datetime.now(timezone.utc).isoformat()
+    sd = {
+        "gates": [_gate("g1", ["credential-audit"], triggered_at=recent)],
+        "skill_history": [],
+    }
+    alerts = _check_endpoint_trigger_gaps(sd)
+    assert alerts[0]["urgency"] == "medium"
+
+
+def test_trigger_gaps_bad_timestamp_defaults_to_zero():
+    sd = {
+        "gates": [{"id": "g1", "status": "pending", "required_skills": ["web-exploit"],
+                   "triggered_at": "not-a-date", "trigger": "upload"}],
+        "skill_history": [],
+    }
+    alerts = _check_endpoint_trigger_gaps(sd)
+    assert len(alerts) == 1
+    assert alerts[0]["urgency"] == "medium"  # elapsed=0 < 15
+
+
+# ---------------------------------------------------------------------------
+# _check_coverage_gap
+# ---------------------------------------------------------------------------
+
+def test_coverage_gap_no_endpoints():
+    assert _check_coverage_gap({"endpoints": []}, {}) == []
+
+
+def test_coverage_gap_unclassified_endpoint_ignored():
+    cov = {"endpoints": [{"path": "/static/image.png"}]}
+    assert _check_coverage_gap(cov, {}) == []
+
+
+def test_coverage_gap_skill_already_run():
+    cov = {"endpoints": [{"path": "/graphql"}]}
+    sd = {"skill_history": [{"skill": "api-security"}]}
+    assert _check_coverage_gap(cov, sd) == []
+
+
+def test_coverage_gap_skill_missing_fires_alert():
+    cov = {"endpoints": [{"path": "/graphql"}]}
+    sd = {"skill_history": []}
+    alerts = _check_coverage_gap(cov, sd)
+    assert len(alerts) == 1
+    assert alerts[0]["code"] == "COVERAGE_GAP"
+    assert "api-security" in alerts[0]["message"]
+
+
+def test_coverage_gap_multiple_same_type_grouped():
+    cov = {"endpoints": [{"path": "/graphql"}, {"path": "/graph/query"}]}
+    sd = {"skill_history": []}
+    alerts = _check_coverage_gap(cov, sd)
+    # Both are graphql type — grouped into one alert
+    assert len(alerts) == 1
+    assert "2 graphql" in alerts[0]["message"]
+
+
+def test_coverage_gap_financial_endpoint_flags_business_logic():
+    cov = {"endpoints": [{"path": "/api/payment"}]}
+    sd = {"skill_history": []}
+    alerts = _check_coverage_gap(cov, sd)
+    assert any("business-logic" in a["message"] for a in alerts)
