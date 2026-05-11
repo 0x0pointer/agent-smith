@@ -33,6 +33,7 @@ build/
 !.env.example
 *.pem
 *.key
+report_generator.py
 
 # ── macOS ─────────────────────────────────────────────────────────────────────
 .DS_Store
