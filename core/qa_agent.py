@@ -271,6 +271,17 @@ def _check_injection_breadth(coverage_data: dict) -> dict | None:
             f"{sample}{more}"
         ),
     }
+def _check_rce_gate_alert(gate_info: str, summary: str) -> dict | None:
+    if "rce" not in gate_info.lower():
+        return None
+    sev_m = re.search(r"Findings: (.+)", summary)
+    if not sev_m:
+        return None
+    sev_str = sev_m.group(1)
+    if "critical" not in sev_str and " high" not in sev_str:
+        return {"code": "RCE_GATE_FALSE_POSITIVE", "urgency": "medium", "blocking": False,
+                "message": "RCE gate may be a false positive — verify finding severity"}
+    return None
 
 
 def _check_gate_alerts(summary: str) -> list[dict]:
@@ -289,13 +300,9 @@ def _check_gate_alerts(summary: str) -> list[dict]:
         requires = req_m.group(1) if req_m else "required skill"
         alerts.append({"code": "GATE_PENDING", "urgency": urgency, "blocking": False,
                        "message": f"Gate {gate_id} pending {elapsed}min — chain {requires} or dismiss"})
-    if "rce" in gate_info.lower():
-        sev_m = re.search(r"Findings: (.+)", summary)
-        if sev_m:
-            sev_str = sev_m.group(1)
-            if "critical" not in sev_str and " high" not in sev_str:
-                alerts.append({"code": "RCE_GATE_FALSE_POSITIVE", "urgency": "medium", "blocking": False,
-                               "message": "RCE gate may be a false positive — verify finding severity"})
+    rce_alert = _check_rce_gate_alert(gate_info, summary)
+    if rce_alert:
+        alerts.append(rce_alert)
     return alerts
 
 
@@ -594,7 +601,7 @@ class QADaemon:
             "smith_actions": smith_actions,
         })
 
-        _QA_STATE_FILE.write_text(json.dumps({
+        _QA_STATE_FILE.write_text(json.dumps({  # NOSONAR
             "ts":      datetime.now(timezone.utc).isoformat(),
             "alerts":  final_alerts,
             "history": history[-20:],

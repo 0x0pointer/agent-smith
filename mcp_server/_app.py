@@ -158,7 +158,6 @@ async def _run(name: str, **kwargs) -> str:
         mount   = os.environ.get("PENTEST_TARGET_PATH", os.getcwd()) if tool.needs_mount else None
         env_vars = {k: os.environ[k] for k in tool.forward_env if k in os.environ} or None
 
-        t_start = time.monotonic()
         try:
             stdout, stderr, _ = await run_container(
                 tool.image, args, timeout=tool.default_timeout,
@@ -170,7 +169,6 @@ async def _run(name: str, **kwargs) -> str:
             cost_tracker.finish(call_id, result)
             log.tool_result(name, result)
             return result
-        elapsed = round(time.monotonic() - t_start, 1)
 
         # Log full verbose output before any clipping
         log.tool_result_verbose(name, stdout, stderr)

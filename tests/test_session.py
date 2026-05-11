@@ -532,3 +532,85 @@ def test_gate_merge_reopens_satisfied_gate():
     core.session.trigger_gate("g1", "expanded", ["skill-b"])
     assert core.session.get()["gates"][0]["status"] == "pending"
     assert set(core.session.get()["gates"][0]["required_skills"]) == {"skill-a", "skill-b"}
+
+
+# ---------------------------------------------------------------------------
+# update_known_assets()
+# ---------------------------------------------------------------------------
+
+def test_update_known_assets_noop_without_session():
+    core.session._current = None
+    core.session.update_known_assets("domains", ["example.com"])  # should not raise
+
+
+def test_update_known_assets_noop_when_not_running():
+    core.session.start("example.com")
+    core.session.complete("done")
+    core.session.update_known_assets("domains", ["evil.com"])
+    assert "evil.com" not in core.session.get().get("known_assets", {}).get("domains", [])
+
+
+def test_update_known_assets_noop_when_empty_items():
+    core.session.start("example.com")
+    core.session.update_known_assets("domains", [])
+    assert core.session.get()["known_assets"]["domains"] == []
+
+
+def test_update_known_assets_accumulates_domains():
+    core.session.start("example.com")
+    core.session.update_known_assets("domains", ["sub.example.com", "api.example.com"])
+    domains = core.session.get()["known_assets"]["domains"]
+    assert domains == ["sub.example.com", "api.example.com"]
+
+
+def test_update_known_assets_deduplicates_scalars():
+    core.session.start("example.com")
+    core.session.update_known_assets("domains", ["sub.example.com"])
+    core.session.update_known_assets("domains", ["sub.example.com", "api.example.com"])
+    domains = core.session.get()["known_assets"]["domains"]
+    assert domains.count("sub.example.com") == 1
+    assert domains.count("api.example.com") == 1
+
+
+def test_update_known_assets_converts_non_strings():
+    core.session.start("example.com")
+    core.session.update_known_assets("technologies", [42, "nginx"])
+    techs = core.session.get()["known_assets"]["technologies"]
+    assert "42" in techs
+    assert "nginx" in techs
+
+
+def test_update_known_assets_ports_appends_dicts():
+    core.session.start("example.com")
+    port_entry = {"host": "10.0.0.1", "port": 80, "protocol": "tcp"}
+    core.session.update_known_assets("ports", [port_entry])
+    ports = core.session.get()["known_assets"]["ports"]
+    assert len(ports) == 1
+    assert ports[0]["port"] == 80
+
+
+def test_update_known_assets_ports_deduplicates_by_host_port():
+    core.session.start("example.com")
+    entry = {"host": "10.0.0.1", "port": 443}
+    core.session.update_known_assets("ports", [entry])
+    core.session.update_known_assets("ports", [entry, {"host": "10.0.0.1", "port": 8080}])
+    ports = core.session.get()["known_assets"]["ports"]
+    assert len(ports) == 2
+    assert any(p["port"] == 443 for p in ports)
+    assert any(p["port"] == 8080 for p in ports)
+
+
+def test_update_known_assets_ports_skips_non_dict_items():
+    core.session.start("example.com")
+    core.session.update_known_assets("ports", ["not-a-dict", 9999])
+    ports = core.session.get()["known_assets"].get("ports", [])
+    assert len(ports) == 0
+
+
+def test_update_known_assets_multiple_types_independent():
+    core.session.start("example.com")
+    core.session.update_known_assets("ips", ["192.168.1.1"])
+    core.session.update_known_assets("technologies", ["Apache"])
+    assets = core.session.get()["known_assets"]
+    assert "192.168.1.1" in assets["ips"]
+    assert "Apache" in assets["technologies"]
