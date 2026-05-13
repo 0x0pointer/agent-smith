@@ -1,0 +1,40 @@
+name: Bump skills submodule
+
+on:
+  repository_dispatch:
+    types: [skills-updated]
+  schedule:
+    - cron: "0 6 * * *"  # daily fallback at 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          submodules: true
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update skills to latest main
+        id: update
+        run: |
+          git submodule update --remote --merge skills
+          echo "sha=$(git -C skills rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Commit if changed
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet; then
+            echo "skills already up to date"
+          else
+            git add skills
+            git commit -m "chore: bump skills submodule to ${{ steps.update.outputs.sha }}"
+            git push
+          fi
