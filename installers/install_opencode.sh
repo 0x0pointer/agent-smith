@@ -76,10 +76,37 @@ PYEOF
 ok "MCP server registered in $OPENCODE_CONFIG"
 ok "CLAUDE.md added to global instructions"
 
+# ── Ask whether to overwrite existing skill files ────────────────────────────
+echo ""
+_FORCE_SKILLS=false
+if ls "$OPENCODE_COMMANDS_DIR/"*.md >/dev/null 2>&1; then
+    printf "  Existing skill files found in %s.\n" "$OPENCODE_COMMANDS_DIR"
+    printf "  Overwrite with fresh copies from the repo? [Y/n]: "
+    IFS= read -r _overwrite_answer </dev/tty || true
+    echo ""
+    if [[ "${_overwrite_answer:-Y}" =~ ^[Yy]$ ]]; then
+        _FORCE_SKILLS=true
+        ok "Will overwrite existing skill files"
+    else
+        warn "Keeping existing skill files — skipping skill installation"
+    fi
+else
+    _FORCE_SKILLS=true
+fi
+
+# ── Copy helper ───────────────────────────────────────────────────────────────
+_cp() {
+    local src="$1" dst="$2"
+    [[ "$_FORCE_SKILLS" == false ]] && return 0
+    rm -f "$dst"
+    cp "$src" "$dst"
+}
+
 # ── Install compaction recovery plugin ──────────────────────────────────────
 echo ""
 echo "Installing compaction recovery plugin..."
 mkdir -p "$OPENCODE_PLUGINS_DIR"
+rm -f "$OPENCODE_PLUGINS_DIR/opencode-pentest-recovery.mjs"
 cp "$REPO_DIR/installers/opencode-pentest-recovery.mjs" \
    "$OPENCODE_PLUGINS_DIR/opencode-pentest-recovery.mjs"
 ok "Compaction recovery plugin installed (preserves scan state across context compaction)"
@@ -90,7 +117,7 @@ echo "Installing slash commands..."
 mkdir -p "$OPENCODE_COMMANDS_DIR"
 
 # /pentester — top-level command
-cp "$REPO_DIR/skills/pentester.md" "$OPENCODE_COMMANDS_DIR/pentester.md"
+_cp "$REPO_DIR/skills/pentester.md" "$OPENCODE_COMMANDS_DIR/pentester.md"
 ok "/pentester command installed"
 
 # Skill commands — each gets its own file
@@ -104,7 +131,7 @@ _install_skill() {
         _SKILL_MISSING+=("$name")
         return
     fi
-    cp "$src" "$OPENCODE_COMMANDS_DIR/${name}.md"
+    _cp "$src" "$OPENCODE_COMMANDS_DIR/${name}.md"
     _SKILL_OK=$((_SKILL_OK + 1))
 }
 
@@ -145,7 +172,9 @@ REFS_SRC="$REPO_DIR/skills/web-exploit/refs"
 REFS_DST="$OPENCODE_COMMANDS_DIR/web-exploit-refs"
 if [ -d "$REFS_SRC" ]; then
     mkdir -p "$REFS_DST"
-    cp "$REFS_SRC"/*.md "$REFS_DST/"
+    for _ref_src in "$REFS_SRC"/*.md; do
+        _cp "$_ref_src" "$REFS_DST/$(basename "$_ref_src")"
+    done
     REF_COUNT=$(ls "$REFS_DST"/*.md 2>/dev/null | wc -l | tr -d ' ')
     ok "$REF_COUNT injection reference files installed (lazy-loaded to save context)"
 else
