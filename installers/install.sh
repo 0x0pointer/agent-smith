@@ -44,11 +44,37 @@ claude mcp add --scope user pentest-agent \
     -- poetry -C "$REPO_DIR" run python -m mcp_server
 ok "MCP server registered (scope: user)"
 
+# ── Ask whether to overwrite existing skill files ────────────────────────────
+echo ""
+_FORCE_SKILLS=false
+if ls "$HOME/.claude/skills/"*/SKILL.md "$HOME/.claude/commands/pentester.md" >/dev/null 2>&1; then
+    printf "  Existing skill files found in ~/.claude/skills/.\n"
+    printf "  Overwrite with fresh copies from the repo? [Y/n]: "
+    IFS= read -r _overwrite_answer </dev/tty || true
+    echo ""
+    if [[ "${_overwrite_answer:-Y}" =~ ^[Yy]$ ]]; then
+        _FORCE_SKILLS=true
+        ok "Will overwrite existing skill files"
+    else
+        warn "Keeping existing skill files — skipping skill installation"
+    fi
+else
+    _FORCE_SKILLS=true
+fi
+
+# ── Copy helper ───────────────────────────────────────────────────────────────
+_cp() {
+    local src="$1" dst="$2"
+    [[ "$_FORCE_SKILLS" == false ]] && return 0
+    rm -f "$dst"
+    cp "$src" "$dst"
+}
+
 # ── Install /pentester slash command ──────────────────────────────────────────
 echo ""
 echo "Installing /pentester slash command..."
 mkdir -p "$HOME/.claude/commands"
-cp "$REPO_DIR/skills/pentester.md" "$HOME/.claude/commands/pentester.md"
+_cp "$REPO_DIR/skills/pentester.md" "$HOME/.claude/commands/pentester.md"
 ok "/pentester command available in all Claude sessions"
 
 # ── Install security analysis skills ─────────────────────────────────────────
@@ -56,117 +82,121 @@ echo ""
 echo "Installing security analysis skills..."
 
 mkdir -p "$HOME/.claude/skills/analyze-cve"
-cp "$REPO_DIR/skills/analyze-cve/SKILL.md" "$HOME/.claude/skills/analyze-cve/SKILL.md"
+_cp "$REPO_DIR/skills/analyze-cve/SKILL.md" "$HOME/.claude/skills/analyze-cve/SKILL.md"
 ok "/analyze-cve skill installed"
 
 mkdir -p "$HOME/.claude/skills/threat-modeling"
-cp "$REPO_DIR/skills/threat-modeling/SKILL.md" "$HOME/.claude/skills/threat-modeling/SKILL.md"
+_cp "$REPO_DIR/skills/threat-modeling/SKILL.md" "$HOME/.claude/skills/threat-modeling/SKILL.md"
 ok "/threat-model skill installed"
 
 mkdir -p "$HOME/.claude/skills/aikido-triage"
-cp "$REPO_DIR/skills/aikido-triage/SKILL.md" "$HOME/.claude/skills/aikido-triage/SKILL.md"
+_cp "$REPO_DIR/skills/aikido-triage/SKILL.md" "$HOME/.claude/skills/aikido-triage/SKILL.md"
 ok "/aikido-triage skill installed"
 
 mkdir -p "$HOME/.claude/skills/gh-export"
-cp "$REPO_DIR/skills/gh-export/SKILL.md" "$HOME/.claude/skills/gh-export/SKILL.md"
+_cp "$REPO_DIR/skills/gh-export/SKILL.md" "$HOME/.claude/skills/gh-export/SKILL.md"
 ok "/gh-export skill installed"
 
 mkdir -p "$HOME/.claude/skills/ai-redteam"
-cp "$REPO_DIR/skills/ai-redteam/SKILL.md" "$HOME/.claude/skills/ai-redteam/SKILL.md"
+_cp "$REPO_DIR/skills/ai-redteam/SKILL.md" "$HOME/.claude/skills/ai-redteam/SKILL.md"
 ok "/ai-redteam skill installed"
 
 mkdir -p "$HOME/.claude/skills/container-k8s-security"
-cp "$REPO_DIR/skills/container-k8s-security/SKILL.md" "$HOME/.claude/skills/container-k8s-security/SKILL.md"
+_cp "$REPO_DIR/skills/container-k8s-security/SKILL.md" "$HOME/.claude/skills/container-k8s-security/SKILL.md"
 ok "/container-k8s-security skill installed"
 
 mkdir -p "$HOME/.claude/skills/cloud-security"
-cp "$REPO_DIR/skills/cloud-security/SKILL.md" "$HOME/.claude/skills/cloud-security/SKILL.md"
+_cp "$REPO_DIR/skills/cloud-security/SKILL.md" "$HOME/.claude/skills/cloud-security/SKILL.md"
 ok "/cloud-security skill installed"
 
 mkdir -p "$HOME/.claude/skills/ad-assessment"
-cp "$REPO_DIR/skills/ad-assessment/SKILL.md" "$HOME/.claude/skills/ad-assessment/SKILL.md"
+_cp "$REPO_DIR/skills/ad-assessment/SKILL.md" "$HOME/.claude/skills/ad-assessment/SKILL.md"
 ok "/ad-assessment skill installed"
 
 mkdir -p "$HOME/.claude/skills/email-security"
-cp "$REPO_DIR/skills/email-security/SKILL.md" "$HOME/.claude/skills/email-security/SKILL.md"
+_cp "$REPO_DIR/skills/email-security/SKILL.md" "$HOME/.claude/skills/email-security/SKILL.md"
 ok "/email-security skill installed"
 
 mkdir -p "$HOME/.claude/skills/metasploit"
-cp "$REPO_DIR/skills/metasploit/SKILL.md" "$HOME/.claude/skills/metasploit/SKILL.md"
+_cp "$REPO_DIR/skills/metasploit/SKILL.md" "$HOME/.claude/skills/metasploit/SKILL.md"
 ok "/metasploit skill installed"
 
 mkdir -p "$HOME/.claude/skills/reverse-shell"
-cp "$REPO_DIR/skills/reverse-shell/SKILL.md" "$HOME/.claude/skills/reverse-shell/SKILL.md"
+_cp "$REPO_DIR/skills/reverse-shell/SKILL.md" "$HOME/.claude/skills/reverse-shell/SKILL.md"
 ok "/reverse-shell skill installed"
 
 mkdir -p "$HOME/.claude/skills/web-exploit/refs"
-cp "$REPO_DIR/skills/web-exploit/SKILL.md" "$HOME/.claude/skills/web-exploit/SKILL.md"
+_cp "$REPO_DIR/skills/web-exploit/SKILL.md" "$HOME/.claude/skills/web-exploit/SKILL.md"
 if [ -d "$REPO_DIR/skills/web-exploit/refs" ]; then
-    cp "$REPO_DIR/skills/web-exploit/refs/"* "$HOME/.claude/skills/web-exploit/refs/"
+    for _ref_src in "$REPO_DIR/skills/web-exploit/refs/"*; do
+        _cp "$_ref_src" "$HOME/.claude/skills/web-exploit/refs/$(basename "$_ref_src")"
+    done
 fi
 ok "/web-exploit skill installed (with lazy-loaded injection refs)"
 
 mkdir -p "$HOME/.claude/skills/api-security"
-cp "$REPO_DIR/skills/api-security/SKILL.md" "$HOME/.claude/skills/api-security/SKILL.md"
+_cp "$REPO_DIR/skills/api-security/SKILL.md" "$HOME/.claude/skills/api-security/SKILL.md"
 ok "/api-security skill installed"
 
 mkdir -p "$HOME/.claude/skills/colang-gen"
-cp "$REPO_DIR/skills/colang-gen/SKILL.md" "$HOME/.claude/skills/colang-gen/SKILL.md"
+_cp "$REPO_DIR/skills/colang-gen/SKILL.md" "$HOME/.claude/skills/colang-gen/SKILL.md"
 ok "/colang-gen skill installed"
 
 mkdir -p "$HOME/.claude/skills/codebase"
-cp "$REPO_DIR/skills/codebase/SKILL.md" "$HOME/.claude/skills/codebase/SKILL.md"
+_cp "$REPO_DIR/skills/codebase/SKILL.md" "$HOME/.claude/skills/codebase/SKILL.md"
 ok "/codebase skill installed"
 
 mkdir -p "$HOME/.claude/skills/remediate"
-cp "$REPO_DIR/skills/remediate/SKILL.md" "$HOME/.claude/skills/remediate/SKILL.md"
+_cp "$REPO_DIR/skills/remediate/SKILL.md" "$HOME/.claude/skills/remediate/SKILL.md"
 ok "/remediate skill installed"
 
 mkdir -p "$HOME/.claude/skills/credential-audit"
-cp "$REPO_DIR/skills/credential-audit/SKILL.md" "$HOME/.claude/skills/credential-audit/SKILL.md"
+_cp "$REPO_DIR/skills/credential-audit/SKILL.md" "$HOME/.claude/skills/credential-audit/SKILL.md"
 ok "/credential-audit skill installed"
 
 mkdir -p "$HOME/.claude/skills/lateral-movement"
-cp "$REPO_DIR/skills/lateral-movement/SKILL.md" "$HOME/.claude/skills/lateral-movement/SKILL.md"
+_cp "$REPO_DIR/skills/lateral-movement/SKILL.md" "$HOME/.claude/skills/lateral-movement/SKILL.md"
 ok "/lateral-movement skill installed"
 
 mkdir -p "$HOME/.claude/skills/network-assess"
-cp "$REPO_DIR/skills/network-assess/SKILL.md" "$HOME/.claude/skills/network-assess/SKILL.md"
+_cp "$REPO_DIR/skills/network-assess/SKILL.md" "$HOME/.claude/skills/network-assess/SKILL.md"
 ok "/network-assess skill installed"
 
 mkdir -p "$HOME/.claude/skills/osint"
-cp "$REPO_DIR/skills/osint/SKILL.md" "$HOME/.claude/skills/osint/SKILL.md"
+_cp "$REPO_DIR/skills/osint/SKILL.md" "$HOME/.claude/skills/osint/SKILL.md"
 ok "/osint skill installed"
 
 mkdir -p "$HOME/.claude/skills/post-exploit"
-cp "$REPO_DIR/skills/post-exploit/SKILL.md" "$HOME/.claude/skills/post-exploit/SKILL.md"
+_cp "$REPO_DIR/skills/post-exploit/SKILL.md" "$HOME/.claude/skills/post-exploit/SKILL.md"
 ok "/post-exploit skill installed"
 
 mkdir -p "$HOME/.claude/skills/ssl-tls-audit"
-cp "$REPO_DIR/skills/ssl-tls-audit/SKILL.md" "$HOME/.claude/skills/ssl-tls-audit/SKILL.md"
+_cp "$REPO_DIR/skills/ssl-tls-audit/SKILL.md" "$HOME/.claude/skills/ssl-tls-audit/SKILL.md"
 ok "/ssl-tls-audit skill installed"
 
 mkdir -p "$HOME/.claude/skills/request-cves"
-cp "$REPO_DIR/skills/request-cves/SKILL.md" "$HOME/.claude/skills/request-cves/SKILL.md"
+_cp "$REPO_DIR/skills/request-cves/SKILL.md" "$HOME/.claude/skills/request-cves/SKILL.md"
 ok "/request-cves skill installed"
 
 mkdir -p "$HOME/.claude/skills/param-fuzz"
-cp "$REPO_DIR/skills/param-fuzz/SKILL.md" "$HOME/.claude/skills/param-fuzz/SKILL.md"
+_cp "$REPO_DIR/skills/param-fuzz/SKILL.md" "$HOME/.claude/skills/param-fuzz/SKILL.md"
 ok "/param-fuzz skill installed"
 
 mkdir -p "$HOME/.claude/skills/business-logic"
-cp "$REPO_DIR/skills/business-logic/SKILL.md" "$HOME/.claude/skills/business-logic/SKILL.md"
+_cp "$REPO_DIR/skills/business-logic/SKILL.md" "$HOME/.claude/skills/business-logic/SKILL.md"
 ok "/business-logic skill installed"
 
 mkdir -p "$HOME/.claude/skills/compliance/refs"
-cp "$REPO_DIR/skills/compliance/SKILL.md" "$HOME/.claude/skills/compliance/SKILL.md"
+_cp "$REPO_DIR/skills/compliance/SKILL.md" "$HOME/.claude/skills/compliance/SKILL.md"
 if [ -d "$REPO_DIR/skills/compliance/refs" ]; then
-    cp "$REPO_DIR/skills/compliance/refs/"* "$HOME/.claude/skills/compliance/refs/"
+    for _ref_src in "$REPO_DIR/skills/compliance/refs/"*; do
+        _cp "$_ref_src" "$HOME/.claude/skills/compliance/refs/$(basename "$_ref_src")"
+    done
 fi
 ok "/compliance skill installed (with ASVS 5.0 CSV ref)"
 
 mkdir -p "$HOME/.claude/skills/report"
-cp "$REPO_DIR/skills/report/SKILL.md" "$HOME/.claude/skills/report/SKILL.md"
+_cp "$REPO_DIR/skills/report/SKILL.md" "$HOME/.claude/skills/report/SKILL.md"
 ok "/report skill installed"
 
 # ── API keys (QA agent + AI testing tools) ───────────────────────────────────
