@@ -1,7 +1,7 @@
 """
 FastAPI web server
 ==================
-Serves the dashboard UI and REST API on the same port (default 8888).
+Serves the dashboard UI and REST API on the same port (default 7777).
 
 Routes
 ------
@@ -14,8 +14,8 @@ Routes
 Usage
 -----
   from core.api_server import serve
-  url = await serve(port=8888)
-  # → "http://localhost:8888"
+  url = await serve(port=7777)
+  # → "http://localhost:7777"
 """
 from __future__ import annotations
 
@@ -438,12 +438,16 @@ def _pid_alive(pid: int) -> bool:
 
 
 def _port_healthy(port: int) -> bool:
-    import socket
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        return s.connect_ex(("localhost", port)) == 0
+    """Return True only if our FastAPI dashboard is responding on this port."""
+    import urllib.request
+    try:
+        with urllib.request.urlopen(f"http://localhost:{port}/api/session", timeout=2) as r:
+            return r.status == 200
+    except Exception:
+        return False
 
 
-async def serve(port: int = 8888) -> str:
+async def serve(port: int = 7777) -> str:
     """
     Start the dashboard server as an independent background process.
     Survives MCP server restarts — uses a PID file to detect and reuse

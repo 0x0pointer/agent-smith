@@ -238,7 +238,7 @@ def _do_start(opts):
 
     lines += [
         "EXECUTE NOW (do not ask questions, do not output text):",
-        "  report(action='dashboard', data={'port': 8888})",
+        "  report(action='dashboard', data={'port': 7777})",
         f"  scan(tool='httpx', target='{target}')" if not is_resume else "  Continue from recovery state above — follow EXECUTE_NOW field.",
         "",
         "Then in order (skip steps in tools_already_run if this is a resume):",
