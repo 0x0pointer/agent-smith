@@ -366,7 +366,7 @@ class TestTimePerSkill:
             {"type": "SKILL", "name": "web-exploit",  "ts": ts(10)},
             {"type": "TOOL",  "name": "sqlmap",       "ts": ts(12)},
         ]
-        result = tmp_metrics._compute_time_per_skill(entries, total_minutes=15)
+        result = tmp_metrics._compute_time_per_skill(entries)
         assert "pentester" in result
         assert "web-exploit" in result
         # pentester: from ts(0) to last tool ts(5) = 5 min
@@ -375,7 +375,7 @@ class TestTimePerSkill:
         assert result["web-exploit"] == 2.0
 
     def test_empty_entries_returns_empty(self, tmp_metrics):
-        assert tmp_metrics._compute_time_per_skill([], 30) == {}
+        assert tmp_metrics._compute_time_per_skill([]) == {}
 
 
 # ---------------------------------------------------------------------------

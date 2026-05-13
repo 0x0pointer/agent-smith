@@ -135,24 +135,24 @@ def test_scope_drift_no_tool_entries():
 # ---------------------------------------------------------------------------
 
 def test_coverage_stall_no_coverage_entries():
-    assert _check_coverage_stall({}, [_tool_entry()]) is None
+    assert _check_coverage_stall([_tool_entry()]) is None
 
 
 def test_coverage_stall_pending_zero():
     entries = [_coverage_entry(pending=0, offset_min=35)]
-    assert _check_coverage_stall({}, entries) is None
+    assert _check_coverage_stall(entries) is None
 
 
 def test_coverage_stall_under_15_min():
     entries = [_coverage_entry(pending=5, offset_min=10)]
-    assert _check_coverage_stall({}, entries) is None
+    assert _check_coverage_stall(entries) is None
 
 
 def test_coverage_stall_fires_at_15_min(tmp_path, monkeypatch):
     import core.steering as st_mod
     monkeypatch.setattr(st_mod, "_STEERING_FILE", tmp_path / "steering_queue.json")
     entries = [_coverage_entry(pending=8, offset_min=20)]
-    alert = _check_coverage_stall({}, entries)
+    alert = _check_coverage_stall(entries)
     assert alert is not None
     assert alert["code"] == "COVERAGE_STALL"
     assert alert["urgency"] == "high"
@@ -163,7 +163,7 @@ def test_coverage_stall_generates_directive(tmp_path, monkeypatch):
     import core.steering as st_mod
     monkeypatch.setattr(st_mod, "_STEERING_FILE", tmp_path / "steering_queue.json")
     entries = [_coverage_entry(pending=3, offset_min=20)]
-    _check_coverage_stall({}, entries)
+    _check_coverage_stall(entries)
     q = st_mod.SteeringQueue()
     assert any(d["code"] == "RESUME_TESTING" for d in q._load())
 

@@ -453,11 +453,12 @@ class QADaemon:
         while True:
             await asyncio.sleep(interval_s)
             try:
-                self._cycle()
+                await self._cycle()
             except Exception as exc:
                 _log.warning("QA Daemon cycle error: %s", exc)
 
-    def _cycle(self) -> None:
+    async def _cycle(self) -> None:
+        await asyncio.sleep(0)
         if not _session_is_running():
             return
 
