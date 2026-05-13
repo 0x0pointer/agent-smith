@@ -30,7 +30,10 @@ jobs:
 
       - name: Open PR if changed
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Prefer a PAT so PR creation works even when the repo-level
+          # "Allow GitHub Actions to create and approve pull requests" toggle
+          # is disabled.  Fall back to GITHUB_TOKEN (requires that toggle ON).
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -49,4 +52,8 @@ jobs:
             --title "chore: bump skills submodule to ${{ steps.update.outputs.sha }}" \
             --body "Automated skills submodule bump triggered by workflow." \
             --base main \
-            --head "$BRANCH"
+            --head "$BRANCH" \
+          || { echo ""; echo "ERROR: PR creation failed."; \
+               echo "Fix: add a GH_PAT repo secret (classic token with repo scope), OR"; \
+               echo "     enable Settings → Actions → General → Allow GitHub Actions to create and approve pull requests"; \
+               exit 1; }
