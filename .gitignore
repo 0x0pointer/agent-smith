@@ -50,3 +50,6 @@ report_generator.py
 *.swp
 *.swo
 *~
+steering_queue.json
+recovery_latest.json
+pentest_metrics.jsonl

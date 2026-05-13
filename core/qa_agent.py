@@ -1,20 +1,18 @@
 """
 QA Agent
 ========
-Two-layer QA reviewer that runs every 2 minutes during an active scan.
+Deterministic QA reviewer + active steering daemon.
 
-Layer 1 — Deterministic Python rules
-  Reads quick_log.summarize(), findings.json, and coverage_matrix.json.
-  Produces coded, typed alerts without any LLM call.
+Runs every 2 minutes during an active scan. Two responsibilities:
 
-Layer 2 — Semantic LLM review
-  Only invoked when there are high/critical findings to review.
-  Checks: overclaimed severity, vague descriptions, missing attack chains.
-  Provider-agnostic via QA_MODEL env var:
+1. Alert generation — coded alerts written to qa_state.json and injected into
+   tool envelopes (via envelope P5.5). Purely observational — no blocking on
+   most codes, completeness blocking only on BULK_MARKING and COVERAGE_INTEGRITY.
 
-    QA_MODEL=openai:gpt-4o-mini               (default)
-    QA_MODEL=anthropic:claude-haiku-4-5-20251001
-    QA_MODEL=ollama:qwen2.5:7b
+2. Steering directives — when Smith stalls, misses a skill chain, or leaves a gate
+   open too long, the QA daemon writes a SteeringDirective to steering_queue.json.
+   The envelope P5.7 injects pending directives directly into Smith's next tool
+   response. No model action needed — Smith sees it automatically.
 
 Alert schema
   {
@@ -23,17 +21,17 @@ Alert schema
     "blocking": bool,  — true = this alert blocks scan completion
     "message":  str,   — human-readable description
   }
+
+All checks operate on structured data (session.json, coverage_matrix.json,
+findings.json, quick_log entries). No regex parsing of summary text.
 """
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
-import os
-import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TypedDict
 
 _log = logging.getLogger(__name__)
 _REPO_ROOT      = Path(__file__).parent.parent
@@ -42,38 +40,72 @@ _SESSION_FILE   = _REPO_ROOT / "session.json"
 _FINDINGS_FILE  = _REPO_ROOT / "findings.json"
 _COVERAGE_FILE  = _REPO_ROOT / "coverage_matrix.json"
 
+_DOCKER_ALIASES = {"host.docker.internal", "172.17.0.1", "172.18.0.1"}  # NOSONAR
 
-# ── Deterministic checks ──────────────────────────────────────────────────────
 
-def _check_scope_drift(summary: str) -> dict | None:
-    if "Possible off-scope targets used:" not in summary:
+def _norm_target(t: str) -> str:
+    for alias in _DOCKER_ALIASES:
+        t = t.replace(alias, "localhost")
+    return t
+
+
+# ── Deterministic checks — structured data only ───────────────────────────────
+
+def _check_scope_drift(entries: list[dict], session_data: dict) -> dict | None:
+    declared = _norm_target(session_data.get("target", ""))
+    if not declared:
         return None
-    m = re.search(r"Possible off-scope targets used: (.+)", summary)
-    targets = m.group(1).strip() if m else "unknown"
+    off_scope: set[str] = set()
+    for e in entries:
+        if e.get("type") != "TOOL":
+            continue
+        tgt = _norm_target(e.get("target", ""))
+        if tgt and declared not in tgt and tgt not in declared:
+            off_scope.add(e.get("target", ""))
+    if not off_scope:
+        return None
+    targets = ", ".join(list(off_scope)[:5])
     return {"code": "SCOPE_DRIFT", "urgency": "high", "blocking": False,
             "message": f"Scope drift: tools ran against {targets}"}
 
 
-def _check_coverage_stall(summary: str) -> dict | None:
-    stall_m   = re.search(r"WARNING: coverage stale \((\d+) min", summary)
-    pending_m = re.search(r",\s*(\d+) pending", summary)
-    if not stall_m or not pending_m:
+def _check_coverage_stall(coverage_data: dict, entries: list[dict]) -> dict | None:
+    cov_entries = [e for e in entries if e.get("type") == "COVERAGE"]
+    if not cov_entries:
         return None
-    pending = int(pending_m.group(1))
+    last = cov_entries[-1]
+    pending = last.get("pending", 0)
     if pending == 0:
         return None
-    mins = int(stall_m.group(1))
+    try:
+        last_ts = datetime.fromisoformat(last["ts"])
+        mins = int((datetime.now(timezone.utc) - last_ts).total_seconds() / 60)
+    except Exception:
+        return None
+    if mins < 15:
+        return None
+    from core.steering import steering_queue, RESUME_TESTING
+    steering_queue.add_directive(
+        code=RESUME_TESTING,
+        message=(
+            f"Coverage stalled {mins}min — {pending} cells pending. "
+            "EXECUTE: session(action='recovery') then resume systematic testing from EXECUTE_NOW."
+        ),
+        priority="high",
+        skill=None,
+        trigger="COVERAGE_STALL",
+    )
     return {"code": "COVERAGE_STALL", "urgency": "high", "blocking": False,
             "message": f"Coverage stall — {pending} cells untested, last update {mins}min ago"}
 
 
-def _check_spider_without_coverage(summary: str, coverage_data: dict) -> dict | None:
-    if "Endpoints found:" not in summary:
+def _check_spider_without_coverage(entries: list[dict], coverage_data: dict) -> dict | None:
+    spiders = [e for e in entries if e.get("type") == "SPIDER"]
+    if not spiders:
         return None
     if coverage_data.get("meta", {}).get("total_cells", 0) != 0:
         return None
-    m = re.search(r"Endpoints found: (\S+)", summary)
-    count = m.group(1) if m else "?"
+    count = spiders[-1].get("endpoints_found", "?")
     return {"code": "SPIDER_WITHOUT_COVERAGE", "urgency": "high", "blocking": False,
             "message": f"Spider found {count} endpoint(s) but coverage matrix is empty — register endpoints"}
 
@@ -87,59 +119,95 @@ def _check_poc_gap(findings_data: dict) -> dict | None:
     titles = ", ".join(f["title"] for f in missing_poc[:3])
     if len(missing_poc) > 3:
         titles += f" +{len(missing_poc) - 3} more"
-    return {"code": "POC_GAP", "urgency": "medium", "blocking": False,
+    from core.steering import steering_queue, POC_REQUIRED
+    steering_queue.add_directive(
+        code=POC_REQUIRED,
+        message=(
+            f"PoC required for {len(missing_poc)} high/critical finding(s): {titles}. "
+            "Call http(action='save_poc', options={title: '...', finding_id: '<id>'}) for each."
+        ),
+        priority="high",
+        skill=None,
+        trigger="POC_GAP",
+    )
+    return {"code": "POC_GAP", "urgency": "high", "blocking": False,
             "message": f"PoC gap: {len(missing_poc)}/{len(high_crit)} high/critical findings have no saved PoC: {titles}"}
 
 
-def _check_skill_chain_gap(summary: str) -> dict | None:
-    if "Findings:" not in summary or "web-exploit" in summary:
+def _check_tool_inactivity(entries: list[dict]) -> dict | None:
+    tools = [e for e in entries if e.get("type") in ("TOOL", "SPIDER")]
+    if not tools:
         return None
-    sev_m = re.search(r"Findings: (.+)", summary)
-    if not sev_m:
+    try:
+        last_ts = datetime.fromisoformat(tools[-1]["ts"])
+        mins = int((datetime.now(timezone.utc) - last_ts).total_seconds() / 60)
+    except Exception:
         return None
-    sev_str = sev_m.group(1)
-    if "critical" not in sev_str and " high" not in sev_str:
-        return None
-    return {"code": "SKILL_CHAIN_GAP", "urgency": "medium", "blocking": False,
-            "message": "High/critical findings but web-exploit not yet chained — run /web-exploit"}
-
-
-def _check_tool_inactivity(summary: str) -> dict | None:
-    inact_m = re.search(r"Last tool call: (\d+) minutes ago", summary)
-    if not inact_m:
-        return None
-    mins = int(inact_m.group(1))
     if mins <= 10:
         return None
-    return {"code": "TOOL_INACTIVITY", "urgency": "low", "blocking": False,
-            "message": f"No tool activity in {mins}min — is Smith stuck?"}
+    urgency = "high" if mins > 15 else "medium"
+    alert = {"code": "TOOL_INACTIVITY", "urgency": urgency, "blocking": False,
+             "message": f"No tool activity for {mins}min — Smith may have stalled or quit."}
+    if mins > 15:
+        from core.steering import steering_queue, RESUME_REQUIRED
+        steering_queue.add_directive(
+            code=RESUME_REQUIRED,
+            message=(
+                f"Smith stalled for {mins}min. "
+                "EXECUTE: session(action='recovery') — then continue from EXECUTE_NOW field."
+            ),
+            priority="high",
+            skill=None,
+            trigger="TOOL_INACTIVITY",
+        )
+    return alert
 
 
-def _check_bulk_marking(summary: str) -> dict | None:
-    if "Bulk-marking warning:" not in summary:
+def _check_bulk_marking(entries: list[dict]) -> dict | None:
+    cov_entries = [e for e in entries if e.get("type") == "COVERAGE"]
+    if not cov_entries:
         return None
-    m = re.search(r"Bulk-marking warning: (.+)(?:\n|$)", summary)
-    detail = m.group(1).strip() if m else "N/A cells have no tested_by tool"
+    na_untooled = cov_entries[-1].get("na_untooled", 0)
+    if na_untooled <= 10:
+        return None
     return {"code": "BULK_MARKING", "urgency": "high", "blocking": True,
-            "message": f"Bulk-marking detected: {detail}"}
+            "message": f"Bulk-marking detected: {na_untooled} N/A cells have no tested_by tool"}
 
 
-def _check_coverage_integrity(summary: str) -> dict | None:
-    integ_m = re.search(r"(\d+) tested/vulnerable cells have no tested_by tool", summary)
-    if not integ_m:
+def _check_coverage_integrity(entries: list[dict]) -> dict | None:
+    cov_entries = [e for e in entries if e.get("type") == "COVERAGE"]
+    if not cov_entries:
         return None
-    count = integ_m.group(1)
+    untooled = cov_entries[-1].get("untooled", 0)
+    if untooled == 0:
+        return None
     return {"code": "COVERAGE_INTEGRITY", "urgency": "high", "blocking": True,
-            "message": f"Coverage integrity: {count} tested/vulnerable cells lack tested_by tool"}
+            "message": f"Coverage integrity: {untooled} tested/vulnerable cells lack tested_by tool"}
+
+
+def _check_missing_diagram(findings_data: dict) -> dict | None:
+    """Warn early when findings exist but no architecture diagram has been logged."""
+    if not findings_data.get("findings"):
+        return None
+    if findings_data.get("diagrams"):
+        return None
+    return {"code": "NO_DIAGRAM", "urgency": "medium", "blocking": False,
+            "message": "No architecture diagram yet — required before completion. Call report(action='diagram')."}
+
+
+def _check_no_spider_after_httpx(entries: list[dict]) -> dict | None:
+    """Warn if httpx confirmed web targets but spider was never run."""
+    tool_names = {e.get("name") for e in entries if e.get("type") == "TOOL"}
+    if "httpx" not in tool_names:
+        return None
+    if any(e.get("type") == "SPIDER" for e in entries):
+        return None
+    return {"code": "NO_SPIDER", "urgency": "medium", "blocking": False,
+            "message": "httpx confirmed web targets but spider never ran — run scan(tool='spider') to crawl the application"}
 
 
 def _check_endpoint_trigger_gaps(session_data: dict) -> list[dict]:
-    """Fire targeted alerts for every pending trigger gate in the session.
-
-    Unlike _check_gate_alerts (which parses the quick_log summary string),
-    this reads session.json's structured `gates` array directly so it catches
-    gates that were opened mid-scan and never escalated to a summary line.
-    """
+    """Fire targeted alerts for every pending trigger gate in the session."""
     alerts: list[dict] = []
     gates = session_data.get("gates", [])
     satisfied_skills = {e["skill"] for e in session_data.get("skill_history", [])}
@@ -167,19 +235,26 @@ def _check_endpoint_trigger_gaps(session_data: dict) -> list[dict]:
                 f"Required skills not yet run: {', '.join(f'/{s}' for s in missing)}"
             ),
         })
+        if elapsed >= 15:
+            for skill in missing:
+                from core.steering import steering_queue, CHAIN_REQUIRED
+                steering_queue.add_directive(
+                    code=CHAIN_REQUIRED,
+                    message=(
+                        f"Gate '{gate['id']}' open {elapsed}min — "
+                        f"invoke /{skill} to satisfy it. "
+                        "Use Skill tool: skill='" + skill + "'."
+                    ),
+                    priority="high",
+                    skill=skill,
+                    trigger="ENDPOINT_TRIGGER_GAP",
+                )
     return alerts
 
 
 def _check_coverage_gap(coverage_data: dict, session_data: dict) -> list[dict]:
-    """Detect high-value endpoint types that appear in the coverage matrix but
-    have no corresponding skill in skill_history.
-
-    Catches cases where an endpoint was registered + classified (so the trigger
-    gate exists) but the gate check didn't fire because session_data['gates']
-    wasn't populated yet (e.g. first scan cycle).
-    """
+    """Detect high-value endpoint types that appear in coverage but have no skill in history."""
     from core.session import _TRIGGER_MAP
-    # Invert trigger map: endpoint_type -> required_skill
     _TYPE_TO_SKILL: dict[str, str] = {
         ep_type: entry["required_skills"][0]
         for ep_type, entry in _TRIGGER_MAP.items()
@@ -223,15 +298,7 @@ def _check_coverage_gap(coverage_data: dict, session_data: dict) -> list[dict]:
 
 
 def _check_injection_breadth(coverage_data: dict) -> dict | None:
-    """Fire when a text parameter has sqli cells but is missing xss/ssti/ssrf/cmdi cells.
-
-    This catches two failure modes:
-    1. Endpoint registered with wrong param_type (e.g. body_json before the applicability fix).
-    2. Agent bulk-marked non-sqli injection types as N/A without testing them.
-
-    Only fires when sqli cells exist AND at least one of the four breadth types is entirely
-    absent (no cell of any status) for the same endpoint+param combination.
-    """
+    """Fire when a text parameter has sqli cells but is missing xss/ssti/ssrf/cmdi cells."""
     _BREADTH_REQUIRED = {"xss", "ssti", "ssrf", "cmdi"}
     _TEXT_PARAM_TYPES = {"query", "body_form", "body_json", "path", "header", "cookie"}
 
@@ -239,7 +306,6 @@ def _check_injection_breadth(coverage_data: dict) -> dict | None:
     if not matrix:
         return None
 
-    # Group cells by (endpoint_id, param) for text-type params
     from collections import defaultdict
     by_param: dict[tuple, dict[str, list]] = defaultdict(lambda: defaultdict(list))
     for cell in matrix:
@@ -250,7 +316,7 @@ def _check_injection_breadth(coverage_data: dict) -> dict | None:
     gap_params: list[str] = []
     for (ep_id, param), inj_map in by_param.items():
         if "sqli" not in inj_map:
-            continue  # no sqli cell — not a text param we care about
+            continue
         missing = _BREADTH_REQUIRED - set(inj_map.keys())
         if missing:
             gap_params.append(f"{param} (missing: {', '.join(sorted(missing))})")
@@ -271,183 +337,31 @@ def _check_injection_breadth(coverage_data: dict) -> dict | None:
             f"{sample}{more}"
         ),
     }
-def _check_rce_gate_alert(gate_info: str, summary: str) -> dict | None:
-    if "rce" not in gate_info.lower():
-        return None
-    sev_m = re.search(r"Findings: (.+)", summary)
-    if not sev_m:
-        return None
-    sev_str = sev_m.group(1)
-    if "critical" not in sev_str and " high" not in sev_str:
-        return {"code": "RCE_GATE_FALSE_POSITIVE", "urgency": "medium", "blocking": False,
-                "message": "RCE gate may be a false positive — verify finding severity"}
-    return None
-
-
-def _check_gate_alerts(summary: str) -> list[dict]:
-    alerts: list[dict] = []
-    gate_m = re.search(r"Pending gates: (.+)(?:\n|$)", summary)
-    if not gate_m:
-        return alerts
-    gate_info = gate_m.group(1)
-    time_m  = re.search(r"triggered (\d+)min ago", gate_info)
-    elapsed = int(time_m.group(1)) if time_m else 0
-    if elapsed >= 5:
-        urgency  = "high" if elapsed >= 15 else "medium"
-        gid_m    = re.search(r"^(\S+) \(", gate_info)
-        gate_id  = gid_m.group(1) if gid_m else "unknown"
-        req_m    = re.search(r"requires: (.+?)\)", gate_info)
-        requires = req_m.group(1) if req_m else "required skill"
-        alerts.append({"code": "GATE_PENDING", "urgency": urgency, "blocking": False,
-                       "message": f"Gate {gate_id} pending {elapsed}min — chain {requires} or dismiss"})
-    rce_alert = _check_rce_gate_alert(gate_info, summary)
-    if rce_alert:
-        alerts.append(rce_alert)
-    return alerts
 
 
 def _deterministic_qa_checks(
-    summary: str,
+    entries: list[dict],
     findings_data: dict,
     coverage_data: dict,
-    session_data: dict | None = None,
+    session_data: dict,
 ) -> list[dict]:
-    """Rule-based checks over the summary text and structured state.
-
-    Returns a list of alert dicts: {code, urgency, blocking, message}.
-    """
-    sd = session_data or {}
+    """Rule-based checks over structured state — no text parsing."""
     checks = [
-        _check_scope_drift(summary),
-        _check_coverage_stall(summary),
-        _check_spider_without_coverage(summary, coverage_data),
+        _check_scope_drift(entries, session_data),
+        _check_coverage_stall(coverage_data, entries),
+        _check_spider_without_coverage(entries, coverage_data),
         _check_poc_gap(findings_data),
-        _check_skill_chain_gap(summary),
-        _check_tool_inactivity(summary),
-        _check_bulk_marking(summary),
-        _check_coverage_integrity(summary),
+        _check_tool_inactivity(entries),
+        _check_bulk_marking(entries),
+        _check_coverage_integrity(entries),
+        _check_missing_diagram(findings_data),
+        _check_no_spider_after_httpx(entries),
         _check_injection_breadth(coverage_data),
     ]
     alerts = [c for c in checks if c is not None]
-    alerts.extend(_check_gate_alerts(summary))
-    alerts.extend(_check_endpoint_trigger_gaps(sd))
-    alerts.extend(_check_coverage_gap(coverage_data, sd))
+    alerts.extend(_check_endpoint_trigger_gaps(session_data))
+    alerts.extend(_check_coverage_gap(coverage_data, session_data))
     return alerts
-
-
-# ── Semantic LLM review ───────────────────────────────────────────────────────
-
-# Prompt focuses only on what a Python rule cannot assess: semantic quality.
-QA_SYSTEM_PROMPT = """\
-You are a QA reviewer for a penetration test. Review the finding quality below.
-
-For each high or critical finding, check:
-1. Is the severity plausibly overclaimed? (e.g. an info-disclosure marked critical)
-2. Is the description so vague it is not actionable by a developer?
-3. Is business impact absent or generic for a high/critical finding?
-4. Is an obvious next attack path missing? (e.g. auth bypass + IDOR suggests priv-esc path)
-
-Only flag issues you can justify from the finding text. Do NOT flag missing PoCs or coverage
-gaps — those are handled by deterministic checks and will appear separately.
-
-Output ONLY valid JSON — no markdown, no explanation:
-{"alerts": [{"code": "FINDING_QUALITY", "urgency": "high|medium", "blocking": false, "message": "..."}]}
-Max 2 alerts. If no semantic issues, return {"alerts": []}.
-"""
-
-
-# ── LangGraph wiring ──────────────────────────────────────────────────────────
-
-class QAState(TypedDict):
-    summary: str
-    raw_response: str
-    alerts: list[dict]
-
-
-def _init_llm(model_name: str, max_tokens: int = 512):
-    provider, _, model = model_name.partition(":")
-    if not model:
-        provider, model = "openai", model_name
-    if provider == "openai":
-        from langchain_openai import ChatOpenAI
-        return ChatOpenAI(model=model, max_tokens=max_tokens)
-    if provider == "anthropic":
-        from langchain_anthropic import ChatAnthropic
-        return ChatAnthropic(model=model, max_tokens=max_tokens)
-    if provider == "ollama":
-        from langchain_ollama import ChatOllama
-        return ChatOllama(model=model, num_predict=max_tokens)
-    raise ValueError(f"Unknown QA_MODEL provider {provider!r}. Use openai:MODEL, anthropic:MODEL, or ollama:MODEL")
-
-
-def _build_graph():
-    """Build and return the LangGraph semantic QA graph, or None if deps are missing."""
-    try:
-        from langgraph.graph import StateGraph, END
-    except ImportError as exc:
-        _log.warning("QA Agent: langgraph / langchain-core not installed (%s). Semantic review disabled.", exc)
-        return None
-
-    model_name = os.getenv("QA_MODEL", "openai:gpt-4o-mini")
-    try:
-        llm = _init_llm(model_name)
-    except Exception as exc:
-        _log.warning("QA Agent: could not initialise model %s — %s", model_name, exc)
-        return None
-
-    def invoke_llm(state: QAState) -> QAState:
-        from langchain_core.messages import SystemMessage, HumanMessage
-        response = llm.invoke([
-            SystemMessage(content=QA_SYSTEM_PROMPT),
-            HumanMessage(content=state["summary"]),
-        ])
-        return {**state, "raw_response": response.content}
-
-    def parse_response(state: QAState) -> QAState:
-        try:
-            alerts = json.loads(state["raw_response"]).get("alerts", [])
-            if not isinstance(alerts, list):
-                alerts = []
-        except (json.JSONDecodeError, AttributeError):
-            alerts = []
-        # Ensure every alert has the required schema fields
-        cleaned = []
-        for a in alerts:
-            if isinstance(a, dict) and a.get("message"):
-                cleaned.append({
-                    "code":     str(a.get("code", "FINDING_QUALITY")),
-                    "urgency":  str(a.get("urgency", "medium")),
-                    "blocking": bool(a.get("blocking", False)),
-                    "message":  str(a["message"]),
-                })
-        return {**state, "alerts": cleaned}
-
-    graph = StateGraph(QAState)
-    graph.add_node("invoke_llm", invoke_llm)
-    graph.add_node("parse_response", parse_response)
-    graph.set_entry_point("invoke_llm")
-    graph.add_edge("invoke_llm", "parse_response")
-    graph.add_edge("parse_response", END)
-    return graph.compile()
-
-
-def _format_findings_for_semantic_review(findings_data: dict) -> str:
-    """Format high/critical findings as compact text for the LLM."""
-    high_crit = [
-        f for f in findings_data.get("findings", [])
-        if f.get("severity") in ("high", "critical")
-    ]
-    if not high_crit:
-        return ""
-    lines = []
-    for f in high_crit[:10]:
-        lines.append(
-            f"[{f['severity'].upper()}] {f['title']}\n"
-            f"  description: {(f.get('description') or '')[:300]}\n"
-            f"  evidence: {(f.get('evidence') or '')[:200]}\n"
-            f"  business_impact: {(f.get('business_impact') or 'not set')}"
-        )
-    return "\n\n".join(lines)
 
 
 # ── State helpers ─────────────────────────────────────────────────────────────
@@ -477,7 +391,7 @@ def _load_json(path: Path) -> dict:
 
 
 def _deduplicate(new_alerts: list[dict], previous_alerts: list[dict]) -> list[dict]:
-    """Drop alerts whose code+message were already raised at same/higher urgency last cycle."""
+    """Return alerts whose code+message changed since last cycle."""
     _URGENCY = {"high": 2, "medium": 1, "low": 0}
     prev_by_code: dict[str, dict] = {}
     for a in previous_alerts:
@@ -489,9 +403,31 @@ def _deduplicate(new_alerts: list[dict], previous_alerts: list[dict]) -> list[di
     for a in new_alerts:
         prev = prev_by_code.get(a.get("code", ""))
         if prev and prev.get("message") == a.get("message"):
-            continue  # unchanged — skip to avoid noise
+            continue  # unchanged — skip
         result.append(a)
     return result
+
+
+def _merge_alerts(unique_alerts: list[dict], all_alerts: list[dict], cap: int = 4) -> list[dict]:
+    """Merge changed alerts first, then fill with persistent unchanged ones.
+
+    Fixes the deduplication bug where persistent alerts disappeared whenever
+    any new alert fired. Changed alerts take priority; unchanged ones fill
+    remaining slots so they stay visible.
+    """
+    seen_codes: set[str] = set()
+    merged: list[dict] = []
+    for a in unique_alerts:
+        code = a.get("code", "")
+        if code not in seen_codes:
+            seen_codes.add(code)
+            merged.append(a)
+    for a in all_alerts:
+        code = a.get("code", "")
+        if code not in seen_codes:
+            seen_codes.add(code)
+            merged.append(a)
+    return merged[:cap]
 
 
 def _sanitize_history(raw: list) -> list[dict]:
@@ -502,7 +438,6 @@ def _sanitize_history(raw: list) -> list[dict]:
         reply = entry.get("smith_reply")
         result.append({
             "ts":            str(entry.get("ts", ""))[:50],
-            "summary_sent":  str(entry.get("summary_sent", "")),
             "alerts":        [a for a in entry.get("alerts", []) if isinstance(a, dict)][:10],
             "smith_reply":   str(reply)[:2000] if reply else None,
             "smith_actions": [a for a in entry.get("smith_actions", []) if isinstance(a, dict)][:50],
@@ -513,16 +448,6 @@ def _sanitize_history(raw: list) -> list[dict]:
 # ── Daemon ────────────────────────────────────────────────────────────────────
 
 class QADaemon:
-    def __init__(self):
-        self._graph = None
-        self._graph_built = False
-
-    def _get_graph(self):
-        if not self._graph_built:
-            self._graph = _build_graph()
-            self._graph_built = True
-        return self._graph
-
     async def run(self, interval_s: int = 120) -> None:
         _log.info("QA Daemon started (interval=%ds)", interval_s)
         while True:
@@ -532,56 +457,32 @@ class QADaemon:
             except Exception as exc:
                 _log.warning("QA Daemon cycle error: %s", exc)
 
-    async def _run_semantic_review(self, finding_text: str) -> list[dict]:
-        graph = self._get_graph()
-        if graph is None:
-            return []
-        try:
-            result = await asyncio.to_thread(
-                graph.invoke,
-                {"summary": finding_text, "raw_response": "", "alerts": []},
-            )
-            return result.get("alerts", [])
-        except Exception as exc:
-            _log.warning("QA Daemon: semantic review failed — %s", exc)
-            return []
-
     async def _cycle(self) -> None:
         if not _session_is_running():
             return
 
         from core.quick_log import quick_log
-        summary = quick_log.summarize()
-        if not summary.strip() or summary == "No activity logged yet.":
+        entries = quick_log.read_all()
+        if not any(e.get("type") in ("TOOL", "SPIDER", "SKILL", "FINDING", "COVERAGE") for e in entries):
             return
 
         findings_data = _load_json(_FINDINGS_FILE)
         coverage_data = _load_json(_COVERAGE_FILE)
         session_data  = _load_json(_SESSION_FILE)
 
-        # Layer 1: deterministic checks — always run, no LLM cost
-        determ_alerts = _deterministic_qa_checks(summary, findings_data, coverage_data, session_data)
+        determ_alerts = _deterministic_qa_checks(entries, findings_data, coverage_data, session_data)
 
-        # Layer 2: semantic LLM review — only when there are high/critical findings
-        finding_text    = _format_findings_for_semantic_review(findings_data)
-        semantic_alerts = await self._run_semantic_review(finding_text) if finding_text else []
+        existing        = _read_qa_state()
+        previous_alerts = existing.get("alerts", [])
 
-        all_alerts = determ_alerts + semantic_alerts
-
-        existing       = _read_qa_state()
-        previous_alerts: list[dict] = existing.get("alerts", [])
-
-        # Deduplicate against last cycle to reduce noise
-        unique_alerts = _deduplicate(all_alerts, previous_alerts)
-        if not unique_alerts and not all_alerts:
+        unique_alerts = _deduplicate(determ_alerts, previous_alerts)
+        if not unique_alerts and not determ_alerts:
             return
 
-        # Cap at 4 alerts (deterministic takes priority over semantic)
-        final_alerts = (all_alerts if not unique_alerts else unique_alerts)[:4]
+        final_alerts = _merge_alerts(unique_alerts, determ_alerts)
 
         ts_before = datetime.now(timezone.utc).isoformat()
 
-        # Re-read after async work so a Clear All during inference is respected
         post_existing = _read_qa_state()
         history       = _sanitize_history(post_existing.get("history", []))
         prev_cycle_ts = history[-1]["ts"] if history else ""
@@ -595,7 +496,6 @@ class QADaemon:
 
         history.append({
             "ts":            ts_before,
-            "summary_sent":  summary,
             "alerts":        final_alerts,
             "smith_reply":   smith_reply,
             "smith_actions": smith_actions,
@@ -607,8 +507,7 @@ class QADaemon:
             "history": history[-20:],
         }))
 
-        _log.info("QA Daemon: %d alert(s) written (%d determ, %d semantic)",
-                  len(final_alerts), len(determ_alerts), len(semantic_alerts))
+        _log.info("QA Daemon: %d alert(s) written", len(final_alerts))
 
 
 qa_daemon = QADaemon()

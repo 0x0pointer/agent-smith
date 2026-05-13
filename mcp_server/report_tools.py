@@ -84,7 +84,7 @@ async def report(action: str, data: Any) -> str:
       message
 
     dashboard data:
-      port=5000
+      port=8888
 
     coverage data:
       type: endpoint | tested | bulk_tested | reset
@@ -292,7 +292,7 @@ def _auto_trigger_note_gates(message: str) -> list[str]:
 async def _do_dashboard(data):
     try:
         from core import api_server
-        port = data.get("port", 5000)
+        port = data.get("port", 8888)
         log.tool_call("dashboard", {"port": port})
         url = await api_server.serve(port)
         log.tool_result("dashboard", url)

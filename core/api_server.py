@@ -1,7 +1,7 @@
 """
 FastAPI web server
 ==================
-Serves the dashboard UI and REST API on the same port (default 5000).
+Serves the dashboard UI and REST API on the same port (default 8888).
 
 Routes
 ------
@@ -14,8 +14,8 @@ Routes
 Usage
 -----
   from core.api_server import serve
-  url = await serve(port=5000)
-  # → "http://localhost:5000"
+  url = await serve(port=8888)
+  # → "http://localhost:8888"
 """
 from __future__ import annotations
 
@@ -34,7 +34,9 @@ _SESSION_FILE      = _REPO_ROOT / "session.json"
 _COST_FILE         = _REPO_ROOT / "session_cost.json"
 _COVERAGE_FILE     = _REPO_ROOT / "coverage_matrix.json"
 _QA_STATE_FILE     = _REPO_ROOT / "qa_state.json"
+_STEERING_FILE     = _REPO_ROOT / "steering_queue.json"
 _QUICK_LOG_FILE    = _REPO_ROOT / "quick_log.json"
+_METRICS_FILE      = _REPO_ROOT / "pentest_metrics.jsonl"
 _TEMPLATES_DIR     = _REPO_ROOT / "templates"
 _THREAT_MODEL_DIR  = _REPO_ROOT / "threat-model"
 
@@ -289,8 +291,11 @@ async def api_clear() -> JSONResponse:
     except Exception:
         pass
 
-    # session.json, coverage_matrix.json, quick_log.json, qa_state.json, session_cost.json
-    for path in (_SESSION_FILE, _COVERAGE_FILE, _QUICK_LOG_FILE, _QA_STATE_FILE, _COST_FILE):
+    # session.json, coverage_matrix.json, quick_log.json, qa_state.json, session_cost.json,
+    # steering_queue.json, recovery_latest.json
+    _RECOVERY_SNAP = _REPO_ROOT / "recovery_latest.json"
+    for path in (_SESSION_FILE, _COVERAGE_FILE, _QUICK_LOG_FILE, _QA_STATE_FILE,
+                 _COST_FILE, _STEERING_FILE, _RECOVERY_SNAP):
         _safe_unlink(path)
 
     # log files in logs/
@@ -365,6 +370,17 @@ async def api_qa() -> JSONResponse:
     return JSONResponse(_read_json(_QA_STATE_FILE))
 
 
+@app.get("/api/steering")
+async def api_steering() -> JSONResponse:
+    return JSONResponse(_read_json(_STEERING_FILE))
+
+
+@app.get("/api/metrics")
+async def api_metrics() -> JSONResponse:
+    import core.metrics as metrics_mod
+    return JSONResponse(metrics_mod.load_all())
+
+
 @app.get("/api/quicklog")
 async def api_quicklog() -> JSONResponse:
     if not _QUICK_LOG_FILE.exists():
@@ -427,7 +443,7 @@ def _port_healthy(port: int) -> bool:
         return s.connect_ex(("localhost", port)) == 0
 
 
-async def serve(port: int = 5000) -> str:
+async def serve(port: int = 8888) -> str:
     """
     Start the dashboard server as an independent background process.
     Survives MCP server restarts — uses a PID file to detect and reuse

@@ -39,7 +39,7 @@ Log findings, diagrams, notes, and coverage matrix updates.
 - `action="finding"` — data: `{title, severity, target, description, evidence, tool_used, cve}`
 - `action="diagram"` — data: `{title, mermaid}`
 - `action="note"` — data: `{message}`
-- `action="dashboard"` — data: `{port: 5000}`
+- `action="dashboard"` — data: `{port: 8888}`
 - `action="coverage"` — data: `{type, ...}` — manage the coverage matrix:
   - `type="endpoint"` — register endpoint + auto-generate cells: `{path, method, params=[{name, type, value_hint}], discovered_by, auth_context}`
   - `type="tested"` — mark cell tested: `{cell_id, status (tested_clean|vulnerable|not_applicable|skipped), notes, finding_id}`

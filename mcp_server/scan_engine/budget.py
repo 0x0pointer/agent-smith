@@ -21,9 +21,9 @@ if TYPE_CHECKING:
 
 MODEL_PROFILES: dict[str, dict] = {
     "full": {
-        "enforce_budget": False,     # No output limits — go full in
-        "budget_multiplier": 1.0,    # unused when enforce_budget=False
-        "context_budget_chars": None,  # no context tracking limit
+        "enforce_budget": False,       # No output limits — go full in
+        "budget_multiplier": 1.0,      # unused when enforce_budget=False
+        "context_budget_chars": 400_000,  # ~100K tokens; warn at 80% (320K) before compaction fires
         "recovery_cells_shown": None,  # show all cells in recovery
         "execute_next_in_summary": True,  # still useful, harmless for large models
     },
