@@ -250,8 +250,9 @@ def _maybe_write_recovery_snapshot(scan_session: Any) -> None:
         seq = len(current.get("tool_invocations", []))
         if seq > 0 and seq % 10 == 0:
             from mcp_server.session_tools import _do_recovery
-            import pathlib
-            _RECOVERY_SNAP_FILE.write_text(_do_recovery(), encoding="utf-8")
+            snap = _RECOVERY_SNAP_FILE.resolve()
+            if _REPO_ROOT.resolve() in snap.parents:
+                snap.write_text(_do_recovery(), encoding="utf-8")
     except Exception:
         pass
 
