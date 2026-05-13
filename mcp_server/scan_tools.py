@@ -17,6 +17,18 @@ def _strip_scheme(target: str) -> str:
     return target
 
 
+# Signals that unambiguously mean the spider tool failed to execute at all.
+_SPIDER_HARD_FAIL_SIGNALS = ("command not found", "exec: ", "no such file or directory")
+
+
+def _spider_succeeded(raw: str) -> bool:
+    """Return True if the spider tool executed (even finding nothing). False = failed to run."""
+    if not raw or not raw.strip():
+        return False
+    low = raw.lower()
+    return not any(sig in low for sig in _SPIDER_HARD_FAIL_SIGNALS)
+
+
 async def _handle_nmap(target, flags, options):
     _record("nmap")
     raw = await _run("nmap", host=_strip_scheme(target), ports=options.get("ports", "top-1000"), flags=flags)
@@ -100,41 +112,101 @@ async def _handle_spider(target, flags, options):
     import json as _json
 
     mode = options.get("mode", "fast")
-    # Auto-upgrade to playwright for thorough scans — katana misses JS-rendered routes
-    if mode == "fast" and scan_session.get() and scan_session.get().get("depth") == "thorough":
-        mode = "playwright"
-        log.note("spider: auto-upgraded mode=fast → playwright (session depth=thorough)")
-
     depth = str(max(1, options.get("depth", 3)))
     timeout = options.get("timeout", 900)
+    cookies = options.get("cookies", {})
+    max_pages = str(options.get("max_pages", 200))
+    safe_url = shlex.quote(target)
+    safe_cookies = shlex.quote(_json.dumps(cookies))
 
-    log.tool_call("spider", {"url": target, "depth": depth, "mode": mode, "flags": flags})
-    call_id = cost_tracker.start("spider")
+    is_thorough = scan_session.get() and scan_session.get().get("depth") == "thorough"
 
-    if mode == "playwright":
-        cookies = options.get("cookies", {})
-        max_pages = str(options.get("max_pages", 200))
-        safe_url = shlex.quote(target)
-        safe_cookies = shlex.quote(_json.dumps(cookies))
-        cmd = (
+    if is_thorough:
+        # Thorough: run katana + playwright + ZAP AJAX spider, merge all results
+        log.note("spider: thorough mode — running katana + playwright + ZAP AJAX spider")
+        log.tool_call("spider", {"url": target, "depth": depth, "mode": "thorough-all", "flags": flags})
+        call_id = cost_tracker.start("spider")
+
+        safe_flags = shlex.join(shlex.split(flags)) if flags else ""
+        rate_flag = "" if "-rate-limit" in (flags or "") else "-rate-limit 50"
+        katana_cmd = f"katana -u {safe_url} -d {depth} -silent -no-color {rate_flag}".strip()
+        if safe_flags:
+            katana_cmd += f" {safe_flags}"
+
+        playwright_cmd = (
             f"playwright-spider --url {safe_url} --cookies {safe_cookies} "
             f"--depth {depth} --max-pages {max_pages}"
         )
-    else:
-        # Default: katana (fast mode)
-        safe_url = shlex.quote(target)
-        safe_flags = shlex.join(shlex.split(flags)) if flags else ""
-        rate_flag = "" if "-rate-limit" in flags else "-rate-limit 50"
-        cmd = f"katana -u {safe_url} -d {depth} -silent -no-color {rate_flag}".strip()
-        if safe_flags:
-            cmd += f" {safe_flags}"
 
-    raw = _clip(await kali_runner.exec_command(cmd, timeout=timeout), 8_000)
+        zap_cmd = (
+            f"zap-cli --port 8090 --api-key zapscan quick-scan --spider --ajax-spider "
+            f"--start-options '-config api.key=zapscan -port 8090' {safe_url}"
+        )
+
+        parts = []
+        for label, cmd, t in [
+            ("=== katana ===", katana_cmd, timeout),
+            ("=== playwright ===", playwright_cmd, timeout),
+            ("=== zap-ajax ===", zap_cmd, timeout),
+        ]:
+            out = _clip(await kali_runner.exec_command(cmd, timeout=t), 4_000)
+            parts.append(f"{label}\n{out}")
+
+        raw = "\n\n".join(parts)
+    else:
+        log.tool_call("spider", {"url": target, "depth": depth, "mode": mode, "flags": flags})
+        call_id = cost_tracker.start("spider")
+
+        if mode == "playwright":
+            cmd = (
+                f"playwright-spider --url {safe_url} --cookies {safe_cookies} "
+                f"--depth {depth} --max-pages {max_pages}"
+            )
+        elif mode == "deep":
+            cmd = (
+                f"zap-cli --port 8090 --api-key zapscan quick-scan --spider --ajax-spider "
+                f"--start-options '-config api.key=zapscan -port 8090' {safe_url}"
+            )
+        else:
+            safe_flags = shlex.join(shlex.split(flags)) if flags else ""
+            rate_flag = "" if "-rate-limit" in (flags or "") else "-rate-limit 50"
+            cmd = f"katana -u {safe_url} -d {depth} -silent -no-color {rate_flag}".strip()
+            if safe_flags:
+                cmd += f" {safe_flags}"
+
+        raw = _clip(await kali_runner.exec_command(cmd, timeout=timeout), 8_000)
+
     _record("spider")
     cost_tracker.finish(call_id, raw)
     log.tool_result("spider", raw)
+
+    # Spider gate: detect whether the tool actually ran.
+    spider_ok = _spider_succeeded(raw)
+    current_retries = scan_session.get_spider_failures().get(target, {}).get("retry_count", 0)
+    if spider_ok:
+        scan_session.clear_spider_failure(target)
+    elif current_retries >= scan_session.spider_max_retries():
+        # After N retries still empty — assume non-crawlable target, release gate.
+        scan_session.clear_spider_failure(target)
+        log.note(f"spider: gate released for {target} after {current_retries + 1} attempts (treating as non-crawlable)")
+        spider_ok = True
+    else:
+        new_count = scan_session.record_spider_failure(target)
+        log.note(f"spider: GATE TRIGGERED for {target} — empty/error output (attempt {new_count})")
+
     from mcp_server.scan_engine import wrap
-    return wrap("spider", raw, {"url": target})
+    result = wrap("spider", raw, {"url": target})
+    if not spider_ok:
+        result += (
+            "\n\n⚠️  SPIDER GATE TRIGGERED: Spider returned empty or error output. "
+            "ALL other scan tools are blocked until spider succeeds.\n"
+            "Fix steps:\n"
+            "  1. If Kali is not running: session(action='start_kali')\n"
+            f"  2. Retry: scan(tool='spider', target='{target}')\n"
+            "  3. Keep retrying until spider returns crawled URLs.\n"
+            f"  (Gate auto-releases after {scan_session.spider_max_retries()} retries if target is non-crawlable.)"
+        )
+    return result
 
 
 async def _handle_semgrep(target, flags, options):
@@ -353,9 +425,42 @@ async def scan(tool: str, target: str, flags: str = "", options: dict | None = N
     if stop:
         return stop
 
+    # Spider gate: block all non-spider tools while any spider has failed.
+    if tool != "spider" and scan_session.has_spider_failure():
+        failures = scan_session.get_spider_failures()
+        failed_targets = list(failures.keys())
+        sample = failed_targets[0]
+        return (
+            "SPIDER GATE BLOCKED: Spider failed for target(s): "
+            + ", ".join(failed_targets)
+            + ".\nNo other scan tools can run until spider succeeds.\n"
+            "Fix steps:\n"
+            "  1. If Kali is not running: session(action='start_kali')\n"
+            f"  2. Retry: scan(tool='spider', target='{sample}')\n"
+            "  3. Keep retrying until spider returns crawled URLs.\n"
+            "Do NOT call any other scan tool until spider succeeds."
+        )
+
     try:
         return await handler(target, flags, options)
     except BaseException as exc:
         err = f"[{tool} error: {type(exc).__name__}: {exc}]"
         log.tool_result(tool, err)
+        if tool == "spider":
+            current_retries = scan_session.get_spider_failures().get(target, {}).get("retry_count", 0)
+            if current_retries >= scan_session.spider_max_retries():
+                scan_session.clear_spider_failure(target)
+                log.note(f"spider: gate released for {target} after {current_retries + 1} exception-based attempts")
+            else:
+                new_count = scan_session.record_spider_failure(target)
+                log.note(f"spider: GATE TRIGGERED (exception) for {target} (attempt {new_count})")
+                err += (
+                    "\n\n⚠️  SPIDER GATE TRIGGERED: Spider raised an exception. "
+                    "ALL other scan tools are blocked until spider succeeds.\n"
+                    "Fix steps:\n"
+                    "  1. If Kali is not running: session(action='start_kali')\n"
+                    f"  2. Retry: scan(tool='spider', target='{target}')\n"
+                    "  3. Keep retrying until spider returns URLs.\n"
+                    f"  (Gate auto-releases after {scan_session.spider_max_retries()} retries if target is non-crawlable.)"
+                )
         return err

@@ -124,6 +124,7 @@ def start(
         "tools_called":  [],
         "current_step":  None,
         "gates":         [],          # triggered gates that block completion
+        "spider_failures": {},        # targets where spider failed; cleared on success
         "model_profile": model_profile,
         "tool_invocations": [],
         "known_assets": {
@@ -131,6 +132,7 @@ def start(
             "technologies": [], "endpoints": [],
         },
         "context_chars_sent": 0,
+        "complete_attempts":  0,        # incremented each time session(complete) is called
     }
     _flush()
     return _current
@@ -315,6 +317,61 @@ def pending_gates() -> list[dict]:
     if _current is None:
         return []
     return [g for g in _current.get("gates", []) if g.get("status") == "pending"]
+
+
+# ── Spider failure gate ───────────────────────────────────────────────────────
+# Tracks targets where spider failed to execute.  Any failure blocks all other
+# scan tools until spider is retried successfully.  Auto-releases after
+# _SPIDER_MAX_RETRIES attempts so a genuinely non-crawlable target doesn't
+# loop forever.
+
+_SPIDER_MAX_RETRIES = 3
+
+
+def record_spider_failure(target: str) -> int:
+    """Record a spider failure for this target.  Returns the new retry count."""
+    global _current
+    if _current is None or _current.get("status") != "running":
+        return 0
+    failures = _current.setdefault("spider_failures", {})
+    entry = failures.get(target, {})
+    new_count = entry.get("retry_count", 0) + 1
+    failures[target] = {
+        "target": target,
+        "failed_at": datetime.now(timezone.utc).isoformat(),
+        "retry_count": new_count,
+    }
+    _flush()
+    return new_count
+
+
+def clear_spider_failure(target: str) -> None:
+    """Clear spider failure for this target after a successful run."""
+    global _current
+    if _current is None:
+        return
+    failures = _current.get("spider_failures")
+    if failures and target in failures:
+        del failures[target]
+        _flush()
+
+
+def has_spider_failure() -> bool:
+    """Return True if any spider has failed and not yet recovered."""
+    if _current is None:
+        return False
+    return bool(_current.get("spider_failures"))
+
+
+def get_spider_failures() -> dict:
+    """Return all current spider failure entries keyed by target URL."""
+    if _current is None:
+        return {}
+    return dict(_current.get("spider_failures", {}))
+
+
+def spider_max_retries() -> int:
+    return _SPIDER_MAX_RETRIES
 
 
 # ── Endpoint-type trigger gates ───────────────────────────────────────────────

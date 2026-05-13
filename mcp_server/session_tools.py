@@ -17,8 +17,12 @@ _background_tasks: set[asyncio.Task] = set()  # keeps fire-and-forget tasks aliv
 
 # Track completion attempts to break infinite loops in small models
 _complete_attempts = 0
-_MAX_COMPLETE_ATTEMPTS = 5
+_MAX_COMPLETE_ATTEMPTS = 8   # raised to accommodate 3 real thorough iterations + quality fix rounds
 _force_completed = False
+
+# Minimum complete() calls required before thorough scans are allowed to finish.
+# Each blocked call is one "iteration" — the model must go deeper and try again.
+_THOROUGH_MIN_ITERATIONS = 3
 
 _QA_STATE_FILENAME = "qa_state.json"
 
@@ -512,6 +516,178 @@ def _finding_quality_blockers(high_findings: list[dict]) -> str | None:
     )
 
 
+def _deepen_brief(iteration: int) -> str:
+    """
+    Generate a mandatory re-run brief for thorough-depth iteration gates.
+    Each iteration re-executes ALL applicable skills and tools with escalating
+    aggressiveness — not advisory hints, but concrete ordered commands.
+    """
+    from core.coverage import get_matrix
+    data      = findings_store._load()
+    current   = scan_session.get() or {}
+    tools_run = _effective_tools()
+
+    findings  = data.get("findings", [])
+    criticals = [f for f in findings if f.get("severity") == "critical"]
+    highs     = [f for f in findings if f.get("severity") == "high"]
+    cov       = get_matrix()
+    ep_map    = {ep["id"]: ep["path"] for ep in cov.get("endpoints", [])}
+
+    pending_cells  = [c for c in cov.get("matrix", []) if c["status"] == "pending"]
+    clean_cells    = [c for c in cov.get("matrix", []) if c["status"] == "tested_clean"]
+    all_endpoints  = [ep["path"] for ep in cov.get("endpoints", [])]
+
+    skills_run = {s["skill"] for s in current.get("skill_history", [])}
+    ai_tools   = {"fuzzyai", "pyrit", "garak", "promptfoo"}
+    endpoints  = current.get("known_assets", {}).get("endpoints", [])
+    has_ai_ep  = any("ai" in ep or "chat" in ep or "llm" in ep for ep in endpoints)
+
+    unchained  = [f for f in criticals if not f.get("escalation_leads")]
+    finding_summary = (
+        f"{len(findings)} findings ({len(criticals)} critical, {len(highs)} high)"
+    )
+
+    # ── Build the ordered mandatory re-run list ─────────────────────────────────
+    steps: list[str] = []
+
+    if iteration == 1:
+        # ── Second pass: re-run every skill, harder ─────────────────────────────
+        steps.append(
+            "Re-invoke /web-exploit (SECOND PASS) — reset all tested_clean cells to pending "
+            "and re-test them with deeper payloads: sqlmap --level=4 --risk=3, "
+            "XSS with CSP/filter bypass variants, SSTI with all engine templates, "
+            "blind/OOB SQLi with out-of-band callbacks, second-order injection testing. "
+            "Every endpoint that returned tested_clean in pass 1 is a candidate for a "
+            "false negative — test again with a different technique."
+        )
+        steps.append(
+            "Re-invoke /param-fuzz (SECOND PASS) — run with larger wordlists "
+            "(burp-parameter-names.txt + raft-large-words.txt), test every parameter "
+            "for HTTP verb tampering, auth header stripping, type confusion "
+            "(string→int→array→null), and mass assignment on ALL endpoints including "
+            "those that returned 4xx in pass 1 (try different HTTP methods)."
+        )
+        steps.append(
+            "Re-invoke /business-logic (SECOND PASS) — run all 9 phases again: "
+            "send concurrent requests (10 parallel) to every state-changing endpoint, "
+            "test negative/zero/overflow values on EVERY numeric field found, "
+            "replay all one-time tokens and confirmation codes, test BOLA on every "
+            "resource ID found in the app, enumerate sequential IDs across all "
+            "resource types."
+        )
+        if has_ai_ep or "ai-redteam" in skills_run:
+            steps.append(
+                "Re-invoke /ai-redteam (SECOND PASS) — run PyRIT crescendo (10 turns), "
+                "Garak with full probe set (dan,encoding,promptinject,leakreplay,gcg,glitch,"
+                "grandma,goodside,snowball,misleading,packagehallucination,malwaregen), "
+                "and manual multi-objective authority-marker payloads on all AI endpoints."
+            )
+        steps.append(
+            "Re-run nuclei with ALL template categories: "
+            "scan(tool='nuclei', templates='cve,exposure,misconfig,default-login,takeovers,"
+            "technologies,token-spray,file-upload,xss,sqli,ssrf,lfi,rce,generic'). "
+            "Also run scan(tool='ffuf') on every endpoint with raft-large-words.txt to "
+            "discover hidden parameters and paths missed in pass 1."
+        )
+        if unchained:
+            titles = ", ".join(f['title'][:40] for f in unchained[:3])
+            steps.append(
+                f"Chain {len(unchained)} unchained critical finding(s) to maximum impact "
+                f"({titles}{'...' if len(unchained) > 3 else ''}): "
+                "SQLi → dump all tables → crack hashes → use creds everywhere; "
+                "SSRF → scan internal network → hit cloud metadata → exfil IAM keys; "
+                "RCE → establish reverse shell → run LinPEAS → escalate to root."
+            )
+
+    elif iteration == 2:
+        # ── Third pass: maximum aggression ─────────────────────────────────────
+        steps.append(
+            "Re-invoke /web-exploit (THIRD PASS — MAXIMUM AGGRESSION) — "
+            "sqlmap --level=5 --risk=3 --technique=BEUSTQ --tamper=space2comment,between,"
+            "randomcase,charunicodeencode on every injection point; "
+            "run commix on ALL parameter inputs for blind OS command injection; "
+            "test HTTP request smuggling (CL.TE and TE.CL) on every HTTP/1.1 endpoint; "
+            "probe all endpoints for CRLF injection and web cache poisoning; "
+            "test deserialization on every cookie and binary parameter (pickle, Java, PHP)."
+        )
+        steps.append(
+            "Re-invoke /param-fuzz (THIRD PASS) — fuzz with the full "
+            "10-million-password-list as a parameter wordlist; test parameter pollution "
+            "(duplicate params in query string + body simultaneously); inject into "
+            "HTTP headers (X-Forwarded-For, X-Original-URL, X-Rewrite-URL, "
+            "X-Custom-IP-Authorization) on every auth-gated endpoint; "
+            "test GraphQL introspection and batching abuse if any /graphql endpoint exists."
+        )
+        steps.append(
+            "Re-invoke /business-logic (THIRD PASS) — run Phase 5 (idempotency) with "
+            "50 concurrent requests on every state-changing endpoint; "
+            "test all time-based attacks (expired token reuse, cooldown bypass); "
+            "perform full multi-tenant isolation testing across all user accounts; "
+            "enumerate ALL resource IDs sequentially (orders, transfers, loans, cards, "
+            "payments) across EVERY user to confirm or deny BOLA at scale."
+        )
+        if has_ai_ep or "ai-redteam" in skills_run:
+            steps.append(
+                "Re-invoke /ai-redteam (THIRD PASS) — run PyRIT with jailbreak + "
+                "crescendo + multi-turn prompt injection (15 turns each); "
+                "test excessive agency by attempting tool invocations with hidden params "
+                "(include_internal=True, admin=True, debug=True, show_all=True); "
+                "test indirect prompt injection via every data field the AI reads "
+                "(usernames, transaction notes, profile fields, filenames)."
+            )
+        steps.append(
+            "Run kali(command='nikto -h TARGET -C all -maxtime 300') for full server "
+            "misconfiguration scan; run testssl.sh against every HTTPS endpoint; "
+            "run enum4linux-ng if any SMB/LDAP ports are open; "
+            "run wapiti with all modules against the full app."
+        )
+        steps.append(
+            f"Produce one end-to-end chain PoC for EACH critical finding ({len(criticals)} total) "
+            "that demonstrates the full kill chain from initial access to maximum impact. "
+            "Each PoC must be a single executable curl/python script that requires zero "
+            "manual steps. Save every PoC with http(action='save_poc') linked to its finding_id."
+        )
+
+    else:
+        # ── Extra iterations beyond the minimum ────────────────────────────────
+        steps.append(
+            f"Iteration {iteration}: re-run ALL skills at maximum depth again — "
+            "the scan has not yet passed quality gates. "
+            "Focus on any cells still pending or skipped, any findings without end-to-end PoCs, "
+            "and any skill not invoked since the last iteration."
+        )
+
+    steps.append(
+        f"Current state: {finding_summary}, "
+        f"{len(pending_cells)} cells pending, "
+        f"{len(clean_cells)} cells marked clean (potential false negatives). "
+        "After completing ALL steps above, call session(action='complete') again."
+    )
+
+    if iteration == 1:
+        intro = (
+            f"⛔ ITERATION GATE: Pass 1/{_THOROUGH_MIN_ITERATIONS} done — "
+            "thorough depth requires {_THOROUGH_MIN_ITERATIONS} full passes. "
+            "RE-RUN ALL TOOLS NOW, harder than pass 1. "
+            "Execute every step below before calling complete() again:"
+        ).format(_THOROUGH_MIN_ITERATIONS=_THOROUGH_MIN_ITERATIONS)
+    elif iteration == 2:
+        intro = (
+            f"⛔ ITERATION GATE: Pass 2/{_THOROUGH_MIN_ITERATIONS} done — "
+            "one more full pass required at MAXIMUM aggression. "
+            "Execute every step below before calling complete() again:"
+        )
+    else:
+        intro = (
+            f"⛔ ITERATION GATE: Pass {iteration}/{_THOROUGH_MIN_ITERATIONS} done — "
+            "quality gates still blocking. "
+            "Execute every step below before calling complete() again:"
+        )
+
+    numbered = "\n".join(f"  {i + 1}. {step}" for i, step in enumerate(steps))
+    return f"{intro}\n{numbered}"
+
+
 def _do_complete(opts):
     global _complete_attempts
     _complete_attempts += 1
@@ -519,6 +695,12 @@ def _do_complete(opts):
     blockers: list[str] = []
 
     data = findings_store._load()
+
+    # Persist the attempt counter to session.json so it survives context compaction.
+    current = scan_session.get() or {}
+    if current:
+        current["complete_attempts"] = _complete_attempts
+        scan_session._flush()
 
     blockers.extend(_gate_blockers())
     blockers.extend(_qa_blockers())
@@ -537,6 +719,17 @@ def _do_complete(opts):
         blockers.append(
             "NO SPIDER: httpx confirmed web targets but spider was never called. "
             "Run scan(tool='spider', target=url) to crawl the application before completing."
+        )
+
+    # Spider failure gate — completion is blocked until all spider failures are resolved.
+    spider_failures = scan_session.get_spider_failures()
+    if spider_failures:
+        failed_list = ", ".join(spider_failures.keys())
+        sample = list(spider_failures.keys())[0]
+        blockers.append(
+            f"SPIDER GATE: Spider failed for [{failed_list}] and has not yet succeeded. "
+            f"Retry scan(tool='spider', target='{sample}') until it returns crawled URLs. "
+            f"If Kali is not running, call session(action='start_kali') first."
         )
 
     high_findings = [f for f in data.get("findings", []) if f.get("severity") in ("high", "critical")]
@@ -558,6 +751,13 @@ def _do_complete(opts):
     from core.coverage import get_matrix
     blockers.extend(_coverage_blockers(get_matrix(), ctf_mode=_has_ctf_flag(data)))
 
+    # ── Thorough-depth iteration gate ────────────────────────────────────────
+    # Only fires after all quality checks pass.  Ensures the model does at least
+    # _THOROUGH_MIN_ITERATIONS meaningful passes before the scan can close.
+    depth = (scan_session.get() or {}).get("depth", "")
+    if not blockers and depth == "thorough" and _complete_attempts < _THOROUGH_MIN_ITERATIONS:
+        blockers.append(_deepen_brief(_complete_attempts))
+
     if blockers:
         # Force-complete after max attempts to break model loops.
         # Marks status as "incomplete_with_unresolved_blockers" so dashboards/exports
@@ -577,9 +777,16 @@ def _do_complete(opts):
                 f"{len(blockers)} blocker(s) were unresolved. session.json updated. "
                 f"STOP — do not call any more tools. The scan is done."
             )
-        msg = f"complete BLOCKED (attempt {_complete_attempts}/{_MAX_COMPLETE_ATTEMPTS}) — fix the following first:\n\n"
-        msg += "\n\n".join(f"  [{i+1}] {b}" for i, b in enumerate(blockers))
-        log.note(f"complete blocked (attempt {_complete_attempts}): {'; '.join(blockers)}")
+        depth = (scan_session.get() or {}).get("depth", "")
+        if depth == "thorough" and _complete_attempts < _THOROUGH_MIN_ITERATIONS:
+            header = (
+                f"complete BLOCKED — thorough scan requires {_THOROUGH_MIN_ITERATIONS} iterations "
+                f"(currently on {_complete_attempts}/{_THOROUGH_MIN_ITERATIONS}):\n\n"
+            )
+        else:
+            header = f"complete BLOCKED (attempt {_complete_attempts}/{_MAX_COMPLETE_ATTEMPTS}) — fix the following first:\n\n"
+        msg = header + "\n\n".join(f"  [{i+1}] {b}" for i, b in enumerate(blockers))
+        log.note(f"complete blocked (attempt {_complete_attempts}): {'; '.join(b[:80] for b in blockers)}")
         return msg
 
     cfg = scan_session.complete(notes)
@@ -706,6 +913,18 @@ def _build_status_base(
             "time_min": remaining.get("time_remaining_minutes", 0),
             "calls": remaining.get("calls_remaining", -1),
         }
+    spider_failures = scan_session.get_spider_failures()
+    if spider_failures:
+        result["spider_gate"] = {
+            "status": "BLOCKED",
+            "failed_targets": list(spider_failures.keys()),
+            "instruction": (
+                "Spider failed — retry scan(tool='spider', target=...) for each target. "
+                "If Kali is not running, call session(action='start_kali') first. "
+                "All other scan tools are blocked until spider succeeds."
+            ),
+        }
+
     unsatisfied = scan_session.pending_gates()
     if unsatisfied:
         result["pending_gates"] = [
@@ -938,6 +1157,16 @@ def _do_recovery():
     )
     next_call = _concrete_next_call(target, tools_run, in_progress_cells, pending_count)
 
+    # Iteration progress for thorough scans
+    complete_iter = current.get("complete_attempts", _complete_attempts)
+    iter_status: str | None = None
+    if current.get("depth") == "thorough":
+        remaining = max(0, _THOROUGH_MIN_ITERATIONS - complete_iter)
+        iter_status = (
+            f"Iteration {complete_iter}/{_THOROUGH_MIN_ITERATIONS} "
+            f"({'complete — quality gates only' if remaining == 0 else f'{remaining} more required'})"
+        )
+
     result = {
         "EXECUTE_NOW": next_call,
         "target": target,
@@ -952,6 +1181,8 @@ def _do_recovery():
             "report(action, data) | session(action)"
         ),
     }
+    if iter_status:
+        result["iteration_progress"] = iter_status
 
     # Include known assets summary
     known_assets = current.get("known_assets", {})
