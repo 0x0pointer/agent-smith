@@ -291,8 +291,6 @@ async def api_clear() -> JSONResponse:
     except Exception:
         pass
 
-    # session.json, coverage_matrix.json, quick_log.json, qa_state.json, session_cost.json,
-    # steering_queue.json, recovery_latest.json
     _RECOVERY_SNAP = _REPO_ROOT / "recovery_latest.json"
     for path in (_SESSION_FILE, _COVERAGE_FILE, _QUICK_LOG_FILE, _QA_STATE_FILE,
                  _COST_FILE, _STEERING_FILE, _RECOVERY_SNAP):

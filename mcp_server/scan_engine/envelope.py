@@ -7,7 +7,7 @@ Raw output lives in artifacts, referenced by artifact_id.
 from __future__ import annotations
 
 import json
-import os
+import pathlib
 from dataclasses import dataclass, field, asdict
 from typing import Any, TYPE_CHECKING
 
@@ -17,10 +17,10 @@ from mcp_server.scan_engine.planner import compute_next
 from mcp_server.scan_engine.state import get_state
 from mcp_server.scan_engine.summarizers import summarize
 
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-_QA_STATE_FILE      = os.path.join(_REPO_ROOT, "qa_state.json")
-_STEERING_FILE      = os.path.join(_REPO_ROOT, "steering_queue.json")
-_RECOVERY_SNAP_FILE = os.path.join(_REPO_ROOT, "recovery_latest.json")
+_REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
+_QA_STATE_FILE      = _REPO_ROOT / "qa_state.json"
+_STEERING_FILE      = _REPO_ROOT / "steering_queue.json"
+_RECOVERY_SNAP_FILE = _REPO_ROOT / "recovery_latest.json"
 _last_qa_shown_ts: str = ""  # ISO timestamp of last alert batch shown to the model
 
 
@@ -251,7 +251,7 @@ def _maybe_write_recovery_snapshot(scan_session: Any) -> None:
         if seq > 0 and seq % 10 == 0:
             from mcp_server.session_tools import _do_recovery
             import pathlib
-            pathlib.Path(_RECOVERY_SNAP_FILE).write_text(_do_recovery(), encoding="utf-8")
+            _RECOVERY_SNAP_FILE.write_text(_do_recovery(), encoding="utf-8")
     except Exception:
         pass
 
@@ -320,9 +320,9 @@ def _inject_qa_alerts_into_envelope(env: Envelope) -> None:
     """
     global _last_qa_shown_ts
     try:
-        if not os.path.isfile(_QA_STATE_FILE):
+        if not _QA_STATE_FILE.is_file():
             return
-        state = json.loads(open(_QA_STATE_FILE).read())
+        state = json.loads(_QA_STATE_FILE.read_text(encoding="utf-8"))
         ts = state.get("ts", "")
         if not ts or ts <= _last_qa_shown_ts:
             return

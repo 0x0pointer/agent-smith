@@ -69,7 +69,7 @@ def _check_scope_drift(entries: list[dict], session_data: dict) -> dict | None:
             "message": f"Scope drift: tools ran against {targets}"}
 
 
-def _check_coverage_stall(coverage_data: dict, entries: list[dict]) -> dict | None:
+def _check_coverage_stall(entries: list[dict]) -> dict | None:
     cov_entries = [e for e in entries if e.get("type") == "COVERAGE"]
     if not cov_entries:
         return None
@@ -348,7 +348,7 @@ def _deterministic_qa_checks(
     """Rule-based checks over structured state — no text parsing."""
     checks = [
         _check_scope_drift(entries, session_data),
-        _check_coverage_stall(coverage_data, entries),
+        _check_coverage_stall(entries),
         _check_spider_without_coverage(entries, coverage_data),
         _check_poc_gap(findings_data),
         _check_tool_inactivity(entries),
@@ -453,11 +453,11 @@ class QADaemon:
         while True:
             await asyncio.sleep(interval_s)
             try:
-                await self._cycle()
+                self._cycle()
             except Exception as exc:
                 _log.warning("QA Daemon cycle error: %s", exc)
 
-    async def _cycle(self) -> None:
+    def _cycle(self) -> None:
         if not _session_is_running():
             return
 

@@ -193,7 +193,7 @@ def _compute(
     unsatisfied_gates = sum(1 for g in gates if g.get("status") != "satisfied")
 
     # ── Time per skill (from quick_log SKILL events) ──────────────────────────
-    time_per_skill = _compute_time_per_skill(quick_log_entries, duration_min)
+    time_per_skill = _compute_time_per_skill(quick_log_entries)
 
     return {
         # Identity
@@ -258,7 +258,7 @@ def _duration_minutes(session: dict) -> float:
         return 0.0
 
 
-def _compute_time_per_skill(entries: list[dict], total_minutes: float) -> dict[str, float]:
+def _compute_time_per_skill(entries: list[dict]) -> dict[str, float]:
     """Compute minutes spent in each skill by bucketing TOOL events between SKILL events."""
     skill_events = [(e["ts"], e.get("name", "")) for e in entries if e.get("type") == "SKILL"]
     tool_events  = [(e["ts"],) for e in entries if e.get("type") in ("TOOL", "SPIDER")]
