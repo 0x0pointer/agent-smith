@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
   bump:
@@ -27,14 +28,25 @@ jobs:
           git submodule update --remote --merge skills
           echo "sha=$(git -C skills rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - name: Commit if changed
+      - name: Open PR if changed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           if git diff --quiet; then
             echo "skills already up to date"
-          else
-            git add skills
-            git commit -m "chore: bump skills submodule to ${{ steps.update.outputs.sha }}"
-            git push
+            exit 0
           fi
+          BRANCH="ci/auto-bump-skills"
+          git checkout -B "$BRANCH"
+          git add skills
+          git commit -m "chore: bump skills submodule to ${{ steps.update.outputs.sha }}"
+          git push --force-with-lease origin "$BRANCH"
+          gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number' \
+            | grep -q '[0-9]' && echo "PR already open" && exit 0
+          gh pr create \
+            --title "chore: bump skills submodule to ${{ steps.update.outputs.sha }}" \
+            --body "Automated skills submodule bump triggered by workflow." \
+            --base main \
+            --head "$BRANCH"
