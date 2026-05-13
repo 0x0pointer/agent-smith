@@ -150,6 +150,14 @@ mkdir -p "$HOME/.claude/skills/request-cves"
 cp "$REPO_DIR/skills/request-cves/SKILL.md" "$HOME/.claude/skills/request-cves/SKILL.md"
 ok "/request-cves skill installed"
 
+mkdir -p "$HOME/.claude/skills/param-fuzz"
+cp "$REPO_DIR/skills/param-fuzz/SKILL.md" "$HOME/.claude/skills/param-fuzz/SKILL.md"
+ok "/param-fuzz skill installed"
+
+mkdir -p "$HOME/.claude/skills/business-logic"
+cp "$REPO_DIR/skills/business-logic/SKILL.md" "$HOME/.claude/skills/business-logic/SKILL.md"
+ok "/business-logic skill installed"
+
 mkdir -p "$HOME/.claude/skills/compliance/refs"
 cp "$REPO_DIR/skills/compliance/SKILL.md" "$HOME/.claude/skills/compliance/SKILL.md"
 if [ -d "$REPO_DIR/skills/compliance/refs" ]; then

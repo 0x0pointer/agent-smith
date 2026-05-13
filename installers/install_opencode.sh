@@ -131,6 +131,8 @@ _install_skill "osint"                  "$REPO_DIR/skills/osint/SKILL.md"
 _install_skill "post-exploit"           "$REPO_DIR/skills/post-exploit/SKILL.md"
 _install_skill "ssl-tls-audit"          "$REPO_DIR/skills/ssl-tls-audit/SKILL.md"
 _install_skill "request-cves"           "$REPO_DIR/skills/request-cves/SKILL.md"
+_install_skill "param-fuzz"             "$REPO_DIR/skills/param-fuzz/SKILL.md"
+_install_skill "business-logic"         "$REPO_DIR/skills/business-logic/SKILL.md"
 ok "$_SKILL_OK skill commands installed"
 if [ ${#_SKILL_MISSING[@]} -gt 0 ]; then
     warn "Missing skills (run \`git submodule update --init --recursive\` to fetch): ${_SKILL_MISSING[*]}"
