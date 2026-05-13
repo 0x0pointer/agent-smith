@@ -249,11 +249,11 @@ def _do_start(opts):
         "  Test each coverage cell with http() or kali()",
         "",
         "Skills available for full workflow automation (invoke instead of improvising):",
-        "  /pentester /web-exploit /codebase /ai-redteam /cloud-security /ad-assessment",
-        "  /network-assess /lateral-movement /credential-audit /post-exploit",
-        "  /container-k8s-security /osint /ssl-tls-audit /email-security /metasploit",
-        "  /reverse-shell /analyze-cve /threat-modeling /aikido-triage /gh-export",
-        "  /remediate /request-cves",
+        "  /pentester /web-exploit /param-fuzz /business-logic /codebase /ai-redteam",
+        "  /cloud-security /ad-assessment /network-assess /lateral-movement /credential-audit",
+        "  /post-exploit /container-k8s-security /osint /ssl-tls-audit /email-security",
+        "  /metasploit /reverse-shell /analyze-cve /threat-modeling /aikido-triage",
+        "  /gh-export /remediate /request-cves",
         "  See CLAUDE.md for full skill descriptions and trigger conditions.",
     ]
     return "\n".join(lines)
