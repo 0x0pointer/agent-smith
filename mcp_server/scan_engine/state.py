@@ -23,7 +23,9 @@ _TESTING_TOOLS = {"kali", "nuclei"}
 def get_state() -> dict:
     """Compute current scan state from session.json + coverage_matrix.json.
 
-    Returns a compact dict suitable for embedding in every tool response envelope.
+    Returns a compact dict embedded in every tool response envelope.
+    Includes recovery-oriented fields so a post-compaction model can orient
+    from any tool response without calling session(action='recovery').
     """
     current = scan_session.get()
     if not current or current.get("status") != "running":
@@ -46,16 +48,46 @@ def get_state() -> dict:
     summary = cost_tracker.get_summary()
     remaining = scan_session.remaining(summary)
 
-    return {
-        "target": current.get("target", ""),
-        "phase": phase,
-        "tools_run": sorted(tools_run),
-        "endpoints": endpoints,
-        "coverage": f"{tested}/{total_cells}" if total_cells else "no endpoints registered",
-        "findings": vulnerable,
-        "calls_used": summary.get("tool_calls_total", 0),
-        "time_pct": remaining.get("time_pct", 0),
+    # In-progress cells — post-compaction orientation (capped at 3 to limit envelope size)
+    ep_map = {ep["id"]: ep.get("path", "?") for ep in cov.get("endpoints", [])}
+    in_progress = [
+        {
+            "cell_id":   c["id"],
+            "endpoint":  ep_map.get(c["endpoint_id"], "?"),
+            "param":     c["param"],
+            "injection": c["injection_type"],
+            "notes":     c.get("notes", "")[:100],
+        }
+        for c in cov.get("matrix", []) if c["status"] == "in_progress"
+    ][:3]
+
+    # Pending escalation leads count
+    try:
+        from core.findings import findings_store
+        findings_data = findings_store._load()
+        pending_escalations = sum(
+            1 for f in findings_data.get("findings", [])
+            for lead in f.get("escalation_leads", [])
+            if lead.get("status") == "pending"
+        )
+    except Exception:
+        pending_escalations = 0
+
+    state: dict = {
+        "target":               current.get("target", ""),
+        "phase":                phase,
+        "active_skill":         current.get("skill", ""),
+        "tools_run":            sorted(tools_run),
+        "endpoints":            endpoints,
+        "coverage":             f"{tested}/{total_cells}" if total_cells else "no endpoints registered",
+        "findings":             vulnerable,
+        "calls_used":           summary.get("tool_calls_total", 0),
+        "time_pct":             remaining.get("time_pct", 0),
+        "pending_escalations":  pending_escalations,
     }
+    if in_progress:
+        state["in_progress_cells"] = in_progress
+    return state
 
 
 def _compute_phase(tools_run: set, endpoints: int, total_cells: int, tested: int) -> str:

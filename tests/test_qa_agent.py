@@ -1,9 +1,13 @@
 """
-Tests for core.qa_agent — session check and QADaemon cycle logic.
+Tests for core.qa_agent — deterministic checks and QADaemon cycle logic.
+
+All check functions now operate on structured data (quick_log entries, JSON dicts).
+No regex parsing of summary text.
 """
 import asyncio
 import json
 import pytest
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -11,11 +15,41 @@ import core.qa_agent
 import core.quick_log
 from core.qa_agent import (
     _session_is_running, _read_qa_state,
-    _sanitize_history, _init_llm, _build_graph, QADaemon,
-    _deterministic_qa_checks, _load_json, _format_findings_for_semantic_review,
-    _deduplicate,
+    _sanitize_history, QADaemon,
+    _deterministic_qa_checks, _load_json,
+    _deduplicate, _merge_alerts,
+    _check_scope_drift, _check_coverage_stall, _check_spider_without_coverage,
+    _check_poc_gap, _check_tool_inactivity, _check_bulk_marking,
+    _check_coverage_integrity, _check_missing_diagram, _check_no_spider_after_httpx,
+    _check_endpoint_trigger_gaps, _check_coverage_gap, _check_injection_breadth,
 )
 from core.quick_log import QuickLog
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _ts(offset_min: int = 0) -> str:
+    """ISO timestamp offset_min minutes in the past."""
+    return (datetime.now(timezone.utc) - timedelta(minutes=offset_min)).isoformat()
+
+
+def _tool_entry(name: str = "nmap", target: str = "https://example.com", offset_min: int = 1) -> dict:
+    return {"type": "TOOL", "name": name, "target": target, "ts": _ts(offset_min)}
+
+
+def _spider_entry(endpoints_found: int = 10, offset_min: int = 1) -> dict:
+    return {"type": "SPIDER", "endpoints_found": endpoints_found, "ts": _ts(offset_min)}
+
+
+def _coverage_entry(pending: int = 0, na_untooled: int = 0, untooled: int = 0,
+                    offset_min: int = 1) -> dict:
+    return {
+        "type": "COVERAGE", "pending": pending, "tested": 5,
+        "na_untooled": na_untooled, "untooled": untooled,
+        "ts": _ts(offset_min),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -53,276 +87,326 @@ def test_session_is_running_returns_false_when_corrupt_json(tmp_path, monkeypatc
 # ---------------------------------------------------------------------------
 
 def test_load_json_returns_empty_when_file_missing(tmp_path):
-    result = _load_json(tmp_path / "nonexistent.json")
-    assert result == {}
+    assert _load_json(tmp_path / "nonexistent.json") == {}
 
 
 def test_load_json_returns_parsed_dict(tmp_path):
     f = tmp_path / "data.json"
     f.write_text(json.dumps({"key": "value", "num": 42}))
-    result = _load_json(f)
-    assert result == {"key": "value", "num": 42}
+    assert _load_json(f) == {"key": "value", "num": 42}
 
 
 def test_load_json_returns_empty_on_corrupt_json(tmp_path):
     f = tmp_path / "bad.json"
     f.write_text("not valid json {{{")
-    result = _load_json(f)
-    assert result == {}
+    assert _load_json(f) == {}
 
 
 # ---------------------------------------------------------------------------
-# _deterministic_qa_checks()
+# _check_scope_drift
 # ---------------------------------------------------------------------------
 
-def test_deterministic_no_alerts_on_clean_summary():
-    alerts = _deterministic_qa_checks("1 tool call: nmap", {}, {})
-    assert alerts == []
+def test_scope_drift_no_target_skips():
+    entries = [_tool_entry("nmap", "evil.com")]
+    assert _check_scope_drift(entries, {}) is None
 
 
-def test_deterministic_scope_drift_detected():
-    summary = "Possible off-scope targets used: evil.com"
-    alerts = _deterministic_qa_checks(summary, {}, {})
-    codes = [a["code"] for a in alerts]
-    assert "SCOPE_DRIFT" in codes
-    scope_alert = next(a for a in alerts if a["code"] == "SCOPE_DRIFT")
-    assert scope_alert["urgency"] == "high"
-    assert scope_alert["blocking"] is False
-    assert "evil.com" in scope_alert["message"]
+def test_scope_drift_detected():
+    entries = [_tool_entry("nmap", "evil.com")]
+    alert = _check_scope_drift(entries, {"target": "https://example.com"})
+    assert alert is not None
+    assert alert["code"] == "SCOPE_DRIFT"
+    assert alert["urgency"] == "high"
+    assert "evil.com" in alert["message"]
 
 
-def test_deterministic_coverage_stall_detected():
-    summary = "WARNING: coverage stale (35 min), 10 pending"
-    alerts = _deterministic_qa_checks(summary, {}, {})
-    codes = [a["code"] for a in alerts]
-    assert "COVERAGE_STALL" in codes
-    stall = next(a for a in alerts if a["code"] == "COVERAGE_STALL")
-    assert stall["urgency"] == "high"
-    assert "10 cells" in stall["message"]
+def test_scope_drift_in_scope_target_ignored():
+    entries = [_tool_entry("httpx", "https://example.com/api/users")]
+    assert _check_scope_drift(entries, {"target": "https://example.com"}) is None
 
 
-def test_deterministic_coverage_stall_skipped_when_pending_zero():
-    summary = "WARNING: coverage stale (35 min), 0 pending"
-    alerts = _deterministic_qa_checks(summary, {}, {})
-    codes = [a["code"] for a in alerts]
-    assert "COVERAGE_STALL" not in codes
+def test_scope_drift_no_tool_entries():
+    entries = [_spider_entry()]
+    assert _check_scope_drift(entries, {"target": "https://example.com"}) is None
 
 
-def test_deterministic_spider_without_coverage():
-    summary = "Endpoints found: 15"
-    coverage_data = {"meta": {"total_cells": 0}}
-    alerts = _deterministic_qa_checks(summary, {}, coverage_data)
-    codes = [a["code"] for a in alerts]
-    assert "SPIDER_WITHOUT_COVERAGE" in codes
-    alert = next(a for a in alerts if a["code"] == "SPIDER_WITHOUT_COVERAGE")
+# ---------------------------------------------------------------------------
+# _check_coverage_stall
+# ---------------------------------------------------------------------------
+
+def test_coverage_stall_no_coverage_entries():
+    assert _check_coverage_stall([_tool_entry()]) is None
+
+
+def test_coverage_stall_pending_zero():
+    entries = [_coverage_entry(pending=0, offset_min=35)]
+    assert _check_coverage_stall(entries) is None
+
+
+def test_coverage_stall_under_15_min():
+    entries = [_coverage_entry(pending=5, offset_min=10)]
+    assert _check_coverage_stall(entries) is None
+
+
+def test_coverage_stall_fires_at_15_min(tmp_path, monkeypatch):
+    import core.steering as st_mod
+    monkeypatch.setattr(st_mod, "_STEERING_FILE", tmp_path / "steering_queue.json")
+    entries = [_coverage_entry(pending=8, offset_min=20)]
+    alert = _check_coverage_stall(entries)
+    assert alert is not None
+    assert alert["code"] == "COVERAGE_STALL"
+    assert alert["urgency"] == "high"
+    assert "8 cells" in alert["message"]
+
+
+def test_coverage_stall_generates_directive(tmp_path, monkeypatch):
+    import core.steering as st_mod
+    monkeypatch.setattr(st_mod, "_STEERING_FILE", tmp_path / "steering_queue.json")
+    entries = [_coverage_entry(pending=3, offset_min=20)]
+    _check_coverage_stall(entries)
+    q = st_mod.SteeringQueue()
+    assert any(d["code"] == "RESUME_TESTING" for d in q._load())
+
+
+# ---------------------------------------------------------------------------
+# _check_spider_without_coverage
+# ---------------------------------------------------------------------------
+
+def test_spider_without_coverage_no_spider():
+    assert _check_spider_without_coverage([_tool_entry()], {}) is None
+
+
+def test_spider_without_coverage_fires():
+    entries = [_spider_entry(15)]
+    alert = _check_spider_without_coverage(entries, {"meta": {"total_cells": 0}})
+    assert alert is not None
+    assert alert["code"] == "SPIDER_WITHOUT_COVERAGE"
     assert "15" in alert["message"]
 
 
-def test_deterministic_spider_without_coverage_skipped_when_matrix_populated():
-    summary = "Endpoints found: 15"
-    coverage_data = {"meta": {"total_cells": 30}}
-    alerts = _deterministic_qa_checks(summary, {}, coverage_data)
-    codes = [a["code"] for a in alerts]
-    assert "SPIDER_WITHOUT_COVERAGE" not in codes
+def test_spider_without_coverage_skipped_when_matrix_populated():
+    entries = [_spider_entry(15)]
+    assert _check_spider_without_coverage(entries, {"meta": {"total_cells": 30}}) is None
 
 
-def test_deterministic_poc_gap_detected():
-    findings_data = {
-        "findings": [
-            {"title": "SQLi", "severity": "critical", "poc_files": []},
-            {"title": "XSS", "severity": "high"},
-        ]
-    }
-    alerts = _deterministic_qa_checks("", findings_data, {})
-    codes = [a["code"] for a in alerts]
-    assert "POC_GAP" in codes
-    poc = next(a for a in alerts if a["code"] == "POC_GAP")
-    assert poc["urgency"] == "medium"
-    assert "2/2" in poc["message"]
+# ---------------------------------------------------------------------------
+# _check_poc_gap
+# ---------------------------------------------------------------------------
+
+def test_poc_gap_no_findings():
+    assert _check_poc_gap({}) is None
 
 
-def test_deterministic_poc_gap_truncates_titles_at_three():
-    """More than 3 missing-PoC findings should show +N more in the message."""
-    findings_data = {
-        "findings": [
-            {"title": f"Finding {i}", "severity": "critical", "poc_files": []}
-            for i in range(5)
-        ]
-    }
-    alerts = _deterministic_qa_checks("", findings_data, {})
-    poc = next(a for a in alerts if a["code"] == "POC_GAP")
-    assert "+2 more" in poc["message"]
+def test_poc_gap_all_have_poc():
+    data = {"findings": [{"title": "SQLi", "severity": "critical", "poc_files": ["sqli.http"]}]}
+    assert _check_poc_gap(data) is None
 
 
-def test_deterministic_poc_gap_skipped_when_all_have_poc():
-    findings_data = {
-        "findings": [
-            {"title": "SQLi", "severity": "critical", "poc_files": ["sqli.http"]},
-        ]
-    }
-    alerts = _deterministic_qa_checks("", findings_data, {})
-    codes = [a["code"] for a in alerts]
-    assert "POC_GAP" not in codes
+def test_poc_gap_fires_high_urgency(tmp_path, monkeypatch):
+    import core.steering as st_mod
+    monkeypatch.setattr(st_mod, "_STEERING_FILE", tmp_path / "steering_queue.json")
+    data = {"findings": [
+        {"title": "SQLi", "severity": "critical", "poc_files": []},
+        {"title": "XSS",  "severity": "high",     "poc_files": []},
+    ]}
+    alert = _check_poc_gap(data)
+    assert alert is not None
+    assert alert["code"] == "POC_GAP"
+    assert alert["urgency"] == "high"
+    assert "2/2" in alert["message"]
 
 
-def test_deterministic_skill_chain_gap():
-    summary = "Findings: 2 critical, 1 high"
-    alerts = _deterministic_qa_checks(summary, {}, {})
-    codes = [a["code"] for a in alerts]
-    assert "SKILL_CHAIN_GAP" in codes
+def test_poc_gap_generates_poc_required_directive(tmp_path, monkeypatch):
+    import core.steering as st_mod
+    monkeypatch.setattr(st_mod, "_STEERING_FILE", tmp_path / "steering_queue.json")
+    data = {"findings": [{"title": "SQLi", "severity": "critical", "poc_files": []}]}
+    _check_poc_gap(data)
+    q = st_mod.SteeringQueue()
+    assert any(d["code"] == "POC_REQUIRED" for d in q._load())
 
 
-def test_deterministic_skill_chain_gap_skipped_when_web_exploit_ran():
-    summary = "Findings: 2 critical, 1 high\nweb-exploit ran"
-    alerts = _deterministic_qa_checks(summary, {}, {})
-    codes = [a["code"] for a in alerts]
-    assert "SKILL_CHAIN_GAP" not in codes
+def test_poc_gap_truncates_titles_at_three(tmp_path, monkeypatch):
+    import core.steering as st_mod
+    monkeypatch.setattr(st_mod, "_STEERING_FILE", tmp_path / "steering_queue.json")
+    data = {"findings": [
+        {"title": f"Finding {i}", "severity": "critical", "poc_files": []}
+        for i in range(5)
+    ]}
+    alert = _check_poc_gap(data)
+    assert "+2 more" in alert["message"]
 
 
-def test_deterministic_tool_inactivity_above_threshold():
-    summary = "Last tool call: 15 minutes ago"
-    alerts = _deterministic_qa_checks(summary, {}, {})
-    codes = [a["code"] for a in alerts]
-    assert "TOOL_INACTIVITY" in codes
-    inact = next(a for a in alerts if a["code"] == "TOOL_INACTIVITY")
-    assert inact["urgency"] == "low"
-    assert "15min" in inact["message"]
+# ---------------------------------------------------------------------------
+# _check_tool_inactivity
+# ---------------------------------------------------------------------------
+
+def test_tool_inactivity_no_tools():
+    assert _check_tool_inactivity([]) is None
 
 
-def test_deterministic_tool_inactivity_below_threshold():
-    summary = "Last tool call: 5 minutes ago"
-    alerts = _deterministic_qa_checks(summary, {}, {})
-    codes = [a["code"] for a in alerts]
-    assert "TOOL_INACTIVITY" not in codes
+def test_tool_inactivity_below_threshold():
+    entries = [_tool_entry(offset_min=5)]
+    assert _check_tool_inactivity(entries) is None
 
 
-def test_deterministic_bulk_marking_detected():
-    summary = "Bulk-marking warning: 8 N/A cells lack tested_by"
-    alerts = _deterministic_qa_checks(summary, {}, {})
-    codes = [a["code"] for a in alerts]
-    assert "BULK_MARKING" in codes
-    bulk = next(a for a in alerts if a["code"] == "BULK_MARKING")
-    assert bulk["blocking"] is True
+def test_tool_inactivity_medium_between_10_and_15(tmp_path, monkeypatch):
+    import core.steering as st_mod
+    monkeypatch.setattr(st_mod, "_STEERING_FILE", tmp_path / "steering_queue.json")
+    entries = [_tool_entry(offset_min=12)]
+    alert = _check_tool_inactivity(entries)
+    assert alert is not None
+    assert alert["code"] == "TOOL_INACTIVITY"
+    assert alert["urgency"] == "medium"
 
 
-def test_deterministic_coverage_integrity_detected():
-    summary = "5 tested/vulnerable cells have no tested_by tool"
-    alerts = _deterministic_qa_checks(summary, {}, {})
-    codes = [a["code"] for a in alerts]
-    assert "COVERAGE_INTEGRITY" in codes
-    integ = next(a for a in alerts if a["code"] == "COVERAGE_INTEGRITY")
-    assert integ["blocking"] is True
-    assert "5" in integ["message"]
+def test_tool_inactivity_high_over_15(tmp_path, monkeypatch):
+    import core.steering as st_mod
+    monkeypatch.setattr(st_mod, "_STEERING_FILE", tmp_path / "steering_queue.json")
+    entries = [_tool_entry(offset_min=20)]
+    alert = _check_tool_inactivity(entries)
+    assert alert is not None
+    assert alert["urgency"] == "high"
+    q = st_mod.SteeringQueue()
+    assert any(d["code"] == "RESUME_REQUIRED" for d in q._load())
 
 
-def test_deterministic_gate_pending_high_urgency():
-    summary = "Pending gates: credential-audit (requires: /credential-audit) triggered 20min ago"
-    alerts = _deterministic_qa_checks(summary, {}, {})
-    codes = [a["code"] for a in alerts]
-    assert "GATE_PENDING" in codes
-    gate = next(a for a in alerts if a["code"] == "GATE_PENDING")
-    assert gate["urgency"] == "high"
-    assert "20min" in gate["message"]
+def test_tool_inactivity_counts_spider_entries():
+    entries = [_spider_entry(offset_min=5)]
+    assert _check_tool_inactivity(entries) is None
 
 
-def test_deterministic_gate_pending_medium_urgency():
-    summary = "Pending gates: post-exploit (requires: /post-exploit) triggered 8min ago"
-    alerts = _deterministic_qa_checks(summary, {}, {})
-    codes = [a["code"] for a in alerts]
-    assert "GATE_PENDING" in codes
-    gate = next(a for a in alerts if a["code"] == "GATE_PENDING")
-    assert gate["urgency"] == "medium"
+# ---------------------------------------------------------------------------
+# _check_bulk_marking
+# ---------------------------------------------------------------------------
+
+def test_bulk_marking_no_coverage_entries():
+    assert _check_bulk_marking([]) is None
 
 
-def test_deterministic_gate_pending_skipped_when_recent():
-    summary = "Pending gates: post-exploit (requires: /post-exploit) triggered 2min ago"
-    alerts = _deterministic_qa_checks(summary, {}, {})
-    codes = [a["code"] for a in alerts]
-    assert "GATE_PENDING" not in codes
+def test_bulk_marking_below_threshold():
+    entries = [_coverage_entry(na_untooled=5)]
+    assert _check_bulk_marking(entries) is None
 
 
-def test_deterministic_rce_gate_false_positive():
-    summary = "Pending gates: rce-check (requires: /post-exploit) triggered 10min ago\nFindings: 2 medium, 1 low"
-    alerts = _deterministic_qa_checks(summary, {}, {})
-    codes = [a["code"] for a in alerts]
-    assert "RCE_GATE_FALSE_POSITIVE" in codes
+def test_bulk_marking_fires():
+    entries = [_coverage_entry(na_untooled=15)]
+    alert = _check_bulk_marking(entries)
+    assert alert is not None
+    assert alert["code"] == "BULK_MARKING"
+    assert alert["blocking"] is True
+    assert "15" in alert["message"]
 
 
-def test_deterministic_rce_gate_not_false_positive_with_high_finding():
-    summary = "Pending gates: rce-check (requires: /post-exploit) triggered 10min ago\nFindings: 1 high"
-    alerts = _deterministic_qa_checks(summary, {}, {})
-    codes = [a["code"] for a in alerts]
-    assert "RCE_GATE_FALSE_POSITIVE" not in codes
+# ---------------------------------------------------------------------------
+# _check_coverage_integrity
+# ---------------------------------------------------------------------------
+
+def test_coverage_integrity_no_entries():
+    assert _check_coverage_integrity([]) is None
 
 
-def test_deterministic_multiple_alerts_can_fire():
-    summary = (
-        "Possible off-scope targets used: evil.com\n"
-        "Last tool call: 20 minutes ago\n"
-        "Bulk-marking warning: 3 N/A cells lack tested_by"
-    )
-    alerts = _deterministic_qa_checks(summary, {}, {})
-    codes = [a["code"] for a in alerts]
+def test_coverage_integrity_zero_untooled():
+    entries = [_coverage_entry(untooled=0)]
+    assert _check_coverage_integrity(entries) is None
+
+
+def test_coverage_integrity_fires():
+    entries = [_coverage_entry(untooled=5)]
+    alert = _check_coverage_integrity(entries)
+    assert alert is not None
+    assert alert["code"] == "COVERAGE_INTEGRITY"
+    assert alert["blocking"] is True
+    assert "5" in alert["message"]
+
+
+# ---------------------------------------------------------------------------
+# _check_missing_diagram
+# ---------------------------------------------------------------------------
+
+def test_missing_diagram_no_findings():
+    assert _check_missing_diagram({}) is None
+
+
+def test_missing_diagram_has_diagram():
+    data = {"findings": [{"id": "f1"}], "diagrams": [{"title": "arch"}]}
+    assert _check_missing_diagram(data) is None
+
+
+def test_missing_diagram_fires():
+    data = {"findings": [{"id": "f1"}], "diagrams": []}
+    alert = _check_missing_diagram(data)
+    assert alert is not None
+    assert alert["code"] == "NO_DIAGRAM"
+    assert alert["urgency"] == "medium"
+
+
+def test_missing_diagram_fires_when_diagrams_key_absent():
+    data = {"findings": [{"id": "f1"}]}
+    assert _check_missing_diagram(data) is not None
+
+
+# ---------------------------------------------------------------------------
+# _check_no_spider_after_httpx
+# ---------------------------------------------------------------------------
+
+def test_no_spider_no_httpx():
+    entries = [_tool_entry("nmap")]
+    assert _check_no_spider_after_httpx(entries) is None
+
+
+def test_no_spider_httpx_with_spider():
+    entries = [_tool_entry("httpx"), _spider_entry()]
+    assert _check_no_spider_after_httpx(entries) is None
+
+
+def test_no_spider_fires_after_httpx():
+    entries = [_tool_entry("httpx"), _tool_entry("nuclei")]
+    alert = _check_no_spider_after_httpx(entries)
+    assert alert is not None
+    assert alert["code"] == "NO_SPIDER"
+    assert alert["urgency"] == "medium"
+
+
+# ---------------------------------------------------------------------------
+# _deterministic_qa_checks — signature and integration
+# ---------------------------------------------------------------------------
+
+def test_deterministic_no_alerts_on_clean_state(tmp_path, monkeypatch):
+    import core.steering as st_mod
+    monkeypatch.setattr(st_mod, "_STEERING_FILE", tmp_path / "steering_queue.json")
+    entries = [_tool_entry(offset_min=2)]
+    alerts = _deterministic_qa_checks(entries, {}, {}, {"target": "https://example.com"})
+    assert alerts == []
+
+
+def test_deterministic_scope_drift_detected(tmp_path, monkeypatch):
+    import core.steering as st_mod
+    monkeypatch.setattr(st_mod, "_STEERING_FILE", tmp_path / "steering_queue.json")
+    entries = [_tool_entry("nmap", "evil.com")]
+    alerts = _deterministic_qa_checks(entries, {}, {}, {"target": "https://example.com"})
+    assert any(a["code"] == "SCOPE_DRIFT" for a in alerts)
+
+
+def test_deterministic_spider_without_coverage(tmp_path, monkeypatch):
+    import core.steering as st_mod
+    monkeypatch.setattr(st_mod, "_STEERING_FILE", tmp_path / "steering_queue.json")
+    entries = [_spider_entry(15)]
+    alerts = _deterministic_qa_checks(entries, {}, {"meta": {"total_cells": 0}}, {})
+    assert any(a["code"] == "SPIDER_WITHOUT_COVERAGE" for a in alerts)
+
+
+def test_deterministic_multiple_alerts_fire(tmp_path, monkeypatch):
+    import core.steering as st_mod
+    monkeypatch.setattr(st_mod, "_STEERING_FILE", tmp_path / "steering_queue.json")
+    entries = [
+        _tool_entry("nmap", "evil.com"),           # scope drift
+        _tool_entry("nmap", "evil.com", offset_min=20),  # inactivity
+        _coverage_entry(na_untooled=15),            # bulk marking
+    ]
+    alerts = _deterministic_qa_checks(entries, {}, {}, {"target": "https://example.com"})
+    codes = {a["code"] for a in alerts}
     assert "SCOPE_DRIFT" in codes
-    assert "TOOL_INACTIVITY" in codes
     assert "BULK_MARKING" in codes
-
-
-# ---------------------------------------------------------------------------
-# _format_findings_for_semantic_review()
-# ---------------------------------------------------------------------------
-
-def test_format_findings_empty_findings():
-    result = _format_findings_for_semantic_review({})
-    assert result == ""
-
-
-def test_format_findings_no_high_critical():
-    findings_data = {
-        "findings": [
-            {"title": "Info leak", "severity": "info"},
-            {"title": "Low issue", "severity": "low"},
-        ]
-    }
-    result = _format_findings_for_semantic_review(findings_data)
-    assert result == ""
-
-
-def test_format_findings_includes_high_critical():
-    findings_data = {
-        "findings": [
-            {
-                "title": "SQL Injection",
-                "severity": "critical",
-                "description": "Classic SQLi on login",
-                "evidence": "' OR 1=1",
-                "business_impact": "Full DB access",
-            },
-            {
-                "title": "XSS",
-                "severity": "high",
-                "description": "Stored XSS in profile",
-                "evidence": "<script>alert(1)</script>",
-            },
-        ]
-    }
-    result = _format_findings_for_semantic_review(findings_data)
-    assert "[CRITICAL]" in result
-    assert "SQL Injection" in result
-    assert "[HIGH]" in result
-    assert "XSS" in result
-
-
-def test_format_findings_caps_at_ten():
-    findings_data = {
-        "findings": [
-            {"title": f"Finding {i}", "severity": "high", "description": "desc"}
-            for i in range(15)
-        ]
-    }
-    result = _format_findings_for_semantic_review(findings_data)
-    # Only 10 should be included — count how many [HIGH] markers appear
-    assert result.count("[HIGH]") == 10
 
 
 # ---------------------------------------------------------------------------
@@ -336,21 +420,19 @@ def test_deduplicate_empty_lists():
 def test_deduplicate_no_previous_keeps_all():
     new_alerts = [
         {"code": "SCOPE_DRIFT", "urgency": "high", "message": "drift detected"},
-        {"code": "POC_GAP", "urgency": "medium", "message": "missing pocs"},
+        {"code": "POC_GAP", "urgency": "high", "message": "missing pocs"},
     ]
-    result = _deduplicate(new_alerts, [])
-    assert len(result) == 2
+    assert len(_deduplicate(new_alerts, [])) == 2
 
 
 def test_deduplicate_drops_same_code_and_message():
     alert = {"code": "SCOPE_DRIFT", "urgency": "high", "message": "drift detected"}
-    result = _deduplicate([alert], [alert])
-    assert result == []
+    assert _deduplicate([alert], [alert]) == []
 
 
 def test_deduplicate_keeps_same_code_different_message():
     prev = {"code": "SCOPE_DRIFT", "urgency": "high", "message": "old target"}
-    new = {"code": "SCOPE_DRIFT", "urgency": "high", "message": "new target"}
+    new  = {"code": "SCOPE_DRIFT", "urgency": "high", "message": "new target"}
     result = _deduplicate([new], [prev])
     assert len(result) == 1
     assert result[0]["message"] == "new target"
@@ -358,18 +440,16 @@ def test_deduplicate_keeps_same_code_different_message():
 
 def test_deduplicate_keeps_different_codes():
     prev = {"code": "SCOPE_DRIFT", "urgency": "high", "message": "drift"}
-    new = {"code": "POC_GAP", "urgency": "medium", "message": "missing"}
+    new  = {"code": "POC_GAP",    "urgency": "high", "message": "missing"}
     result = _deduplicate([new], [prev])
     assert len(result) == 1
     assert result[0]["code"] == "POC_GAP"
 
 
-def test_deduplicate_returns_new_when_urgency_changed():
-    prev = {"code": "TOOL_INACTIVITY", "urgency": "low", "message": "idle 15min"}
-    new = {"code": "TOOL_INACTIVITY", "urgency": "high", "message": "idle 15min"}
-    # Same message → deduped regardless of urgency change (dedup is by code+message)
-    result = _deduplicate([new], [prev])
-    assert result == []
+def test_deduplicate_same_message_deduped_regardless_of_urgency():
+    prev = {"code": "TOOL_INACTIVITY", "urgency": "low",  "message": "idle 15min"}
+    new  = {"code": "TOOL_INACTIVITY", "urgency": "high", "message": "idle 15min"}
+    assert _deduplicate([new], [prev]) == []
 
 
 # ---------------------------------------------------------------------------
@@ -385,8 +465,7 @@ def test_read_qa_state_returns_parsed_json(tmp_path, monkeypatch):
     qa_state = tmp_path / "qa_state.json"
     qa_state.write_text(json.dumps({"alerts": [], "ts": "2026-01-01T00:00:00+00:00"}))
     monkeypatch.setattr(core.qa_agent, "_QA_STATE_FILE", qa_state)
-    result = _read_qa_state()
-    assert result["alerts"] == []
+    assert _read_qa_state()["alerts"] == []
 
 
 def test_read_qa_state_returns_empty_on_corrupt_json(tmp_path, monkeypatch):
@@ -397,20 +476,20 @@ def test_read_qa_state_returns_empty_on_corrupt_json(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# _sanitize_history()
+# _sanitize_history() — summary_sent no longer stored
 # ---------------------------------------------------------------------------
 
 def test_sanitize_history_filters_non_dicts():
-    raw = [{"ts": "2026-01-01T00:00:00+00:00", "summary_sent": "s", "alerts": [], "smith_actions": []}, "not-a-dict", 42]
-    result = _sanitize_history(raw)
-    assert len(result) == 1
+    raw = [{"ts": "2026-01-01T00:00:00+00:00", "alerts": [], "smith_actions": []},
+           "not-a-dict", 42]
+    assert len(_sanitize_history(raw)) == 1
 
 
 def test_sanitize_history_caps_field_length():
     long_ts = "X" * 100
     alerts = [{"urgency": "high", "message": "a"}] * 20
-    smith = [{"type": "TOOL"}] * 100
-    raw = [{"ts": long_ts, "summary_sent": "s", "alerts": alerts, "smith_actions": smith}]
+    smith  = [{"type": "TOOL"}] * 100
+    raw = [{"ts": long_ts, "alerts": alerts, "smith_actions": smith}]
     result = _sanitize_history(raw)
     assert len(result[0]["ts"]) <= 50
     assert len(result[0]["alerts"]) <= 10
@@ -418,45 +497,46 @@ def test_sanitize_history_caps_field_length():
 
 
 def test_sanitize_history_keeps_valid_alert_dicts():
-    raw = [{"ts": "t", "summary_sent": "s",
-            "alerts": [{"urgency": "high"}, "not-dict"],
-            "smith_actions": []}]
-    result = _sanitize_history(raw)
-    assert result[0]["alerts"] == [{"urgency": "high"}]
+    raw = [{"ts": "t", "alerts": [{"urgency": "high"}, "not-dict"], "smith_actions": []}]
+    assert _sanitize_history(raw)[0]["alerts"] == [{"urgency": "high"}]
 
 
 def test_sanitize_history_empty_list():
     assert _sanitize_history([]) == []
 
 
-def test_sanitize_history_includes_smith_reply_when_present():
-    raw = [{"ts": "t", "summary_sent": "s", "alerts": [],
-            "smith_actions": [], "smith_reply": "Acknowledged."}]
-    result = _sanitize_history(raw)
-    assert result[0]["smith_reply"] == "Acknowledged."
+def test_sanitize_history_smith_reply_preserved():
+    raw = [{"ts": "t", "alerts": [], "smith_actions": [], "smith_reply": "Acknowledged."}]
+    assert _sanitize_history(raw)[0]["smith_reply"] == "Acknowledged."
 
 
-def test_sanitize_history_smith_reply_is_none_when_absent():
-    raw = [{"ts": "t", "summary_sent": "s", "alerts": [], "smith_actions": []}]
-    result = _sanitize_history(raw)
-    assert result[0]["smith_reply"] is None
+def test_sanitize_history_smith_reply_none_when_absent():
+    raw = [{"ts": "t", "alerts": [], "smith_actions": []}]
+    assert _sanitize_history(raw)[0]["smith_reply"] is None
 
 
 def test_sanitize_history_truncates_long_smith_reply():
-    long_reply = "A" * 3000
-    raw = [{"ts": "t", "summary_sent": "s", "alerts": [],
-            "smith_actions": [], "smith_reply": long_reply}]
+    raw = [{"ts": "t", "alerts": [], "smith_actions": [], "smith_reply": "A" * 3000}]
+    assert len(_sanitize_history(raw)[0]["smith_reply"]) <= 2000
+
+
+def test_sanitize_history_no_summary_sent_in_output():
+    """summary_sent is removed — history entries should not have this field."""
+    raw = [{"ts": "t", "summary_sent": "old prompt", "alerts": [], "smith_actions": []}]
     result = _sanitize_history(raw)
-    assert len(result[0]["smith_reply"]) <= 2000
+    assert "summary_sent" not in result[0]
 
 
 # ---------------------------------------------------------------------------
-# QADaemon._cycle() — early-return guards
+# QADaemon._cycle() — guards and state
 # ---------------------------------------------------------------------------
 
-def _setup_cycle_files(tmp_path, monkeypatch, status="running"):
+def _setup_cycle_files(tmp_path, monkeypatch, status="running", session_extra=None):
+    session_data = {"status": status}
+    if session_extra:
+        session_data.update(session_extra)
     session_file = tmp_path / "session.json"
-    session_file.write_text(json.dumps({"status": status}))
+    session_file.write_text(json.dumps(session_data))
     monkeypatch.setattr(core.qa_agent, "_SESSION_FILE", session_file)
 
     qa_state = tmp_path / "qa_state.json"
@@ -471,6 +551,13 @@ def _setup_cycle_files(tmp_path, monkeypatch, status="running"):
     return qa_state
 
 
+def _mock_ql(entries=None, since=None):
+    m = MagicMock()
+    m.read_all.return_value = entries or []
+    m.read_since.return_value = since or []
+    return m
+
+
 @pytest.mark.asyncio
 async def test_cycle_skips_when_session_not_running(tmp_path, monkeypatch):
     qa_state = _setup_cycle_files(tmp_path, monkeypatch, status="complete")
@@ -482,10 +569,7 @@ async def test_cycle_skips_when_session_not_running(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_cycle_skips_when_quick_log_is_empty(tmp_path, monkeypatch):
     qa_state = _setup_cycle_files(tmp_path, monkeypatch)
-
-    test_log = QuickLog(path=tmp_path / "quick_log.json")
-    monkeypatch.setattr(core.quick_log, "quick_log", test_log)
-
+    monkeypatch.setattr(core.quick_log, "quick_log", QuickLog(path=tmp_path / "ql.json"))
     daemon = QADaemon()
     await daemon._cycle()
     assert not qa_state.exists()
@@ -493,62 +577,46 @@ async def test_cycle_skips_when_quick_log_is_empty(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_cycle_skips_when_no_new_alerts(tmp_path, monkeypatch):
-    """Cycle skips writing when deterministic + semantic both produce no alerts."""
     qa_state = _setup_cycle_files(tmp_path, monkeypatch)
-
-    # Activity exists but no triggers in the summary
-    mock_ql = MagicMock()
-    mock_ql.summarize.return_value = "1 tool call: nmap"
-    mock_ql.read_since.return_value = []
-    monkeypatch.setattr(core.quick_log, "quick_log", mock_ql)
-
+    monkeypatch.setattr(core.quick_log, "quick_log",
+                        _mock_ql(entries=[_tool_entry(offset_min=2)]))
     daemon = QADaemon()
-    monkeypatch.setattr(daemon, "_get_graph", lambda: None)
     await daemon._cycle()
-
     assert not qa_state.exists()
 
 
 @pytest.mark.asyncio
 async def test_cycle_writes_qa_state_with_deterministic_alert(tmp_path, monkeypatch):
+    import core.steering as st_mod
+    monkeypatch.setattr(st_mod, "_STEERING_FILE", tmp_path / "steering_queue.json")
     qa_state = _setup_cycle_files(tmp_path, monkeypatch)
-
-    mock_ql = MagicMock()
-    mock_ql.summarize.return_value = "Possible off-scope targets used: evil.com"
-    mock_ql.read_since.return_value = []
-    monkeypatch.setattr(core.quick_log, "quick_log", mock_ql)
-
+    # SPIDER entry with empty coverage → SPIDER_WITHOUT_COVERAGE fires
+    monkeypatch.setattr(core.quick_log, "quick_log",
+                        _mock_ql(entries=[_spider_entry(12)]))
     daemon = QADaemon()
-    monkeypatch.setattr(daemon, "_get_graph", lambda: None)
     await daemon._cycle()
-
     assert qa_state.exists()
     data = json.loads(qa_state.read_text())
-    codes = [a["code"] for a in data["alerts"]]
-    assert "SCOPE_DRIFT" in codes
+    assert any(a["code"] == "SPIDER_WITHOUT_COVERAGE" for a in data["alerts"])
     assert "ts" in data
     assert "history" in data
 
 
 @pytest.mark.asyncio
 async def test_cycle_caps_alerts_at_four(tmp_path, monkeypatch):
-    """Cycle keeps at most 4 alerts."""
+    import core.steering as st_mod
+    monkeypatch.setattr(st_mod, "_STEERING_FILE", tmp_path / "steering_queue.json")
     qa_state = _setup_cycle_files(tmp_path, monkeypatch)
+    monkeypatch.setattr(core.quick_log, "quick_log",
+                        _mock_ql(entries=[_spider_entry()]))
 
-    mock_ql = MagicMock()
-    mock_ql.summarize.return_value = (
-        "Possible off-scope targets used: evil.com\n"
-        "Last tool call: 20 minutes ago\n"
-        "Bulk-marking warning: 3 N/A cells lack tested_by\n"
-        "5 tested/vulnerable cells have no tested_by tool\n"
-        "WARNING: coverage stale (40 min), 5 pending"
-    )
-    mock_ql.read_since.return_value = []
-    monkeypatch.setattr(core.quick_log, "quick_log", mock_ql)
-
-    daemon = QADaemon()
-    monkeypatch.setattr(daemon, "_get_graph", lambda: None)
-    await daemon._cycle()
+    six_alerts = [
+        {"code": f"ALERT{i}", "urgency": "high", "blocking": False, "message": f"msg{i}"}
+        for i in range(6)
+    ]
+    with patch("core.qa_agent._deterministic_qa_checks", return_value=six_alerts):
+        daemon = QADaemon()
+        await daemon._cycle()
 
     data = json.loads(qa_state.read_text())
     assert len(data["alerts"]) <= 4
@@ -556,36 +624,33 @@ async def test_cycle_caps_alerts_at_four(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_cycle_captures_smith_actions_in_history(tmp_path, monkeypatch):
+    import core.steering as st_mod
+    monkeypatch.setattr(st_mod, "_STEERING_FILE", tmp_path / "steering_queue.json")
     qa_state = _setup_cycle_files(tmp_path, monkeypatch)
-    # Seed previous history so prev_cycle_ts is set
+    # Seed previous history
     qa_state.write_text(json.dumps({
         "ts": "2025-12-31T00:00:00+00:00",
         "alerts": [],
-        "history": [{"ts": "2025-12-31T00:00:00+00:00", "summary_sent": "prev",
+        "history": [{"ts": "2025-12-31T00:00:00+00:00",
                      "alerts": [], "smith_actions": [], "smith_reply": None}],
     }))
-
     new_action = {"type": "TOOL", "name": "nuclei", "ts": "2099-12-31T23:59:59+00:00"}
-    mock_ql = MagicMock()
-    mock_ql.summarize.return_value = "Possible off-scope targets used: evil.com"
-    mock_ql.read_since.return_value = [new_action]
-    monkeypatch.setattr(core.quick_log, "quick_log", mock_ql)
-
+    monkeypatch.setattr(core.quick_log, "quick_log",
+                        _mock_ql(entries=[_spider_entry()], since=[new_action]))
     daemon = QADaemon()
-    monkeypatch.setattr(daemon, "_get_graph", lambda: None)
     await daemon._cycle()
-
     data = json.loads(qa_state.read_text())
     assert len(data["history"]) == 2
-    smith_actions = data["history"][-1]["smith_actions"]
-    assert any(a.get("name") == "nuclei" for a in smith_actions)
+    assert any(a.get("name") == "nuclei" for a in data["history"][-1]["smith_actions"])
 
 
 @pytest.mark.asyncio
 async def test_cycle_caps_history_at_20(tmp_path, monkeypatch):
+    import core.steering as st_mod
+    monkeypatch.setattr(st_mod, "_STEERING_FILE", tmp_path / "steering_queue.json")
     qa_state = _setup_cycle_files(tmp_path, monkeypatch)
     existing_history = [
-        {"ts": f"2026-01-{i:02d}T00:00:00+00:00", "summary_sent": "s",
+        {"ts": f"2026-01-{i:02d}T00:00:00+00:00",
          "alerts": [], "smith_actions": [], "smith_reply": None}
         for i in range(1, 21)
     ]
@@ -594,370 +659,253 @@ async def test_cycle_caps_history_at_20(tmp_path, monkeypatch):
         "alerts": [],
         "history": existing_history,
     }))
-
-    mock_ql = MagicMock()
-    mock_ql.summarize.return_value = "Possible off-scope targets used: evil.com"
-    mock_ql.read_since.return_value = []
-    monkeypatch.setattr(core.quick_log, "quick_log", mock_ql)
-
+    monkeypatch.setattr(core.quick_log, "quick_log",
+                        _mock_ql(entries=[_spider_entry()]))
     daemon = QADaemon()
-    monkeypatch.setattr(daemon, "_get_graph", lambda: None)
     await daemon._cycle()
-
     data = json.loads(qa_state.read_text())
     assert len(data["history"]) == 20
 
 
 @pytest.mark.asyncio
 async def test_cycle_handles_corrupt_qa_state_gracefully(tmp_path, monkeypatch):
+    import core.steering as st_mod
+    monkeypatch.setattr(st_mod, "_STEERING_FILE", tmp_path / "steering_queue.json")
     qa_state = _setup_cycle_files(tmp_path, monkeypatch)
     qa_state.write_text("not valid json {{{")
-
-    mock_ql = MagicMock()
-    mock_ql.summarize.return_value = "Possible off-scope targets used: evil.com"
-    mock_ql.read_since.return_value = []
-    monkeypatch.setattr(core.quick_log, "quick_log", mock_ql)
-
+    monkeypatch.setattr(core.quick_log, "quick_log",
+                        _mock_ql(entries=[_spider_entry()]))
     daemon = QADaemon()
-    monkeypatch.setattr(daemon, "_get_graph", lambda: None)
     await daemon._cycle()
-
     data = json.loads(qa_state.read_text())
     assert len(data["history"]) == 1
 
 
 @pytest.mark.asyncio
-async def test_cycle_invokes_semantic_review_for_high_findings(tmp_path, monkeypatch):
-    qa_state = _setup_cycle_files(tmp_path, monkeypatch)
-
-    findings_file = tmp_path / "findings.json"
-    findings_file.write_text(json.dumps({
-        "findings": [
-            {"title": "SQLi", "severity": "critical",
-             "description": "Classic injection", "evidence": "payload", "poc_files": ["poc.http"]},
-        ]
-    }))
-    monkeypatch.setattr(core.qa_agent, "_FINDINGS_FILE", findings_file)
-
-    mock_ql = MagicMock()
-    mock_ql.summarize.return_value = "1 tool call: sqlmap"
-    mock_ql.read_since.return_value = []
-    monkeypatch.setattr(core.quick_log, "quick_log", mock_ql)
-
-    semantic_alerts = [{"code": "FINDING_QUALITY", "urgency": "medium",
-                        "blocking": False, "message": "Severity appears overclaimed"}]
-    mock_graph = MagicMock()
-
-    daemon = QADaemon()
-    monkeypatch.setattr(daemon, "_get_graph", lambda: mock_graph)
-
-    with patch("asyncio.to_thread", new=AsyncMock(return_value={"alerts": semantic_alerts})):
-        await daemon._cycle()
-
-    data = json.loads(qa_state.read_text())
-    codes = [a["code"] for a in data["alerts"]]
-    assert "FINDING_QUALITY" in codes
-
-
-@pytest.mark.asyncio
-async def test_cycle_skips_semantic_review_when_no_high_findings(tmp_path, monkeypatch):
-    qa_state = _setup_cycle_files(tmp_path, monkeypatch)
-
-    findings_file = tmp_path / "findings.json"
-    findings_file.write_text(json.dumps({
-        "findings": [
-            {"title": "Minor info", "severity": "info", "description": "d"},
-        ]
-    }))
-    monkeypatch.setattr(core.qa_agent, "_FINDINGS_FILE", findings_file)
-
-    mock_ql = MagicMock()
-    mock_ql.summarize.return_value = "Possible off-scope targets used: evil.com"
-    mock_ql.read_since.return_value = []
-    monkeypatch.setattr(core.quick_log, "quick_log", mock_ql)
-
-    invoke_called = []
-    mock_graph = MagicMock()
-    mock_graph.invoke = lambda *a, **kw: invoke_called.append(True) or {"alerts": []}
-
-    daemon = QADaemon()
-    monkeypatch.setattr(daemon, "_get_graph", lambda: mock_graph)
-
-    with patch("asyncio.to_thread", new=AsyncMock(side_effect=AssertionError("should not call"))):
-        await daemon._cycle()
-
-    assert not invoke_called
-
-
-@pytest.mark.asyncio
-async def test_cycle_handles_semantic_review_exception(tmp_path, monkeypatch):
-    qa_state = _setup_cycle_files(tmp_path, monkeypatch)
-
-    findings_file = tmp_path / "findings.json"
-    findings_file.write_text(json.dumps({
-        "findings": [
-            {"title": "SQLi", "severity": "critical", "description": "d", "poc_files": ["poc.http"]},
-        ]
-    }))
-    monkeypatch.setattr(core.qa_agent, "_FINDINGS_FILE", findings_file)
-
-    mock_ql = MagicMock()
-    mock_ql.summarize.return_value = "1 tool call: sqlmap"
-    mock_ql.read_since.return_value = []
-    monkeypatch.setattr(core.quick_log, "quick_log", mock_ql)
-
-    mock_graph = MagicMock()
-    daemon = QADaemon()
-    monkeypatch.setattr(daemon, "_get_graph", lambda: mock_graph)
-
-    # Semantic review raises an exception — cycle should not crash
-    with patch("asyncio.to_thread", new=AsyncMock(side_effect=RuntimeError("LLM timeout"))):
-        await daemon._cycle()  # should not raise
-
-
-@pytest.mark.asyncio
 async def test_cycle_skips_write_when_alerts_unchanged(tmp_path, monkeypatch):
-    """When no new alerts are generated, qa_state is not rewritten."""
     qa_state = _setup_cycle_files(tmp_path, monkeypatch)
-
-    # Pre-seed qa_state with an existing alert
     existing_alert = {"code": "SCOPE_DRIFT", "urgency": "high", "blocking": False,
-                      "message": "Possible off-scope targets used: evil.com"}
+                      "message": "Scope drift: tools ran against evil.com"}
     qa_state.write_text(json.dumps({
         "ts": "2026-01-01T00:00:00+00:00",
         "alerts": [existing_alert],
         "history": [],
     }))
-
-    # Summary produces no deterministic alerts, no high/critical findings
-    mock_ql = MagicMock()
-    mock_ql.summarize.return_value = "1 tool call: nmap"
-    mock_ql.read_since.return_value = []
-    monkeypatch.setattr(core.quick_log, "quick_log", mock_ql)
-
+    # Entries that produce no deterministic alerts
+    monkeypatch.setattr(core.quick_log, "quick_log",
+                        _mock_ql(entries=[_tool_entry(offset_min=2)]))
     daemon = QADaemon()
-    monkeypatch.setattr(daemon, "_get_graph", lambda: None)
-
     mtime_before = qa_state.stat().st_mtime
     await daemon._cycle()
     assert qa_state.stat().st_mtime == mtime_before
 
 
-# ---------------------------------------------------------------------------
-# _init_llm()
-# ---------------------------------------------------------------------------
-
-def test_init_llm_openai_provider():
-    mock_cls = MagicMock(return_value=MagicMock())
-    with patch.dict("sys.modules", {"langchain_openai": MagicMock(ChatOpenAI=mock_cls)}):
-        result = _init_llm("openai:gpt-4o-mini")
-    mock_cls.assert_called_once_with(model="gpt-4o-mini", max_tokens=512)
-
-
-def test_init_llm_anthropic_provider():
-    mock_cls = MagicMock(return_value=MagicMock())
-    with patch.dict("sys.modules", {"langchain_anthropic": MagicMock(ChatAnthropic=mock_cls)}):
-        result = _init_llm("anthropic:claude-haiku-4-5-20251001")
-    mock_cls.assert_called_once_with(model="claude-haiku-4-5-20251001", max_tokens=512)
-
-
-def test_init_llm_ollama_provider():
-    mock_cls = MagicMock(return_value=MagicMock())
-    with patch.dict("sys.modules", {"langchain_ollama": MagicMock(ChatOllama=mock_cls)}):
-        result = _init_llm("ollama:qwen2.5:7b")
-    mock_cls.assert_called_once_with(model="qwen2.5:7b", num_predict=512)
-
-
-def test_init_llm_unknown_provider_raises():
-    with pytest.raises(ValueError, match="Unknown QA_MODEL provider"):
-        _init_llm("fakevendor:some-model")
-
-
-def test_init_llm_no_colon_defaults_to_openai():
-    mock_cls = MagicMock(return_value=MagicMock())
-    with patch.dict("sys.modules", {"langchain_openai": MagicMock(ChatOpenAI=mock_cls)}):
-        _init_llm("gpt-4o-mini")
-    mock_cls.assert_called_once_with(model="gpt-4o-mini", max_tokens=512)
-
-
-# ---------------------------------------------------------------------------
-# _build_graph()
-# ---------------------------------------------------------------------------
-
-def test_build_graph_returns_none_when_langgraph_missing():
-    with patch.dict("sys.modules", {"langgraph": None, "langgraph.graph": None,
-                                     "langchain_core": None, "langchain_core.messages": None}):
-        result = _build_graph()
-    assert result is None
-
-
-def test_build_graph_returns_none_when_llm_init_fails(monkeypatch):
-    mock_state_graph = MagicMock()
-    mock_graph_instance = MagicMock()
-    mock_state_graph.return_value = mock_graph_instance
-
-    fake_langgraph = MagicMock()
-    fake_langgraph.graph.StateGraph = mock_state_graph
-    fake_langgraph.graph.END = "END"
-
-    fake_lc_core = MagicMock()
-
-    with patch.dict("sys.modules", {
-        "langgraph": fake_langgraph,
-        "langgraph.graph": fake_langgraph.graph,
-        "langchain_core": fake_lc_core,
-        "langchain_core.messages": fake_lc_core.messages,
-    }):
-        monkeypatch.setenv("QA_MODEL", "openai:gpt-4o-mini")
-        with patch("core.qa_agent._init_llm", side_effect=Exception("no key")):
-            result = _build_graph()
-    assert result is None
-
-
-def test_build_graph_returns_compiled_graph(monkeypatch):
-    mock_compiled = MagicMock()
-    mock_sg_instance = MagicMock()
-    mock_sg_instance.compile.return_value = mock_compiled
-    mock_sg_cls = MagicMock(return_value=mock_sg_instance)
-
-    fake_langgraph_graph = MagicMock()
-    fake_langgraph_graph.StateGraph = mock_sg_cls
-    fake_langgraph_graph.END = "END"
-
-    fake_lc_core_messages = MagicMock()
-
-    with patch.dict("sys.modules", {
-        "langgraph": MagicMock(graph=fake_langgraph_graph),
-        "langgraph.graph": fake_langgraph_graph,
-        "langchain_core": MagicMock(messages=fake_lc_core_messages),
-        "langchain_core.messages": fake_lc_core_messages,
-    }):
-        monkeypatch.setenv("QA_MODEL", "openai:gpt-4o-mini")
-        mock_llm = MagicMock()
-        with patch("core.qa_agent._init_llm", return_value=mock_llm):
-            result = _build_graph()
-
-    assert result is mock_compiled
-
-
-# ---------------------------------------------------------------------------
-# QADaemon._get_graph() — lazy-builds only once
-# ---------------------------------------------------------------------------
-
-def test_get_graph_builds_once(monkeypatch):
-    build_calls = []
-
-    def fake_build():
-        build_calls.append(1)
-        return MagicMock()
-
+@pytest.mark.asyncio
+async def test_cycle_history_has_no_summary_sent(tmp_path, monkeypatch):
+    import core.steering as st_mod
+    monkeypatch.setattr(st_mod, "_STEERING_FILE", tmp_path / "steering_queue.json")
+    qa_state = _setup_cycle_files(tmp_path, monkeypatch)
+    monkeypatch.setattr(core.quick_log, "quick_log",
+                        _mock_ql(entries=[_spider_entry()]))
     daemon = QADaemon()
-    with patch("core.qa_agent._build_graph", side_effect=fake_build):
-        daemon._get_graph()
-        daemon._get_graph()
-
-    assert len(build_calls) == 1
+    await daemon._cycle()
+    data = json.loads(qa_state.read_text())
+    for entry in data["history"]:
+        assert "summary_sent" not in entry
 
 
 # ---------------------------------------------------------------------------
-# _build_graph() — node execution (invoke_llm + parse_response)
+# _merge_alerts() — fixed dedup
 # ---------------------------------------------------------------------------
 
-def test_build_graph_nodes_parse_valid_json(monkeypatch):
-    """Exercises invoke_llm and parse_response nodes with a mocked LLM."""
+def test_merge_alerts_changed_alerts_first():
+    new_alert  = {"code": "POC_GAP",    "urgency": "high", "message": "new"}
+    persistent = {"code": "SCOPE_DRIFT","urgency": "high", "message": "drift"}
+    result = _merge_alerts([new_alert], [new_alert, persistent], cap=4)
+    assert result[0]["code"] == "POC_GAP"
+
+
+def test_merge_alerts_preserves_persistent_when_new_fires():
+    persistent1 = {"code": "SCOPE_DRIFT",    "urgency": "high",   "message": "drift"}
+    persistent2 = {"code": "COVERAGE_STALL", "urgency": "medium", "message": "stale"}
+    new_alert   = {"code": "POC_GAP",        "urgency": "high",   "message": "new poc"}
+    result = _merge_alerts([new_alert], [new_alert, persistent1, persistent2], cap=4)
+    codes = {a["code"] for a in result}
+    assert codes == {"POC_GAP", "SCOPE_DRIFT", "COVERAGE_STALL"}
+
+
+def test_merge_alerts_respects_cap():
+    alerts = [{"code": f"A{i}", "urgency": "low", "message": f"m{i}"} for i in range(6)]
+    assert len(_merge_alerts(alerts, alerts, cap=4)) == 4
+
+
+def test_merge_alerts_no_duplicate_codes():
+    a = {"code": "SCOPE_DRIFT", "urgency": "high", "message": "same"}
+    assert len(_merge_alerts([a], [a], cap=4)) == 1
+
+
+def test_merge_alerts_empty_inputs():
+    assert _merge_alerts([], []) == []
+
+
+# ---------------------------------------------------------------------------
+# _check_injection_breadth
+# ---------------------------------------------------------------------------
+
+def _make_cell(ep_id, param, param_type, injection_type, status="pending"):
+    return {"id": f"cell-{ep_id}-{param}-{injection_type}", "endpoint_id": ep_id,
+            "param": param, "param_type": param_type, "injection_type": injection_type,
+            "status": status}
+
+
+def test_injection_breadth_no_matrix():
+    assert _check_injection_breadth({"matrix": []}) is None
+
+
+def test_injection_breadth_no_sqli_cells():
+    matrix = [_make_cell("ep1", "q", "query", "xss")]
+    assert _check_injection_breadth({"matrix": matrix}) is None
+
+
+def test_injection_breadth_full_coverage():
+    matrix = [_make_cell("ep1", "q", "query", t)
+              for t in ("sqli", "xss", "ssti", "ssrf", "cmdi")]
+    assert _check_injection_breadth({"matrix": matrix}) is None
+
+
+def test_injection_breadth_missing_types():
+    matrix = [_make_cell("ep1", "username", "body_json", "sqli")]
+    alert = _check_injection_breadth({"matrix": matrix})
+    assert alert is not None
+    assert alert["code"] == "INJECTION_BREADTH_GAP"
+    assert alert["urgency"] == "high"
+    assert "username" in alert["message"]
+
+
+def test_injection_breadth_endpoint_param_skipped():
+    matrix = [{"id": "c1", "endpoint_id": "ep1", "param": "_endpoint",
+               "param_type": "endpoint", "injection_type": "sqli", "status": "pending"}]
+    assert _check_injection_breadth({"matrix": matrix}) is None
+
+
+def test_injection_breadth_partial_missing():
+    matrix = [_make_cell("ep1", "id", "query", "sqli"),
+              _make_cell("ep1", "id", "query", "xss")]
+    alert = _check_injection_breadth({"matrix": matrix})
+    assert alert is not None
+    assert "ssti" in alert["message"] or "ssrf" in alert["message"]
+
+
+# ---------------------------------------------------------------------------
+# _check_endpoint_trigger_gaps
+# ---------------------------------------------------------------------------
+
+def _gate(gid, required, status="pending", triggered_at=None, trigger="api endpoint"):
+    return {"id": gid, "status": status, "required_skills": required,
+            "triggered_at": triggered_at or _ts(0), "trigger": trigger}
+
+
+def test_trigger_gaps_no_gates():
+    assert _check_endpoint_trigger_gaps({}) == []
+
+
+def test_trigger_gaps_satisfied_gate_skipped():
+    sd = {"gates": [_gate("g1", ["api-security"], status="satisfied")], "skill_history": []}
+    assert _check_endpoint_trigger_gaps(sd) == []
+
+
+def test_trigger_gaps_all_skills_satisfied():
+    sd = {"gates": [_gate("g1", ["api-security"])],
+          "skill_history": [{"skill": "api-security"}]}
+    assert _check_endpoint_trigger_gaps(sd) == []
+
+
+def test_trigger_gaps_missing_skill_fires_alert():
+    sd = {"gates": [_gate("g1", ["api-security"])], "skill_history": []}
+    alerts = _check_endpoint_trigger_gaps(sd)
+    assert len(alerts) == 1
+    assert alerts[0]["code"] == "ENDPOINT_TRIGGER_GAP"
+    assert "/api-security" in alerts[0]["message"]
+
+
+def test_trigger_gaps_elapsed_over_15_is_high(tmp_path, monkeypatch):
+    import core.steering as st_mod
+    monkeypatch.setattr(st_mod, "_STEERING_FILE", tmp_path / "steering_queue.json")
+    sd = {"gates": [_gate("g1", ["credential-audit"], triggered_at=_ts(20))],
+          "skill_history": []}
+    alerts = _check_endpoint_trigger_gaps(sd)
+    assert alerts[0]["urgency"] == "high"
+
+
+def test_trigger_gaps_elapsed_under_15_is_medium():
+    sd = {"gates": [_gate("g1", ["credential-audit"], triggered_at=_ts(0))],
+          "skill_history": []}
+    assert _check_endpoint_trigger_gaps(sd)[0]["urgency"] == "medium"
+
+
+def test_trigger_gaps_bad_timestamp_defaults_to_zero():
+    sd = {"gates": [{"id": "g1", "status": "pending", "required_skills": ["web-exploit"],
+                     "triggered_at": "not-a-date", "trigger": "upload"}],
+          "skill_history": []}
+    alerts = _check_endpoint_trigger_gaps(sd)
+    assert len(alerts) == 1
+    assert alerts[0]["urgency"] == "medium"
+
+
+# ---------------------------------------------------------------------------
+# _check_coverage_gap
+# ---------------------------------------------------------------------------
+
+def test_coverage_gap_no_endpoints():
+    assert _check_coverage_gap({"endpoints": []}, {}) == []
+
+
+def test_coverage_gap_unclassified_endpoint_ignored():
+    cov = {"endpoints": [{"path": "/static/image.png"}]}
+    assert _check_coverage_gap(cov, {}) == []
+
+
+def test_coverage_gap_skill_already_run():
+    cov = {"endpoints": [{"path": "/graphql"}]}
+    sd  = {"skill_history": [{"skill": "api-security"}]}
+    assert _check_coverage_gap(cov, sd) == []
+
+
+def test_coverage_gap_skill_missing_fires_alert():
+    cov = {"endpoints": [{"path": "/graphql"}]}
+    alerts = _check_coverage_gap(cov, {"skill_history": []})
+    assert len(alerts) == 1
+    assert alerts[0]["code"] == "COVERAGE_GAP"
+    assert "api-security" in alerts[0]["message"]
+
+
+def test_coverage_gap_multiple_same_type_grouped():
+    cov = {"endpoints": [{"path": "/graphql"}, {"path": "/graph/query"}]}
+    alerts = _check_coverage_gap(cov, {"skill_history": []})
+    assert len(alerts) == 1
+    assert "2 graphql" in alerts[0]["message"]
+
+
+def test_coverage_gap_financial_endpoint_flags_business_logic():
+    cov = {"endpoints": [{"path": "/api/payment"}]}
+    alerts = _check_coverage_gap(cov, {"skill_history": []})
+    assert any("business-logic" in a["message"] for a in alerts)
+
+
+def test_coverage_gap_import_error_returns_empty(monkeypatch):
+    import sys
+    import types
+    original = sys.modules.get("core.coverage")
+    broken = types.ModuleType("core.coverage")
+    sys.modules["core.coverage"] = broken
     try:
-        from langgraph.graph import StateGraph  # noqa: F401
-    except ImportError:
-        pytest.skip("langgraph not installed")
-
-    monkeypatch.setenv("QA_MODEL", "openai:gpt-4o-mini")
-    mock_llm = MagicMock()
-    mock_response = MagicMock()
-    mock_response.content = json.dumps({
-        "alerts": [
-            {"code": "FINDING_QUALITY", "urgency": "high",
-             "blocking": False, "message": "severity overclaimed"}
-        ]
-    })
-    mock_llm.invoke.return_value = mock_response
-
-    with patch("core.qa_agent._init_llm", return_value=mock_llm):
-        graph = _build_graph()
-
-    assert graph is not None
-    result = graph.invoke({"summary": "test findings", "raw_response": "", "alerts": []})
-    assert len(result["alerts"]) == 1
-    assert result["alerts"][0]["code"] == "FINDING_QUALITY"
-    assert result["alerts"][0]["urgency"] == "high"
-
-
-def test_build_graph_nodes_handle_invalid_json(monkeypatch):
-    """parse_response should return empty alerts for non-JSON LLM output."""
-    try:
-        from langgraph.graph import StateGraph  # noqa: F401
-    except ImportError:
-        pytest.skip("langgraph not installed")
-
-    monkeypatch.setenv("QA_MODEL", "openai:gpt-4o-mini")
-    mock_llm = MagicMock()
-    mock_response = MagicMock()
-    mock_response.content = "not valid json at all"
-    mock_llm.invoke.return_value = mock_response
-
-    with patch("core.qa_agent._init_llm", return_value=mock_llm):
-        graph = _build_graph()
-
-    assert graph is not None
-    result = graph.invoke({"summary": "test", "raw_response": "", "alerts": []})
-    assert result["alerts"] == []
-
-
-def test_build_graph_nodes_filter_alerts_without_message(monkeypatch):
-    """parse_response drops alert dicts that have no 'message' field."""
-    try:
-        from langgraph.graph import StateGraph  # noqa: F401
-    except ImportError:
-        pytest.skip("langgraph not installed")
-
-    monkeypatch.setenv("QA_MODEL", "openai:gpt-4o-mini")
-    mock_llm = MagicMock()
-    mock_response = MagicMock()
-    mock_response.content = json.dumps({
-        "alerts": [
-            {"code": "FINDING_QUALITY", "urgency": "high"},  # no message → filtered
-            {"code": "FINDING_QUALITY", "urgency": "medium", "message": "real alert"},
-        ]
-    })
-    mock_llm.invoke.return_value = mock_response
-
-    with patch("core.qa_agent._init_llm", return_value=mock_llm):
-        graph = _build_graph()
-
-    assert graph is not None
-    result = graph.invoke({"summary": "test", "raw_response": "", "alerts": []})
-    assert len(result["alerts"]) == 1
-    assert result["alerts"][0]["message"] == "real alert"
-
-
-def test_build_graph_nodes_handle_non_list_alerts(monkeypatch):
-    """parse_response should produce empty alerts when JSON alerts field is not a list."""
-    try:
-        from langgraph.graph import StateGraph  # noqa: F401
-    except ImportError:
-        pytest.skip("langgraph not installed")
-
-    monkeypatch.setenv("QA_MODEL", "openai:gpt-4o-mini")
-    mock_llm = MagicMock()
-    mock_response = MagicMock()
-    mock_response.content = json.dumps({"alerts": "not-a-list"})
-    mock_llm.invoke.return_value = mock_response
-
-    with patch("core.qa_agent._init_llm", return_value=mock_llm):
-        graph = _build_graph()
-
-    assert graph is not None
-    result = graph.invoke({"summary": "test", "raw_response": "", "alerts": []})
-    assert result["alerts"] == []
+        from core.qa_agent import _check_coverage_gap
+        assert _check_coverage_gap({"endpoints": [{"path": "/graphql"}]}, {}) == []
+    finally:
+        if original is not None:
+            sys.modules["core.coverage"] = original
+        else:
+            sys.modules.pop("core.coverage", None)
 
 
 # ---------------------------------------------------------------------------
@@ -966,7 +914,6 @@ def test_build_graph_nodes_handle_non_list_alerts(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_run_calls_cycle_and_swallows_exceptions(tmp_path, monkeypatch):
-    """run() must not propagate _cycle() exceptions and must keep looping."""
     session_file = tmp_path / "session.json"
     session_file.write_text(json.dumps({"status": "running"}))
     monkeypatch.setattr(core.qa_agent, "_SESSION_FILE", session_file)
@@ -990,218 +937,3 @@ async def test_run_calls_cycle_and_swallows_exceptions(tmp_path, monkeypatch):
             pass
 
     assert call_count == 2
-
-
-# ── _check_injection_breadth ──────────────────────────────────────────────────
-
-def _make_cell(ep_id, param, param_type, injection_type, status="pending"):
-    return {
-        "id": f"cell-{ep_id}-{param}-{injection_type}",
-        "endpoint_id": ep_id,
-        "param": param,
-        "param_type": param_type,
-        "injection_type": injection_type,
-        "status": status,
-    }
-
-
-def test_injection_breadth_no_matrix():
-    result = core.qa_agent._check_injection_breadth({"matrix": []})
-    assert result is None
-
-
-def test_injection_breadth_no_sqli_cells():
-    """Params without sqli cells are ignored."""
-    matrix = [_make_cell("ep1", "q", "query", "xss")]
-    result = core.qa_agent._check_injection_breadth({"matrix": matrix})
-    assert result is None
-
-
-def test_injection_breadth_full_coverage():
-    """Param has sqli + all four breadth types — no alert."""
-    matrix = [
-        _make_cell("ep1", "q", "query", "sqli"),
-        _make_cell("ep1", "q", "query", "xss"),
-        _make_cell("ep1", "q", "query", "ssti"),
-        _make_cell("ep1", "q", "query", "ssrf"),
-        _make_cell("ep1", "q", "query", "cmdi"),
-    ]
-    result = core.qa_agent._check_injection_breadth({"matrix": matrix})
-    assert result is None
-
-
-def test_injection_breadth_missing_types():
-    """Param has sqli but is missing xss/ssti/ssrf/cmdi — alert fires."""
-    matrix = [_make_cell("ep1", "username", "body_json", "sqli")]
-    result = core.qa_agent._check_injection_breadth({"matrix": matrix})
-    assert result is not None
-    assert result["code"] == "INJECTION_BREADTH_GAP"
-    assert result["urgency"] == "high"
-    assert "username" in result["message"]
-    assert "xss" in result["message"]
-
-
-def test_injection_breadth_endpoint_param_skipped():
-    """_endpoint params are never checked for breadth."""
-    matrix = [
-        {"id": "c1", "endpoint_id": "ep1", "param": "_endpoint",
-         "param_type": "endpoint", "injection_type": "sqli", "status": "pending"},
-    ]
-    result = core.qa_agent._check_injection_breadth({"matrix": matrix})
-    assert result is None
-
-
-def test_injection_breadth_partial_missing():
-    """Alert message lists which types are missing."""
-    matrix = [
-        _make_cell("ep1", "id", "query", "sqli"),
-        _make_cell("ep1", "id", "query", "xss"),
-        # missing ssti, ssrf, cmdi
-    ]
-    result = core.qa_agent._check_injection_breadth({"matrix": matrix})
-    assert result is not None
-    assert "ssti" in result["message"] or "ssrf" in result["message"]
-
-
-# ---------------------------------------------------------------------------
-# _check_endpoint_trigger_gaps
-# ---------------------------------------------------------------------------
-
-from core.qa_agent import _check_endpoint_trigger_gaps, _check_coverage_gap
-from datetime import datetime, timezone, timedelta
-
-
-def _gate(gid, required, status="pending", triggered_at=None, trigger="api endpoint"):
-    return {
-        "id": gid,
-        "status": status,
-        "required_skills": required,
-        "triggered_at": triggered_at or datetime.now(timezone.utc).isoformat(),
-        "trigger": trigger,
-    }
-
-
-def test_trigger_gaps_no_gates():
-    assert _check_endpoint_trigger_gaps({}) == []
-
-
-def test_trigger_gaps_satisfied_gate_skipped():
-    sd = {"gates": [_gate("g1", ["api-security"], status="satisfied")], "skill_history": []}
-    assert _check_endpoint_trigger_gaps(sd) == []
-
-
-def test_trigger_gaps_all_skills_satisfied():
-    sd = {
-        "gates": [_gate("g1", ["api-security"])],
-        "skill_history": [{"skill": "api-security"}],
-    }
-    assert _check_endpoint_trigger_gaps(sd) == []
-
-
-def test_trigger_gaps_missing_skill_fires_alert():
-    sd = {
-        "gates": [_gate("g1", ["api-security"])],
-        "skill_history": [],
-    }
-    alerts = _check_endpoint_trigger_gaps(sd)
-    assert len(alerts) == 1
-    assert alerts[0]["code"] == "ENDPOINT_TRIGGER_GAP"
-    assert "/api-security" in alerts[0]["message"]
-
-
-def test_trigger_gaps_elapsed_over_15_is_high():
-    old_time = (datetime.now(timezone.utc) - timedelta(minutes=20)).isoformat()
-    sd = {
-        "gates": [_gate("g1", ["credential-audit"], triggered_at=old_time)],
-        "skill_history": [],
-    }
-    alerts = _check_endpoint_trigger_gaps(sd)
-    assert alerts[0]["urgency"] == "high"
-
-
-def test_trigger_gaps_elapsed_under_15_is_medium():
-    recent = datetime.now(timezone.utc).isoformat()
-    sd = {
-        "gates": [_gate("g1", ["credential-audit"], triggered_at=recent)],
-        "skill_history": [],
-    }
-    alerts = _check_endpoint_trigger_gaps(sd)
-    assert alerts[0]["urgency"] == "medium"
-
-
-def test_trigger_gaps_bad_timestamp_defaults_to_zero():
-    sd = {
-        "gates": [{"id": "g1", "status": "pending", "required_skills": ["web-exploit"],
-                   "triggered_at": "not-a-date", "trigger": "upload"}],
-        "skill_history": [],
-    }
-    alerts = _check_endpoint_trigger_gaps(sd)
-    assert len(alerts) == 1
-    assert alerts[0]["urgency"] == "medium"  # elapsed=0 < 15
-
-
-# ---------------------------------------------------------------------------
-# _check_coverage_gap
-# ---------------------------------------------------------------------------
-
-def test_coverage_gap_no_endpoints():
-    assert _check_coverage_gap({"endpoints": []}, {}) == []
-
-
-def test_coverage_gap_unclassified_endpoint_ignored():
-    cov = {"endpoints": [{"path": "/static/image.png"}]}
-    assert _check_coverage_gap(cov, {}) == []
-
-
-def test_coverage_gap_skill_already_run():
-    cov = {"endpoints": [{"path": "/graphql"}]}
-    sd = {"skill_history": [{"skill": "api-security"}]}
-    assert _check_coverage_gap(cov, sd) == []
-
-
-def test_coverage_gap_skill_missing_fires_alert():
-    cov = {"endpoints": [{"path": "/graphql"}]}
-    sd = {"skill_history": []}
-    alerts = _check_coverage_gap(cov, sd)
-    assert len(alerts) == 1
-    assert alerts[0]["code"] == "COVERAGE_GAP"
-    assert "api-security" in alerts[0]["message"]
-
-
-def test_coverage_gap_multiple_same_type_grouped():
-    cov = {"endpoints": [{"path": "/graphql"}, {"path": "/graph/query"}]}
-    sd = {"skill_history": []}
-    alerts = _check_coverage_gap(cov, sd)
-    # Both are graphql type — grouped into one alert
-    assert len(alerts) == 1
-    assert "2 graphql" in alerts[0]["message"]
-
-
-def test_coverage_gap_financial_endpoint_flags_business_logic():
-    cov = {"endpoints": [{"path": "/api/payment"}]}
-    sd = {"skill_history": []}
-    alerts = _check_coverage_gap(cov, sd)
-    assert any("business-logic" in a["message"] for a in alerts)
-
-
-def test_coverage_gap_import_error_returns_empty(monkeypatch):
-    """Exception during classify_endpoint import → returns []."""
-    import sys
-    # Remove core.coverage from sys.modules so the dynamic import triggers
-    # a fresh import, then patch it so it raises AttributeError on access
-    original = sys.modules.get("core.coverage")
-    # Replace core.coverage with a module-like object missing classify_endpoint
-    import types
-    broken = types.ModuleType("core.coverage")
-    # No classify_endpoint attribute → accessing it raises AttributeError
-    sys.modules["core.coverage"] = broken
-    try:
-        from core.qa_agent import _check_coverage_gap
-        cov = {"endpoints": [{"path": "/graphql"}]}
-        result = _check_coverage_gap(cov, {})
-        assert result == []
-    finally:
-        if original is not None:
-            sys.modules["core.coverage"] = original
-        else:
-            sys.modules.pop("core.coverage", None)

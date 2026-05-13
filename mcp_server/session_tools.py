@@ -200,6 +200,7 @@ def _do_start(opts):
             "matrix": [],
         })
     # Same target with existing data — keep matrix as-is (resume or view results)
+    is_resume = bool(prev_target and prev_target == target and has_data)
     depth = opts.get("depth", "standard")
     cfg = scan_session.start(
         target=target, depth=depth,
@@ -223,11 +224,24 @@ def _do_start(opts):
         "Scan started.",
         f"  Target: {target} | Depth: {cfg['depth_label']} | Limits: {cost_str}/{time_str}/{call_limit_str}",
         "",
+    ]
+
+    if is_resume:
+        recovery_brief = _do_recovery()
+        lines += [
+            "RESUME DETECTED: existing scan state found for this target.",
+            "Recovery state follows — read it before issuing any tool calls:",
+            "",
+            recovery_brief,
+            "",
+        ]
+
+    lines += [
         "EXECUTE NOW (do not ask questions, do not output text):",
-        "  report(action='dashboard', data={'port': 5000})",
-        f"  scan(tool='httpx', target='{target}')",
+        "  report(action='dashboard', data={'port': 7777})",
+        f"  scan(tool='httpx', target='{target}')" if not is_resume else "  Continue from recovery state above — follow EXECUTE_NOW field.",
         "",
-        "Then in order:",
+        "Then in order (skip steps in tools_already_run if this is a resume):",
         f"  scan(tool='naabu', target='{target}')",
         f"  scan(tool='spider', target='{target}')",
         "  Register endpoints with report(action='coverage', data=...)",
@@ -556,6 +570,7 @@ def _do_complete(opts):
             log.note(f"Force-completing after {attempts} blocked attempts. Remaining blockers: {'; '.join(blockers)}")
             scan_session.complete(notes, stop_reason=force_reason, quality_gate="failed")
             _complete_attempts = 0
+            _record_metrics(data, blockers, force_completed=True)
             return (
                 f"Scan FORCE-COMPLETED (exceeded {attempts} attempt limit). "
                 f"status=incomplete_with_unresolved_blockers quality_gate=failed. "
@@ -571,17 +586,65 @@ def _do_complete(opts):
     status = cfg.get("status", "complete")
     log.note(f"Scan complete — {notes}")
     _complete_attempts = 0
+    _record_metrics(data, [], force_completed=False)
+    # Clean up old artifacts (older than 24h) to prevent unbounded disk growth
+    try:
+        from mcp_server.scan_engine.artifacts import cleanup_artifacts
+        cleanup_artifacts(max_age_hours=24)
+    except Exception:
+        pass
     return f"Scan marked {status}. session.json updated. STOP — do not call any more tools. The scan is done."
 
 
+def _record_metrics(findings_data: dict, completion_blockers: list[str], force_completed: bool) -> None:
+    try:
+        import core.metrics as metrics_mod
+        from core.quick_log import quick_log
+        from core.steering import steering_queue
+        from core.coverage import get_matrix
+        metrics_mod.record(
+            session=scan_session.get() or {},
+            cost_summary=cost_tracker.get_summary(),
+            findings_data=findings_data,
+            coverage=get_matrix(),
+            force_completed=force_completed,
+            completion_blockers=completion_blockers,
+            quick_log_entries=quick_log.read_all(),
+            steering_history=steering_queue.get_history(),
+        )
+    except Exception:
+        pass
+
+
 async def _do_qa_reply(opts):
-    """Log Smith's textual response to QA alerts so the conversation record is complete."""
+    """Log Smith's response to a QA steering directive and acknowledge it.
+
+    Optionally references a specific directive_id to acknowledge. If omitted,
+    the most recently injected directive is acknowledged automatically.
+    """
     from core.quick_log import quick_log
+    from core.steering import steering_queue
     message = str(opts.get("message", "")).strip()
+    directive_id = str(opts.get("directive_id", "")).strip()
     if not message:
         return "qa_reply requires a non-empty message= option."
-    await quick_log.append({"type": "QA_REPLY", "message": message})
-    return "QA reply logged."
+
+    ack_id: str | None = None
+    if directive_id:
+        if steering_queue.acknowledge(directive_id, message):
+            ack_id = directive_id
+    else:
+        ack_id = steering_queue.acknowledge_latest_injected(message)
+
+    await quick_log.append({
+        "type":         "QA_REPLY",
+        "message":      message,
+        "directive_id": ack_id,
+    })
+
+    if ack_id:
+        return f"QA reply logged. Directive {ack_id} acknowledged."
+    return "QA reply logged. (No active directive to acknowledge — reply recorded for audit trail.)"
 
 
 def _do_status():
@@ -701,7 +764,7 @@ def _add_status_work_queue(result: dict, cov: dict) -> None:
 
 
 def _add_status_qa_alerts(result: dict) -> None:
-    """Append QA alerts from qa_state.json to the status result dict (in-place)."""
+    """Append QA alerts and active steering directives to the status result dict."""
     import os as _os
     _qa_path = _os.path.join(_os.path.dirname(_os.path.dirname(__file__)), _QA_STATE_FILENAME)
     try:
@@ -711,15 +774,27 @@ def _add_status_qa_alerts(result: dict) -> None:
             _alerts = _qa.get("alerts", [])
             result["qa_alerts"] = _alerts
             result["qa_last_check"] = _qa.get("ts", "")
-            if _alerts:
-                result["qa_instruction"] = (
-                    "REQUIRED: call session(action='qa_reply', options={'message': '<your response>'}) "
-                    "NOW — acknowledge each alert and state what you will do. Do this before any other tool call."
-                )
         else:
             result["qa_alerts"] = []
     except Exception:
         result["qa_alerts"] = []
+
+    # Include active steering directives so status gives a complete picture
+    try:
+        from core.steering import steering_queue
+        active = steering_queue.get_active()
+        if active:
+            result["steering_directives"] = [
+                {"id": d.id, "code": d.code, "priority": d.priority,
+                 "message": d.message, "status": d.status}
+                for d in active
+            ]
+            result["qa_note"] = (
+                "Steering directives above are already injected into tool responses. "
+                "To acknowledge: session(action='qa_reply', options={message: '...', directive_id: '<id>'})"
+            )
+    except Exception:
+        pass
 
 
 _INJECTION_TOOL_MAP = {
@@ -1034,6 +1109,14 @@ def _do_set_skill(opts):
     chained_from = opts.get("chained_from", "")
     if not skill_name:
         return "Error: 'skill' option is required"
+
+    # Check for resume BEFORE set_skill appends (set_skill deduplicates silently)
+    prior = scan_session.get() or {}
+    is_resume = skill_name in [
+        (e["skill"] if isinstance(e, dict) else e)
+        for e in prior.get("skill_history", [])
+    ]
+
     result = scan_session.set_skill(skill_name, reason=reason, chained_from=chained_from)
     if result is None:
         return "No active running session — cannot set skill."
@@ -1060,6 +1143,24 @@ def _do_set_skill(opts):
         _t.add_done_callback(_background_tasks.discard)
     except Exception:
         pass
+
+    # Auto-satisfy any CHAIN_REQUIRED steering directives for this skill
+    try:
+        from core.steering import steering_queue
+        steering_queue.auto_satisfy(skill_name)
+    except Exception:
+        pass
+
+    # Detect post-compaction resume: skill was already in history before this call
+    if is_resume:
+        recovery_brief = _do_recovery()
+        msg = (
+            f"RESUME DETECTED: '{skill_name}' was already in skill history — "
+            f"post-compaction context likely. Full recovery state follows:\n\n{recovery_brief}"
+        )
+        if satisfied_gates:
+            msg += f"\n\n(satisfied gate(s): {', '.join(satisfied_gates)})"
+        return msg
 
     msg = f"Skill '{skill_name}' logged"
     if satisfied_gates:
