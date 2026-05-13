@@ -367,6 +367,8 @@ flowchart LR
 |---|---|
 | `/pentester` | Full autonomous engagement — chains everything else |
 | `/web-exploit` | SQLi, XSS, SSRF, SSTI, deserialization, JWT, smuggling, race conditions, etc. |
+| `/param-fuzz` | Auth stripping, type confusion, boundary values, mass assignment, token entropy analysis |
+| `/business-logic` | Value/quantity abuse, workflow bypass, BOLA/BFLA, replay, quota bypass, multi-tenant isolation |
 | `/api-security` | OWASP API Top 10 (2023) — BOLA, BFLA, mass assignment, JWT/OAuth abuse, SSRF, business-flow abuse, inventory drift. REST/GraphQL/gRPC/SOAP/MCP |
 | `/network-assess` | VLAN hopping, LLMNR/NBT-NS, SNMP, segmentation |
 | `/post-exploit` | Linux/Windows privesc, persistence, credential harvesting |
