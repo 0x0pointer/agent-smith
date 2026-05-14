@@ -1,18 +1,18 @@
 # Dashboard API Reference
 
-The FastAPI server (`core/api_server.py`) starts when Claude calls `start_dashboard`. It serves both the dashboard UI and a REST API used by the frontend.
+The FastAPI server (`core/api_server.py`) starts when Claude calls `report(action="dashboard", ...)`. It serves both the dashboard UI and a REST API used by the frontend.
 
-**Default URL:** `http://localhost:5000`
+**Default URL:** `http://localhost:7777`
 
 ---
 
 ## Starting the dashboard
 
-Claude calls `start_dashboard` automatically at the start of a pentest. You can also call it manually:
+Claude calls `report(action="dashboard")` automatically at the start of a pentest. You can also call it manually:
 
 ```
-start_dashboard()           # default port 5000
-start_dashboard(port=5001)  # custom port
+report(action="dashboard", data={"port": 7777})  # default port
+report(action="dashboard", data={"port": 8888})  # custom port
 ```
 
 The call is idempotent — calling it again on the same port returns the existing URL without restarting.

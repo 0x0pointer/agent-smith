@@ -32,7 +32,7 @@ White-box source code security review structured around OWASP ASVS 5.0 (427 veri
 | `standard` | quick + route mapping + auth review + dangerous patterns | $0.50 | 45 min | 30 |
 | `thorough` | full ASVS-mapped review + IaC + crypto + source-to-sink tracing | $2.00 | 120 min | 60 |
 
-**Chains into:** `/threat-model` (real architecture from code), `/pentester` (targeted scanning of discovered endpoints), `/web-exploit` (source-to-sink context), `/cloud-security` (IaC verification), `/analyze-cve` (full code context for CVE tracing).
+**Chains into:** `/threat-modelinging` (real architecture from code), `/pentester` (targeted scanning of discovered endpoints), `/web-exploit` (source-to-sink context), `/cloud-security` (IaC verification), `/analyze-cve` (full code context for CVE tracing).
 
 ---
 
@@ -49,7 +49,7 @@ Full penetration test — recon through exploitation through reporting.
 
 **What it does:**
 
-1. Calls `start_dashboard` — opens live findings tracker at `http://localhost:5000`
+1. Calls `report(action="dashboard")` — opens live findings tracker at `http://localhost:7777`
 2. Runs `run_naabu` + `run_subfinder` in parallel for initial recon
 3. Runs `run_httpx` to confirm live web services
 4. Calls `report_diagram` with a Mermaid diagram of discovered topology
@@ -91,14 +91,14 @@ Traces a CVE in a project dependency — checks whether the vulnerable code path
 
 ---
 
-## `/threat-model`
+## `/threat-modelinging`
 
 Structured threat model using the PASTA framework (Process for Attack Simulation and Threat Analysis) with STRIDE analysis and attack trees.
 
 ```
-/threat-model
-/threat-model focus on the authentication system
-/threat-model for the payment processing flow
+/threat-modeling
+/threat-modeling focus on the authentication system
+/threat-modeling for the payment processing flow
 ```
 
 **What it produces:**
@@ -109,7 +109,7 @@ Structured threat model using the PASTA framework (Process for Attack Simulation
 - STRIDE threat table (Spoofing / Tampering / Repudiation / Info Disclosure / DoS / Elevation)
 - Risk register with likelihood × impact scores
 - Prioritised mitigation plan
-- `threat-model/threat-model-<app>.md` — saved to the repo root
+- `threat-model/threat-modeling-<app>.md` — saved to the repo root
 
 The report is automatically displayed in the **Threat Model** tab of the dashboard. Mermaid diagrams are pre-rendered server-side (dark theme). If you run multiple threat models, use the dropdown in the tab to switch between them.
 
@@ -581,7 +581,7 @@ Skills are designed to be chained automatically during an engagement:
 Before a pentest
   ├── /codebase               if source code available — ASVS 5.0 white-box review
   ├── /osint                  passive recon — subdomains, emails, tech stack, cloud storage
-  └── /threat-model           identify high-risk areas to focus the scan
+  └── /threat-modeling           identify high-risk areas to focus the scan
 
 During a pentest (/pentester)
   ├── /analyze-cve            if nuclei or semgrep finds a CVE dependency
@@ -610,7 +610,7 @@ For AI/LLM targets (instead of /pentester)
   └── /ai-redteam             OWASP LLM Top 10 assessment
 
 After a pentest
-  ├── /threat-model           STRIDE analysis based on discovered architecture
+  ├── /threat-modeling           STRIDE analysis based on discovered architecture
   ├── /remediate              generate specific fixes for every finding
   ├── /aikido-triage          if an Aikido CSV export is available
   └── /gh-export              format findings as GitHub issues (includes remediation)
