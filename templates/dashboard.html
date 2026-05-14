@@ -900,19 +900,18 @@
       statusEl.textContent = s.status || '—';
       statusEl.className   = `session-status-${s.status || 'running'}`;
 
-      // Stop polling once the scan is complete — prevents DOM updates
-      // that break text selection and copy/paste.
+      // Mark scan done for UI status only — findings still poll so the
+      // dashboard stays accurate across session restarts and force-completes.
       if (s.status === 'complete' && !scanDone) {
         scanDone = true;
         document.getElementById('status').innerHTML =
-          '<span class="dot" style="background:#6e7681;animation:none"></span>Scan complete — polling paused';
+          '<span class="dot" style="background:#6e7681;animation:none"></span>Scan complete';
       }
     } catch { /* session may not exist yet */ }
   }
 
   // ── Findings tab ──────────────────────────────────────────────────────────
   async function pollFindings() {
-    if (scanDone) return;
     try {
       const r = await fetch(`/api/findings?_=${Date.now()}`);
       if (!r.ok) throw new Error('not found');
