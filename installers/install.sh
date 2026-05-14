@@ -87,7 +87,7 @@ ok "/analyze-cve skill installed"
 
 mkdir -p "$HOME/.claude/skills/threat-modeling"
 _cp "$REPO_DIR/skills/threat-modeling/SKILL.md" "$HOME/.claude/skills/threat-modeling/SKILL.md"
-ok "/threat-model skill installed"
+ok "/threat-modeling skill installed"
 
 mkdir -p "$HOME/.claude/skills/aikido-triage"
 _cp "$REPO_DIR/skills/aikido-triage/SKILL.md" "$HOME/.claude/skills/aikido-triage/SKILL.md"

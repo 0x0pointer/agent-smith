@@ -291,10 +291,10 @@ Start the FastAPI dashboard and return its URL. Idempotent — safe to call mult
 
 | Field | Default | Description |
 |---|---|---|
-| `port` | `5000` | Port to listen on |
+| `port` | `7777` | Port to listen on |
 
 ```
-report(action="dashboard", data={"port": 5000})
+report(action="dashboard", data={"port": 7777})
 ```
 
 ---

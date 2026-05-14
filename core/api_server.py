@@ -292,8 +292,9 @@ async def api_clear() -> JSONResponse:
         pass
 
     _RECOVERY_SNAP = _REPO_ROOT / "recovery_latest.json"
+    _METRICS_FILE  = _REPO_ROOT / "pentest_metrics.jsonl"
     for path in (_SESSION_FILE, _COVERAGE_FILE, _QUICK_LOG_FILE, _QA_STATE_FILE,
-                 _COST_FILE, _STEERING_FILE, _RECOVERY_SNAP):
+                 _COST_FILE, _STEERING_FILE, _RECOVERY_SNAP, _METRICS_FILE):
         _safe_unlink(path)
 
     # log files in logs/

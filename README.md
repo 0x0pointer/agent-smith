@@ -229,7 +229,7 @@ You (/pentester scan target.com)
               ├── Lightweight scanners — docker run --rm (nmap, nuclei, httpx, …)
               ├── Kali container       — persistent kali-mcp (nikto, sqlmap, ffuf, …)
               ├── Metasploit container — exploit validation
-              └── FastAPI dashboard    — live findings at localhost:5000
+              └── FastAPI dashboard    — live findings at localhost:7777
 ```
 
 The LLM decides what to run. Each tool's output is aggregated and returned to the model, which interprets the result and chooses the next action — pivoting deeper, skipping dead ends, or finalizing findings. Hard cost / time / call-count limits are enforced server-side. When any limit fires, the tool returns a stop signal and the agent writes the final report.
@@ -238,7 +238,7 @@ The LLM decides what to run. Each tool's output is aggregated and returned to th
 
 ```mermaid
 flowchart TD
-    User["You<br/>/pentester · /codebase · /ai-redteam · /threat-model"]
+    User["You<br/>/pentester · /codebase · /ai-redteam · /threat-modeling"]
     Agent["Your LLM client<br/>Claude Code · OpenCode · MCP-capable IDE"]
     MCP["mcp_server/<br/>5 consolidated tools<br/>scan · kali · http · report · session"]
     Docker["Docker containers<br/>ephemeral --rm · 2 GB RAM · 1.5 CPU<br/>nmap · nuclei · httpx · ffuf · semgrep · trufflehog"]
