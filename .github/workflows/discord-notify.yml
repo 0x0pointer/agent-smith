@@ -1,0 +1,51 @@
+name: Discord Merge Notification
+
+on:
+  pull_request:
+    branches: [main]
+    types: [closed]
+
+jobs:
+  notify:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Send Discord notification
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+        run: |
+          COMMITS=$(git log --pretty=format:"• %s (%an)" "$BASE_SHA".."$MERGE_SHA" | head -20)
+
+          PAYLOAD=$(jq -n \
+            --arg pr_title "$PR_TITLE" \
+            --arg commits "$COMMITS" \
+            --arg author "$PR_AUTHOR" \
+            --arg pr_num "#${PR_NUMBER}" \
+            --arg pr_url "$PR_URL" \
+            '{
+              embeds: [{
+                title: "PR merged into main",
+                description: ("**" + $pr_title + "**\n\n**Commits:**\n" + $commits),
+                color: 5763719,
+                fields: [
+                  {name: "Author", value: $author, inline: true},
+                  {name: "PR", value: ("[" + $pr_num + "](" + $pr_url + ")"), inline: true}
+                ],
+                footer: {text: "agent-smith"}
+              }]
+            }')
+
+          curl -s -X POST "$DISCORD_WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD"
