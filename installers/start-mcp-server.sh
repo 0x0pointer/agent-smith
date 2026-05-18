@@ -25,7 +25,7 @@ case "${1:-start}" in
             echo "✗ Could not determine venv Python path — run 'poetry -C $REPO_DIR install' first"
             exit 1
         fi
-        nohup "$VENV_PYTHON" -m mcp_server --transport sse \
+        nohup env PYTHONPATH="$REPO_DIR" "$VENV_PYTHON" -m mcp_server --transport sse \
             --host 127.0.0.1 --port "$PORT" >> "$LOG_FILE" 2>&1 &
         echo $! > "$PID_FILE"
         # Wait up to 8s for readiness
