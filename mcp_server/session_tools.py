@@ -24,6 +24,12 @@ _force_completed = False
 # Each blocked call is one "iteration" — the model must go deeper and try again.
 _THOROUGH_MIN_ITERATIONS = 3
 
+# Counts complete() calls that passed ALL quality checks (no PoC gaps, no missing reproductions,
+# no coverage blockers).  Separate from _complete_attempts so that quality-fix attempts (where
+# the model just added missing PoC files) do NOT count as genuine analysis passes.
+# The iteration gate uses _analysis_passes, not _complete_attempts.
+_analysis_passes = 0
+
 _QA_STATE_FILENAME = "qa_state.json"
 
 
@@ -148,13 +154,14 @@ def _dispatch_sync_action(action: str, opts: dict) -> str:
 
 
 def _do_start(opts):
-    global _complete_attempts, _force_completed
+    global _complete_attempts, _analysis_passes, _force_completed
     if _force_completed:
         return (
             "BLOCKED: Scan was already force-completed. "
             "STOP — do not call any more tools. The scan is done."
         )
     _complete_attempts = 0
+    _analysis_passes = 0
     _session_tools_called.clear()
     target = opts.get("target", "")
 
@@ -516,6 +523,169 @@ def _finding_quality_blockers(high_findings: list[dict]) -> str | None:
     )
 
 
+def _is_whitebox_scan() -> bool:
+    """Return True when the active scan is a white-box code review rather than a live pentest.
+
+    Signals:
+    - set_codebase() was called (PENTEST_TARGET_PATH is set to a local directory)
+    - semgrep or trufflehog appear in the tools called this session
+    - The active or most-recent skill is 'codebase'
+    """
+    if os.environ.get("PENTEST_TARGET_PATH"):
+        return True
+    effective = _effective_tools()
+    if effective & {"semgrep", "trufflehog"}:
+        return True
+    current = scan_session.get() or {}
+    skill_history = current.get("skill_history", [])
+    if skill_history:
+        last_skill = skill_history[-1].get("skill", "")
+        if last_skill == "codebase":
+            return True
+        if any(s.get("skill") == "codebase" for s in skill_history):
+            return True
+    return False
+
+
+def _deepen_brief_whitebox(analysis_pass: int) -> str:
+    """
+    Generate a mandatory re-run brief for white-box code-review iteration gates.
+    Each pass deepens the analysis rather than re-running live exploitation tools.
+    analysis_pass is 1-indexed: 1 = just finished pass 1, need pass 2; 2 = need pass 3.
+    """
+    data = findings_store._load()
+    findings = data.get("findings", [])
+    criticals = [f for f in findings if f.get("severity") == "critical"]
+    highs = [f for f in findings if f.get("severity") == "high"]
+    current = scan_session.get() or {}
+    skills_run = {s["skill"] for s in current.get("skill_history", [])}
+    codebase_path = os.environ.get("PENTEST_TARGET_PATH", "the codebase")
+    finding_summary = f"{len(findings)} findings ({len(criticals)} critical, {len(highs)} high)"
+
+    steps: list[str] = []
+
+    if analysis_pass == 1:
+        # Pass 2: deeper cross-component tracing and ASVS gap coverage
+        intro = (
+            f"⛔ WHITEBOX ITERATION GATE: Analysis pass 1/{_THOROUGH_MIN_ITERATIONS} done — "
+            f"thorough white-box review requires {_THOROUGH_MIN_ITERATIONS} passes. "
+            "Pass 2 must go deeper: cross-component data flow tracing, ASVS gap coverage, "
+            "and second-order flaws. Execute ALL steps below before calling complete() again:"
+        )
+        steps.append(
+            "SOURCE-TO-SINK TRACING — for every injection-class finding (SQL injection, "
+            "command injection, SSTI, path traversal, deserialization), trace the full data "
+            "flow from the HTTP entry point through every function call to the dangerous sink. "
+            "Read each intermediate function to verify whether sanitization actually occurs "
+            "or is bypassable. Document the complete call chain in the finding's evidence field."
+        )
+        steps.append(
+            "CROSS-COMPONENT ANALYSIS — read the interfaces between the top 5 highest-risk "
+            "components (e.g. FHIRdoor → Aidbox, medikit-experiment → K8s API, "
+            "Keycloak/Zitadel → Aidbox). For each interface: what data crosses the trust "
+            "boundary? What validation is performed on arrival? What can an attacker-controlled "
+            "value at the source become at the destination? Log any new findings from this analysis."
+        )
+        steps.append(
+            "ASVS GAP COVERAGE — go through each ASVS 5.0 chapter not yet covered in pass 1 "
+            "and explicitly verify each requirement against the code. Minimum chapters to cover "
+            "if not already done: V6 (Authentication), V7 (Session Management), V8 (Authorization), "
+            "V9 (Self-contained Tokens), V10 (OAuth/OIDC), V11 (Cryptography), V13 (Configuration), "
+            "V14 (Data Protection), V16 (Security Logging). For each chapter, read the relevant "
+            "source files and log a finding or note confirming whether each requirement is met."
+        )
+        steps.append(
+            "SECOND-ORDER AND STORED FLAWS — identify all places where user-supplied data is "
+            "stored (database, cache, files, K8s secrets, FHIR resources) and then later "
+            "retrieved and used in a security-sensitive operation. Does the retrieval path "
+            "re-validate the data? Can a value stored safely now be used dangerously later "
+            "(stored XSS, second-order SQLi, YAML/pickle deserialization of stored blobs)?"
+        )
+        steps.append(
+            "DEPENDENCY AUDIT — run scan(tool='semgrep') again with 'p/security-audit' and "
+            "'p/owasp-top-ten' rulesets if not already run. For every high-severity CVE-tagged "
+            "dependency found, trace whether the vulnerable code path is actually reachable "
+            "from the application's attack surface."
+        )
+        if criticals:
+            unchained = [f for f in criticals if not f.get("escalation_leads")]
+            if unchained:
+                titles = ", ".join(f["title"][:50] for f in unchained[:3])
+                steps.append(
+                    f"KILL CHAIN COMPLETION — {len(unchained)} critical finding(s) have no "
+                    f"escalation_leads set ({titles}{'...' if len(unchained) > 3 else ''}). "
+                    "For each: read the relevant code to determine what an attacker can do AFTER "
+                    "exploiting this finding. What data can be exfiltrated? What next component "
+                    "can be reached? What is the maximum blast radius? Update each finding with "
+                    "escalation_leads pointing to the next step in the kill chain."
+                )
+
+    elif analysis_pass == 2:
+        # Pass 3: adversarial mindset — chained attacks, edge cases, maximum coverage
+        intro = (
+            f"⛔ WHITEBOX ITERATION GATE: Analysis pass 2/{_THOROUGH_MIN_ITERATIONS} done — "
+            "one final pass required at maximum adversarial depth. "
+            "Pass 3 must find what passes 1 and 2 missed by combining findings and "
+            "attacking edge cases. Execute ALL steps below before calling complete() again:"
+        )
+        steps.append(
+            "CHAINED EXPLOIT PATHS — take the top 3 pairs of findings and reason through "
+            "whether exploiting finding A makes finding B easier or newly exploitable. "
+            "Example patterns: committed secret → auth bypass → RBAC escalation → bulk data read; "
+            "CORS bypass + weak session token → cross-site PHI exfiltration; "
+            "IMDS access → managed identity → ACR write → supply chain → all pods compromised. "
+            "For each viable chain: read the relevant code to confirm the path is real, "
+            "then log a new finding (or update existing ones) with the full chain evidence."
+        )
+        steps.append(
+            "BUSINESS LOGIC EDGE CASES — for every FHIR operation and access-control decision "
+            "in the codebase, ask: what happens at the boundary? Can a null/empty/zero value "
+            "bypass a check? Can a list with zero items pass an 'all items must satisfy X' check? "
+            "Can a race condition between two concurrent requests produce an inconsistent state? "
+            "Read the relevant policy evaluation code and test edge cases analytically."
+        )
+        steps.append(
+            "CONFIGURATION VS CODE MISMATCHES — compare what the infrastructure configuration "
+            "(K8s manifests, ArgoCD values, Terraform) declares vs. what the application code "
+            "actually expects. Look for: environment variables the code reads but the manifest "
+            "doesn't set (falls back to insecure default); secrets the code expects to be "
+            "present but may be absent in some environments; TLS settings the code assumes "
+            "but the infra doesn't enforce."
+        )
+        steps.append(
+            "REMAINING ASVS VERIFICATION — go through any ASVS chapters still unverified "
+            "from passes 1 and 2. For each unmet requirement, either confirm it is met by "
+            "reading the code or log it as a finding. Produce a final ASVS coverage note "
+            "using report(action='note') summarising which chapters are covered, which are "
+            "partially covered, and which are absent."
+        )
+        steps.append(
+            "END-TO-END POC SCRIPTS — for each critical finding that has only an HTTP template "
+            "PoC, write a self-contained Python or shell script that executes the full exploit "
+            "from scratch (no manual steps). Save each with http(action='save_poc') and link "
+            "it to the finding_id. The script must include: credential/token acquisition, "
+            "the exploit request, and verification of impact."
+        )
+
+    else:
+        intro = (
+            f"⛔ WHITEBOX ITERATION GATE: Pass {analysis_pass}/{_THOROUGH_MIN_ITERATIONS} — "
+            "quality gates still blocking. Re-run all code review activities at maximum depth."
+        )
+        steps.append(
+            "Re-read every component not yet fully analyzed, deepen every finding with "
+            "additional code evidence, and ensure all high/critical findings have complete "
+            "source-to-sink call chains documented in their evidence field."
+        )
+
+    steps.append(
+        f"Current state: {finding_summary}. "
+        "After completing ALL steps above, call session(action='complete') again."
+    )
+    numbered = "\n".join(f"  {i + 1}. {step}" for i, step in enumerate(steps))
+    return f"{intro}\n{numbered}"
+
+
 def _deepen_brief(iteration: int) -> str:
     """
     Generate a mandatory re-run brief for thorough-depth iteration gates.
@@ -689,17 +859,18 @@ def _deepen_brief(iteration: int) -> str:
 
 
 def _do_complete(opts):
-    global _complete_attempts
+    global _complete_attempts, _analysis_passes
     _complete_attempts += 1
     notes = opts.get("notes", "")
     blockers: list[str] = []
 
     data = findings_store._load()
 
-    # Persist the attempt counter to session.json so it survives context compaction.
+    # Persist attempt counters to session.json so they survive context compaction.
     current = scan_session.get() or {}
     if current:
         current["complete_attempts"] = _complete_attempts
+        current["analysis_passes"] = _analysis_passes
         scan_session._flush()
 
     blockers.extend(_gate_blockers())
@@ -752,11 +923,25 @@ def _do_complete(opts):
     blockers.extend(_coverage_blockers(get_matrix(), ctf_mode=_has_ctf_flag(data)))
 
     # ── Thorough-depth iteration gate ────────────────────────────────────────
-    # Only fires after all quality checks pass.  Ensures the model does at least
-    # _THOROUGH_MIN_ITERATIONS meaningful passes before the scan can close.
+    # _analysis_passes counts complete() calls that had NO quality blockers — i.e. genuine
+    # analysis passes.  Quality-fix attempts (where the model only added missing PoC files or
+    # reproduction steps) do NOT increment this counter, so they cannot satisfy the gate.
+    # This prevents the bug where 2 quality-fix attempts consumed the entire 3-pass budget.
     depth = (scan_session.get() or {}).get("depth", "")
-    if not blockers and depth == "thorough" and _complete_attempts < _THOROUGH_MIN_ITERATIONS:
-        blockers.append(_deepen_brief(_complete_attempts))
+    if not blockers and depth == "thorough":
+        # This call is quality-clean: count it as a real analysis pass.
+        _analysis_passes += 1
+        if current:
+            current["analysis_passes"] = _analysis_passes
+            scan_session._flush()
+
+        if _analysis_passes < _THOROUGH_MIN_ITERATIONS:
+            brief = (
+                _deepen_brief_whitebox(_analysis_passes)
+                if _is_whitebox_scan()
+                else _deepen_brief(_analysis_passes)
+            )
+            blockers.append(brief)
 
     if blockers:
         # Force-complete after max attempts to break model loops.
@@ -770,6 +955,7 @@ def _do_complete(opts):
             log.note(f"Force-completing after {attempts} blocked attempts. Remaining blockers: {'; '.join(blockers)}")
             scan_session.complete(notes, stop_reason=force_reason, quality_gate="failed")
             _complete_attempts = 0
+            _analysis_passes = 0
             _record_metrics(data, blockers, force_completed=True)
             return (
                 f"Scan FORCE-COMPLETED (exceeded {attempts} attempt limit). "
@@ -778,21 +964,25 @@ def _do_complete(opts):
                 f"STOP — do not call any more tools. The scan is done."
             )
         depth = (scan_session.get() or {}).get("depth", "")
-        if depth == "thorough" and _complete_attempts < _THOROUGH_MIN_ITERATIONS:
+        if depth == "thorough" and _analysis_passes < _THOROUGH_MIN_ITERATIONS:
             header = (
-                f"complete BLOCKED — thorough scan requires {_THOROUGH_MIN_ITERATIONS} iterations "
-                f"(currently on {_complete_attempts}/{_THOROUGH_MIN_ITERATIONS}):\n\n"
+                f"complete BLOCKED — thorough scan requires {_THOROUGH_MIN_ITERATIONS} analysis passes "
+                f"(quality-clean passes: {_analysis_passes}/{_THOROUGH_MIN_ITERATIONS}):\n\n"
             )
         else:
             header = f"complete BLOCKED (attempt {_complete_attempts}/{_MAX_COMPLETE_ATTEMPTS}) — fix the following first:\n\n"
         msg = header + "\n\n".join(f"  [{i+1}] {b}" for i, b in enumerate(blockers))
-        log.note(f"complete blocked (attempt {_complete_attempts}): {'; '.join(b[:80] for b in blockers)}")
+        log.note(
+            f"complete blocked (attempt {_complete_attempts}, analysis_passes={_analysis_passes}): "
+            f"{'; '.join(b[:80] for b in blockers)}"
+        )
         return msg
 
     cfg = scan_session.complete(notes)
     status = cfg.get("status", "complete")
     log.note(f"Scan complete — {notes}")
     _complete_attempts = 0
+    _analysis_passes = 0
     _record_metrics(data, [], force_completed=False)
     # Clean up old artifacts (older than 24h) to prevent unbounded disk growth
     try:
@@ -1157,13 +1347,14 @@ def _do_recovery():
     )
     next_call = _concrete_next_call(target, tools_run, in_progress_cells, pending_count)
 
-    # Iteration progress for thorough scans
-    complete_iter = current.get("complete_attempts", _complete_attempts)
+    # Iteration progress for thorough scans.
+    # Use _analysis_passes (quality-clean passes) not _complete_attempts (includes quality-fix calls).
+    analysis_iter = current.get("analysis_passes", _analysis_passes)
     iter_status: str | None = None
     if current.get("depth") == "thorough":
-        remaining = max(0, _THOROUGH_MIN_ITERATIONS - complete_iter)
+        remaining = max(0, _THOROUGH_MIN_ITERATIONS - analysis_iter)
         iter_status = (
-            f"Iteration {complete_iter}/{_THOROUGH_MIN_ITERATIONS} "
+            f"Analysis pass {analysis_iter}/{_THOROUGH_MIN_ITERATIONS} "
             f"({'complete — quality gates only' if remaining == 0 else f'{remaining} more required'})"
         )
 
