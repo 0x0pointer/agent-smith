@@ -34,9 +34,7 @@ if step:
     print(f"Resume at step: {step}")
 if skill:
     print(f"Active skill: /{skill}")
-    print(f"ACTION REQUIRED: Re-invoke the /{skill} skill to reload its workflow.")
-    print(f"Then call session(action='recovery') for a compact brief of where to resume,")
-    print(f"including in-progress test cells and pending escalation leads.")
+    print(f"Call session(action='recovery') for a compact brief of where to resume.")
 else:
     print("Call session(action='recovery') to get a compact recovery brief.")
 PYEOF

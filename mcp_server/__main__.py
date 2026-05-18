@@ -10,8 +10,7 @@ Consolidated tools (5 MCP tools, down from 24):
   mcp_server/report_tools.py  — report()  : findings, diagrams, notes, dashboard
   mcp_server/session_tools.py — session() : scan lifecycle, Kali infra, codebase target
 
-Register with Claude Code (run once):
-  claude mcp add pentest-agent -- poetry -C ~/Desktop/agent-smith run python -m server
+Register (run ./installers/install.sh — switches to persistent SSE daemon on port 7778)
 """
 import asyncio
 import faulthandler
@@ -23,6 +22,14 @@ from datetime import datetime, timezone
 
 import anyio
 from pathlib import Path
+
+# ── CLI arguments ─────────────────────────────────────────────────────────────
+import argparse as _argparse
+_ap = _argparse.ArgumentParser(add_help=False)
+_ap.add_argument("--transport", choices=["stdio", "sse"], default="stdio")
+_ap.add_argument("--host", default="127.0.0.1")
+_ap.add_argument("--port", type=int, default=7778)
+_args, _ = _ap.parse_known_args()
 
 # ── Crash log setup ───────────────────────────────────────────────────────────
 # All stderr + explicit phase logs land here.  The file is appended (not
@@ -293,27 +300,67 @@ except Exception:
     traceback.print_exc(file=sys.stderr)
 
 
+# ── SSE server fallback (for mcp versions that don't accept transport kwargs) ─
+
+def _start_sse_server_direct(host: str, port: int) -> None:
+    """SSE transport via SseServerTransport + starlette + uvicorn.
+
+    FastMCP.run(transport='sse') does not accept host/port kwargs in mcp 1.26.0,
+    so we wire up the SSE transport manually to control the bind address and port.
+    """
+    from mcp.server.sse import SseServerTransport
+    from starlette.applications import Starlette
+    from starlette.responses import Response
+    from starlette.routing import Mount, Route
+    import uvicorn
+
+    sse_transport = SseServerTransport("/messages/")
+
+    async def handle_sse(request):
+        async with sse_transport.connect_sse(
+            request.scope, request.receive, request._send
+        ) as streams:
+            await mcp._mcp_server.run(
+                streams[0], streams[1],
+                mcp._mcp_server.create_initialization_options(),
+            )
+        # Must return a Response — starlette raises TypeError: 'NoneType' not callable
+        # when the client disconnects if handle_sse returns None.
+        return Response()
+
+    starlette_app = Starlette(routes=[
+        Route("/sse", endpoint=handle_sse),
+        Mount("/messages/", app=sse_transport.handle_post_message),
+    ])
+    uvicorn.run(starlette_app, host=host, port=port, log_level="error")
+
+
 # ── Start MCP server ──────────────────────────────────────────────────────────
 
-_phase("CALLING mcp.run()  — server handshake begins now")
-try:
+if _args.transport == "sse":
+    _phase(f"STARTING SSE SERVER on {_args.host}:{_args.port}")
+    _start_sse_server_direct(_args.host, _args.port)
+    _phase("SSE server exited normally")
+else:
+    _phase("CALLING mcp.run()  — server handshake begins now")
     try:
-        mcp.run()
-        _phase("mcp.run() returned normally")
-    except* (anyio.ClosedResourceError, anyio.BrokenResourceError, AssertionError):
-        # Safety net: if these escape despite the monkey-patch (e.g. from the
-        # stdio transport layer itself), treat them as non-fatal.
-        _phase("mcp.run() exited — suppressed transport/SDK error (ClosedResourceError or double-respond)")
-except (anyio.ClosedResourceError, anyio.BrokenResourceError):
-    # Bare (non-grouped) ClosedResourceError — same treatment.
-    _phase("mcp.run() exited — client disconnected (ClosedResourceError suppressed)")
-except BaseException:
-    _phase("CRASHED inside mcp.run()")
-    traceback.print_exc(file=sys.stderr)
-    try:
-        import sentry_sdk
-        sentry_sdk.capture_exception()
-        sentry_sdk.flush(timeout=3)
-    except Exception:
-        pass
-    raise
+        try:
+            mcp.run()
+            _phase("mcp.run() returned normally")
+        except* (anyio.ClosedResourceError, anyio.BrokenResourceError, AssertionError):
+            # Safety net: if these escape despite the monkey-patch (e.g. from the
+            # stdio transport layer itself), treat them as non-fatal.
+            _phase("mcp.run() exited — suppressed transport/SDK error (ClosedResourceError or double-respond)")
+    except (anyio.ClosedResourceError, anyio.BrokenResourceError):
+        # Bare (non-grouped) ClosedResourceError — same treatment.
+        _phase("mcp.run() exited — client disconnected (ClosedResourceError suppressed)")
+    except BaseException:
+        _phase("CRASHED inside mcp.run()")
+        traceback.print_exc(file=sys.stderr)
+        try:
+            import sentry_sdk
+            sentry_sdk.capture_exception()
+            sentry_sdk.flush(timeout=3)
+        except Exception:
+            pass
+        raise
