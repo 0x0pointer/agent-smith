@@ -51,7 +51,7 @@ claude mcp add --scope user --transport sse pentest-agent \
 ok "MCP server registered with Claude Code (scope: user, transport: sse)"
 
 # ── Register MCP server with opencode (SSE transport) ────────────────────────
-OPENCODE_CONFIG="$HOME/.config/opencode/config.json"
+OPENCODE_CONFIG="$HOME/.config/opencode/opencode.json"
 if [[ -f "$OPENCODE_CONFIG" ]]; then
     echo ""
     echo "Registering pentest-agent MCP server with opencode..."
