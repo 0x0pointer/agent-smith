@@ -39,9 +39,16 @@ echo "Installing Python dependencies..."
 poetry -C "$REPO_DIR" install --no-interaction
 ok "Poetry dependencies installed"
 
+# ── Start MCP SSE daemon ──────────────────────────────────────────────────────
+echo ""
+echo "Starting MCP SSE server..."
+chmod +x "$REPO_DIR/installers/start-mcp-server.sh"
+"$REPO_DIR/installers/start-mcp-server.sh" restart
+ok "MCP SSE server running on localhost:7778"
+
 # ── Register MCP server + instructions in opencode config ────────────────────
 echo ""
-echo "Registering pentest-agent MCP server in opencode config..."
+echo "Registering pentest-agent MCP server (SSE) in opencode config..."
 mkdir -p "$OPENCODE_CONFIG_DIR"
 
 python3 - <<PYEOF
@@ -56,13 +63,12 @@ try:
 except Exception:
     data = {}
 
-# MCP server entry
+# MCP server entry — SSE transport (shared daemon on 127.0.0.1:7778)
 mcp = data.setdefault("mcp", {})
 mcp["pentest-agent"] = {
-    "type":    "local",
-    "command": ["poetry", "-C", str(repo_dir), "run", "python", "-m", "mcp_server"],
+    "type":    "sse",
+    "url":     "http://127.0.0.1:7778/sse",
     "enabled": True,
-    "timeout": 660000,   # 11 minutes — 10% above the kali() tool's default 600 s command timeout
 }
 
 # Add CLAUDE.md to global instructions (avoid duplicates)
@@ -73,8 +79,18 @@ if instructions_entry not in instructions:
 
 config_path.write_text(json.dumps(data, indent=2) + "\n")
 PYEOF
-ok "MCP server registered in $OPENCODE_CONFIG"
+ok "MCP server registered in $OPENCODE_CONFIG (transport: sse)"
 ok "CLAUDE.md added to global instructions"
+
+# ── Install launchd plist for auto-start on login ────────────────────────────
+echo ""
+echo "Installing launchd plist..."
+PLIST_SRC="$REPO_DIR/installers/com.agent-smith.mcp-sse.plist"
+PLIST_DST="$HOME/Library/LaunchAgents/com.agent-smith.mcp-sse.plist"
+sed "s|REPO_DIR|$REPO_DIR|g" "$PLIST_SRC" > "$PLIST_DST"
+launchctl unload "$PLIST_DST" 2>/dev/null || true
+launchctl load "$PLIST_DST"
+ok "launchd plist installed — MCP server auto-starts on login and restarts on crash"
 
 # ── Ask whether to overwrite existing skill files ────────────────────────────
 echo ""
