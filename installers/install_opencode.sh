@@ -63,10 +63,11 @@ try:
 except Exception:
     data = {}
 
-# MCP server entry — SSE transport (shared daemon on 127.0.0.1:7778)
+# MCP server entry — remote transport (shared SSE daemon on 127.0.0.1:7778).
+# opencode's schema uses "remote" for any HTTP/SSE MCP server; there is no "sse" type.
 mcp = data.setdefault("mcp", {})
 mcp["pentest-agent"] = {
-    "type":    "sse",
+    "type":    "remote",
     "url":     "http://127.0.0.1:7778/sse",
     "enabled": True,
 }
@@ -79,7 +80,7 @@ if instructions_entry not in instructions:
 
 config_path.write_text(json.dumps(data, indent=2) + "\n")
 PYEOF
-ok "MCP server registered in $OPENCODE_CONFIG (transport: sse)"
+ok "MCP server registered in $OPENCODE_CONFIG (transport: remote/SSE)"
 ok "CLAUDE.md added to global instructions"
 
 # ── Install launchd plist for auto-start on login ────────────────────────────
