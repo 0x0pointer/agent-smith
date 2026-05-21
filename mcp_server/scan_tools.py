@@ -208,13 +208,14 @@ async def _handle_spider(target, flags, options):
     result = wrap("spider", raw, {"url": target})
     if not spider_ok:
         result += (
-            "\n\n⚠️  SPIDER GATE TRIGGERED: Spider returned empty or error output. "
-            "ALL other scan tools are blocked until spider succeeds.\n"
-            "Fix steps:\n"
+            "\n\n⚠️  SPIDER WARNING: Spider returned empty or error output. "
+            "Other scan tools can still run on the original target + endpoints "
+            "discovered by httpx/naabu/subfinder, but matrix coverage will be "
+            "narrower than a full crawl would produce.\n"
+            "Recommended:\n"
             "  1. If Kali is not running: session(action='start_kali')\n"
             f"  2. Retry: scan(tool='spider', target='{target}')\n"
-            "  3. Keep retrying until spider returns crawled URLs.\n"
-            f"  (Gate auto-releases after {scan_session.spider_max_retries()} retries if target is non-crawlable.)"
+            f"  (Failure tracking auto-releases after {scan_session.spider_max_retries()} retries.)"
         )
     return result
 
@@ -435,21 +436,15 @@ async def scan(tool: str, target: str, flags: str = "", options: dict | None = N
     if stop:
         return stop
 
-    # Spider gate: block all non-spider tools while any spider has failed.
-    if tool != "spider" and scan_session.has_spider_failure():
-        failures = scan_session.get_spider_failures()
-        failed_targets = list(failures.keys())
-        sample = failed_targets[0]
-        return (
-            "SPIDER GATE BLOCKED: Spider failed for target(s): "
-            + ", ".join(failed_targets)
-            + ".\nNo other scan tools can run until spider succeeds.\n"
-            "Fix steps:\n"
-            "  1. If Kali is not running: session(action='start_kali')\n"
-            f"  2. Retry: scan(tool='spider', target='{sample}')\n"
-            "  3. Keep retrying until spider returns crawled URLs.\n"
-            "Do NOT call any other scan tool until spider succeeds."
-        )
+    # Spider failure is NOT a runtime block on other tools. Other scanners
+    # (nuclei, ffuf, kali sqlmap, http probes, etc.) can productively run
+    # against the original target URL + endpoints already discovered by
+    # httpx / naabu / subdomain enumeration, even while spider is retrying
+    # or has given up. The spider failure is still recorded in
+    # session.spider_failures + the generalised tool_failures registry
+    # (Phase 4) so the QA agent surfaces it as a coverage warning, and
+    # Phase 7's tool-class coverage gate still catches "web target but ffuf
+    # never ran" at completion time.
 
     try:
         return await handler(target, flags, options)
@@ -460,17 +455,16 @@ async def scan(tool: str, target: str, flags: str = "", options: dict | None = N
             current_retries = scan_session.get_spider_failures().get(target, {}).get("retry_count", 0)
             if current_retries >= scan_session.spider_max_retries():
                 scan_session.clear_spider_failure(target)
-                log.note(f"spider: gate released for {target} after {current_retries + 1} exception-based attempts")
+                log.note(f"spider: failure-tracking released for {target} after {current_retries + 1} exception-based attempts")
             else:
                 new_count = scan_session.record_spider_failure(target)
-                log.note(f"spider: GATE TRIGGERED (exception) for {target} (attempt {new_count})")
+                log.note(f"spider: failure recorded (exception) for {target} (attempt {new_count})")
                 err += (
-                    "\n\n⚠️  SPIDER GATE TRIGGERED: Spider raised an exception. "
-                    "ALL other scan tools are blocked until spider succeeds.\n"
-                    "Fix steps:\n"
+                    "\n\n⚠️  SPIDER WARNING: Spider raised an exception. "
+                    "Other scan tools can still run; matrix coverage will be narrower than a full crawl.\n"
+                    "Recommended:\n"
                     "  1. If Kali is not running: session(action='start_kali')\n"
                     f"  2. Retry: scan(tool='spider', target='{target}')\n"
-                    "  3. Keep retrying until spider returns URLs.\n"
-                    f"  (Gate auto-releases after {scan_session.spider_max_retries()} retries if target is non-crawlable.)"
+                    f"  (Failure tracking auto-releases after {scan_session.spider_max_retries()} retries.)"
                 )
         return err
