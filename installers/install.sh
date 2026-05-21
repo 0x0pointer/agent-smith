@@ -55,7 +55,7 @@ OPENCODE_CONFIG="$HOME/.config/opencode/opencode.json"
 if [[ -f "$OPENCODE_CONFIG" ]]; then
     echo ""
     echo "Registering pentest-agent MCP server with opencode..."
-    jq '.mcp["pentest-agent"] = {"type": "remote", "url": "http://127.0.0.1:7778/sse", "enabled": true}' \
+    jq '.mcp["pentest-agent"] = {"type": "remote", "url": "http://127.0.0.1:7778/sse", "enabled": true, "timeout": 9000000}' \
         "$OPENCODE_CONFIG" > "$OPENCODE_CONFIG.tmp" \
         && mv "$OPENCODE_CONFIG.tmp" "$OPENCODE_CONFIG"
     ok "MCP server registered with opencode"

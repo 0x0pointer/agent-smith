@@ -892,16 +892,13 @@ def _do_complete(opts):
             "Run scan(tool='spider', target=url) to crawl the application before completing."
         )
 
-    # Spider failure gate — completion is blocked until all spider failures are resolved.
-    spider_failures = scan_session.get_spider_failures()
-    if spider_failures:
-        failed_list = ", ".join(spider_failures.keys())
-        sample = list(spider_failures.keys())[0]
-        blockers.append(
-            f"SPIDER GATE: Spider failed for [{failed_list}] and has not yet succeeded. "
-            f"Retry scan(tool='spider', target='{sample}') until it returns crawled URLs. "
-            f"If Kali is not running, call session(action='start_kali') first."
-        )
+    # Spider failures are NOT a completion blocker. Phase 7 work-based gates
+    # already require ffuf to have run on a web target (tool-class coverage)
+    # and finding-saturation to be reached, both of which together cover
+    # under-discovery without forcing the model to retry a spider that may
+    # be permanently broken on the target (cloudflare interstitials, etc.).
+    # The failure is still recorded in the spider_failures registry + the
+    # Phase 4 tool_failures registry so it's visible to QA + dashboards.
 
     high_findings = [f for f in data.get("findings", []) if f.get("severity") in ("high", "critical")]
     missing_poc = [f for f in high_findings if not f.get("poc_files")]
