@@ -65,11 +65,16 @@ except Exception:
 
 # MCP server entry — remote transport (shared SSE daemon on 127.0.0.1:7778).
 # opencode's schema uses "remote" for any HTTP/SSE MCP server; there is no "sse" type.
+# timeout defaults to 5_000 ms in opencode if not set — far too short for spider,
+# sqlmap, ffuf, kali commands etc. Spider on enterprise SPAs can now run up to
+# 2h (see scan_tools._handle_spider), so MCP client timeout is 2.5h to keep a
+# safety margin above the longest-running tool.
 mcp = data.setdefault("mcp", {})
 mcp["pentest-agent"] = {
     "type":    "remote",
     "url":     "http://127.0.0.1:7778/sse",
     "enabled": True,
+    "timeout": 9_000_000,
 }
 
 # Add CLAUDE.md to global instructions (avoid duplicates)

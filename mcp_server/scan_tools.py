@@ -113,7 +113,13 @@ async def _handle_spider(target, flags, options):
 
     mode = options.get("mode", "fast")
     depth = str(max(1, options.get("depth", 3)))
-    timeout = options.get("timeout", 900)
+    # Spider default raised from 15min → 2h (7200s) to handle large SPAs and
+    # deep nav trees on enterprise targets. The MCP client timeout
+    # (opencode.json "timeout" / claude mcp transport) must be at least this
+    # large or the call will be cut by the client before the spider finishes
+    # — installers/install*.sh now ship a 2.5h MCP client timeout for that
+    # reason.
+    timeout = options.get("timeout", 7200)
     cookies = options.get("cookies", {})
     max_pages = str(options.get("max_pages", 200))
     safe_url = shlex.quote(target)
@@ -122,8 +128,12 @@ async def _handle_spider(target, flags, options):
     is_thorough = scan_session.get() and scan_session.get().get("depth") == "thorough"
 
     if is_thorough:
-        # Thorough: run katana + playwright + ZAP AJAX spider, merge all results
-        log.note("spider: thorough mode — running katana + playwright + ZAP AJAX spider")
+        # Thorough: run katana + playwright + ZAP AJAX spider, merge all results.
+        # Split the budget across the 3 subtools so total wall-clock caps at the
+        # user-provided `timeout` value (default 2h → ~40min per subtool, floor
+        # 20min so a tiny budget doesn't starve any one tool).
+        per_subtool = max(timeout // 3, 1200)
+        log.note(f"spider: thorough mode — katana + playwright + zap-ajax (per-subtool timeout={per_subtool}s)")
         log.tool_call("spider", {"url": target, "depth": depth, "mode": "thorough-all", "flags": flags})
         call_id = cost_tracker.start("spider")
 
@@ -145,9 +155,9 @@ async def _handle_spider(target, flags, options):
 
         parts = []
         for label, cmd, t in [
-            ("=== katana ===", katana_cmd, timeout),
-            ("=== playwright ===", playwright_cmd, timeout),
-            ("=== zap-ajax ===", zap_cmd, timeout),
+            ("=== katana ===", katana_cmd, per_subtool),
+            ("=== playwright ===", playwright_cmd, per_subtool),
+            ("=== zap-ajax ===", zap_cmd, per_subtool),
         ]:
             out = _clip(await kali_runner.exec_command(cmd, timeout=t), 4_000)
             parts.append(f"{label}\n{out}")
