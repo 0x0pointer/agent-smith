@@ -39,6 +39,10 @@ Findings, PoCs (Burp-ready `.http` files), threat models, code patches, GitHub i
 
 
 Every scanner runs inside an ephemeral Docker container. Hard cost / time / call-count limits enforced server-side.
+- 🔍 **Depth enforcement — a QA agent watches Smith.** 
+
+
+A background QA daemon runs every 2 minutes and pushes the agent to go deeper rather than surface-scanning. It detects stalls, premature completion, shortcut behaviour (bulk N/A marking, suspiciously fast cell closures), missing skill chains, and un-followed-up critical findings. When something is wrong it injects a steering directive that overrides whatever Smith was doing next. When the agent is genuinely stuck it escalates to a human-intervention pause (HIR) so you can unblock it.
 - 📊 **Live dashboard.** 
 
 
@@ -265,6 +269,59 @@ flowchart TD
 
 ---
 
+## Scan modes
+
+Pass `scan_mode` to `session(action="start")` to change how Smith handles critical findings.
+
+| Mode | How to start | Exploit escalation on critical/high |
+|---|---|---|
+| `pentest` *(default)* | `session(action="start", options={target, scan_mode: "pentest"})` | Pauses and asks you before exploiting further (RCE, SQLi extraction, etc.) |
+| `benchmark` | `session(action="start", options={target, scan_mode: "benchmark"})` | Automatically pushes Smith to exploit the full chain — RCE, DB dump, pivot — without waiting for permission |
+
+> **Everything else is identical.** Both modes enforce all Human Intervention Required (HIR) pauses, cost limits, and depth-enforcement rules. Only the exploit-escalation decision on critical/high findings differs. The dashboard shows a **BENCHMARK** badge in the command center when this mode is active.
+
+### Human Intervention Required (HIR)
+
+Certain conditions always pause the scan and block tool calls until you respond via `session(action="recovery")`, regardless of scan mode:
+
+| Trigger | Condition |
+|---|---|
+| Auth failure | >60 % of HTTP calls return 401/403 after prior successful 2xx responses |
+| Budget limit | >90 % of tool-call budget used with <80 % coverage |
+| Zero endpoints | Spider finished, matrix is empty, 10+ min elapsed — target may be SPA/JS-heavy |
+| Target unreachable | 3+ consecutive errors against the same target |
+| Repeated tool failure | Same tool fails 3+ consecutive times within 20 min |
+| Stuck on target | 5+ tool calls against the same target with no new finding — first cycle injects a directive; second cycle escalates to HIR |
+
+The dashboard surfaces the HIR reason directly in the notification so you know exactly what Smith is blocked on.
+
+---
+
+## QA depth enforcement
+
+A background QA daemon runs every 2 minutes alongside Smith. Its sole job is to ensure the scan goes deep and doesn't cut corners. It never fires mid-tool; it reads the quick-log between tool calls and injects steering directives or HIR events as needed.
+
+### What it enforces
+
+| Check | What it catches |
+|---|---|
+| **Bulk N/A marking** | >10 coverage cells marked N/A with no tested_by tool — blocks completion |
+| **Coverage integrity** | Cells marked tested but no artifact on disk — blocks completion |
+| **Premature completion** | Thorough scan tries to complete before 3 semgrep passes — blocked |
+| **Suspicious speed** | >20 cells closed in <10 min — likely rubber-stamping, not real testing |
+| **N/A abuse** | N/A rate >35 % of all cells — injects a directive to re-examine skipped tests |
+| **Depth after finding** | Critical/high finding logged >20 min ago with no follow-up tool — pushes Smith to go deeper |
+| **Whitebox passes** | Thorough codebase scans must complete 3 real semgrep passes, not one |
+| **Tool inactivity** | No tool call for >15 min — injects a recovery directive |
+| **Core skill chain** | Enforces the universal spider → /web-exploit → /param-fuzz → /business-logic progression |
+| **Missing skills** | Endpoint types (SQLi-eligible, financial logic, auth flows) with no matching skill invoked |
+
+### Directive priority
+
+When the QA agent injects a steering directive it takes over Smith's next action completely — the planner suppresses all `required`/`recommended` suggestions while a directive is active. QA alerts at medium/low urgency go to the dashboard only; only `high` urgency alerts surface in Smith's tool envelope to keep the model context lean.
+
+---
+
 ## Skills
 
 Skills are markdown files that teach the LLM a methodology. They live in the [`skills/` submodule](https://github.com/0x0pointer/skills) and are loaded by your client at startup.
@@ -444,6 +501,8 @@ Every scan produces a structured set of artifacts you can hand to a developer, a
 | Threat model | `threat-model/*.md` | PASTA + STRIDE write-up + diagrams |
 | CVE packages | via `/request-cves` | MITRE form, GHSA draft, vendor email, full disclosure |
 | Session log | `logs/pentest.log` | Full audit trail of what the agent decided and why |
+| QA state | `qa_state.json` | Live QA alerts, steering directives, and Smith's acknowledgements |
+| Steering queue | `steering_queue.json` | Active depth-enforcement directives injected by the QA daemon |
 
 ---
 
@@ -465,12 +524,22 @@ mcp_server/              MCP tool layer — 5 consolidated tools (LLM-callable)
   session_tools.py       session() — scan lifecycle · Kali infra · codebase target
 
 core/                    Server infrastructure
-  session.py             Scan scope, depth presets, hard limit enforcement
+  session.py             Scan scope, depth presets, hard limit enforcement, scan_mode
   logger.py              Structured session log → logs/pentest.log
   findings.py            findings.json read/write
   cost.py                Cost tracking per tool invocation
-  coverage.py            Endpoint × technique coverage matrix
+  coverage.py            Endpoint × technique coverage matrix (artifact_id enforced)
+  qa_agent.py            QA daemon — depth enforcement, HIR triggers, steering directives
+  quick_log.py           Fast structured log consumed by the QA daemon
+  steering.py            Steering directive queue (steering_queue.json)
   api_server.py          FastAPI web server (dashboard + REST API)
+
+mcp_server/scan_engine/  Per-tool response pipeline
+  envelope.py            Canonical tool-response wrapper — summarise → store → plan → steer → QA
+  planner.py             Next-action suggestions (suppressed while a directive is active)
+  budget.py              Hard call / cost / time limit enforcement
+  summarizers.py         Tool-specific output summarisers
+  artifacts.py           Raw output storage with artifact_id generation
 
 tools/                   Docker tool definitions + runners
   base.py · docker_runner.py · kali_runner.py · metasploit_runner.py
