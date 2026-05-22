@@ -407,9 +407,9 @@ async def api_intervention_respond(request: Request) -> JSONResponse:
             trigger="HIR_RESOLVED",
         )
         return JSONResponse({"ok": True, "resumed": True, "instruction": human_instruction})
-    except Exception as exc:
-        _log.exception("api_intervention_respond failed: %s", exc)
-        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+    except Exception:
+        _log.exception("api_intervention_respond failed")
+        return JSONResponse({"ok": False, "error": "Request failed"}, status_code=500)
 
 
 @app.post("/api/steer")
@@ -433,9 +433,9 @@ async def api_steer(request: Request) -> JSONResponse:
             trigger="HUMAN_STEER",
         )
         return JSONResponse({"ok": True})
-    except Exception as exc:
-        _log.exception("api_steer failed: %s", exc)
-        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+    except Exception:
+        _log.exception("api_steer failed")
+        return JSONResponse({"ok": False, "error": "Request failed"}, status_code=500)
 
 
 @app.get("/api/qa")

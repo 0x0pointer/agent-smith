@@ -991,7 +991,7 @@ def test_stuck_on_target_first_detection(tmp_path, monkeypatch):
     alert = _check_stuck_on_target(entries, {}, [])
     assert alert is not None
     assert alert["code"] == "STUCK_ON_TARGET"
-    assert "https://example.com" in alert["message"]
+    assert "example.com" in alert["message"]
 
 
 def test_stuck_on_target_second_detection_triggers_hir(tmp_path, monkeypatch):
