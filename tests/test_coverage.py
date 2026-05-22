@@ -6,6 +6,14 @@ import pytest
 import core.coverage
 
 
+def _make_artifact(tool: str = "sqlmap") -> str:
+    """Create a fake artifact file in _ARTIFACTS_DIR and return its artifact_id."""
+    import uuid
+    artifact_id = f"{tool}-{uuid.uuid4().hex[:8]}"
+    (core.coverage._ARTIFACTS_DIR / f"{artifact_id}.txt").write_text("test output")
+    return artifact_id
+
+
 # ---------------------------------------------------------------------------
 # add_endpoint
 # ---------------------------------------------------------------------------
@@ -139,8 +147,10 @@ async def test_update_cell_marks_tested(coverage_file):
     cell = data["matrix"][0]
     # Must pass through in_progress first (integrity rule)
     await core.coverage.update_cell(cell["id"], "in_progress", notes="Starting test")
+    artifact_id = _make_artifact("sqlmap")
     ok = await core.coverage.update_cell(
-        cell["id"], "tested_clean", notes="No injection found", tested_by="sqlmap"
+        cell["id"], "tested_clean", notes="No injection found",
+        tested_by="sqlmap", artifact_id=artifact_id,
     )
     assert ok is True
     data = json.loads(coverage_file.read_text())
@@ -160,8 +170,10 @@ async def test_update_cell_warns_on_skip_in_progress(coverage_file):
     )
     data = json.loads(coverage_file.read_text())
     cell = data["matrix"][0]
+    artifact_id = _make_artifact("http_request")
     result = await core.coverage.update_cell(
-        cell["id"], "tested_clean", notes="No injection found", tested_by="http_request"
+        cell["id"], "tested_clean", notes="No injection found",
+        tested_by="http_request", artifact_id=artifact_id,
     )
     assert isinstance(result, str)
     assert "INTEGRITY WARNING" in result
@@ -181,9 +193,11 @@ async def test_update_cell_vulnerable_with_finding(coverage_file):
     sqli_cell = next(c for c in data["matrix"] if c["injection_type"] == "sqli" and c["param"] == "user")
     # Proper flow: pending -> in_progress -> vulnerable
     await core.coverage.update_cell(sqli_cell["id"], "in_progress", notes="Testing SQLi")
+    artifact_id = _make_artifact("sqlmap")
     ok = await core.coverage.update_cell(
         sqli_cell["id"], "vulnerable",
-        notes="Blind SQLi confirmed", finding_id="finding-123", tested_by="sqlmap"
+        notes="Blind SQLi confirmed", finding_id="finding-123",
+        tested_by="sqlmap", artifact_id=artifact_id,
     )
     assert ok is True
     data = json.loads(coverage_file.read_text())
@@ -223,9 +237,12 @@ async def test_bulk_update_multiple_cells(coverage_file):
         for c in data["matrix"][:3]
     ]
     await core.coverage.bulk_update(in_progress_updates)
-    # Now mark tested_clean
+    # Now mark tested_clean with valid artifact_ids
     updates = [
-        {"cell_id": c["id"], "status": "tested_clean", "notes": "OK", "tested_by": "http_request"}
+        {
+            "cell_id": c["id"], "status": "tested_clean", "notes": "OK",
+            "tested_by": "http_request", "artifact_id": _make_artifact("http_request"),
+        }
         for c in data["matrix"][:3]
     ]
     result = await core.coverage.bulk_update(updates)
@@ -243,7 +260,10 @@ async def test_bulk_update_warns_on_skip_in_progress(coverage_file):
     )
     data = json.loads(coverage_file.read_text())
     updates = [
-        {"cell_id": c["id"], "status": "tested_clean", "notes": "OK", "tested_by": "http_request"}
+        {
+            "cell_id": c["id"], "status": "tested_clean", "notes": "OK",
+            "tested_by": "http_request", "artifact_id": _make_artifact("http_request"),
+        }
         for c in data["matrix"][:3]
     ]
     result = await core.coverage.bulk_update(updates)
@@ -364,8 +384,16 @@ async def test_meta_counters_accurate(coverage_file):
 
     # Mark one tested, one vulnerable, one N/A
     cells = data["matrix"]
-    await core.coverage.update_cell(cells[0]["id"], "tested_clean", tested_by="sqlmap")
-    await core.coverage.update_cell(cells[1]["id"], "vulnerable", tested_by="sqlmap")
+    await core.coverage.update_cell(cells[0]["id"], "in_progress")
+    await core.coverage.update_cell(
+        cells[0]["id"], "tested_clean",
+        tested_by="sqlmap", artifact_id=_make_artifact("sqlmap"),
+    )
+    await core.coverage.update_cell(cells[1]["id"], "in_progress")
+    await core.coverage.update_cell(
+        cells[1]["id"], "vulnerable",
+        tested_by="sqlmap", artifact_id=_make_artifact("sqlmap"),
+    )
     await core.coverage.update_cell(cells[2]["id"], "not_applicable")
 
     data = json.loads(coverage_file.read_text())
