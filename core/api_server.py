@@ -284,7 +284,7 @@ async def api_clear() -> JSONResponse:
     # findings.json
     _save({"meta": {"created": "", "target": ""}, "findings": [], "diagrams": []})
 
-    # Reset in-memory coverage state before unlinking the file
+    # coverage_matrix.json — reset to empty (keep the file so /api/coverage returns valid JSON)
     try:
         from core.coverage import reset as _reset_coverage
         await _reset_coverage()
@@ -293,7 +293,9 @@ async def api_clear() -> JSONResponse:
 
     _RECOVERY_SNAP = _REPO_ROOT / "recovery_latest.json"
     _METRICS_FILE  = _REPO_ROOT / "pentest_metrics.jsonl"
-    for path in (_SESSION_FILE, _COVERAGE_FILE, _QUICK_LOG_FILE, _QA_STATE_FILE,
+    # _COVERAGE_FILE is intentionally omitted — reset() above already wrote the empty state.
+    # Deleting it would cause /api/coverage to return {} instead of an empty-but-valid matrix.
+    for path in (_SESSION_FILE, _QUICK_LOG_FILE, _QA_STATE_FILE,
                  _COST_FILE, _STEERING_FILE, _RECOVERY_SNAP, _METRICS_FILE):
         _safe_unlink(path)
 
