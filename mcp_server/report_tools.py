@@ -370,11 +370,12 @@ async def _do_coverage_tested(data: dict, cov: Any) -> str:
         notes=data.get("notes", ""),
         finding_id=data.get("finding_id"),
         tested_by=data.get("tested_by", ""),
+        artifact_id=data.get("artifact_id", ""),
     )
     if result is False:
         return f"Cell not found: {data.get('cell_id')}"
     if isinstance(result, str):
-        return f"Cell updated: {data.get('cell_id')} — {result}"
+        return result  # passes through REJECTED messages directly
     return f"Cell updated: {data.get('cell_id')}"
 
 
@@ -392,10 +393,10 @@ async def _do_coverage_bulk(data: dict, cov: Any) -> str:
 async def _do_coverage_reset(cov: Any) -> str:
     """Handle coverage type='reset': clear the matrix (blocked during active scan)."""
     current = scan_session.get()
-    if current and current.get("status") == "running":
+    if current and current.get("status") in ("running", "intervention_required"):
         log.note("coverage reset BLOCKED — scan is active. Do NOT reset the matrix mid-scan.")
         return (
-            "BLOCKED: Cannot reset coverage matrix while a scan is running. "
+            "BLOCKED: Cannot reset coverage matrix while a scan is active. "
             "The matrix tracks your testing progress — resetting it mid-scan destroys that state. "
             "If you need to re-register endpoints, just call coverage(type='endpoint') again — "
             "duplicates are automatically ignored."

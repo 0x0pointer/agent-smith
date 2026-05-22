@@ -85,7 +85,10 @@ def start(
     max_tool_calls:   int   | None = None,
     skill:            str   | None = None,
     model_profile:    str        = "full",
+    scan_mode:        str        = "pentest",
 ) -> dict:
+    """scan_mode: "pentest" (default) — HIR pauses for human decisions on ambiguous situations.
+                  "benchmark" — fully autonomous, no HIR triggers, aggressive exploitation."""
     """Initialise a new scan session and write session.json."""
     global _current
 
@@ -124,8 +127,10 @@ def start(
         "tools_called":  [],
         "current_step":  None,
         "gates":         [],          # triggered gates that block completion
+        "deferred_gates": [],         # gate IDs suppressed while a skill is active
         "spider_failures": {},        # targets where spider failed; cleared on success
         "model_profile": model_profile,
+        "scan_mode":     scan_mode,
         "tool_invocations": [],
         "known_assets": {
             "domains": [], "ips": [], "ports": [],
@@ -313,10 +318,35 @@ def satisfy_gate(gate_id: str, skill_name: str) -> dict | None:
 
 
 def pending_gates() -> list[dict]:
-    """Return all unsatisfied gates."""
+    """Return unsatisfied, non-deferred gates."""
     if _current is None:
         return []
-    return [g for g in _current.get("gates", []) if g.get("status") == "pending"]
+    deferred = set(_current.get("deferred_gates", []))
+    return [
+        g for g in _current.get("gates", [])
+        if g.get("status") == "pending" and g.get("id", "") not in deferred
+    ]
+
+
+def defer_gates(gate_ids: list[str]) -> None:
+    """Suppress the given gate IDs from pending_gates() until restore_gates() is called."""
+    global _current
+    if _current is None:
+        return
+    deferred = _current.setdefault("deferred_gates", [])
+    for gid in gate_ids:
+        if gid and gid not in deferred:
+            deferred.append(gid)
+    _flush()
+
+
+def restore_gates() -> None:
+    """Clear all deferred gate IDs so they become visible again."""
+    global _current
+    if _current is None:
+        return
+    _current["deferred_gates"] = []
+    _flush()
 
 
 # ── Spider failure gate ───────────────────────────────────────────────────────
@@ -499,6 +529,60 @@ def remaining(cost_summary: dict) -> dict:
         "time_pct":               0 if max_time is None else min(100, round(elapsed / max_time * 100, 1)),
         "calls_pct":              min(100, round(calls / max_calls * 100, 1)) if max_calls > 0 else 0,
     }
+
+
+# ── Human Intervention Required ──────────────────────────────────────────────
+
+def trigger_intervention(
+    code: str,
+    situation: str,
+    tried: list[str],
+    options: list[str],
+) -> dict:
+    """Transition session to intervention_required state.
+
+    Pauses the scan — envelope.py blocks all non-session tool calls while in this state.
+    The human responds via the dashboard or session(action='resume').
+    """
+    global _current
+    if not _current:
+        return {}
+    _current["status"] = "intervention_required"
+    _current["intervention"] = {
+        "code":         code,
+        "situation":    situation,
+        "tried":        tried,
+        "options":      options,
+        "triggered_at": datetime.now(timezone.utc).isoformat(),
+        "resolved_at":  None,
+        "resolution":   None,
+    }
+    _flush()
+    return _current
+
+
+def resolve_intervention(choice: str, message: str = "") -> dict:
+    """Human responded — transition back to running and record their decision."""
+    global _current
+    if not _current:
+        return {}
+    intervention = _current.get("intervention", {})
+    if intervention:
+        intervention["resolved_at"] = datetime.now(timezone.utc).isoformat()
+        intervention["resolution"]  = {"choice": choice, "message": message}
+    _current["status"] = "running"
+    _current["intervention_history"] = _current.get("intervention_history", [])
+    _current["intervention_history"].append(intervention)
+    _current["intervention"] = None
+    _flush()
+    return _current
+
+
+def get_intervention() -> dict | None:
+    """Return current intervention dict if scan is paused, else None."""
+    if not _current or _current.get("status") != "intervention_required":
+        return None
+    return _current.get("intervention")
 
 
 # ── Internal ──────────────────────────────────────────────────────────────────

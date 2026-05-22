@@ -15,10 +15,9 @@ from mcp_server._app import mcp, _ensure_dict, _session_tools_called
 
 _background_tasks: set[asyncio.Task] = set()  # keeps fire-and-forget tasks alive
 
-# Track completion attempts to break infinite loops in small models
+# Track completion attempts — after _MAX_COMPLETE_ATTEMPTS the scan escalates to HIR
 _complete_attempts = 0
-_MAX_COMPLETE_ATTEMPTS = 8   # raised to accommodate 3 real thorough iterations + quality fix rounds
-_force_completed = False
+_MAX_COMPLETE_ATTEMPTS = 8
 
 # Minimum complete() calls required before thorough scans are allowed to finish.
 # Each blocked call is one "iteration" — the model must go deeper and try again.
@@ -150,35 +149,21 @@ def _dispatch_sync_action(action: str, opts: dict) -> str:
         return _do_artifact(opts)
     if action == "pre_chain":
         return _do_pre_chain(opts)
-    return f"Unknown action '{action}'. Use: start, complete, status, qa_reply, recovery, artifact, pre_chain, set_skill, set_step, start_kali, stop_kali, start_metasploit, stop_metasploit, pull_images, set_codebase"
+    if action == "resume":
+        return _do_resume(opts)
+    if action == "intervene":
+        return _do_intervene(opts)
+    return f"Unknown action '{action}'. Use: start, complete, status, qa_reply, recovery, artifact, pre_chain, set_skill, set_step, resume, start_kali, stop_kali, start_metasploit, stop_metasploit, pull_images, set_codebase"
 
 
-def _do_start(opts):
-    global _complete_attempts, _analysis_passes, _force_completed
-    if _force_completed:
-        return (
-            "BLOCKED: Scan was already force-completed. "
-            "STOP — do not call any more tools. The scan is done."
-        )
-    _complete_attempts = 0
-    _analysis_passes = 0
-    _session_tools_called.clear()
-    target = opts.get("target", "")
-
-    # Coverage matrix lifecycle: only reset when the target changes.
-    # Same target = keep matrix (resume interrupted scan or view completed results).
-    # Different target = archive old matrix, then reset.
+def _reset_coverage_matrix(target: str, prev_target: str, has_data: bool) -> bool:
+    """Reset/init coverage matrix. Returns True if this is a resume of the same target."""
     from core.coverage import COVERAGE_FILE, _save as _cov_save, get_matrix
     from datetime import datetime, timezone
     import shutil
 
-    prev = scan_session.get()
-    prev_target = prev.get("target", "") if prev else ""
-    cov = get_matrix()
-    has_data = len(cov.get("matrix", [])) > 0
-
     if prev_target and prev_target != target and has_data:
-        # Different target — archive the old matrix and wipe quick_log + qa_state
+        # Different target — archive the old matrix AND archive (not delete) quick_log + qa_state
         ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         archive_dir = COVERAGE_FILE.parent / "logs"
         archive_dir.mkdir(exist_ok=True)
@@ -187,7 +172,10 @@ def _do_start(opts):
         log.note(f"Coverage matrix archived to {archive_path.name} (previous target: {prev_target})")
         for stale in ("quick_log.json", _QA_STATE_FILENAME):
             p = COVERAGE_FILE.parent / stale
-            p.unlink(missing_ok=True)
+            if p.exists():
+                archive_stale = archive_dir / f"{p.stem}_{ts}.json"
+                shutil.copy2(p, archive_stale)
+                p.unlink()
         _cov_save({
             "meta": {
                 "created": datetime.now(timezone.utc).isoformat(),
@@ -198,8 +186,8 @@ def _do_start(opts):
             "endpoints": [],
             "matrix": [],
         })
-    elif not has_data:
-        # Empty matrix — just set the target
+    elif not has_data and not COVERAGE_FILE.exists():
+        # No coverage file at all — create an empty one
         _cov_save({
             "meta": {
                 "created": datetime.now(timezone.utc).isoformat(),
@@ -211,8 +199,37 @@ def _do_start(opts):
             "matrix": [],
         })
     # Same target with existing data — keep matrix as-is (resume or view results)
-    is_resume = bool(prev_target and prev_target == target and has_data)
+    return bool(prev_target and prev_target == target and has_data)
+
+
+def _do_start(opts):
+    global _complete_attempts, _analysis_passes
+    existing = scan_session.get() or {}
+    if existing.get("status") == "intervention_required":
+        return (
+            "SCAN PAUSED — awaiting human intervention. "
+            "Respond via session(action='resume', options={choice: '...', message: '...'}) "
+            "before starting a new scan."
+        )
+    _complete_attempts = 0
+    _analysis_passes = 0
+    _session_tools_called.clear()
+    target = opts.get("target", "")
+
+    # Coverage matrix lifecycle: only reset when the target changes.
+    # Same target = keep matrix (resume interrupted scan or view completed results).
+    # Different target = archive old matrix, then reset.
+    from core.coverage import get_matrix
+
+    prev = scan_session.get()
+    prev_target = prev.get("target", "") if prev else ""
+    cov = get_matrix()
+    has_data = len(cov.get("matrix", [])) > 0
+    is_resume = _reset_coverage_matrix(target, prev_target, has_data)
     depth = opts.get("depth", "standard")
+    scan_mode = str(opts.get("scan_mode", "pentest")).lower()
+    if scan_mode not in ("pentest", "benchmark"):
+        scan_mode = "pentest"
     cfg = scan_session.start(
         target=target, depth=depth,
         scope=opts.get("scope"),
@@ -222,6 +239,7 @@ def _do_start(opts):
         max_tool_calls=opts.get("max_tool_calls"),
         skill=opts.get("skill"),
         model_profile=opts.get("model_profile", "full"),
+        scan_mode=scan_mode,
     )
     lim = cfg["limits"]
     cost_str  = f"${lim['max_cost_usd']:.2f}" if lim['max_cost_usd'] is not None else "unlimited"
@@ -231,11 +249,19 @@ def _do_start(opts):
         f"Scan started — target={target}  depth={depth}  "
         f"limits: {cost_str} / {time_str} / {call_limit_str}"
     )
+    mode_label = "BENCHMARK (auto-exploit critical findings)" if scan_mode == "benchmark" else "Pentest (human-in-the-loop for exploitation decisions)"
     lines = [
         "Scan started.",
-        f"  Target: {target} | Depth: {cfg['depth_label']} | Limits: {cost_str}/{time_str}/{call_limit_str}",
+        f"  Target: {target} | Depth: {cfg['depth_label']} | Mode: {mode_label} | Limits: {cost_str}/{time_str}/{call_limit_str}",
         "",
     ]
+    if scan_mode == "benchmark":
+        lines += [
+            "BENCHMARK MODE: On critical/high findings, do NOT pause — exploit the chain autonomously.",
+            "Demonstrate full impact: RCE → execute commands, SQLi → dump data, SSRF → pivot internally.",
+            "Document every step as a finding. All other safety checks and HIR triggers remain active.",
+            "",
+        ]
 
     if is_resume:
         recovery_brief = _do_recovery()
@@ -558,8 +584,6 @@ def _deepen_brief_whitebox(analysis_pass: int) -> str:
     criticals = [f for f in findings if f.get("severity") == "critical"]
     highs = [f for f in findings if f.get("severity") == "high"]
     current = scan_session.get() or {}
-    skills_run = {s["skill"] for s in current.get("skill_history", [])}
-    codebase_path = os.environ.get("PENTEST_TARGET_PATH", "the codebase")
     finding_summary = f"{len(findings)} findings ({len(criticals)} critical, {len(highs)} high)"
 
     steps: list[str] = []
@@ -686,6 +710,112 @@ def _deepen_brief_whitebox(analysis_pass: int) -> str:
     return f"{intro}\n{numbered}"
 
 
+def _deepen_steps_pass1(
+    criticals: list, has_ai_ep: bool, skills_run: set, unchained: list
+) -> list[str]:
+    steps: list[str] = []
+    steps.append(
+        "Re-invoke /web-exploit (SECOND PASS) — reset all tested_clean cells to pending "
+        "and re-test them with deeper payloads: sqlmap --level=4 --risk=3, "
+        "XSS with CSP/filter bypass variants, SSTI with all engine templates, "
+        "blind/OOB SQLi with out-of-band callbacks, second-order injection testing. "
+        "Every endpoint that returned tested_clean in pass 1 is a candidate for a "
+        "false negative — test again with a different technique."
+    )
+    steps.append(
+        "Re-invoke /param-fuzz (SECOND PASS) — run with larger wordlists "
+        "(burp-parameter-names.txt + raft-large-words.txt), test every parameter "
+        "for HTTP verb tampering, auth header stripping, type confusion "
+        "(string→int→array→null), and mass assignment on ALL endpoints including "
+        "those that returned 4xx in pass 1 (try different HTTP methods)."
+    )
+    steps.append(
+        "Re-invoke /business-logic (SECOND PASS) — run all 9 phases again: "
+        "send concurrent requests (10 parallel) to every state-changing endpoint, "
+        "test negative/zero/overflow values on EVERY numeric field found, "
+        "replay all one-time tokens and confirmation codes, test BOLA on every "
+        "resource ID found in the app, enumerate sequential IDs across all "
+        "resource types."
+    )
+    if has_ai_ep or "ai-redteam" in skills_run:
+        steps.append(
+            "Re-invoke /ai-redteam (SECOND PASS) — run PyRIT crescendo (10 turns), "
+            "Garak with full probe set (dan,encoding,promptinject,leakreplay,gcg,glitch,"
+            "grandma,goodside,snowball,misleading,packagehallucination,malwaregen), "
+            "and manual multi-objective authority-marker payloads on all AI endpoints."
+        )
+    steps.append(
+        "Re-run nuclei with ALL template categories: "
+        "scan(tool='nuclei', templates='cve,exposure,misconfig,default-login,takeovers,"
+        "technologies,token-spray,file-upload,xss,sqli,ssrf,lfi,rce,generic'). "
+        "Also run scan(tool='ffuf') on every endpoint with raft-large-words.txt to "
+        "discover hidden parameters and paths missed in pass 1."
+    )
+    if unchained:
+        titles = ", ".join(f['title'][:40] for f in unchained[:3])
+        steps.append(
+            f"Chain {len(unchained)} unchained critical finding(s) to maximum impact "
+            f"({titles}{'...' if len(unchained) > 3 else ''}): "
+            "SQLi → dump all tables → crack hashes → use creds everywhere; "
+            "SSRF → scan internal network → hit cloud metadata → exfil IAM keys; "
+            "RCE → establish reverse shell → run LinPEAS → escalate to root."
+        )
+    return steps
+
+
+def _deepen_steps_pass2(
+    criticals: list, has_ai_ep: bool, skills_run: set
+) -> list[str]:
+    steps: list[str] = []
+    steps.append(
+        "Re-invoke /web-exploit (THIRD PASS — MAXIMUM AGGRESSION) — "
+        "sqlmap --level=5 --risk=3 --technique=BEUSTQ --tamper=space2comment,between,"
+        "randomcase,charunicodeencode on every injection point; "
+        "run commix on ALL parameter inputs for blind OS command injection; "
+        "test HTTP request smuggling (CL.TE and TE.CL) on every HTTP/1.1 endpoint; "
+        "probe all endpoints for CRLF injection and web cache poisoning; "
+        "test deserialization on every cookie and binary parameter (pickle, Java, PHP)."
+    )
+    steps.append(
+        "Re-invoke /param-fuzz (THIRD PASS) — fuzz with the full "
+        "10-million-password-list as a parameter wordlist; test parameter pollution "
+        "(duplicate params in query string + body simultaneously); inject into "
+        "HTTP headers (X-Forwarded-For, X-Original-URL, X-Rewrite-URL, "
+        "X-Custom-IP-Authorization) on every auth-gated endpoint; "
+        "test GraphQL introspection and batching abuse if any /graphql endpoint exists."
+    )
+    steps.append(
+        "Re-invoke /business-logic (THIRD PASS) — run Phase 5 (idempotency) with "
+        "50 concurrent requests on every state-changing endpoint; "
+        "test all time-based attacks (expired token reuse, cooldown bypass); "
+        "perform full multi-tenant isolation testing across all user accounts; "
+        "enumerate ALL resource IDs sequentially (orders, transfers, loans, cards, "
+        "payments) across EVERY user to confirm or deny BOLA at scale."
+    )
+    if has_ai_ep or "ai-redteam" in skills_run:
+        steps.append(
+            "Re-invoke /ai-redteam (THIRD PASS) — run PyRIT with jailbreak + "
+            "crescendo + multi-turn prompt injection (15 turns each); "
+            "test excessive agency by attempting tool invocations with hidden params "
+            "(include_internal=True, admin=True, debug=True, show_all=True); "
+            "test indirect prompt injection via every data field the AI reads "
+            "(usernames, transaction notes, profile fields, filenames)."
+        )
+    steps.append(
+        "Run kali(command='nikto -h TARGET -C all -maxtime 300') for full server "
+        "misconfiguration scan; run testssl.sh against every HTTPS endpoint; "
+        "run enum4linux-ng if any SMB/LDAP ports are open; "
+        "run wapiti with all modules against the full app."
+    )
+    steps.append(
+        f"Produce one end-to-end chain PoC for EACH critical finding ({len(criticals)} total) "
+        "that demonstrates the full kill chain from initial access to maximum impact. "
+        "Each PoC must be a single executable curl/python script that requires zero "
+        "manual steps. Save every PoC with http(action='save_poc') linked to its finding_id."
+    )
+    return steps
+
+
 def _deepen_brief(iteration: int) -> str:
     """
     Generate a mandatory re-run brief for thorough-depth iteration gates.
@@ -695,20 +825,15 @@ def _deepen_brief(iteration: int) -> str:
     from core.coverage import get_matrix
     data      = findings_store._load()
     current   = scan_session.get() or {}
-    tools_run = _effective_tools()
-
     findings  = data.get("findings", [])
     criticals = [f for f in findings if f.get("severity") == "critical"]
     highs     = [f for f in findings if f.get("severity") == "high"]
     cov       = get_matrix()
-    ep_map    = {ep["id"]: ep["path"] for ep in cov.get("endpoints", [])}
 
     pending_cells  = [c for c in cov.get("matrix", []) if c["status"] == "pending"]
     clean_cells    = [c for c in cov.get("matrix", []) if c["status"] == "tested_clean"]
-    all_endpoints  = [ep["path"] for ep in cov.get("endpoints", [])]
 
     skills_run = {s["skill"] for s in current.get("skill_history", [])}
-    ai_tools   = {"fuzzyai", "pyrit", "garak", "promptfoo"}
     endpoints  = current.get("known_assets", {}).get("endpoints", [])
     has_ai_ep  = any("ai" in ep or "chat" in ep or "llm" in ep for ep in endpoints)
 
@@ -718,113 +843,32 @@ def _deepen_brief(iteration: int) -> str:
     )
 
     # ── Build the ordered mandatory re-run list ─────────────────────────────────
-    steps: list[str] = []
-
     if iteration == 1:
-        # ── Second pass: re-run every skill, harder ─────────────────────────────
-        steps.append(
-            "Re-invoke /web-exploit (SECOND PASS) — reset all tested_clean cells to pending "
-            "and re-test them with deeper payloads: sqlmap --level=4 --risk=3, "
-            "XSS with CSP/filter bypass variants, SSTI with all engine templates, "
-            "blind/OOB SQLi with out-of-band callbacks, second-order injection testing. "
-            "Every endpoint that returned tested_clean in pass 1 is a candidate for a "
-            "false negative — test again with a different technique."
-        )
-        steps.append(
-            "Re-invoke /param-fuzz (SECOND PASS) — run with larger wordlists "
-            "(burp-parameter-names.txt + raft-large-words.txt), test every parameter "
-            "for HTTP verb tampering, auth header stripping, type confusion "
-            "(string→int→array→null), and mass assignment on ALL endpoints including "
-            "those that returned 4xx in pass 1 (try different HTTP methods)."
-        )
-        steps.append(
-            "Re-invoke /business-logic (SECOND PASS) — run all 9 phases again: "
-            "send concurrent requests (10 parallel) to every state-changing endpoint, "
-            "test negative/zero/overflow values on EVERY numeric field found, "
-            "replay all one-time tokens and confirmation codes, test BOLA on every "
-            "resource ID found in the app, enumerate sequential IDs across all "
-            "resource types."
-        )
-        if has_ai_ep or "ai-redteam" in skills_run:
-            steps.append(
-                "Re-invoke /ai-redteam (SECOND PASS) — run PyRIT crescendo (10 turns), "
-                "Garak with full probe set (dan,encoding,promptinject,leakreplay,gcg,glitch,"
-                "grandma,goodside,snowball,misleading,packagehallucination,malwaregen), "
-                "and manual multi-objective authority-marker payloads on all AI endpoints."
-            )
-        steps.append(
-            "Re-run nuclei with ALL template categories: "
-            "scan(tool='nuclei', templates='cve,exposure,misconfig,default-login,takeovers,"
-            "technologies,token-spray,file-upload,xss,sqli,ssrf,lfi,rce,generic'). "
-            "Also run scan(tool='ffuf') on every endpoint with raft-large-words.txt to "
-            "discover hidden parameters and paths missed in pass 1."
-        )
-        if unchained:
-            titles = ", ".join(f['title'][:40] for f in unchained[:3])
-            steps.append(
-                f"Chain {len(unchained)} unchained critical finding(s) to maximum impact "
-                f"({titles}{'...' if len(unchained) > 3 else ''}): "
-                "SQLi → dump all tables → crack hashes → use creds everywhere; "
-                "SSRF → scan internal network → hit cloud metadata → exfil IAM keys; "
-                "RCE → establish reverse shell → run LinPEAS → escalate to root."
-            )
-
+        steps = _deepen_steps_pass1(criticals, has_ai_ep, skills_run, unchained)
+        intro = (
+            f"⛔ ITERATION GATE: Pass 1/{_THOROUGH_MIN_ITERATIONS} done — "
+            "thorough depth requires {_THOROUGH_MIN_ITERATIONS} full passes. "
+            "RE-RUN ALL TOOLS NOW, harder than pass 1. "
+            "Execute every step below before calling complete() again:"
+        ).format(_THOROUGH_MIN_ITERATIONS=_THOROUGH_MIN_ITERATIONS)
     elif iteration == 2:
-        # ── Third pass: maximum aggression ─────────────────────────────────────
-        steps.append(
-            "Re-invoke /web-exploit (THIRD PASS — MAXIMUM AGGRESSION) — "
-            "sqlmap --level=5 --risk=3 --technique=BEUSTQ --tamper=space2comment,between,"
-            "randomcase,charunicodeencode on every injection point; "
-            "run commix on ALL parameter inputs for blind OS command injection; "
-            "test HTTP request smuggling (CL.TE and TE.CL) on every HTTP/1.1 endpoint; "
-            "probe all endpoints for CRLF injection and web cache poisoning; "
-            "test deserialization on every cookie and binary parameter (pickle, Java, PHP)."
+        steps = _deepen_steps_pass2(criticals, has_ai_ep, skills_run)
+        intro = (
+            f"⛔ ITERATION GATE: Pass 2/{_THOROUGH_MIN_ITERATIONS} done — "
+            "one more full pass required at MAXIMUM aggression. "
+            "Execute every step below before calling complete() again:"
         )
-        steps.append(
-            "Re-invoke /param-fuzz (THIRD PASS) — fuzz with the full "
-            "10-million-password-list as a parameter wordlist; test parameter pollution "
-            "(duplicate params in query string + body simultaneously); inject into "
-            "HTTP headers (X-Forwarded-For, X-Original-URL, X-Rewrite-URL, "
-            "X-Custom-IP-Authorization) on every auth-gated endpoint; "
-            "test GraphQL introspection and batching abuse if any /graphql endpoint exists."
-        )
-        steps.append(
-            "Re-invoke /business-logic (THIRD PASS) — run Phase 5 (idempotency) with "
-            "50 concurrent requests on every state-changing endpoint; "
-            "test all time-based attacks (expired token reuse, cooldown bypass); "
-            "perform full multi-tenant isolation testing across all user accounts; "
-            "enumerate ALL resource IDs sequentially (orders, transfers, loans, cards, "
-            "payments) across EVERY user to confirm or deny BOLA at scale."
-        )
-        if has_ai_ep or "ai-redteam" in skills_run:
-            steps.append(
-                "Re-invoke /ai-redteam (THIRD PASS) — run PyRIT with jailbreak + "
-                "crescendo + multi-turn prompt injection (15 turns each); "
-                "test excessive agency by attempting tool invocations with hidden params "
-                "(include_internal=True, admin=True, debug=True, show_all=True); "
-                "test indirect prompt injection via every data field the AI reads "
-                "(usernames, transaction notes, profile fields, filenames)."
-            )
-        steps.append(
-            "Run kali(command='nikto -h TARGET -C all -maxtime 300') for full server "
-            "misconfiguration scan; run testssl.sh against every HTTPS endpoint; "
-            "run enum4linux-ng if any SMB/LDAP ports are open; "
-            "run wapiti with all modules against the full app."
-        )
-        steps.append(
-            f"Produce one end-to-end chain PoC for EACH critical finding ({len(criticals)} total) "
-            "that demonstrates the full kill chain from initial access to maximum impact. "
-            "Each PoC must be a single executable curl/python script that requires zero "
-            "manual steps. Save every PoC with http(action='save_poc') linked to its finding_id."
-        )
-
     else:
-        # ── Extra iterations beyond the minimum ────────────────────────────────
-        steps.append(
+        steps = [
             f"Iteration {iteration}: re-run ALL skills at maximum depth again — "
             "the scan has not yet passed quality gates. "
             "Focus on any cells still pending or skipped, any findings without end-to-end PoCs, "
             "and any skill not invoked since the last iteration."
+        ]
+        intro = (
+            f"⛔ ITERATION GATE: Pass {iteration}/{_THOROUGH_MIN_ITERATIONS} done — "
+            "quality gates still blocking. "
+            "Execute every step below before calling complete() again:"
         )
 
     steps.append(
@@ -834,44 +878,13 @@ def _deepen_brief(iteration: int) -> str:
         "After completing ALL steps above, call session(action='complete') again."
     )
 
-    if iteration == 1:
-        intro = (
-            f"⛔ ITERATION GATE: Pass 1/{_THOROUGH_MIN_ITERATIONS} done — "
-            "thorough depth requires {_THOROUGH_MIN_ITERATIONS} full passes. "
-            "RE-RUN ALL TOOLS NOW, harder than pass 1. "
-            "Execute every step below before calling complete() again:"
-        ).format(_THOROUGH_MIN_ITERATIONS=_THOROUGH_MIN_ITERATIONS)
-    elif iteration == 2:
-        intro = (
-            f"⛔ ITERATION GATE: Pass 2/{_THOROUGH_MIN_ITERATIONS} done — "
-            "one more full pass required at MAXIMUM aggression. "
-            "Execute every step below before calling complete() again:"
-        )
-    else:
-        intro = (
-            f"⛔ ITERATION GATE: Pass {iteration}/{_THOROUGH_MIN_ITERATIONS} done — "
-            "quality gates still blocking. "
-            "Execute every step below before calling complete() again:"
-        )
-
     numbered = "\n".join(f"  {i + 1}. {step}" for i, step in enumerate(steps))
     return f"{intro}\n{numbered}"
 
 
-def _do_complete(opts):
-    global _complete_attempts, _analysis_passes
-    _complete_attempts += 1
-    notes = opts.get("notes", "")
+def _collect_completion_blockers(data: dict, effective: set) -> list[str]:
+    """Run all completion gate checks and return the list of blocker strings."""
     blockers: list[str] = []
-
-    data = findings_store._load()
-
-    # Persist attempt counters to session.json so they survive context compaction.
-    current = scan_session.get() or {}
-    if current:
-        current["complete_attempts"] = _complete_attempts
-        current["analysis_passes"] = _analysis_passes
-        scan_session._flush()
 
     blockers.extend(_gate_blockers())
     blockers.extend(_qa_blockers())
@@ -885,7 +898,6 @@ def _do_complete(opts):
             "application architecture before completing."
         )
 
-    effective = _effective_tools()
     if "httpx" in effective and "spider" not in effective:
         blockers.append(
             "NO SPIDER: httpx confirmed web targets but spider was never called. "
@@ -919,6 +931,26 @@ def _do_complete(opts):
     from core.coverage import get_matrix
     blockers.extend(_coverage_blockers(get_matrix(), ctf_mode=_has_ctf_flag(data)))
 
+    return blockers
+
+
+def _do_complete(opts):
+    global _complete_attempts, _analysis_passes
+    _complete_attempts += 1
+    notes = opts.get("notes", "")
+
+    data = findings_store._load()
+
+    # Persist attempt counters to session.json so they survive context compaction.
+    current = scan_session.get() or {}
+    if current:
+        current["complete_attempts"] = _complete_attempts
+        current["analysis_passes"] = _analysis_passes
+        scan_session._flush()
+
+    effective = _effective_tools()
+    blockers = _collect_completion_blockers(data, effective)
+
     # ── Thorough-depth iteration gate ────────────────────────────────────────
     # _analysis_passes counts complete() calls that had NO quality blockers — i.e. genuine
     # analysis passes.  Quality-fix attempts (where the model only added missing PoC files or
@@ -941,25 +973,40 @@ def _do_complete(opts):
             blockers.append(brief)
 
     if blockers:
-        # Force-complete after max attempts to break model loops.
-        # Marks status as "incomplete_with_unresolved_blockers" so dashboards/exports
-        # distinguish this from a clean completion.
+        # After max attempts, escalate to HUMAN INTERVENTION REQUIRED.
+        # The scan pauses — no tool calls execute while intervention_required.
+        # The human decides via dashboard or session(action='resume').
         if _complete_attempts >= _MAX_COMPLETE_ATTEMPTS:
-            global _force_completed
             attempts = _complete_attempts
-            _force_completed = True
-            force_reason = f"FORCE-COMPLETED: {len(blockers)} blocker(s) unresolved after {attempts} attempts: {'; '.join(blockers)}"
-            log.note(f"Force-completing after {attempts} blocked attempts. Remaining blockers: {'; '.join(blockers)}")
-            scan_session.complete(notes, stop_reason=force_reason, quality_gate="failed")
-            _complete_attempts = 0
-            _analysis_passes = 0
-            _record_metrics(data, blockers, force_completed=True)
-            return (
-                f"Scan FORCE-COMPLETED (exceeded {attempts} attempt limit). "
-                f"status=incomplete_with_unresolved_blockers quality_gate=failed. "
-                f"{len(blockers)} blocker(s) were unresolved. session.json updated. "
-                f"STOP — do not call any more tools. The scan is done."
+            log.note(f"HIR triggered after {attempts} blocked complete() attempts. Blockers: {'; '.join(b[:80] for b in blockers)}")
+            scan_session.trigger_intervention(
+                code="HIR_FORCE_COMPLETE",
+                situation=(
+                    f"{len(blockers)} completion blocker(s) could not be resolved after "
+                    f"{attempts} attempts. The scan cannot complete automatically."
+                ),
+                tried=[f"complete() attempt {i+1}/{attempts}" for i in range(min(attempts, 5))],
+                options=[
+                    "SKIP_CELLS: Tell me which specific cells or endpoint types to mark as skipped — I will document them and complete",
+                    "REDUCE_SCOPE: Specify which checks to drop (e.g. 'skip all rate_limit cells', 'accept missing PoC for finding X')",
+                    "ACCEPT_PARTIAL: I will complete with current coverage and flag all unresolved items in the report",
+                    "CONTINUE: Provide specific instructions to resolve the remaining blockers and I will retry",
+                ],
             )
+            return json.dumps({
+                "status": "HUMAN_INTERVENTION_REQUIRED",
+                "code": "HIR_FORCE_COMPLETE",
+                "situation": f"{len(blockers)} blocker(s) unresolved after {attempts} complete() attempts.",
+                "blockers": blockers[:5],
+                "options": [
+                    "SKIP_CELLS — specify cells/endpoint types to skip",
+                    "REDUCE_SCOPE — drop specific checks",
+                    "ACCEPT_PARTIAL — complete with documented gaps",
+                    "CONTINUE — give me instructions to fix the blockers",
+                ],
+                "how_to_respond": "Use the dashboard 'Send to Smith' panel, or call session(action='resume', options={choice: '...', message: '...'})",
+                "scan_paused": True,
+            }, indent=2)
         depth = (scan_session.get() or {}).get("depth", "")
         if depth == "thorough" and _analysis_passes < _THOROUGH_MIN_ITERATIONS:
             header = (
@@ -981,12 +1028,6 @@ def _do_complete(opts):
     _complete_attempts = 0
     _analysis_passes = 0
     _record_metrics(data, [], force_completed=False)
-    # Clean up old artifacts (older than 24h) to prevent unbounded disk growth
-    try:
-        from mcp_server.scan_engine.artifacts import cleanup_artifacts
-        cleanup_artifacts(max_age_hours=24)
-    except Exception:
-        pass
     return f"Scan marked {status}. session.json updated. STOP — do not call any more tools. The scan is done."
 
 
@@ -1039,6 +1080,74 @@ async def _do_qa_reply(opts):
     if ack_id:
         return f"QA reply logged. Directive {ack_id} acknowledged."
     return "QA reply logged. (No active directive to acknowledge — reply recorded for audit trail.)"
+
+
+def _do_resume(opts: dict) -> str:
+    """Human responded to a HUMAN_INTERVENTION_REQUIRED event.
+
+    Transitions the scan back to 'running', records the human's choice,
+    and injects a steering directive so Smith immediately knows what to do.
+    """
+    from core.steering import steering_queue, RESUME_REQUIRED
+    choice  = str(opts.get("choice", "")).strip()
+    message = str(opts.get("message", "")).strip()
+    if not choice and not message:
+        return (
+            "resume requires choice= and/or message=. "
+            "Example: session(action='resume', options={choice: 'ACCEPT_PARTIAL', message: 'Complete with documented gaps'})"
+        )
+    current = scan_session.get() or {}
+    if current.get("status") not in ("intervention_required", "running"):
+        return f"No active intervention to resolve. Current status: {current.get('status', 'none')}"
+
+    scan_session.resolve_intervention(choice, message)
+    human_instruction = f"Human resolved HIR with choice='{choice}'" + (f": {message}" if message else "")
+    log.note(f"HIR resolved by human: {human_instruction}")
+    steering_queue.add_directive(
+        code=RESUME_REQUIRED,
+        message=(
+            f"HUMAN RESPONSE: {human_instruction}. "
+            "Act on this instruction now, then call session(action='complete') when ready."
+        ),
+        priority="high",
+        skill=None,
+        trigger="HIR_RESOLVED",
+    )
+    return json.dumps({
+        "status": "resumed",
+        "message": "Scan resumed. Human instruction injected as steering directive.",
+        "choice": choice,
+        "instruction": message,
+        "next": "Call session(action='recovery') to get your current position, then follow the steering directive.",
+    }, indent=2)
+
+
+def _do_intervene(opts: dict) -> str:
+    """Manually trigger a HUMAN_INTERVENTION_REQUIRED event.
+
+    Useful for QA checks that detect conditions warranting human review
+    (repeated tool failure, auth expiry, etc.).
+    """
+    code      = str(opts.get("code", "HIR_MANUAL")).strip()
+    situation = str(opts.get("situation", "Manual intervention requested.")).strip()
+    tried     = opts.get("tried", [])
+    options   = opts.get("options", [
+        "CONTINUE — provide instructions to proceed",
+        "ABORT — stop the scan",
+    ])
+    current = scan_session.get() or {}
+    if not current or current.get("status") != "running":
+        return f"No running scan to pause. Status: {current.get('status', 'none')}"
+    scan_session.trigger_intervention(code, situation, tried, options)
+    log.note(f"HIR manually triggered: {code} — {situation}")
+    return json.dumps({
+        "status": "HUMAN_INTERVENTION_REQUIRED",
+        "code":      code,
+        "situation": situation,
+        "options":   options,
+        "scan_paused": True,
+        "how_to_respond": "session(action='resume', options={choice: '...', message: '...'})",
+    }, indent=2)
 
 
 def _do_status():
@@ -1285,7 +1394,6 @@ def _do_recovery():
     # Coverage matrix: in_progress and pending cells
     from core.coverage import get_matrix
     cov = get_matrix()
-    meta = cov.get("meta", {})
     ep_map = {ep["id"]: ep["path"] for ep in cov.get("endpoints", [])}
 
     in_progress_cells = [
@@ -1344,6 +1452,32 @@ def _do_recovery():
     )
     next_call = _concrete_next_call(target, tools_run, in_progress_cells, pending_count)
 
+    result = _build_recovery_result(
+        current, cov, data, in_progress_cells, pending_count, extra_cells,
+        unsatisfied_gates, pending_escalations, integrity_warnings,
+        target, tools_run, action_list, next_call, resume_step,
+    )
+    return json.dumps(result, indent=2)
+
+
+def _build_recovery_result(
+    current: dict,
+    cov: dict,
+    data: dict,
+    in_progress_cells: list,
+    pending_count: int,
+    extra_cells: int,
+    unsatisfied_gates: list,
+    pending_escalations: list,
+    integrity_warnings: list,
+    target: str,
+    tools_run: set,
+    action_list: list,
+    next_call: str,
+    resume_step: str,
+) -> dict:
+    meta = cov.get("meta", {})
+
     # Iteration progress for thorough scans.
     # Use _analysis_passes (quality-clean passes) not _complete_attempts (includes quality-fix calls).
     analysis_iter = current.get("analysis_passes", _analysis_passes)
@@ -1396,7 +1530,7 @@ def _do_recovery():
     if integrity_warnings:
         result["integrity_warnings"] = integrity_warnings
 
-    return json.dumps(result, indent=2)
+    return result
 
 
 def _concrete_next_call(target: str, tools_run: set, in_progress: list, pending_count: int) -> str:
@@ -1522,6 +1656,27 @@ def _do_pre_chain(opts):
     return json.dumps(result, indent=2)
 
 
+def _manage_skill_gates(skill_name: str, result: dict) -> list[str]:
+    """Satisfy gates requiring skill_name, defer others. Returns list of satisfied gate IDs."""
+    satisfied_gates: list[str] = []
+    for gate in result.get("gates", []):
+        if gate["status"] == "pending" and skill_name in gate["required_skills"]:
+            scan_session.satisfy_gate(gate["id"], skill_name)
+            satisfied_gates.append(gate["id"])
+
+    # Restore all previously deferred gates, then defer any that don't require THIS skill.
+    # This ensures only the one gate relevant to the active skill fires per response.
+    scan_session.restore_gates()
+    remaining_pending = scan_session.pending_gates()
+    gates_to_defer = [
+        g["id"] for g in remaining_pending
+        if skill_name not in g.get("required_skills", [])
+    ]
+    if gates_to_defer:
+        scan_session.defer_gates(gates_to_defer)
+    return satisfied_gates
+
+
 def _do_set_skill(opts):
     skill_name = opts.get("skill", "")
     reason = opts.get("reason", "")
@@ -1540,12 +1695,7 @@ def _do_set_skill(opts):
     if result is None:
         return "No active running session — cannot set skill."
 
-    # Auto-satisfy any gates that require this skill
-    satisfied_gates: list[str] = []
-    for gate in result.get("gates", []):
-        if gate["status"] == "pending" and skill_name in gate["required_skills"]:
-            scan_session.satisfy_gate(gate["id"], skill_name)
-            satisfied_gates.append(gate["id"])
+    satisfied_gates = _manage_skill_gates(skill_name, result)
 
     log.skill_start(skill_name, reason=reason, chained_from=chained_from)
 

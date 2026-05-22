@@ -1,7 +1,7 @@
 """
 Tests for core.qa_agent — deterministic checks and QADaemon cycle logic.
 
-All check functions now operate on structured data (quick_log entries, JSON dicts).
+All check functions operate on structured data (quick_log entries, JSON dicts).
 No regex parsing of summary text.
 """
 import asyncio
@@ -18,10 +18,16 @@ from core.qa_agent import (
     _sanitize_history, QADaemon,
     _deterministic_qa_checks, _load_json,
     _deduplicate, _merge_alerts,
-    _check_scope_drift, _check_coverage_stall, _check_spider_without_coverage,
-    _check_poc_gap, _check_tool_inactivity, _check_bulk_marking,
-    _check_coverage_integrity, _check_missing_diagram, _check_no_spider_after_httpx,
-    _check_endpoint_trigger_gaps, _check_coverage_gap, _check_injection_breadth,
+    _check_tool_inactivity, _check_bulk_marking,
+    _check_coverage_integrity, _check_no_spider_after_httpx,
+    _check_missing_skill,
+    _check_suspicious_speed, _check_na_abuse, _check_depth_after_finding,
+    _check_whitebox_passes, _check_premature_complete, _check_stuck_on_target,
+    _maybe_inject_web_exploit_directive, _maybe_inject_param_fuzz_directive,
+    _maybe_inject_business_logic_directive, _check_core_skill_chain,
+    _hir, _check_auth_failure, _check_budget_limit, _check_zero_endpoints,
+    _check_target_unreachable, _check_exploit_escalation, _check_repeated_tool_failure,
+    _ts_age_secs,
 )
 from core.quick_log import QuickLog
 
@@ -103,140 +109,6 @@ def test_load_json_returns_empty_on_corrupt_json(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# _check_scope_drift
-# ---------------------------------------------------------------------------
-
-def test_scope_drift_no_target_skips():
-    entries = [_tool_entry("nmap", "evil.com")]
-    assert _check_scope_drift(entries, {}) is None
-
-
-def test_scope_drift_detected():
-    entries = [_tool_entry("nmap", "evil.com")]
-    alert = _check_scope_drift(entries, {"target": "https://example.com"})
-    assert alert is not None
-    assert alert["code"] == "SCOPE_DRIFT"
-    assert alert["urgency"] == "high"
-    assert "evil.com" in alert["message"]
-
-
-def test_scope_drift_in_scope_target_ignored():
-    entries = [_tool_entry("httpx", "https://example.com/api/users")]
-    assert _check_scope_drift(entries, {"target": "https://example.com"}) is None
-
-
-def test_scope_drift_no_tool_entries():
-    entries = [_spider_entry()]
-    assert _check_scope_drift(entries, {"target": "https://example.com"}) is None
-
-
-# ---------------------------------------------------------------------------
-# _check_coverage_stall
-# ---------------------------------------------------------------------------
-
-def test_coverage_stall_no_coverage_entries():
-    assert _check_coverage_stall([_tool_entry()]) is None
-
-
-def test_coverage_stall_pending_zero():
-    entries = [_coverage_entry(pending=0, offset_min=35)]
-    assert _check_coverage_stall(entries) is None
-
-
-def test_coverage_stall_under_15_min():
-    entries = [_coverage_entry(pending=5, offset_min=10)]
-    assert _check_coverage_stall(entries) is None
-
-
-def test_coverage_stall_fires_at_15_min(tmp_path, monkeypatch):
-    import core.steering as st_mod
-    monkeypatch.setattr(st_mod, "_STEERING_FILE", tmp_path / "steering_queue.json")
-    entries = [_coverage_entry(pending=8, offset_min=20)]
-    alert = _check_coverage_stall(entries)
-    assert alert is not None
-    assert alert["code"] == "COVERAGE_STALL"
-    assert alert["urgency"] == "high"
-    assert "8 cells" in alert["message"]
-
-
-def test_coverage_stall_generates_directive(tmp_path, monkeypatch):
-    import core.steering as st_mod
-    monkeypatch.setattr(st_mod, "_STEERING_FILE", tmp_path / "steering_queue.json")
-    entries = [_coverage_entry(pending=3, offset_min=20)]
-    _check_coverage_stall(entries)
-    q = st_mod.SteeringQueue()
-    assert any(d["code"] == "RESUME_TESTING" for d in q._load())
-
-
-# ---------------------------------------------------------------------------
-# _check_spider_without_coverage
-# ---------------------------------------------------------------------------
-
-def test_spider_without_coverage_no_spider():
-    assert _check_spider_without_coverage([_tool_entry()], {}) is None
-
-
-def test_spider_without_coverage_fires():
-    entries = [_spider_entry(15)]
-    alert = _check_spider_without_coverage(entries, {"meta": {"total_cells": 0}})
-    assert alert is not None
-    assert alert["code"] == "SPIDER_WITHOUT_COVERAGE"
-    assert "15" in alert["message"]
-
-
-def test_spider_without_coverage_skipped_when_matrix_populated():
-    entries = [_spider_entry(15)]
-    assert _check_spider_without_coverage(entries, {"meta": {"total_cells": 30}}) is None
-
-
-# ---------------------------------------------------------------------------
-# _check_poc_gap
-# ---------------------------------------------------------------------------
-
-def test_poc_gap_no_findings():
-    assert _check_poc_gap({}) is None
-
-
-def test_poc_gap_all_have_poc():
-    data = {"findings": [{"title": "SQLi", "severity": "critical", "poc_files": ["sqli.http"]}]}
-    assert _check_poc_gap(data) is None
-
-
-def test_poc_gap_fires_high_urgency(tmp_path, monkeypatch):
-    import core.steering as st_mod
-    monkeypatch.setattr(st_mod, "_STEERING_FILE", tmp_path / "steering_queue.json")
-    data = {"findings": [
-        {"title": "SQLi", "severity": "critical", "poc_files": []},
-        {"title": "XSS",  "severity": "high",     "poc_files": []},
-    ]}
-    alert = _check_poc_gap(data)
-    assert alert is not None
-    assert alert["code"] == "POC_GAP"
-    assert alert["urgency"] == "high"
-    assert "2/2" in alert["message"]
-
-
-def test_poc_gap_generates_poc_required_directive(tmp_path, monkeypatch):
-    import core.steering as st_mod
-    monkeypatch.setattr(st_mod, "_STEERING_FILE", tmp_path / "steering_queue.json")
-    data = {"findings": [{"title": "SQLi", "severity": "critical", "poc_files": []}]}
-    _check_poc_gap(data)
-    q = st_mod.SteeringQueue()
-    assert any(d["code"] == "POC_REQUIRED" for d in q._load())
-
-
-def test_poc_gap_truncates_titles_at_three(tmp_path, monkeypatch):
-    import core.steering as st_mod
-    monkeypatch.setattr(st_mod, "_STEERING_FILE", tmp_path / "steering_queue.json")
-    data = {"findings": [
-        {"title": f"Finding {i}", "severity": "critical", "poc_files": []}
-        for i in range(5)
-    ]}
-    alert = _check_poc_gap(data)
-    assert "+2 more" in alert["message"]
-
-
-# ---------------------------------------------------------------------------
 # _check_tool_inactivity
 # ---------------------------------------------------------------------------
 
@@ -249,19 +121,21 @@ def test_tool_inactivity_below_threshold():
     assert _check_tool_inactivity(entries) is None
 
 
-def test_tool_inactivity_medium_between_10_and_15(tmp_path, monkeypatch):
-    import core.steering as st_mod
-    monkeypatch.setattr(st_mod, "_STEERING_FILE", tmp_path / "steering_queue.json")
+def test_tool_inactivity_under_15_min_no_alert():
+    # Changed threshold: only fires at >15 min (not medium at 10-15)
     entries = [_tool_entry(offset_min=12)]
-    alert = _check_tool_inactivity(entries)
-    assert alert is not None
-    assert alert["code"] == "TOOL_INACTIVITY"
-    assert alert["urgency"] == "medium"
+    assert _check_tool_inactivity(entries) is None
 
 
 def test_tool_inactivity_high_over_15(tmp_path, monkeypatch):
     import core.steering as st_mod
-    monkeypatch.setattr(st_mod, "_STEERING_FILE", tmp_path / "steering_queue.json")
+    import core.qa_agent as qa_mod
+    steering_file = tmp_path / "steering_queue.json"
+    # Patch both the steering module path and the qa_agent local copy so
+    # _has_pending_directives() reads the temp file (no stale real-file state).
+    monkeypatch.setattr(st_mod, "_STEERING_FILE", steering_file)
+    # Also patch qa_agent's local copy so _has_pending_directives() reads temp file.
+    monkeypatch.setattr(qa_mod, "_STEERING_FILE", steering_file)
     entries = [_tool_entry(offset_min=20)]
     alert = _check_tool_inactivity(entries)
     assert alert is not None
@@ -320,32 +194,6 @@ def test_coverage_integrity_fires():
 
 
 # ---------------------------------------------------------------------------
-# _check_missing_diagram
-# ---------------------------------------------------------------------------
-
-def test_missing_diagram_no_findings():
-    assert _check_missing_diagram({}) is None
-
-
-def test_missing_diagram_has_diagram():
-    data = {"findings": [{"id": "f1"}], "diagrams": [{"title": "arch"}]}
-    assert _check_missing_diagram(data) is None
-
-
-def test_missing_diagram_fires():
-    data = {"findings": [{"id": "f1"}], "diagrams": []}
-    alert = _check_missing_diagram(data)
-    assert alert is not None
-    assert alert["code"] == "NO_DIAGRAM"
-    assert alert["urgency"] == "medium"
-
-
-def test_missing_diagram_fires_when_diagrams_key_absent():
-    data = {"findings": [{"id": "f1"}]}
-    assert _check_missing_diagram(data) is not None
-
-
-# ---------------------------------------------------------------------------
 # _check_no_spider_after_httpx
 # ---------------------------------------------------------------------------
 
@@ -368,6 +216,62 @@ def test_no_spider_fires_after_httpx():
 
 
 # ---------------------------------------------------------------------------
+# _check_missing_skill (was _check_coverage_gap)
+# ---------------------------------------------------------------------------
+
+def test_missing_skill_no_endpoints():
+    assert _check_missing_skill({"endpoints": []}, {}) == []
+
+
+def test_missing_skill_unclassified_endpoint_ignored():
+    cov = {"endpoints": [{"path": "/static/image.png"}]}
+    assert _check_missing_skill(cov, {}) == []
+
+
+def test_missing_skill_skill_already_run():
+    cov = {"endpoints": [{"path": "/graphql"}]}
+    sd  = {"skill_history": [{"skill": "api-security"}]}
+    assert _check_missing_skill(cov, sd) == []
+
+
+def test_missing_skill_fires_alert():
+    cov = {"endpoints": [{"path": "/graphql"}]}
+    alerts = _check_missing_skill(cov, {"skill_history": []})
+    assert len(alerts) == 1
+    assert alerts[0]["code"] == "MISSING_SKILL"
+    assert "api-security" in alerts[0]["message"]
+
+
+def test_missing_skill_multiple_same_type_grouped():
+    cov = {"endpoints": [{"path": "/graphql"}, {"path": "/graph/query"}]}
+    alerts = _check_missing_skill(cov, {"skill_history": []})
+    assert len(alerts) == 1
+    assert "2 graphql" in alerts[0]["message"]
+
+
+def test_missing_skill_financial_flags_business_logic():
+    cov = {"endpoints": [{"path": "/api/payment"}]}
+    alerts = _check_missing_skill(cov, {"skill_history": []})
+    assert any("business-logic" in a["message"] for a in alerts)
+
+
+def test_missing_skill_import_error_returns_empty(monkeypatch):
+    import sys
+    import types
+    original = sys.modules.get("core.coverage")
+    broken = types.ModuleType("core.coverage")
+    sys.modules["core.coverage"] = broken
+    try:
+        from core.qa_agent import _check_missing_skill
+        assert _check_missing_skill({"endpoints": [{"path": "/graphql"}]}, {}) == []
+    finally:
+        if original is not None:
+            sys.modules["core.coverage"] = original
+        else:
+            sys.modules.pop("core.coverage", None)
+
+
+# ---------------------------------------------------------------------------
 # _deterministic_qa_checks — signature and integration
 # ---------------------------------------------------------------------------
 
@@ -379,33 +283,23 @@ def test_deterministic_no_alerts_on_clean_state(tmp_path, monkeypatch):
     assert alerts == []
 
 
-def test_deterministic_scope_drift_detected(tmp_path, monkeypatch):
+def test_deterministic_bulk_marking_detected(tmp_path, monkeypatch):
     import core.steering as st_mod
     monkeypatch.setattr(st_mod, "_STEERING_FILE", tmp_path / "steering_queue.json")
-    entries = [_tool_entry("nmap", "evil.com")]
-    alerts = _deterministic_qa_checks(entries, {}, {}, {"target": "https://example.com"})
-    assert any(a["code"] == "SCOPE_DRIFT" for a in alerts)
-
-
-def test_deterministic_spider_without_coverage(tmp_path, monkeypatch):
-    import core.steering as st_mod
-    monkeypatch.setattr(st_mod, "_STEERING_FILE", tmp_path / "steering_queue.json")
-    entries = [_spider_entry(15)]
-    alerts = _deterministic_qa_checks(entries, {}, {"meta": {"total_cells": 0}}, {})
-    assert any(a["code"] == "SPIDER_WITHOUT_COVERAGE" for a in alerts)
+    entries = [_coverage_entry(na_untooled=15)]
+    alerts = _deterministic_qa_checks(entries, {}, {}, {})
+    assert any(a["code"] == "BULK_MARKING" for a in alerts)
 
 
 def test_deterministic_multiple_alerts_fire(tmp_path, monkeypatch):
     import core.steering as st_mod
     monkeypatch.setattr(st_mod, "_STEERING_FILE", tmp_path / "steering_queue.json")
     entries = [
-        _tool_entry("nmap", "evil.com"),           # scope drift
-        _tool_entry("nmap", "evil.com", offset_min=20),  # inactivity
-        _coverage_entry(na_untooled=15),            # bulk marking
+        _tool_entry("nmap", "https://example.com", offset_min=20),  # inactivity
+        _coverage_entry(na_untooled=15),                             # bulk marking
     ]
     alerts = _deterministic_qa_checks(entries, {}, {}, {"target": "https://example.com"})
     codes = {a["code"] for a in alerts}
-    assert "SCOPE_DRIFT" in codes
     assert "BULK_MARKING" in codes
 
 
@@ -419,31 +313,31 @@ def test_deduplicate_empty_lists():
 
 def test_deduplicate_no_previous_keeps_all():
     new_alerts = [
-        {"code": "SCOPE_DRIFT", "urgency": "high", "message": "drift detected"},
-        {"code": "POC_GAP", "urgency": "high", "message": "missing pocs"},
+        {"code": "TOOL_INACTIVITY", "urgency": "high", "message": "stalled"},
+        {"code": "BULK_MARKING",    "urgency": "high", "message": "bulk"},
     ]
     assert len(_deduplicate(new_alerts, [])) == 2
 
 
 def test_deduplicate_drops_same_code_and_message():
-    alert = {"code": "SCOPE_DRIFT", "urgency": "high", "message": "drift detected"}
+    alert = {"code": "BULK_MARKING", "urgency": "high", "message": "bulk detected"}
     assert _deduplicate([alert], [alert]) == []
 
 
 def test_deduplicate_keeps_same_code_different_message():
-    prev = {"code": "SCOPE_DRIFT", "urgency": "high", "message": "old target"}
-    new  = {"code": "SCOPE_DRIFT", "urgency": "high", "message": "new target"}
+    prev = {"code": "TOOL_INACTIVITY", "urgency": "high", "message": "idle 15min"}
+    new  = {"code": "TOOL_INACTIVITY", "urgency": "high", "message": "idle 25min"}
     result = _deduplicate([new], [prev])
     assert len(result) == 1
-    assert result[0]["message"] == "new target"
+    assert result[0]["message"] == "idle 25min"
 
 
 def test_deduplicate_keeps_different_codes():
-    prev = {"code": "SCOPE_DRIFT", "urgency": "high", "message": "drift"}
-    new  = {"code": "POC_GAP",    "urgency": "high", "message": "missing"}
+    prev = {"code": "BULK_MARKING",   "urgency": "high", "message": "bulk"}
+    new  = {"code": "TOOL_INACTIVITY","urgency": "high", "message": "idle"}
     result = _deduplicate([new], [prev])
     assert len(result) == 1
-    assert result[0]["code"] == "POC_GAP"
+    assert result[0]["code"] == "TOOL_INACTIVITY"
 
 
 def test_deduplicate_same_message_deduped_regardless_of_urgency():
@@ -476,7 +370,7 @@ def test_read_qa_state_returns_empty_on_corrupt_json(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# _sanitize_history() — summary_sent no longer stored
+# _sanitize_history()
 # ---------------------------------------------------------------------------
 
 def test_sanitize_history_filters_non_dicts():
@@ -521,7 +415,6 @@ def test_sanitize_history_truncates_long_smith_reply():
 
 
 def test_sanitize_history_no_summary_sent_in_output():
-    """summary_sent is removed — history entries should not have this field."""
     raw = [{"ts": "t", "summary_sent": "old prompt", "alerts": [], "smith_actions": []}]
     result = _sanitize_history(raw)
     assert "summary_sent" not in result[0]
@@ -590,14 +483,14 @@ async def test_cycle_writes_qa_state_with_deterministic_alert(tmp_path, monkeypa
     import core.steering as st_mod
     monkeypatch.setattr(st_mod, "_STEERING_FILE", tmp_path / "steering_queue.json")
     qa_state = _setup_cycle_files(tmp_path, monkeypatch)
-    # SPIDER entry with empty coverage → SPIDER_WITHOUT_COVERAGE fires
+    # BULK_MARKING fires when na_untooled > 10
     monkeypatch.setattr(core.quick_log, "quick_log",
-                        _mock_ql(entries=[_spider_entry(12)]))
+                        _mock_ql(entries=[_coverage_entry(na_untooled=15)]))
     daemon = QADaemon()
     await daemon._cycle()
     assert qa_state.exists()
     data = json.loads(qa_state.read_text())
-    assert any(a["code"] == "SPIDER_WITHOUT_COVERAGE" for a in data["alerts"])
+    assert any(a["code"] == "BULK_MARKING" for a in data["alerts"])
     assert "ts" in data
     assert "history" in data
 
@@ -608,7 +501,7 @@ async def test_cycle_caps_alerts_at_four(tmp_path, monkeypatch):
     monkeypatch.setattr(st_mod, "_STEERING_FILE", tmp_path / "steering_queue.json")
     qa_state = _setup_cycle_files(tmp_path, monkeypatch)
     monkeypatch.setattr(core.quick_log, "quick_log",
-                        _mock_ql(entries=[_spider_entry()]))
+                        _mock_ql(entries=[_coverage_entry(na_untooled=15)]))
 
     six_alerts = [
         {"code": f"ALERT{i}", "urgency": "high", "blocking": False, "message": f"msg{i}"}
@@ -627,7 +520,6 @@ async def test_cycle_captures_smith_actions_in_history(tmp_path, monkeypatch):
     import core.steering as st_mod
     monkeypatch.setattr(st_mod, "_STEERING_FILE", tmp_path / "steering_queue.json")
     qa_state = _setup_cycle_files(tmp_path, monkeypatch)
-    # Seed previous history
     qa_state.write_text(json.dumps({
         "ts": "2025-12-31T00:00:00+00:00",
         "alerts": [],
@@ -636,7 +528,7 @@ async def test_cycle_captures_smith_actions_in_history(tmp_path, monkeypatch):
     }))
     new_action = {"type": "TOOL", "name": "nuclei", "ts": "2099-12-31T23:59:59+00:00"}
     monkeypatch.setattr(core.quick_log, "quick_log",
-                        _mock_ql(entries=[_spider_entry()], since=[new_action]))
+                        _mock_ql(entries=[_coverage_entry(na_untooled=15)], since=[new_action]))
     daemon = QADaemon()
     await daemon._cycle()
     data = json.loads(qa_state.read_text())
@@ -660,7 +552,7 @@ async def test_cycle_caps_history_at_20(tmp_path, monkeypatch):
         "history": existing_history,
     }))
     monkeypatch.setattr(core.quick_log, "quick_log",
-                        _mock_ql(entries=[_spider_entry()]))
+                        _mock_ql(entries=[_coverage_entry(na_untooled=15)]))
     daemon = QADaemon()
     await daemon._cycle()
     data = json.loads(qa_state.read_text())
@@ -674,7 +566,7 @@ async def test_cycle_handles_corrupt_qa_state_gracefully(tmp_path, monkeypatch):
     qa_state = _setup_cycle_files(tmp_path, monkeypatch)
     qa_state.write_text("not valid json {{{")
     monkeypatch.setattr(core.quick_log, "quick_log",
-                        _mock_ql(entries=[_spider_entry()]))
+                        _mock_ql(entries=[_coverage_entry(na_untooled=15)]))
     daemon = QADaemon()
     await daemon._cycle()
     data = json.loads(qa_state.read_text())
@@ -684,14 +576,13 @@ async def test_cycle_handles_corrupt_qa_state_gracefully(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_cycle_skips_write_when_alerts_unchanged(tmp_path, monkeypatch):
     qa_state = _setup_cycle_files(tmp_path, monkeypatch)
-    existing_alert = {"code": "SCOPE_DRIFT", "urgency": "high", "blocking": False,
-                      "message": "Scope drift: tools ran against evil.com"}
+    existing_alert = {"code": "BULK_MARKING", "urgency": "high", "blocking": True,
+                      "message": "Bulk-marking detected: 15 N/A cells have no tested_by tool — run actual tools before marking N/A"}
     qa_state.write_text(json.dumps({
         "ts": "2026-01-01T00:00:00+00:00",
         "alerts": [existing_alert],
         "history": [],
     }))
-    # Entries that produce no deterministic alerts
     monkeypatch.setattr(core.quick_log, "quick_log",
                         _mock_ql(entries=[_tool_entry(offset_min=2)]))
     daemon = QADaemon()
@@ -706,7 +597,7 @@ async def test_cycle_history_has_no_summary_sent(tmp_path, monkeypatch):
     monkeypatch.setattr(st_mod, "_STEERING_FILE", tmp_path / "steering_queue.json")
     qa_state = _setup_cycle_files(tmp_path, monkeypatch)
     monkeypatch.setattr(core.quick_log, "quick_log",
-                        _mock_ql(entries=[_spider_entry()]))
+                        _mock_ql(entries=[_coverage_entry(na_untooled=15)]))
     daemon = QADaemon()
     await daemon._cycle()
     data = json.loads(qa_state.read_text())
@@ -715,23 +606,23 @@ async def test_cycle_history_has_no_summary_sent(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# _merge_alerts() — fixed dedup
+# _merge_alerts()
 # ---------------------------------------------------------------------------
 
 def test_merge_alerts_changed_alerts_first():
-    new_alert  = {"code": "POC_GAP",    "urgency": "high", "message": "new"}
-    persistent = {"code": "SCOPE_DRIFT","urgency": "high", "message": "drift"}
+    new_alert  = {"code": "BULK_MARKING",  "urgency": "high", "message": "new"}
+    persistent = {"code": "TOOL_INACTIVITY","urgency": "high", "message": "idle"}
     result = _merge_alerts([new_alert], [new_alert, persistent], cap=4)
-    assert result[0]["code"] == "POC_GAP"
+    assert result[0]["code"] == "BULK_MARKING"
 
 
 def test_merge_alerts_preserves_persistent_when_new_fires():
-    persistent1 = {"code": "SCOPE_DRIFT",    "urgency": "high",   "message": "drift"}
-    persistent2 = {"code": "COVERAGE_STALL", "urgency": "medium", "message": "stale"}
-    new_alert   = {"code": "POC_GAP",        "urgency": "high",   "message": "new poc"}
+    persistent1 = {"code": "TOOL_INACTIVITY",   "urgency": "high",   "message": "idle"}
+    persistent2 = {"code": "COVERAGE_INTEGRITY", "urgency": "high",   "message": "untooled"}
+    new_alert   = {"code": "BULK_MARKING",       "urgency": "high",   "message": "new bulk"}
     result = _merge_alerts([new_alert], [new_alert, persistent1, persistent2], cap=4)
     codes = {a["code"] for a in result}
-    assert codes == {"POC_GAP", "SCOPE_DRIFT", "COVERAGE_STALL"}
+    assert codes == {"BULK_MARKING", "TOOL_INACTIVITY", "COVERAGE_INTEGRITY"}
 
 
 def test_merge_alerts_respects_cap():
@@ -740,172 +631,12 @@ def test_merge_alerts_respects_cap():
 
 
 def test_merge_alerts_no_duplicate_codes():
-    a = {"code": "SCOPE_DRIFT", "urgency": "high", "message": "same"}
+    a = {"code": "BULK_MARKING", "urgency": "high", "message": "same"}
     assert len(_merge_alerts([a], [a], cap=4)) == 1
 
 
 def test_merge_alerts_empty_inputs():
     assert _merge_alerts([], []) == []
-
-
-# ---------------------------------------------------------------------------
-# _check_injection_breadth
-# ---------------------------------------------------------------------------
-
-def _make_cell(ep_id, param, param_type, injection_type, status="pending"):
-    return {"id": f"cell-{ep_id}-{param}-{injection_type}", "endpoint_id": ep_id,
-            "param": param, "param_type": param_type, "injection_type": injection_type,
-            "status": status}
-
-
-def test_injection_breadth_no_matrix():
-    assert _check_injection_breadth({"matrix": []}) is None
-
-
-def test_injection_breadth_no_sqli_cells():
-    matrix = [_make_cell("ep1", "q", "query", "xss")]
-    assert _check_injection_breadth({"matrix": matrix}) is None
-
-
-def test_injection_breadth_full_coverage():
-    matrix = [_make_cell("ep1", "q", "query", t)
-              for t in ("sqli", "xss", "ssti", "ssrf", "cmdi")]
-    assert _check_injection_breadth({"matrix": matrix}) is None
-
-
-def test_injection_breadth_missing_types():
-    matrix = [_make_cell("ep1", "username", "body_json", "sqli")]
-    alert = _check_injection_breadth({"matrix": matrix})
-    assert alert is not None
-    assert alert["code"] == "INJECTION_BREADTH_GAP"
-    assert alert["urgency"] == "high"
-    assert "username" in alert["message"]
-
-
-def test_injection_breadth_endpoint_param_skipped():
-    matrix = [{"id": "c1", "endpoint_id": "ep1", "param": "_endpoint",
-               "param_type": "endpoint", "injection_type": "sqli", "status": "pending"}]
-    assert _check_injection_breadth({"matrix": matrix}) is None
-
-
-def test_injection_breadth_partial_missing():
-    matrix = [_make_cell("ep1", "id", "query", "sqli"),
-              _make_cell("ep1", "id", "query", "xss")]
-    alert = _check_injection_breadth({"matrix": matrix})
-    assert alert is not None
-    assert "ssti" in alert["message"] or "ssrf" in alert["message"]
-
-
-# ---------------------------------------------------------------------------
-# _check_endpoint_trigger_gaps
-# ---------------------------------------------------------------------------
-
-def _gate(gid, required, status="pending", triggered_at=None, trigger="api endpoint"):
-    return {"id": gid, "status": status, "required_skills": required,
-            "triggered_at": triggered_at or _ts(0), "trigger": trigger}
-
-
-def test_trigger_gaps_no_gates():
-    assert _check_endpoint_trigger_gaps({}) == []
-
-
-def test_trigger_gaps_satisfied_gate_skipped():
-    sd = {"gates": [_gate("g1", ["api-security"], status="satisfied")], "skill_history": []}
-    assert _check_endpoint_trigger_gaps(sd) == []
-
-
-def test_trigger_gaps_all_skills_satisfied():
-    sd = {"gates": [_gate("g1", ["api-security"])],
-          "skill_history": [{"skill": "api-security"}]}
-    assert _check_endpoint_trigger_gaps(sd) == []
-
-
-def test_trigger_gaps_missing_skill_fires_alert():
-    sd = {"gates": [_gate("g1", ["api-security"])], "skill_history": []}
-    alerts = _check_endpoint_trigger_gaps(sd)
-    assert len(alerts) == 1
-    assert alerts[0]["code"] == "ENDPOINT_TRIGGER_GAP"
-    assert "/api-security" in alerts[0]["message"]
-
-
-def test_trigger_gaps_elapsed_over_15_is_high(tmp_path, monkeypatch):
-    import core.steering as st_mod
-    monkeypatch.setattr(st_mod, "_STEERING_FILE", tmp_path / "steering_queue.json")
-    sd = {"gates": [_gate("g1", ["credential-audit"], triggered_at=_ts(20))],
-          "skill_history": []}
-    alerts = _check_endpoint_trigger_gaps(sd)
-    assert alerts[0]["urgency"] == "high"
-
-
-def test_trigger_gaps_elapsed_under_15_is_medium():
-    sd = {"gates": [_gate("g1", ["credential-audit"], triggered_at=_ts(0))],
-          "skill_history": []}
-    assert _check_endpoint_trigger_gaps(sd)[0]["urgency"] == "medium"
-
-
-def test_trigger_gaps_bad_timestamp_defaults_to_zero():
-    sd = {"gates": [{"id": "g1", "status": "pending", "required_skills": ["web-exploit"],
-                     "triggered_at": "not-a-date", "trigger": "upload"}],
-          "skill_history": []}
-    alerts = _check_endpoint_trigger_gaps(sd)
-    assert len(alerts) == 1
-    assert alerts[0]["urgency"] == "medium"
-
-
-# ---------------------------------------------------------------------------
-# _check_coverage_gap
-# ---------------------------------------------------------------------------
-
-def test_coverage_gap_no_endpoints():
-    assert _check_coverage_gap({"endpoints": []}, {}) == []
-
-
-def test_coverage_gap_unclassified_endpoint_ignored():
-    cov = {"endpoints": [{"path": "/static/image.png"}]}
-    assert _check_coverage_gap(cov, {}) == []
-
-
-def test_coverage_gap_skill_already_run():
-    cov = {"endpoints": [{"path": "/graphql"}]}
-    sd  = {"skill_history": [{"skill": "api-security"}]}
-    assert _check_coverage_gap(cov, sd) == []
-
-
-def test_coverage_gap_skill_missing_fires_alert():
-    cov = {"endpoints": [{"path": "/graphql"}]}
-    alerts = _check_coverage_gap(cov, {"skill_history": []})
-    assert len(alerts) == 1
-    assert alerts[0]["code"] == "COVERAGE_GAP"
-    assert "api-security" in alerts[0]["message"]
-
-
-def test_coverage_gap_multiple_same_type_grouped():
-    cov = {"endpoints": [{"path": "/graphql"}, {"path": "/graph/query"}]}
-    alerts = _check_coverage_gap(cov, {"skill_history": []})
-    assert len(alerts) == 1
-    assert "2 graphql" in alerts[0]["message"]
-
-
-def test_coverage_gap_financial_endpoint_flags_business_logic():
-    cov = {"endpoints": [{"path": "/api/payment"}]}
-    alerts = _check_coverage_gap(cov, {"skill_history": []})
-    assert any("business-logic" in a["message"] for a in alerts)
-
-
-def test_coverage_gap_import_error_returns_empty(monkeypatch):
-    import sys
-    import types
-    original = sys.modules.get("core.coverage")
-    broken = types.ModuleType("core.coverage")
-    sys.modules["core.coverage"] = broken
-    try:
-        from core.qa_agent import _check_coverage_gap
-        assert _check_coverage_gap({"endpoints": [{"path": "/graphql"}]}, {}) == []
-    finally:
-        if original is not None:
-            sys.modules["core.coverage"] = original
-        else:
-            sys.modules.pop("core.coverage", None)
 
 
 # ---------------------------------------------------------------------------
@@ -937,3 +668,878 @@ async def test_run_calls_cycle_and_swallows_exceptions(tmp_path, monkeypatch):
             pass
 
     assert call_count == 2
+
+
+# ===========================================================================
+# NEW TESTS — additional coverage for previously uncovered functions
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Helper entry builders
+# ---------------------------------------------------------------------------
+
+def _http_entry(offset_min=1, status_code=200, target="https://example.com", error=False):
+    e = {
+        "type": "TOOL", "name": "http_request", "target": target,
+        "ts": _ts(offset_min), "status_code": status_code,
+    }
+    if error:
+        e["error"] = True
+    return e
+
+
+def _finding_entry(severity="high", target="https://example.com", offset_min=25):
+    return {
+        "severity": severity, "target": target, "ts": _ts(offset_min),
+        "title": f"Test {severity} finding", "id": "f-1",
+    }
+
+
+def _skill_history_entry(skill: str, offset_min: int = 25) -> dict:
+    return {"skill": skill, "ts": _ts(offset_min), "reason": "test"}
+
+
+def _error_tool_entry(name="nmap", target="https://example.com", offset_min=1):
+    return {"type": "TOOL", "name": name, "target": target, "ts": _ts(offset_min), "error": True}
+
+
+# ---------------------------------------------------------------------------
+# _ts_age_secs
+# ---------------------------------------------------------------------------
+
+def test_ts_age_secs_valid_ts():
+    now = datetime.now(timezone.utc)
+    ts = (now - timedelta(seconds=120)).isoformat()
+    age = _ts_age_secs(ts, now)
+    assert 115 < age < 125
+
+
+def test_ts_age_secs_empty_string():
+    now = datetime.now(timezone.utc)
+    assert _ts_age_secs("", now) == 0.0
+
+
+def test_ts_age_secs_invalid_string():
+    now = datetime.now(timezone.utc)
+    assert _ts_age_secs("not-a-timestamp", now) == 0.0
+
+
+# ---------------------------------------------------------------------------
+# _check_suspicious_speed
+# ---------------------------------------------------------------------------
+
+def test_suspicious_speed_fewer_than_2_coverage_entries():
+    entries = [_coverage_entry(offset_min=1)]
+    assert _check_suspicious_speed(entries) is None
+
+
+def test_suspicious_speed_low_cells_closed():
+    entries = [
+        {**_coverage_entry(offset_min=5), "cells_closed": 5},
+        {**_coverage_entry(offset_min=1), "cells_closed": 5},
+    ]
+    assert _check_suspicious_speed(entries) is None
+
+
+def test_suspicious_speed_fires_when_too_many_cells_closed(tmp_path, monkeypatch):
+    import core.steering as st_mod
+    import core.qa_agent as qa_mod
+    steering_file = tmp_path / "steering_queue.json"
+    monkeypatch.setattr(st_mod, "_STEERING_FILE", steering_file)
+    monkeypatch.setattr(qa_mod, "_STEERING_FILE", steering_file)
+
+    entries = [
+        {**_coverage_entry(offset_min=5), "cells_closed": 15},
+        {**_coverage_entry(offset_min=1), "cells_closed": 10},
+    ]
+    alert = _check_suspicious_speed(entries)
+    assert alert is not None
+    assert alert["code"] == "SUSPICIOUS_SPEED"
+    assert alert["urgency"] == "high"
+    assert "25" in alert["message"]
+
+
+def test_suspicious_speed_directive_injected(tmp_path, monkeypatch):
+    import core.steering as st_mod
+    import core.qa_agent as qa_mod
+    steering_file = tmp_path / "steering_queue.json"
+    monkeypatch.setattr(st_mod, "_STEERING_FILE", steering_file)
+    monkeypatch.setattr(qa_mod, "_STEERING_FILE", steering_file)
+
+    entries = [
+        {**_coverage_entry(offset_min=5), "cells_closed": 15},
+        {**_coverage_entry(offset_min=1), "cells_closed": 10},
+    ]
+    _check_suspicious_speed(entries)
+    q = st_mod.SteeringQueue()
+    assert any(d.get("trigger") == "SUSPICIOUS_SPEED" for d in q._load())
+
+
+# ---------------------------------------------------------------------------
+# _check_na_abuse
+# ---------------------------------------------------------------------------
+
+def test_na_abuse_no_matrix():
+    assert _check_na_abuse({}) is None
+
+
+def test_na_abuse_fewer_than_10_addressed():
+    matrix = [{"status": "not_applicable"}] * 5
+    assert _check_na_abuse({"matrix": matrix}) is None
+
+
+def test_na_abuse_low_na_rate():
+    matrix = (
+        [{"status": "tested"}] * 8 +
+        [{"status": "not_applicable"}] * 2
+    )
+    assert _check_na_abuse({"matrix": matrix}) is None
+
+
+def test_na_abuse_fires_high_na_rate(tmp_path, monkeypatch):
+    import core.steering as st_mod
+    import core.qa_agent as qa_mod
+    steering_file = tmp_path / "steering_queue.json"
+    monkeypatch.setattr(st_mod, "_STEERING_FILE", steering_file)
+    monkeypatch.setattr(qa_mod, "_STEERING_FILE", steering_file)
+
+    matrix = (
+        [{"status": "not_applicable"}] * 8 +
+        [{"status": "tested"}] * 2
+    )
+    alert = _check_na_abuse({"matrix": matrix})
+    assert alert is not None
+    assert alert["code"] == "NA_ABUSE"
+    assert "80%" in alert["message"]
+
+
+def test_na_abuse_directive_injected(tmp_path, monkeypatch):
+    import core.steering as st_mod
+    import core.qa_agent as qa_mod
+    steering_file = tmp_path / "steering_queue.json"
+    monkeypatch.setattr(st_mod, "_STEERING_FILE", steering_file)
+    monkeypatch.setattr(qa_mod, "_STEERING_FILE", steering_file)
+
+    matrix = (
+        [{"status": "not_applicable"}] * 8 +
+        [{"status": "tested"}] * 2
+    )
+    _check_na_abuse({"matrix": matrix})
+    q = st_mod.SteeringQueue()
+    assert any(d.get("trigger") == "NA_ABUSE" for d in q._load())
+
+
+# ---------------------------------------------------------------------------
+# _check_depth_after_finding
+# ---------------------------------------------------------------------------
+
+def test_depth_after_finding_no_high_critical():
+    findings = {"findings": [_finding_entry(severity="low")]}
+    assert _check_depth_after_finding([], findings) is None
+
+
+def test_depth_after_finding_finding_too_recent():
+    findings = {"findings": [_finding_entry(severity="high", offset_min=5)]}
+    assert _check_depth_after_finding([], findings) is None
+
+
+def test_depth_after_finding_tools_ran_after():
+    finding = _finding_entry(severity="high", offset_min=25)
+    # tool entry with ts after the finding
+    tool = _tool_entry("sqlmap", "https://example.com", offset_min=10)
+    findings = {"findings": [finding]}
+    assert _check_depth_after_finding([tool], findings) is None
+
+
+def test_depth_after_finding_fires(tmp_path, monkeypatch):
+    import core.steering as st_mod
+    import core.qa_agent as qa_mod
+    steering_file = tmp_path / "steering_queue.json"
+    monkeypatch.setattr(st_mod, "_STEERING_FILE", steering_file)
+    monkeypatch.setattr(qa_mod, "_STEERING_FILE", steering_file)
+
+    findings = {"findings": [_finding_entry(severity="high", offset_min=25)]}
+    alert = _check_depth_after_finding([], findings)
+    assert alert is not None
+    assert alert["code"] == "DEPTH_AFTER_FINDING"
+    assert "Test high finding" in alert["message"]
+
+
+def test_depth_after_finding_directive_injected(tmp_path, monkeypatch):
+    import core.steering as st_mod
+    import core.qa_agent as qa_mod
+    steering_file = tmp_path / "steering_queue.json"
+    monkeypatch.setattr(st_mod, "_STEERING_FILE", steering_file)
+    monkeypatch.setattr(qa_mod, "_STEERING_FILE", steering_file)
+
+    findings = {"findings": [_finding_entry(severity="critical", offset_min=30)]}
+    _check_depth_after_finding([], findings)
+    q = st_mod.SteeringQueue()
+    assert any(d.get("trigger") == "DEPTH_AFTER_FINDING" for d in q._load())
+
+
+# ---------------------------------------------------------------------------
+# _check_whitebox_passes
+# ---------------------------------------------------------------------------
+
+def test_whitebox_passes_not_thorough():
+    assert _check_whitebox_passes([], {"depth": "normal"}) is None
+
+
+def test_whitebox_passes_enough_runs():
+    entries = [_tool_entry("semgrep")] * 3
+    assert _check_whitebox_passes(entries, {"depth": "thorough"}) is None
+
+
+def test_whitebox_passes_fires_at_zero(tmp_path, monkeypatch):
+    import core.steering as st_mod
+    import core.qa_agent as qa_mod
+    steering_file = tmp_path / "steering_queue.json"
+    monkeypatch.setattr(st_mod, "_STEERING_FILE", steering_file)
+    monkeypatch.setattr(qa_mod, "_STEERING_FILE", steering_file)
+
+    alert = _check_whitebox_passes([], {"depth": "thorough"})
+    assert alert is not None
+    assert alert["code"] == "WHITEBOX_PASSES"
+    assert "0/3" in alert["message"]
+
+
+def test_whitebox_passes_fires_at_one(tmp_path, monkeypatch):
+    import core.steering as st_mod
+    import core.qa_agent as qa_mod
+    steering_file = tmp_path / "steering_queue.json"
+    monkeypatch.setattr(st_mod, "_STEERING_FILE", steering_file)
+    monkeypatch.setattr(qa_mod, "_STEERING_FILE", steering_file)
+
+    entries = [_tool_entry("semgrep")]
+    alert = _check_whitebox_passes(entries, {"depth": "thorough"})
+    assert alert is not None
+    assert "1/3" in alert["message"]
+    assert "pass 2" in alert["message"]
+
+
+def test_whitebox_passes_directive_injected(tmp_path, monkeypatch):
+    import core.steering as st_mod
+    import core.qa_agent as qa_mod
+    steering_file = tmp_path / "steering_queue.json"
+    monkeypatch.setattr(st_mod, "_STEERING_FILE", steering_file)
+    monkeypatch.setattr(qa_mod, "_STEERING_FILE", steering_file)
+
+    _check_whitebox_passes([], {"depth": "thorough"})
+    q = st_mod.SteeringQueue()
+    assert any(d.get("trigger") == "WHITEBOX_PASSES" for d in q._load())
+
+
+# ---------------------------------------------------------------------------
+# _check_premature_complete
+# ---------------------------------------------------------------------------
+
+def test_premature_complete_not_thorough():
+    assert _check_premature_complete([], {"depth": "normal"}) is None
+
+
+def test_premature_complete_no_complete_event():
+    entries = [_tool_entry("semgrep")]
+    assert _check_premature_complete(entries, {"depth": "thorough"}) is None
+
+
+def test_premature_complete_enough_passes():
+    entries = [_tool_entry("semgrep")] * 3 + [{"type": "COMPLETE", "ts": _ts(1)}]
+    assert _check_premature_complete(entries, {"depth": "thorough"}) is None
+
+
+def test_premature_complete_fires():
+    entries = [{"type": "COMPLETE", "ts": _ts(1)}]
+    alert = _check_premature_complete(entries, {"depth": "thorough"})
+    assert alert is not None
+    assert alert["code"] == "PREMATURE_COMPLETE"
+    assert alert["blocking"] is True
+    assert "0 done" in alert["message"]
+
+
+# ---------------------------------------------------------------------------
+# _check_stuck_on_target
+# ---------------------------------------------------------------------------
+
+def test_stuck_on_target_too_few_tool_calls():
+    entries = [_tool_entry(offset_min=5)] * 3
+    assert _check_stuck_on_target(entries, {}, []) is None
+
+
+def test_stuck_on_target_spread_across_targets():
+    entries = [
+        _tool_entry("nmap", f"https://host{i}.com", offset_min=5)
+        for i in range(5)
+    ]
+    assert _check_stuck_on_target(entries, {}, []) is None
+
+
+def test_stuck_on_target_recent_finding_allows_pass():
+    entries = [_tool_entry("nmap", "https://example.com", offset_min=5)] * 5
+    findings = {"findings": [_finding_entry(target="https://example.com", offset_min=10)]}
+    assert _check_stuck_on_target(entries, findings, []) is None
+
+
+def test_stuck_on_target_first_detection(tmp_path, monkeypatch):
+    import core.steering as st_mod
+    import core.qa_agent as qa_mod
+    steering_file = tmp_path / "steering_queue.json"
+    monkeypatch.setattr(st_mod, "_STEERING_FILE", steering_file)
+    monkeypatch.setattr(qa_mod, "_STEERING_FILE", steering_file)
+
+    entries = [_tool_entry("nmap", "https://example.com", offset_min=5)] * 6
+    alert = _check_stuck_on_target(entries, {}, [])
+    assert alert is not None
+    assert alert["code"] == "STUCK_ON_TARGET"
+    assert "example.com" in alert["message"]
+
+
+def test_stuck_on_target_second_detection_triggers_hir(tmp_path, monkeypatch):
+    import core.steering as st_mod
+    import core.qa_agent as qa_mod
+    steering_file = tmp_path / "steering_queue.json"
+    monkeypatch.setattr(st_mod, "_STEERING_FILE", steering_file)
+    monkeypatch.setattr(qa_mod, "_STEERING_FILE", steering_file)
+
+    # Simulate trigger_intervention and get_intervention
+    with patch("core.session.get_intervention", return_value=None), \
+         patch("core.session.trigger_intervention") as mock_trigger:
+        entries = [_tool_entry("nmap", "https://example.com", offset_min=5)] * 6
+        previous_alerts = [
+            {"code": "STUCK_ON_TARGET", "message": "Stuck on target: 6 tool calls against 'https://example.com' ..."}
+        ]
+        alert = _check_stuck_on_target(entries, {}, previous_alerts)
+        assert alert is not None
+        assert alert["code"] == "STUCK_ON_TARGET"
+        mock_trigger.assert_called_once()
+        call_kwargs = mock_trigger.call_args
+        assert call_kwargs[1]["code"] == "HIR_STUCK_ON_TARGET" or call_kwargs[0][0] == "HIR_STUCK_ON_TARGET"
+
+
+def test_stuck_on_target_no_double_hir(tmp_path, monkeypatch):
+    import core.steering as st_mod
+    import core.qa_agent as qa_mod
+    steering_file = tmp_path / "steering_queue.json"
+    monkeypatch.setattr(st_mod, "_STEERING_FILE", steering_file)
+    monkeypatch.setattr(qa_mod, "_STEERING_FILE", steering_file)
+
+    existing_iv = {"code": "HIR_STUCK_ON_TARGET"}
+    with patch("core.session.get_intervention", return_value=existing_iv), \
+         patch("core.session.trigger_intervention") as mock_trigger:
+        entries = [_tool_entry("nmap", "https://example.com", offset_min=5)] * 6
+        previous_alerts = [
+            {"code": "STUCK_ON_TARGET", "message": "Stuck on target: 6 tool calls against 'https://example.com' ..."}
+        ]
+        _check_stuck_on_target(entries, {}, previous_alerts)
+        mock_trigger.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _maybe_inject_web_exploit_directive
+# ---------------------------------------------------------------------------
+
+def test_maybe_inject_web_exploit_no_spider_ts():
+    alerts = []
+    _maybe_inject_web_exploit_directive("", set(), datetime.now(timezone.utc), alerts)
+    assert alerts == []
+
+
+def test_maybe_inject_web_exploit_already_run():
+    alerts = []
+    now = datetime.now(timezone.utc)
+    spider_ts = (now - timedelta(minutes=30)).isoformat()
+    _maybe_inject_web_exploit_directive(spider_ts, {"web-exploit"}, now, alerts)
+    assert alerts == []
+
+
+def test_maybe_inject_web_exploit_too_recent():
+    alerts = []
+    now = datetime.now(timezone.utc)
+    spider_ts = (now - timedelta(minutes=5)).isoformat()
+    _maybe_inject_web_exploit_directive(spider_ts, set(), now, alerts)
+    assert alerts == []
+
+
+def test_maybe_inject_web_exploit_fires(tmp_path, monkeypatch):
+    import core.steering as st_mod
+    import core.qa_agent as qa_mod
+    steering_file = tmp_path / "steering_queue.json"
+    monkeypatch.setattr(st_mod, "_STEERING_FILE", steering_file)
+    monkeypatch.setattr(qa_mod, "_STEERING_FILE", steering_file)
+
+    alerts = []
+    now = datetime.now(timezone.utc)
+    spider_ts = (now - timedelta(minutes=30)).isoformat()
+    _maybe_inject_web_exploit_directive(spider_ts, set(), now, alerts)
+    assert len(alerts) == 1
+    assert alerts[0]["code"] == "MISSING_WEB_EXPLOIT"
+    q = st_mod.SteeringQueue()
+    assert any(d.get("trigger") == "MISSING_WEB_EXPLOIT" for d in q._load())
+
+
+# ---------------------------------------------------------------------------
+# _maybe_inject_param_fuzz_directive
+# ---------------------------------------------------------------------------
+
+def test_maybe_inject_param_fuzz_no_web_exploit_ts():
+    alerts = []
+    _maybe_inject_param_fuzz_directive("", set(), datetime.now(timezone.utc), alerts)
+    assert alerts == []
+
+
+def test_maybe_inject_param_fuzz_already_run():
+    alerts = []
+    now = datetime.now(timezone.utc)
+    web_ts = (now - timedelta(minutes=30)).isoformat()
+    _maybe_inject_param_fuzz_directive(web_ts, {"param-fuzz"}, now, alerts)
+    assert alerts == []
+
+
+def test_maybe_inject_param_fuzz_too_recent():
+    alerts = []
+    now = datetime.now(timezone.utc)
+    web_ts = (now - timedelta(minutes=5)).isoformat()
+    _maybe_inject_param_fuzz_directive(web_ts, set(), now, alerts)
+    assert alerts == []
+
+
+def test_maybe_inject_param_fuzz_fires(tmp_path, monkeypatch):
+    import core.steering as st_mod
+    import core.qa_agent as qa_mod
+    steering_file = tmp_path / "steering_queue.json"
+    monkeypatch.setattr(st_mod, "_STEERING_FILE", steering_file)
+    monkeypatch.setattr(qa_mod, "_STEERING_FILE", steering_file)
+
+    alerts = []
+    now = datetime.now(timezone.utc)
+    web_ts = (now - timedelta(minutes=30)).isoformat()
+    _maybe_inject_param_fuzz_directive(web_ts, set(), now, alerts)
+    assert len(alerts) == 1
+    assert alerts[0]["code"] == "MISSING_PARAM_FUZZ"
+    q = st_mod.SteeringQueue()
+    assert any(d.get("trigger") == "MISSING_PARAM_FUZZ" for d in q._load())
+
+
+def test_maybe_inject_param_fuzz_skips_directive_when_web_exploit_alert_pending(tmp_path, monkeypatch):
+    """When MISSING_WEB_EXPLOIT is already in alerts list, skip adding directive."""
+    import core.steering as st_mod
+    import core.qa_agent as qa_mod
+    steering_file = tmp_path / "steering_queue.json"
+    monkeypatch.setattr(st_mod, "_STEERING_FILE", steering_file)
+    monkeypatch.setattr(qa_mod, "_STEERING_FILE", steering_file)
+
+    # pre-populate with MISSING_WEB_EXPLOIT so directive injection is suppressed
+    existing_alert = {"code": "MISSING_WEB_EXPLOIT", "urgency": "high", "blocking": False, "message": "..."}
+    alerts = [existing_alert]
+    now = datetime.now(timezone.utc)
+    web_ts = (now - timedelta(minutes=30)).isoformat()
+    _maybe_inject_param_fuzz_directive(web_ts, set(), now, alerts)
+    # alert appended but no steering directive
+    assert any(a["code"] == "MISSING_PARAM_FUZZ" for a in alerts)
+    q = st_mod.SteeringQueue()
+    assert not any(d.get("trigger") == "MISSING_PARAM_FUZZ" for d in q._load())
+
+
+# ---------------------------------------------------------------------------
+# _maybe_inject_business_logic_directive
+# ---------------------------------------------------------------------------
+
+def test_maybe_inject_business_logic_not_thorough():
+    alerts = []
+    _maybe_inject_business_logic_directive("normal", [], {"web-exploit", "param-fuzz"}, datetime.now(timezone.utc), alerts)
+    assert alerts == []
+
+
+def test_maybe_inject_business_logic_missing_prerequisite_skills():
+    alerts = []
+    now = datetime.now(timezone.utc)
+    # only web-exploit done, not param-fuzz
+    _maybe_inject_business_logic_directive("thorough", [], {"web-exploit"}, now, alerts)
+    assert alerts == []
+
+
+def test_maybe_inject_business_logic_already_run():
+    alerts = []
+    now = datetime.now(timezone.utc)
+    _maybe_inject_business_logic_directive(
+        "thorough", [], {"web-exploit", "param-fuzz", "business-logic"}, now, alerts
+    )
+    assert alerts == []
+
+
+def test_maybe_inject_business_logic_no_param_fuzz_ts():
+    """No param-fuzz entry in skill_history — should return early."""
+    alerts = []
+    now = datetime.now(timezone.utc)
+    _maybe_inject_business_logic_directive(
+        "thorough", [], {"web-exploit", "param-fuzz"}, now, alerts
+    )
+    assert alerts == []
+
+
+def test_maybe_inject_business_logic_param_fuzz_too_recent():
+    alerts = []
+    now = datetime.now(timezone.utc)
+    skill_history = [_skill_history_entry("param-fuzz", offset_min=5)]
+    _maybe_inject_business_logic_directive(
+        "thorough", skill_history, {"web-exploit", "param-fuzz"}, now, alerts
+    )
+    assert alerts == []
+
+
+def test_maybe_inject_business_logic_fires(tmp_path, monkeypatch):
+    import core.steering as st_mod
+    import core.qa_agent as qa_mod
+    steering_file = tmp_path / "steering_queue.json"
+    monkeypatch.setattr(st_mod, "_STEERING_FILE", steering_file)
+    monkeypatch.setattr(qa_mod, "_STEERING_FILE", steering_file)
+
+    alerts = []
+    now = datetime.now(timezone.utc)
+    skill_history = [_skill_history_entry("param-fuzz", offset_min=30)]
+    _maybe_inject_business_logic_directive(
+        "thorough", skill_history, {"web-exploit", "param-fuzz"}, now, alerts
+    )
+    assert len(alerts) == 1
+    assert alerts[0]["code"] == "MISSING_BUSINESS_LOGIC"
+    q = st_mod.SteeringQueue()
+    assert any(d.get("trigger") == "MISSING_BUSINESS_LOGIC" for d in q._load())
+
+
+# ---------------------------------------------------------------------------
+# _check_core_skill_chain
+# ---------------------------------------------------------------------------
+
+def test_core_skill_chain_no_spider():
+    alerts = _check_core_skill_chain([], {})
+    assert alerts == []
+
+
+def test_core_skill_chain_missing_web_exploit(tmp_path, monkeypatch):
+    import core.steering as st_mod
+    import core.qa_agent as qa_mod
+    steering_file = tmp_path / "steering_queue.json"
+    monkeypatch.setattr(st_mod, "_STEERING_FILE", steering_file)
+    monkeypatch.setattr(qa_mod, "_STEERING_FILE", steering_file)
+
+    entries = [_spider_entry(endpoints_found=5, offset_min=30)]
+    session_data = {"skill_history": [], "depth": "normal"}
+    alerts = _check_core_skill_chain(entries, session_data)
+    assert any(a["code"] == "MISSING_WEB_EXPLOIT" for a in alerts)
+
+
+def test_core_skill_chain_missing_param_fuzz(tmp_path, monkeypatch):
+    import core.steering as st_mod
+    import core.qa_agent as qa_mod
+    steering_file = tmp_path / "steering_queue.json"
+    monkeypatch.setattr(st_mod, "_STEERING_FILE", steering_file)
+    monkeypatch.setattr(qa_mod, "_STEERING_FILE", steering_file)
+
+    entries = [_spider_entry(endpoints_found=5, offset_min=30)]
+    session_data = {
+        "skill_history": [_skill_history_entry("web-exploit", offset_min=30)],
+        "depth": "normal",
+    }
+    alerts = _check_core_skill_chain(entries, session_data)
+    assert any(a["code"] == "MISSING_PARAM_FUZZ" for a in alerts)
+
+
+def test_core_skill_chain_missing_business_logic_thorough(tmp_path, monkeypatch):
+    import core.steering as st_mod
+    import core.qa_agent as qa_mod
+    steering_file = tmp_path / "steering_queue.json"
+    monkeypatch.setattr(st_mod, "_STEERING_FILE", steering_file)
+    monkeypatch.setattr(qa_mod, "_STEERING_FILE", steering_file)
+
+    entries = [_spider_entry(endpoints_found=5, offset_min=60)]
+    session_data = {
+        "skill_history": [
+            _skill_history_entry("web-exploit", offset_min=60),
+            _skill_history_entry("param-fuzz", offset_min=30),
+        ],
+        "depth": "thorough",
+    }
+    alerts = _check_core_skill_chain(entries, session_data)
+    assert any(a["code"] == "MISSING_BUSINESS_LOGIC" for a in alerts)
+
+
+def test_core_skill_chain_all_skills_present():
+    entries = [_spider_entry(endpoints_found=5, offset_min=60)]
+    session_data = {
+        "skill_history": [
+            _skill_history_entry("web-exploit", offset_min=60),
+            _skill_history_entry("param-fuzz", offset_min=30),
+            _skill_history_entry("business-logic", offset_min=15),
+        ],
+        "depth": "thorough",
+    }
+    # No missing skills since all are present
+    alerts = _check_core_skill_chain(entries, session_data)
+    codes = {a["code"] for a in alerts}
+    assert "MISSING_WEB_EXPLOIT" not in codes
+    assert "MISSING_PARAM_FUZZ" not in codes
+    assert "MISSING_BUSINESS_LOGIC" not in codes
+
+
+# ---------------------------------------------------------------------------
+# _hir
+# ---------------------------------------------------------------------------
+
+def test_hir_calls_trigger_intervention_when_no_active():
+    with patch("core.session.get_intervention", return_value=None), \
+         patch("core.session.trigger_intervention") as mock_trigger:
+        _hir("TEST_CODE", "situation", ["tried"], ["option1"])
+        mock_trigger.assert_called_once_with("TEST_CODE", "situation", ["tried"], ["option1"])
+
+
+def test_hir_does_not_call_trigger_when_active():
+    with patch("core.session.get_intervention", return_value={"code": "existing"}), \
+         patch("core.session.trigger_intervention") as mock_trigger:
+        _hir("TEST_CODE", "situation", ["tried"], ["option1"])
+        mock_trigger.assert_not_called()
+
+
+def test_hir_swallows_exceptions():
+    with patch("core.session.get_intervention", side_effect=RuntimeError("boom")):
+        # Should not raise
+        _hir("TEST_CODE", "situation", ["tried"], ["option1"])
+
+
+# ---------------------------------------------------------------------------
+# _check_auth_failure
+# ---------------------------------------------------------------------------
+
+def test_auth_failure_too_few_entries():
+    entries = [_http_entry(status_code=401)] * 3
+    assert _check_auth_failure(entries) is None
+
+
+def test_auth_failure_never_authed():
+    entries = [_http_entry(status_code=401)] * 5
+    assert _check_auth_failure(entries) is None
+
+
+def test_auth_failure_low_failure_rate():
+    entries = (
+        [_http_entry(status_code=200)] * 5 +
+        [_http_entry(status_code=401)] * 2
+    )
+    assert _check_auth_failure(entries) is None
+
+
+def test_auth_failure_fires(tmp_path, monkeypatch):
+    with patch("core.session.get_intervention", return_value=None), \
+         patch("core.session.trigger_intervention") as mock_trigger:
+        entries = (
+            [_http_entry(status_code=200)] * 5 +
+            [_http_entry(status_code=401)] * 8
+        )
+        alert = _check_auth_failure(entries)
+        assert alert is not None
+        assert alert["code"] == "HIR_AUTH_FAILURE"
+        mock_trigger.assert_called_once()
+
+
+def test_auth_failure_403_also_counts():
+    with patch("core.session.get_intervention", return_value=None), \
+         patch("core.session.trigger_intervention"):
+        entries = (
+            [_http_entry(status_code=200)] * 5 +
+            [_http_entry(status_code=403)] * 8
+        )
+        alert = _check_auth_failure(entries)
+        assert alert is not None
+        assert alert["code"] == "HIR_AUTH_FAILURE"
+
+
+# ---------------------------------------------------------------------------
+# _check_budget_limit
+# ---------------------------------------------------------------------------
+
+def test_budget_limit_no_max_calls():
+    assert _check_budget_limit({}, {}) is None
+
+
+def test_budget_limit_below_90_percent():
+    session_data = {"calls_used": 80, "max_tool_calls": 100}
+    assert _check_budget_limit(session_data, {}) is None
+
+
+def test_budget_limit_high_coverage():
+    session_data = {"calls_used": 95, "max_tool_calls": 100}
+    coverage_data = {"meta": {"total_cells": 100, "tested": 85, "not_applicable": 0}}
+    assert _check_budget_limit(session_data, coverage_data) is None
+
+
+def test_budget_limit_fires():
+    with patch("core.session.get_intervention", return_value=None), \
+         patch("core.session.trigger_intervention") as mock_trigger:
+        session_data = {"calls_used": 95, "max_tool_calls": 100}
+        coverage_data = {"meta": {"total_cells": 100, "tested": 50, "not_applicable": 0}}
+        alert = _check_budget_limit(session_data, coverage_data)
+        assert alert is not None
+        assert alert["code"] == "HIR_BUDGET_LIMIT"
+        mock_trigger.assert_called_once()
+
+
+def test_budget_limit_no_total_cells_treated_as_done():
+    # total=0 → coverage_pct = 1.0 → skip
+    session_data = {"calls_used": 95, "max_tool_calls": 100}
+    coverage_data = {"meta": {"total_cells": 0, "tested": 0, "not_applicable": 0}}
+    assert _check_budget_limit(session_data, coverage_data) is None
+
+
+# ---------------------------------------------------------------------------
+# _check_zero_endpoints
+# ---------------------------------------------------------------------------
+
+def test_zero_endpoints_no_spider():
+    assert _check_zero_endpoints([], {}) is None
+
+
+def test_zero_endpoints_spider_found_some():
+    entries = [_spider_entry(endpoints_found=5, offset_min=15)]
+    assert _check_zero_endpoints(entries, {}) is None
+
+
+def test_zero_endpoints_matrix_not_empty():
+    entries = [_spider_entry(endpoints_found=0, offset_min=15)]
+    coverage = {"meta": {"total_cells": 10}}
+    assert _check_zero_endpoints(entries, coverage) is None
+
+
+def test_zero_endpoints_spider_too_recent():
+    entries = [_spider_entry(endpoints_found=0, offset_min=5)]
+    assert _check_zero_endpoints(entries, {}) is None
+
+
+def test_zero_endpoints_fires():
+    with patch("core.session.get_intervention", return_value=None), \
+         patch("core.session.trigger_intervention") as mock_trigger:
+        entries = [_spider_entry(endpoints_found=0, offset_min=15)]
+        alert = _check_zero_endpoints(entries, {})
+        assert alert is not None
+        assert alert["code"] == "HIR_NO_ENDPOINTS"
+        mock_trigger.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# _check_target_unreachable
+# ---------------------------------------------------------------------------
+
+def test_target_unreachable_too_few_tool_entries():
+    entries = [_error_tool_entry()] * 2
+    assert _check_target_unreachable(entries) is None
+
+
+def test_target_unreachable_errors_on_different_targets():
+    entries = [
+        _error_tool_entry(target="https://a.com"),
+        _error_tool_entry(target="https://b.com"),
+        _error_tool_entry(target="https://c.com"),
+    ]
+    assert _check_target_unreachable(entries) is None
+
+
+def test_target_unreachable_run_count_below_3():
+    entries = [
+        _error_tool_entry(target="https://example.com"),
+        _error_tool_entry(target="https://example.com"),
+        _tool_entry("nmap", "https://example.com"),  # success breaks the run
+    ]
+    assert _check_target_unreachable(entries) is None
+
+
+def test_target_unreachable_fires():
+    with patch("core.session.get_intervention", return_value=None), \
+         patch("core.session.trigger_intervention") as mock_trigger:
+        entries = [
+            _error_tool_entry(target="https://example.com"),
+            _error_tool_entry(target="https://example.com"),
+            _error_tool_entry(target="https://example.com"),
+        ]
+        alert = _check_target_unreachable(entries)
+        assert alert is not None
+        assert alert["code"] == "HIR_TARGET_UNREACHABLE"
+        mock_trigger.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# _check_exploit_escalation
+# ---------------------------------------------------------------------------
+
+def test_exploit_escalation_not_benchmark():
+    findings = {"findings": [_finding_entry(severity="critical", offset_min=20)]}
+    assert _check_exploit_escalation([], findings, {"scan_mode": "pentest"}) is None
+
+
+def test_exploit_escalation_no_findings():
+    assert _check_exploit_escalation([], {}, {"scan_mode": "benchmark"}) is None
+
+
+def test_exploit_escalation_finding_too_recent():
+    findings = {"findings": [_finding_entry(severity="critical", offset_min=5)]}
+    assert _check_exploit_escalation([], findings, {"scan_mode": "benchmark"}) is None
+
+
+def test_exploit_escalation_exploit_tool_ran_after():
+    finding = _finding_entry(severity="critical", offset_min=20)
+    exploit_tool = _tool_entry("metasploit", "https://example.com", offset_min=10)
+    findings = {"findings": [finding]}
+    assert _check_exploit_escalation([exploit_tool], findings, {"scan_mode": "benchmark"}) is None
+
+
+def test_exploit_escalation_fires(tmp_path, monkeypatch):
+    import core.steering as st_mod
+    import core.qa_agent as qa_mod
+    steering_file = tmp_path / "steering_queue.json"
+    monkeypatch.setattr(st_mod, "_STEERING_FILE", steering_file)
+    monkeypatch.setattr(qa_mod, "_STEERING_FILE", steering_file)
+
+    findings = {"findings": [_finding_entry(severity="critical", offset_min=20)]}
+    alert = _check_exploit_escalation([], findings, {"scan_mode": "benchmark"})
+    assert alert is not None
+    assert alert["code"] == "EXPLOIT_ESCALATION"
+    q = st_mod.SteeringQueue()
+    assert any(d.get("trigger") == "EXPLOIT_ESCALATION" for d in q._load())
+
+
+# ---------------------------------------------------------------------------
+# _check_repeated_tool_failure
+# ---------------------------------------------------------------------------
+
+def test_repeated_tool_failure_too_few_error_entries():
+    entries = [_error_tool_entry("nmap")] * 2
+    assert _check_repeated_tool_failure(entries) is None
+
+
+def test_repeated_tool_failure_different_tools():
+    entries = [
+        _error_tool_entry("nmap"),
+        _error_tool_entry("nuclei"),
+        _error_tool_entry("ffuf"),
+    ]
+    assert _check_repeated_tool_failure(entries) is None
+
+
+def test_repeated_tool_failure_errors_too_old():
+    entries = [
+        {"type": "TOOL", "name": "nmap", "target": "https://example.com",
+         "ts": _ts(25), "error": True},
+        {"type": "TOOL", "name": "nmap", "target": "https://example.com",
+         "ts": _ts(22), "error": True},
+        {"type": "TOOL", "name": "nmap", "target": "https://example.com",
+         "ts": _ts(21), "error": True},
+    ]
+    assert _check_repeated_tool_failure(entries) is None
+
+
+def test_repeated_tool_failure_fires():
+    with patch("core.session.get_intervention", return_value=None), \
+         patch("core.session.trigger_intervention") as mock_trigger:
+        entries = [_error_tool_entry("nmap", offset_min=1)] * 3
+        alert = _check_repeated_tool_failure(entries)
+        assert alert is not None
+        assert alert["code"] == "HIR_TOOL_FAILURE"
+        assert "nmap" in alert["message"]
+        mock_trigger.assert_called_once()

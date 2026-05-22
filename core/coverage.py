@@ -37,7 +37,8 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-COVERAGE_FILE = (Path(__file__).parent.parent / "coverage_matrix.json").resolve()
+COVERAGE_FILE  = (Path(__file__).parent.parent / "coverage_matrix.json").resolve()
+_ARTIFACTS_DIR = (Path(__file__).parent.parent / "artifacts").resolve()
 
 _lock = asyncio.Lock()
 
@@ -300,28 +301,55 @@ def _na_bypass_warning(status: str, inj_type: str, notes: str) -> str:
     )
 
 
+def _validate_artifact(artifact_id: str, status: str) -> str:
+    """Return rejection string if artifact_id is missing or invalid, else empty string.
+
+    Hard rules for tested_clean / vulnerable:
+    1. artifact_id must be non-empty.
+    2. The artifact file must exist on disk (proves the tool actually ran).
+    3. The tool prefix encoded in the artifact_id must not be empty.
+    """
+    if status not in ("tested_clean", "vulnerable"):
+        return ""
+    if not artifact_id or not artifact_id.strip():
+        return (
+            f"REJECTED: closing a cell as '{status}' requires an artifact_id. "
+            "Run the test tool first, capture the artifact_id from its response, "
+            "then pass it here. Free-text tested_by is no longer accepted."
+        )
+    artifact_file = _ARTIFACTS_DIR / f"{artifact_id}.txt"
+    if not artifact_file.exists():
+        return (
+            f"REJECTED: artifact_id '{artifact_id}' not found on disk. "
+            "The tool must actually run and produce an artifact before the cell can close. "
+            "Check that you are using the artifact_id from the tool response, not a placeholder."
+        )
+    return ""
+
+
 async def update_cell(
     cell_id: str,
     status: str,
     notes: str = "",
     finding_id: str | None = None,
     tested_by: str = "",
+    artifact_id: str = "",
 ) -> bool | str:
     """Update a single matrix cell.
 
-    Returns True if updated, False if cell not found, or a warning/rejection string
-    if the update was applied but violated an integrity rule (or was rejected).
+    Returns True if updated, False if cell not found, or a rejection/warning string.
 
-    Hard rule: tested_clean and vulnerable require a non-empty tested_by.
+    Hard rules:
+    - tested_clean / vulnerable require a real artifact_id that exists on disk.
+    - The legacy tested_by field is still stored for human-readable context but
+      is no longer the enforcement mechanism — artifact_id is.
     """
     valid = {"pending", "in_progress", "tested_clean", "vulnerable", "not_applicable", "skipped"}
     if status not in valid:
         return False
-    if status in ("tested_clean", "vulnerable") and not tested_by.strip():
-        return (
-            f"REJECTED: status '{status}' requires a non-empty tested_by field. "
-            f"Record the tool used (e.g. tested_by='sqlmap') before marking this cell."
-        )
+    rejection = _validate_artifact(artifact_id, status)
+    if rejection:
+        return rejection
 
     async with _lock:
         data = _load()
@@ -331,9 +359,10 @@ async def update_cell(
                     cell_id, cell["status"], status,
                     cell.get("injection_type", ""), notes,
                 )
-                cell["status"] = status
-                cell["notes"] = notes
-                cell["tested_by"] = tested_by
+                cell["status"]      = status
+                cell["notes"]       = notes
+                cell["tested_by"]   = tested_by
+                cell["artifact_id"] = artifact_id
                 if finding_id:
                     cell["finding_id"] = finding_id
                 cell["tested_at"] = datetime.now(timezone.utc).isoformat()
@@ -353,21 +382,23 @@ def _apply_bulk_cell(cell: dict, upd: dict, warnings: list[str]) -> None:
     )
     if warning:
         warnings.append(warning)
-    cell["status"] = st
-    cell["notes"] = notes_text
-    cell["tested_by"] = upd.get("tested_by", "")
+    cell["status"]      = st
+    cell["notes"]       = notes_text
+    cell["tested_by"]   = upd.get("tested_by", "")
+    cell["artifact_id"] = upd.get("artifact_id", "")
     if upd.get("finding_id"):
         cell["finding_id"] = upd["finding_id"]
     cell["tested_at"] = datetime.now(timezone.utc).isoformat()
 
 
 async def bulk_update(updates: list[dict]) -> dict:
-    """Update multiple cells. Each update: {cell_id, status, notes?, finding_id?, tested_by?}.
+    """Update multiple cells.
 
+    Each update: {cell_id, status, notes?, finding_id?, tested_by?, artifact_id?}.
     Returns {"updated": N, "rejected": N, "warnings": [str]}.
 
     Hard rules (reject without applying):
-    - tested_clean or vulnerable requires a non-empty tested_by (tool that produced the result).
+    - tested_clean or vulnerable requires artifact_id that exists on disk.
     """
     valid = {"pending", "in_progress", "tested_clean", "vulnerable", "not_applicable", "skipped"}
     _TESTED_FINAL = {"tested_clean", "vulnerable"}
@@ -383,13 +414,12 @@ async def bulk_update(updates: list[dict]) -> dict:
             st  = upd.get("status", "")
             if st not in valid or cid not in cell_map:
                 continue
-            if st in _TESTED_FINAL and not upd.get("tested_by", "").strip():
-                warnings.append(
-                    f"REJECTED cell {cid}: status '{st}' requires a non-empty tested_by field. "
-                    f"Record the tool used (e.g. tested_by='sqlmap') before marking this cell."
-                )
-                rejected += 1
-                continue
+            if st in _TESTED_FINAL:
+                rejection = _validate_artifact(upd.get("artifact_id", ""), st)
+                if rejection:
+                    warnings.append(f"REJECTED cell {cid}: {rejection}")
+                    rejected += 1
+                    continue
             _apply_bulk_cell(cell_map[cid], upd, warnings)
             count += 1
         _recount(data)

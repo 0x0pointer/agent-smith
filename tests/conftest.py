@@ -86,7 +86,10 @@ def findings_file(tmp_path, monkeypatch):
 
 @pytest.fixture
 def coverage_file(tmp_path, monkeypatch):
-    """Redirect coverage_matrix.json to a temp file and return the Path."""
+    """Redirect coverage_matrix.json and _ARTIFACTS_DIR to temp paths."""
     path = tmp_path / "coverage_matrix.json"
+    artifacts_dir = tmp_path / "artifacts"
+    artifacts_dir.mkdir()
     monkeypatch.setattr(core.coverage, "COVERAGE_FILE", path)
+    monkeypatch.setattr(core.coverage, "_ARTIFACTS_DIR", artifacts_dir)
     return path

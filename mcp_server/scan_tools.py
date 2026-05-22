@@ -107,10 +107,76 @@ async def _handle_ffuf(target, flags, options):
     return wrap("ffuf", raw, {"url": target})
 
 
-async def _handle_spider(target, flags, options):
+async def _run_spider_thorough(target: str, flags: str, cookies: dict, depth: str, max_pages: str, timeout: int) -> str:
+    """Run katana + playwright + ZAP AJAX spider in thorough mode and return merged raw output."""
     from tools import kali_runner
     import json as _json
 
+    safe_url = shlex.quote(target)
+    safe_cookies = shlex.quote(_json.dumps(cookies))
+    # Split the budget across the 3 subtools so total wall-clock caps at the
+    # user-provided `timeout` value (default 2h → ~40min per subtool, floor
+    # 20min so a tiny budget doesn't starve any one tool).
+    per_subtool = max(timeout // 3, 1200)
+    log.note(f"spider: thorough mode — katana + playwright + zap-ajax (per-subtool timeout={per_subtool}s)")
+
+    safe_flags = shlex.join(shlex.split(flags)) if flags else ""
+    rate_flag = "" if "-rate-limit" in (flags or "") else "-rate-limit 50"
+    katana_cmd = f"katana -u {safe_url} -d {depth} -silent -no-color {rate_flag}".strip()
+    if safe_flags:
+        katana_cmd += f" {safe_flags}"
+
+    playwright_cmd = (
+        f"playwright-spider --url {safe_url} --cookies {safe_cookies} "
+        f"--depth {depth} --max-pages {max_pages}"
+    )
+
+    zap_cmd = (
+        f"zap-cli --port 8090 --api-key zapscan quick-scan --spider --ajax-spider "
+        f"--start-options '-config api.key=zapscan -port 8090' {safe_url}"
+    )
+
+    parts = []
+    for label, cmd, t in [
+        ("=== katana ===", katana_cmd, per_subtool),
+        ("=== playwright ===", playwright_cmd, per_subtool),
+        ("=== zap-ajax ===", zap_cmd, per_subtool),
+    ]:
+        out = _clip(await kali_runner.exec_command(cmd, timeout=t), 4_000)
+        parts.append(f"{label}\n{out}")
+
+    return "\n\n".join(parts)
+
+
+async def _run_spider_fast(target: str, flags: str, cookies: dict, depth: str, max_pages: str, mode: str, timeout: int) -> str:
+    """Run the fast/playwright/deep spider mode and return raw output."""
+    from tools import kali_runner
+    import json as _json
+
+    safe_url = shlex.quote(target)
+    safe_cookies = shlex.quote(_json.dumps(cookies))
+
+    if mode == "playwright":
+        cmd = (
+            f"playwright-spider --url {safe_url} --cookies {safe_cookies} "
+            f"--depth {depth} --max-pages {max_pages}"
+        )
+    elif mode == "deep":
+        cmd = (
+            f"zap-cli --port 8090 --api-key zapscan quick-scan --spider --ajax-spider "
+            f"--start-options '-config api.key=zapscan -port 8090' {safe_url}"
+        )
+    else:
+        safe_flags = shlex.join(shlex.split(flags)) if flags else ""
+        rate_flag = "" if "-rate-limit" in (flags or "") else "-rate-limit 50"
+        cmd = f"katana -u {safe_url} -d {depth} -silent -no-color {rate_flag}".strip()
+        if safe_flags:
+            cmd += f" {safe_flags}"
+
+    return _clip(await kali_runner.exec_command(cmd, timeout=timeout), 8_000)
+
+
+async def _handle_spider(target, flags, options):
     mode = options.get("mode", "fast")
     depth = str(max(1, options.get("depth", 3)))
     # Spider default raised from 15min → 2h (7200s) to handle large SPAs and
@@ -122,69 +188,18 @@ async def _handle_spider(target, flags, options):
     timeout = options.get("timeout", 7200)
     cookies = options.get("cookies", {})
     max_pages = str(options.get("max_pages", 200))
-    safe_url = shlex.quote(target)
-    safe_cookies = shlex.quote(_json.dumps(cookies))
 
     is_thorough = scan_session.get() and scan_session.get().get("depth") == "thorough"
 
     if is_thorough:
         # Thorough: run katana + playwright + ZAP AJAX spider, merge all results.
-        # Split the budget across the 3 subtools so total wall-clock caps at the
-        # user-provided `timeout` value (default 2h → ~40min per subtool, floor
-        # 20min so a tiny budget doesn't starve any one tool).
-        per_subtool = max(timeout // 3, 1200)
-        log.note(f"spider: thorough mode — katana + playwright + zap-ajax (per-subtool timeout={per_subtool}s)")
         log.tool_call("spider", {"url": target, "depth": depth, "mode": "thorough-all", "flags": flags})
         call_id = cost_tracker.start("spider")
-
-        safe_flags = shlex.join(shlex.split(flags)) if flags else ""
-        rate_flag = "" if "-rate-limit" in (flags or "") else "-rate-limit 50"
-        katana_cmd = f"katana -u {safe_url} -d {depth} -silent -no-color {rate_flag}".strip()
-        if safe_flags:
-            katana_cmd += f" {safe_flags}"
-
-        playwright_cmd = (
-            f"playwright-spider --url {safe_url} --cookies {safe_cookies} "
-            f"--depth {depth} --max-pages {max_pages}"
-        )
-
-        zap_cmd = (
-            f"zap-cli --port 8090 --api-key zapscan quick-scan --spider --ajax-spider "
-            f"--start-options '-config api.key=zapscan -port 8090' {safe_url}"
-        )
-
-        parts = []
-        for label, cmd, t in [
-            ("=== katana ===", katana_cmd, per_subtool),
-            ("=== playwright ===", playwright_cmd, per_subtool),
-            ("=== zap-ajax ===", zap_cmd, per_subtool),
-        ]:
-            out = _clip(await kali_runner.exec_command(cmd, timeout=t), 4_000)
-            parts.append(f"{label}\n{out}")
-
-        raw = "\n\n".join(parts)
+        raw = await _run_spider_thorough(target, flags, cookies, depth, max_pages, timeout)
     else:
         log.tool_call("spider", {"url": target, "depth": depth, "mode": mode, "flags": flags})
         call_id = cost_tracker.start("spider")
-
-        if mode == "playwright":
-            cmd = (
-                f"playwright-spider --url {safe_url} --cookies {safe_cookies} "
-                f"--depth {depth} --max-pages {max_pages}"
-            )
-        elif mode == "deep":
-            cmd = (
-                f"zap-cli --port 8090 --api-key zapscan quick-scan --spider --ajax-spider "
-                f"--start-options '-config api.key=zapscan -port 8090' {safe_url}"
-            )
-        else:
-            safe_flags = shlex.join(shlex.split(flags)) if flags else ""
-            rate_flag = "" if "-rate-limit" in (flags or "") else "-rate-limit 50"
-            cmd = f"katana -u {safe_url} -d {depth} -silent -no-color {rate_flag}".strip()
-            if safe_flags:
-                cmd += f" {safe_flags}"
-
-        raw = _clip(await kali_runner.exec_command(cmd, timeout=timeout), 8_000)
+        raw = await _run_spider_fast(target, flags, cookies, depth, max_pages, mode, timeout)
 
     _record("spider")
     cost_tracker.finish(call_id, raw)
@@ -221,11 +236,17 @@ async def _handle_spider(target, flags, options):
 
 
 async def _handle_semgrep(target, flags, options):
-    return await _run("semgrep", path=target, flags=flags)
+    _record("semgrep")
+    raw = await _run("semgrep", path=target, flags=flags)
+    from mcp_server.scan_engine import wrap
+    return wrap("semgrep", raw, {"path": target})
 
 
 async def _handle_trufflehog(target, flags, options):
-    return await _run("trufflehog", path=target, flags=flags)
+    _record("trufflehog")
+    raw = await _run("trufflehog", path=target, flags=flags)
+    from mcp_server.scan_engine import wrap
+    return wrap("trufflehog", raw, {"path": target})
 
 
 async def _handle_fuzzyai(target, flags, options):

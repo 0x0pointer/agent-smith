@@ -21,11 +21,11 @@ if TYPE_CHECKING:
 
 MODEL_PROFILES: dict[str, dict] = {
     "full": {
-        "enforce_budget": False,       # No output limits — go full in
-        "budget_multiplier": 1.0,      # unused when enforce_budget=False
+        "enforce_budget": True,
+        "budget_multiplier": 2.0,      # generous but bounded — facts/evidence won't explode
         "context_budget_chars": 400_000,  # ~100K tokens; warn at 80% (320K) before compaction fires
         "recovery_cells_shown": None,  # show all cells in recovery
-        "execute_next_in_summary": True,  # still useful, harmless for large models
+        "execute_next_in_summary": True,
     },
     "medium": {
         "enforce_budget": True,

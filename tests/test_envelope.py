@@ -3,6 +3,7 @@ Tests for mcp_server.scan_engine.envelope pipeline changes:
   - Tiered context pressure warnings (P4)
   - Steering directive injection (P5.6)
   - Duplicate tool call warning (P5.7)
+  - _build_quick_log_entry (P6)
 """
 import json
 import pytest
@@ -197,3 +198,195 @@ class TestDuplicateWarning:
         # This test just confirms the warning format is correct.
         warnings_text = " ".join(env.warnings)
         assert "DUPLICATE_TOOL_CALL" in warnings_text
+
+
+# ---------------------------------------------------------------------------
+# _build_quick_log_entry — P6 quick log helper
+# ---------------------------------------------------------------------------
+
+from mcp_server.scan_engine.envelope import _build_quick_log_entry
+
+
+def _mock_result(evidence=None, anomalies=None):
+    r = MagicMock()
+    r.evidence = evidence if evidence is not None else {}
+    r.anomalies = anomalies if anomalies is not None else []
+    return r
+
+
+class TestBuildQuickLogEntry:
+
+    def test_spider_returns_spider_type_with_endpoint_count(self):
+        result = _build_quick_log_entry(
+            "spider", "https://example.com",
+            "Found 42 unique endpoints across the site", None
+        )
+        assert result["type"] == "SPIDER"
+        assert result["target"] == "https://example.com"
+        assert result["endpoints_found"] == 42
+
+    def test_spider_no_match_returns_zero_endpoints(self):
+        result = _build_quick_log_entry(
+            "spider", "https://example.com",
+            "No pages discovered at all", None
+        )
+        assert result["type"] == "SPIDER"
+        assert result["endpoints_found"] == 0
+
+    def test_non_spider_returns_tool_type_with_name_and_target(self):
+        result = _build_quick_log_entry(
+            "nmap", "192.168.1.1", "some summary", None
+        )
+        assert result["type"] == "TOOL"
+        assert result["name"] == "nmap"
+        assert result["target"] == "192.168.1.1"
+
+    def test_http_request_status_code_extracted_from_evidence(self):
+        r = _mock_result(evidence={"status": 200})
+        result = _build_quick_log_entry("http_request", "https://example.com", "", r)
+        assert result["status_code"] == 200
+
+    def test_http_request_with_error_in_evidence_sets_error_true(self):
+        r = _mock_result(evidence={"status": 200, "error": "connection refused"})
+        result = _build_quick_log_entry("http_request", "https://example.com", "", r)
+        assert result.get("error") is True
+
+    def test_http_request_with_status_zero_does_not_set_error(self):
+        """status=0 is treated as absent (defaults to 200 via `or 200`), so no error flag."""
+        r = _mock_result(evidence={"status": 0})
+        result = _build_quick_log_entry("http_request", "https://example.com", "", r)
+        # The expression `int(ev.get("status", 200) or 200)` evaluates 0 as falsy,
+        # so falls back to 200 — not an error condition.
+        assert result.get("error") is not True
+
+    def test_non_http_tool_with_error_in_anomalies_sets_error_true(self):
+        r = _mock_result(evidence={}, anomalies=["connection error: timed out"])
+        result = _build_quick_log_entry("nuclei", "https://example.com", "", r)
+        assert result.get("error") is True
+
+    def test_result_none_does_not_crash(self):
+        result = _build_quick_log_entry("nmap", "10.0.0.1", "scan done", None)
+        assert result["type"] == "TOOL"
+        assert "error" not in result
+
+
+# ---------------------------------------------------------------------------
+# _inject_steering_directives — exception path
+# ---------------------------------------------------------------------------
+
+class TestSteeringInjectionExceptionPath:
+
+    def test_exception_in_steering_returns_false(self):
+        """If steering_queue.get_pending() raises, function returns False without crashing."""
+        env = _make_envelope(summary="original")
+        from mcp_server.scan_engine.envelope import _inject_steering_directives
+        with patch("core.steering.steering_queue") as mock_sq:
+            mock_sq.get_pending.side_effect = RuntimeError("disk error")
+            result = _inject_steering_directives(env)
+        assert result is False
+        assert env.summary == "original"  # unchanged
+
+
+# ---------------------------------------------------------------------------
+# _inject_qa_alerts_into_envelope — QA alert injection
+# ---------------------------------------------------------------------------
+
+class TestInjectQaAlerts:
+
+    def _write_qa_state(self, path, alerts, ts="2025-01-01T12:00:00+00:00"):
+        import json
+        path.write_text(json.dumps({"ts": ts, "alerts": alerts}), encoding="utf-8")
+
+    def test_no_qa_state_file_does_nothing(self, tmp_path, monkeypatch):
+        import mcp_server.scan_engine.envelope as env_mod
+        monkeypatch.setattr(env_mod, "_QA_STATE_FILE", tmp_path / "qa_state.json")
+        monkeypatch.setattr(env_mod, "_last_qa_shown_ts", "")
+        env = _make_envelope(summary="clean")
+        from mcp_server.scan_engine.envelope import _inject_qa_alerts_into_envelope
+        _inject_qa_alerts_into_envelope(env)
+        assert env.summary == "clean"
+        assert env.warnings == []
+
+    def test_high_urgency_alert_injected_into_warnings_and_summary(self, tmp_path, monkeypatch):
+        import mcp_server.scan_engine.envelope as env_mod
+        qa_path = tmp_path / "qa_state.json"
+        monkeypatch.setattr(env_mod, "_QA_STATE_FILE", qa_path)
+        monkeypatch.setattr(env_mod, "_last_qa_shown_ts", "")
+        self._write_qa_state(qa_path, [
+            {"urgency": "high", "message": "Smith is skipping endpoints!"},
+        ])
+        env = _make_envelope(summary="original summary")
+        from mcp_server.scan_engine.envelope import _inject_qa_alerts_into_envelope
+        _inject_qa_alerts_into_envelope(env)
+        assert any("[QA HIGH]" in w for w in env.warnings)
+        assert "QA ALERT" in env.summary
+        assert "Smith is skipping endpoints!" in env.summary
+
+    def test_suppress_summary_prepend_omits_summary_prefix(self, tmp_path, monkeypatch):
+        import mcp_server.scan_engine.envelope as env_mod
+        qa_path = tmp_path / "qa_state.json"
+        monkeypatch.setattr(env_mod, "_QA_STATE_FILE", qa_path)
+        monkeypatch.setattr(env_mod, "_last_qa_shown_ts", "")
+        self._write_qa_state(qa_path, [
+            {"urgency": "high", "message": "Check auth flows!"},
+        ])
+        env = _make_envelope(summary="original summary")
+        from mcp_server.scan_engine.envelope import _inject_qa_alerts_into_envelope
+        _inject_qa_alerts_into_envelope(env, suppress_summary_prepend=True)
+        assert any("[QA HIGH]" in w for w in env.warnings)
+        assert "QA ALERT" not in env.summary
+
+    def test_medium_urgency_alert_skipped(self, tmp_path, monkeypatch):
+        import mcp_server.scan_engine.envelope as env_mod
+        qa_path = tmp_path / "qa_state.json"
+        monkeypatch.setattr(env_mod, "_QA_STATE_FILE", qa_path)
+        monkeypatch.setattr(env_mod, "_last_qa_shown_ts", "")
+        self._write_qa_state(qa_path, [
+            {"urgency": "medium", "message": "Low priority advisory"},
+        ])
+        env = _make_envelope(summary="original")
+        from mcp_server.scan_engine.envelope import _inject_qa_alerts_into_envelope
+        _inject_qa_alerts_into_envelope(env)
+        assert env.warnings == []
+        assert "QA ALERT" not in env.summary
+
+    def test_dedup_same_ts_does_not_reinject(self, tmp_path, monkeypatch):
+        import mcp_server.scan_engine.envelope as env_mod
+        qa_path = tmp_path / "qa_state.json"
+        ts = "2025-06-01T10:00:00+00:00"
+        monkeypatch.setattr(env_mod, "_QA_STATE_FILE", qa_path)
+        monkeypatch.setattr(env_mod, "_last_qa_shown_ts", ts)
+        self._write_qa_state(qa_path, [
+            {"urgency": "high", "message": "Already shown!"},
+        ], ts=ts)
+        env = _make_envelope(summary="original")
+        from mcp_server.scan_engine.envelope import _inject_qa_alerts_into_envelope
+        _inject_qa_alerts_into_envelope(env)
+        assert env.warnings == []
+
+    def test_exception_in_qa_injection_does_not_propagate(self, tmp_path, monkeypatch):
+        import mcp_server.scan_engine.envelope as env_mod
+        qa_path = tmp_path / "qa_state.json"
+        qa_path.write_text("not valid json{{{{", encoding="utf-8")
+        monkeypatch.setattr(env_mod, "_QA_STATE_FILE", qa_path)
+        monkeypatch.setattr(env_mod, "_last_qa_shown_ts", "")
+        env = _make_envelope(summary="safe")
+        from mcp_server.scan_engine.envelope import _inject_qa_alerts_into_envelope
+        _inject_qa_alerts_into_envelope(env)  # must not raise
+        assert env.summary == "safe"
+
+    def test_multiple_high_alerts_all_injected(self, tmp_path, monkeypatch):
+        import mcp_server.scan_engine.envelope as env_mod
+        qa_path = tmp_path / "qa_state.json"
+        monkeypatch.setattr(env_mod, "_QA_STATE_FILE", qa_path)
+        monkeypatch.setattr(env_mod, "_last_qa_shown_ts", "")
+        self._write_qa_state(qa_path, [
+            {"urgency": "high", "message": "Alert one"},
+            {"urgency": "high", "message": "Alert two"},
+        ])
+        env = _make_envelope(summary="s")
+        from mcp_server.scan_engine.envelope import _inject_qa_alerts_into_envelope
+        _inject_qa_alerts_into_envelope(env)
+        assert sum(1 for w in env.warnings if "[QA HIGH]" in w) == 2
+        assert "Alert one" in env.summary
+        assert "Alert two" in env.summary

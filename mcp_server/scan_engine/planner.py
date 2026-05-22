@@ -37,10 +37,63 @@ def _add_discovery_actions(required: list[str], recommended: list[str], tools_ru
         recommended.append(f"Directory fuzzing: scan(tool='ffuf', target='{target}')")
 
 
+def _inject_pending_gates(required: list[str]) -> None:
+    """Synchronously inject open skill-chain gates as required actions.
+
+    This is the proactive mechanism — gates fire in the same tool response that
+    triggered them, while the agent still has full context of the discovery.
+    The QA daemon's 2-minute delayed alert is a fallback only.
+    """
+    try:
+        from core import session as scan_session
+        pending_gates = scan_session.pending_gates()
+        if not pending_gates:
+            return
+        satisfied_skills = {
+            e["skill"] for e in (scan_session.get() or {}).get("skill_history", [])
+        }
+        for gate in pending_gates:
+            missing = [
+                s for s in gate.get("required_skills", [])
+                if s not in satisfied_skills
+            ]
+            if not missing:
+                continue
+            trigger = gate.get("trigger", "")
+            for skill in missing:
+                required.insert(0, (
+                    f"CHAIN REQUIRED: invoke /{skill} NOW — gate '{gate['id']}' triggered by {trigger}. "
+                    f"Call session(action='set_skill', options={{skill: '{skill}', reason: '{trigger}'}}) "
+                    f"then Skill('{skill}') before any other action. "
+                    "Context is freshest right now — do not defer."
+                ))
+            # Inject at most one gate per response to avoid context flooding.
+            break
+    except Exception:
+        pass
+
+
+def _has_pending_directives() -> bool:
+    """Return True if Smith already has an unacknowledged steering directive."""
+    import json
+    import pathlib
+    _steering = pathlib.Path(__file__).resolve().parent.parent.parent / "steering_queue.json"
+    try:
+        data = json.loads(_steering.read_text()) if _steering.exists() else {}
+        return any(
+            d.get("status") in ("pending", "injected")
+            for d in data.get("directives", [])
+        )
+    except Exception:
+        return False
+
+
 def compute_next(tool: str, state: dict) -> dict:
     """Compute next actions based on current state.
 
     Returns {"required": [...], "recommended": [...], "warnings": [...]}.
+    When a steering directive is pending, required and recommended are suppressed —
+    the directive is Smith's only job until acknowledged.
     """
     required: list[str] = []
     recommended: list[str] = []
@@ -53,6 +106,15 @@ def compute_next(tool: str, state: dict) -> dict:
     if phase == "idle":
         required.append(f"Start scan: session(action='start', options={{target: '{target}', depth: 'thorough'}})")
         return {"required": required, "recommended": recommended, "warnings": warnings}
+
+    # When a steering directive is active, suppress all planner output.
+    # Smith's only job is to execute the directive — additional required/recommended
+    # actions create competing obligations and increase the chance of shortcuts.
+    if _has_pending_directives():
+        return {"required": [], "recommended": [], "warnings": warnings}
+
+    # Proactive gate injection — synchronous, fires on same response as trigger
+    _inject_pending_gates(required)
 
     # --- Drift detection ---
     drift = _detect_drift(tool, phase, tools_run)
