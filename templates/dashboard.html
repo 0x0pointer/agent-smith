@@ -75,25 +75,230 @@
     }
     @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
 
-    /* ── Session strip ── */
-    #session-strip {
-      background: linear-gradient(135deg, rgba(45,43,85,0.55), rgba(26,24,64,0.9));
-      border: 1px solid var(--border); border-radius: 6px;
-      padding: 0.55rem 1rem; margin-bottom: 1rem;
-      display: none; gap: 2rem; flex-wrap: wrap; align-items: center;
-      font-size: 0.8rem; font-family: 'IBM Plex Mono', monospace;
-      position: relative; overflow: hidden;
+    /* ── HIR panel ── */
+    #hir-panel {
+      display: none; margin-bottom: 1rem;
+      border: 1.5px solid #f97316; border-radius: 8px;
+      background: linear-gradient(135deg, rgba(124,45,18,0.55), rgba(30,10,5,0.92));
+      overflow: hidden;
     }
-    #session-strip::before {
+    #hir-panel.visible { display: block; }
+    @keyframes hir-pulse { 0%,100%{box-shadow:0 0 0 0 rgba(249,115,22,0.4)} 50%{box-shadow:0 0 0 8px rgba(249,115,22,0)} }
+    #hir-panel.visible { animation: hir-pulse 2.5s infinite; }
+    .hir-header {
+      display: flex; align-items: center; gap: 0.6rem;
+      background: rgba(249,115,22,0.18); padding: 0.55rem 1rem;
+      border-bottom: 1px solid rgba(249,115,22,0.35);
+    }
+    .hir-badge {
+      font-family: 'Chakra Petch', sans-serif; font-size: 0.7rem; font-weight: 700;
+      letter-spacing: 0.1em; color: #f97316; background: rgba(249,115,22,0.15);
+      border: 1px solid #f97316; border-radius: 3px; padding: 0.1rem 0.4rem;
+    }
+    .hir-code { font-family: 'IBM Plex Mono', monospace; font-size: 0.8rem; color: #fed7aa; font-weight: 600; }
+    .hir-dismiss { margin-left: auto; font-size: 0.7rem; color: var(--text-dim); cursor: pointer; }
+    .hir-dismiss:hover { color: var(--text); }
+    .hir-body { padding: 0.75rem 1rem 0.9rem; }
+    .hir-situation { font-size: 0.83rem; color: #fed7aa; margin-bottom: 0.6rem; line-height: 1.5; }
+    .hir-section-label { font-size: 0.68rem; font-family: 'IBM Plex Mono', monospace; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 0.3rem; margin-top: 0.55rem; }
+    .hir-options { display: flex; flex-wrap: wrap; gap: 0.45rem; margin-bottom: 0.75rem; }
+    .hir-opt-btn {
+      background: rgba(249,115,22,0.1); border: 1px solid rgba(249,115,22,0.45);
+      color: #fed7aa; border-radius: 4px; padding: 0.3rem 0.7rem;
+      font-size: 0.75rem; font-family: 'IBM Plex Mono', monospace; cursor: pointer;
+      transition: background .15s, border-color .15s;
+    }
+    .hir-opt-btn:hover { background: rgba(249,115,22,0.25); border-color: #f97316; color: #fff; }
+    .hir-opt-btn.selected { background: rgba(249,115,22,0.35); border-color: #f97316; color: #fff; font-weight: 600; }
+    .hir-input-row { display: flex; gap: 0.5rem; align-items: flex-end; }
+    #hir-message {
+      flex: 1; background: rgba(13,11,32,0.7); border: 1px solid rgba(249,115,22,0.35);
+      border-radius: 5px; color: var(--text); font-family: 'IBM Plex Mono', monospace;
+      font-size: 0.78rem; padding: 0.45rem 0.65rem; resize: vertical; min-height: 52px;
+      outline: none;
+    }
+    #hir-message:focus { border-color: #f97316; }
+    .hir-send-btn {
+      background: #f97316; border: none; border-radius: 5px; color: #fff;
+      font-family: 'Chakra Petch', sans-serif; font-size: 0.75rem; font-weight: 700;
+      letter-spacing: 0.05em; padding: 0.5rem 1.1rem; cursor: pointer;
+      white-space: nowrap; transition: background .15s, transform .1s;
+    }
+    .hir-send-btn:hover  { background: #ea6c0a; }
+    .hir-send-btn:active { transform: scale(0.97); }
+    .hir-send-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .hir-tried { margin: 0.3rem 0 0.65rem; }
+    .hir-tried-item {
+      display: flex; gap: 0.5rem; align-items: baseline;
+      font-family: 'IBM Plex Mono', monospace; font-size: 0.77rem;
+      color: var(--text-dim); padding: 0.18rem 0;
+    }
+    .hir-tried-num { color: #f97316; min-width: 1.4rem; flex-shrink: 0; }
+
+    /* ── Command Center ── */
+    #cmd-center {
+      margin-bottom: 0.75rem;
+      border-radius: 8px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+    }
+    .cmd-status-row {
+      display: flex; align-items: center; gap: 1.5rem; flex-wrap: wrap;
+      background: linear-gradient(135deg, rgba(45,43,85,0.55), rgba(26,24,64,0.9));
+      padding: 0.55rem 1rem; position: relative; overflow: hidden;
+      font-size: 0.78rem; font-family: 'IBM Plex Mono', monospace;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .cmd-status-row::before {
       content: ''; position: absolute; inset: 0 0 auto 0; height: 1px;
       background: linear-gradient(90deg, transparent, var(--green) 30%, var(--purple) 70%, transparent);
     }
-    #session-strip.visible { display: flex; }
-    #session-strip .s-label { color: var(--text-dim); }
-    #session-strip strong   { color: #fff; }
-    .session-status-running       { color: var(--green);  font-weight: 700; }
-    .session-status-complete      { color: var(--purple); font-weight: 700; }
-    .session-status-limit_reached { color: #ff4d4f;       font-weight: 700; }
+    .cmd-status-left  { display: flex; align-items: center; gap: 0.6rem; flex: 1; min-width: 0; }
+    .cmd-status-mid   { display: flex; align-items: center; gap: 1rem; }
+    .cmd-status-right { margin-left: auto; white-space: nowrap; }
+    .cmd-target-label { color: var(--text-dim); }
+    .cmd-target-val   { color: #fff; font-weight: 600; }
+    .cmd-phase-pill {
+      display: inline-flex; align-items: center; gap: 0.25rem;
+      background: rgba(91,242,155,0.08); border: 1px solid rgba(91,242,155,0.2);
+      border-radius: 10px; padding: 0.1rem 0.55rem; font-size: 0.7rem; white-space: nowrap;
+    }
+    .cmd-phase-active  { color: var(--green); font-weight: 600; }
+    .cmd-skill-name    { color: var(--purple); }
+    .cmd-dim           { color: var(--text-dim); }
+    .cmd-val           { color: #fff; font-weight: 600; }
+    .cmd-cov-group     { display: flex; align-items: center; gap: 0.35rem; }
+    .cmd-cov-track     { width: 56px; height: 4px; background: rgba(123,120,255,0.15); border-radius: 2px; overflow: hidden; }
+    .cmd-cov-bar       { height: 100%; background: var(--green); border-radius: 2px; transition: width 0.5s; }
+    .cmd-cov-bar.warn  { background: #f97316; }
+    .cmd-gates-txt     { color: #f97316; font-size: 0.74rem; }
+    .cmd-scan-status   { font-weight: 700; }
+    .cmd-scan-status.running       { color: var(--green); }
+    .cmd-scan-status.complete      { color: var(--purple); }
+    .cmd-scan-status.intervention  { color: #f97316; animation: blink 1.5s infinite; }
+    .cmd-scan-status.limit_reached { color: #ff4d4f; }
+
+    /* ── Smith command panel ── */
+    .cmd-smith-panel {
+      background: linear-gradient(135deg, rgba(45,43,85,0.3), rgba(26,24,64,0.6));
+      padding: 0.65rem 1rem 0.75rem;
+    }
+    .cmd-smith-header {
+      display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.45rem;
+    }
+    .cmd-smith-dot {
+      width: 7px; height: 7px; border-radius: 50%;
+      background: var(--purple); box-shadow: 0 0 5px var(--purple);
+      flex-shrink: 0; transition: background .3s, box-shadow .3s;
+    }
+    .cmd-smith-label {
+      font-size: 0.68rem; font-family: 'IBM Plex Mono', monospace;
+      color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.08em;
+    }
+    .cmd-smith-hint {
+      font-size: 0.68rem; font-family: 'IBM Plex Mono', monospace;
+      color: #f97316; margin-left: 0.4rem;
+    }
+    .cmd-smith-row {
+      display: flex; gap: 0.5rem; align-items: flex-start;
+    }
+    .cmd-smith-input {
+      flex: 1; background: rgba(13,11,32,0.7); border: 1px solid var(--border);
+      border-radius: 5px; color: var(--text); font-family: 'IBM Plex Mono', monospace;
+      font-size: 0.78rem; padding: 0.45rem 0.65rem; resize: none;
+      min-height: 44px; max-height: 120px; outline: none; line-height: 1.5;
+    }
+    .cmd-smith-input:focus { border-color: var(--purple); }
+    .cmd-smith-input.hir-active { border-color: #f97316; }
+    .cmd-smith-send {
+      background: var(--purple); border: none; border-radius: 5px; color: #fff;
+      font-family: 'Chakra Petch', sans-serif; font-size: 0.72rem; font-weight: 700;
+      letter-spacing: 0.05em; padding: 0.5rem 1rem; cursor: pointer;
+      white-space: nowrap; transition: background .15s; align-self: flex-end;
+      min-width: 64px;
+    }
+    .cmd-smith-send:hover    { background: #6360e0; }
+    .cmd-smith-send:disabled { opacity: 0.45; cursor: not-allowed; }
+    .cmd-smith-send.hir-mode { background: #f97316; }
+    .cmd-smith-send.hir-mode:hover { background: #ea6c0a; }
+    .cmd-quick-chips {
+      display: flex; gap: 0.35rem; flex-wrap: wrap; margin-top: 0.4rem;
+    }
+    .cmd-chip {
+      background: rgba(123,120,255,0.07); border: 1px solid rgba(123,120,255,0.2);
+      color: var(--text-dim); border-radius: 10px; padding: 0.15rem 0.6rem;
+      font-size: 0.68rem; font-family: 'IBM Plex Mono', monospace; cursor: pointer;
+      transition: background .15s, color .15s, border-color .15s; white-space: nowrap;
+    }
+    .cmd-chip:hover {
+      background: rgba(123,120,255,0.18); color: var(--text); border-color: var(--purple);
+    }
+    .cmd-smith-feedback {
+      font-size: 0.69rem; color: var(--green); margin-top: 0.3rem;
+      min-height: 1em; font-family: 'IBM Plex Mono', monospace;
+    }
+
+    /* ── Activity tab ── */
+    .activity-section { margin-bottom: 1.5rem; }
+    .activity-section-header {
+      display: flex; align-items: center; gap: 0.55rem;
+      margin-bottom: 0.75rem; padding-bottom: 0.5rem;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .activity-dot {
+      width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+      animation: pulse-dot 2s ease-in-out infinite;
+    }
+    .activity-section-title {
+      font-family: 'Chakra Petch', sans-serif; font-size: 0.9rem; font-weight: 600; color: #fff;
+    }
+    .activity-section-meta {
+      margin-left: auto; font-family: 'IBM Plex Mono', monospace;
+      font-size: 0.7rem; color: var(--text-dim);
+    }
+
+    /* ── Stuck Events log ── */
+    .stuck-entry {
+      background: var(--bg-card); border: 1px solid var(--border);
+      border-radius: 6px; padding: 0.65rem 0.9rem; margin-bottom: 0.45rem;
+      font-size: 0.83rem;
+    }
+    .stuck-entry-hir   { border-left: 3px solid #f97316; }
+    .stuck-entry-stall { border-left: 3px solid #facc15; }
+    .stuck-entry-header {
+      display: flex; align-items: center; gap: 0.5rem;
+      margin-bottom: 0.35rem; flex-wrap: wrap;
+    }
+    .stuck-type-badge {
+      font-family: 'IBM Plex Mono', monospace; font-size: 0.65rem; font-weight: 700;
+      letter-spacing: 0.08em; border: 1px solid; border-radius: 3px;
+      padding: 0.1rem 0.4rem; text-transform: uppercase; flex-shrink: 0;
+    }
+    .stuck-code {
+      font-family: 'IBM Plex Mono', monospace; font-size: 0.74rem;
+      color: var(--text-muted); font-weight: 600;
+    }
+    .stuck-ts {
+      font-family: 'IBM Plex Mono', monospace; font-size: 0.7rem; color: var(--text-dim);
+      margin-left: auto;
+    }
+    .stuck-status {
+      font-family: 'IBM Plex Mono', monospace; font-size: 0.7rem;
+    }
+    .stuck-reason {
+      color: var(--text); line-height: 1.55; margin-bottom: 0.2rem;
+    }
+    .stuck-tried-item {
+      font-family: 'IBM Plex Mono', monospace; font-size: 0.74rem;
+      color: var(--text-dim); padding: 0.1rem 0;
+      display: flex; gap: 0.4rem;
+    }
+    .stuck-tried-num { color: #f97316; min-width: 1.2rem; flex-shrink: 0; }
+    .stuck-resolution {
+      font-family: 'IBM Plex Mono', monospace; font-size: 0.75rem;
+      color: var(--green); margin-top: 0.25rem; padding: 0.25rem 0.5rem;
+      background: rgba(91,242,155,0.07); border-radius: 4px; line-height: 1.4;
+    }
 
     /* ── Tab nav ── */
     .tab-nav {
@@ -112,7 +317,8 @@
     .tab-content.active { display: block; }
 
     /* ── Stats bar ── */
-    #stats { display: flex; gap: 0.6rem; flex-wrap: wrap; margin-bottom: 1.25rem; }
+    #stats { display: flex; gap: 0.6rem; flex-wrap: wrap; margin-bottom: 0.6rem; }
+    #vstats { display: flex; gap: 0.6rem; flex-wrap: wrap; margin-bottom: 1.25rem; }
     .stat {
       padding: 0.25rem 0.75rem; border-radius: 4px; font-size: 0.73rem;
       font-weight: 600; border: 1px solid; cursor: pointer; transition: opacity .15s;
@@ -126,6 +332,31 @@
     .stat-medium   { background: rgba(250,173,20,.15);  border-color: #faad14;        color: #faad14; }
     .stat-low      { background: var(--green-dim);      border-color: var(--green);   color: var(--green); }
     .stat-info     { background: var(--purple-dim);     border-color: var(--purple);  color: var(--purple); }
+
+    /* ── Verification filter bar ── */
+    .vstat-label { font-size: 0.68rem; color: var(--text-dim); font-family: 'IBM Plex Mono', monospace;
+                   align-self: center; white-space: nowrap; }
+    .vstat-confirmed_dynamic      { background: rgba(91,242,155,.15);  border-color: var(--green);    color: var(--green); }
+    .vstat-new_dynamic_finding    { background: rgba(88,166,255,.15);  border-color: #58a6ff;         color: #58a6ff; }
+    .vstat-code_confirmed         { background: rgba(123,120,255,.15); border-color: var(--purple);   color: var(--purple); }
+    .vstat-not_accessible_external{ background: rgba(107,104,144,.2);  border-color: var(--text-dim); color: var(--text-dim); }
+    .vstat-not_confirmed          { background: rgba(250,140,22,.15);  border-color: #fa8c16;         color: #fa8c16; }
+    .vstat-unverified             { background: rgba(45,43,85,.5);     border-color: var(--border);   color: var(--text-muted); }
+
+    /* ── Verification badge on cards ── */
+    .vbadge {
+      display: inline-flex; align-items: center; gap: 0.25rem;
+      padding: 0.1rem 0.45rem; border-radius: 3px; font-size: 0.63rem;
+      font-weight: 700; text-transform: uppercase; letter-spacing: .06em;
+      font-family: 'IBM Plex Mono', monospace; margin-left: 0.4rem;
+      vertical-align: middle; white-space: nowrap;
+    }
+    .vbadge-confirmed_dynamic       { background: rgba(91,242,155,.18);  color: var(--green);    border: 1px solid rgba(91,242,155,.35); }
+    .vbadge-new_dynamic_finding     { background: rgba(88,166,255,.18);  color: #58a6ff;         border: 1px solid rgba(88,166,255,.35); }
+    .vbadge-code_confirmed          { background: rgba(123,120,255,.18); color: #a89fff;         border: 1px solid rgba(123,120,255,.35); }
+    .vbadge-not_accessible_external { background: rgba(107,104,144,.18); color: var(--text-dim); border: 1px solid rgba(107,104,144,.35); }
+    .vbadge-not_confirmed           { background: rgba(250,140,22,.18);  color: #fa8c16;         border: 1px solid rgba(250,140,22,.35); }
+    .vbadge-unverified              { background: rgba(45,43,85,.4);     color: var(--text-dim); border: 1px solid var(--border); }
 
     /* ── Findings table ── */
     table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
@@ -662,16 +893,81 @@
   </div>
 </div>
 <div id="status"><span class="dot"></span>Connecting…</div>
-<div id="stall-banner" style="display:none;background:#7c2d12;color:#fed7aa;padding:0.5rem 1rem;border-radius:6px;margin-bottom:0.5rem;font-size:0.82rem;border:1px solid #c2410c;">
-  ⚠ <strong>Smith appears stalled</strong> — <span id="stall-banner-msg"></span>. Check the Steering tab for QA directives.
+
+<!-- ── HIR panel — visible only during intervention_required ─────────────── -->
+<div id="hir-panel">
+  <div class="hir-header">
+    <div class="hir-badge">SCAN PAUSED</div>
+    <div class="hir-code" id="hir-code">HIR_UNKNOWN</div>
+    <div class="hir-dismiss" onclick="dismissHir()" title="Dismiss (scan stays paused)">✕ dismiss view</div>
+  </div>
+  <div class="hir-body">
+    <div class="hir-situation" id="hir-situation"></div>
+    <div id="hir-tried-wrap" style="display:none">
+      <div class="hir-section-label">What Smith already tried</div>
+      <div class="hir-tried" id="hir-tried"></div>
+    </div>
+    <div class="hir-section-label">Choose how to respond — click to select, then Send</div>
+    <div class="hir-options" id="hir-options"></div>
+    <div class="hir-section-label">Optional message to Smith (add context or override)</div>
+    <div class="hir-input-row">
+      <textarea id="hir-message" placeholder="Type your instruction… (or click a quick option above)"></textarea>
+      <button class="hir-send-btn" id="hir-send-btn" onclick="sendHirResponse()">Send Response</button>
+    </div>
+  </div>
 </div>
 
-<!-- ── Session strip ─────────────────────────────────────────────────────── -->
-<div id="session-strip">
-  <span><span class="s-label">Target </span><strong id="s-target">—</strong></span>
-  <span><span class="s-label">Depth </span><strong  id="s-depth">—</strong></span>
-  <span><span class="s-label">Scope </span><strong  id="s-scope">—</strong></span>
-  <span><span class="s-label">Status </span><strong id="s-status">—</strong></span>
+<!-- ── Status + Command Center ──────────────────────────────────────────── -->
+<div id="cmd-center">
+  <div id="cmd-status-row" class="cmd-status-row">
+    <div class="cmd-status-left">
+      <span class="cmd-target-label">Target</span>
+      <span class="cmd-target-val" id="cmd-target">—</span>
+      <div id="cmd-phase-pill" class="cmd-phase-pill" style="display:none">
+        <span id="cmd-phase-text" class="cmd-phase-active">recon</span>
+        <span id="cmd-phase-skill-sep" style="display:none"> › </span>
+        <span id="cmd-phase-skill" class="cmd-skill-name" style="display:none"></span>
+      </div>
+      <div id="cmd-benchmark-badge" style="display:none;margin-left:8px;background:#f59e0b;color:#000;font-size:10px;font-weight:700;letter-spacing:.08em;padding:2px 7px;border-radius:3px;">BENCHMARK</div>
+    </div>
+    <div class="cmd-status-mid" id="cmd-status-mid">
+      <div id="cmd-cov-group" class="cmd-cov-group" style="display:none">
+        <span class="cmd-dim">cov</span>
+        <div class="cmd-cov-track"><div class="cmd-cov-bar" id="cmd-cov-bar" style="width:0%"></div></div>
+        <span id="cmd-cov-txt" class="cmd-dim">0/0</span>
+      </div>
+      <div id="cmd-gates-alert" style="display:none">
+        <span class="cmd-gates-txt">⚠ <span id="cmd-gates-count"></span></span>
+      </div>
+      <div id="cmd-cost-group" style="display:none">
+        <span class="cmd-dim">cost</span>
+        <span id="cmd-cost-val" class="cmd-val">—</span>
+      </div>
+    </div>
+    <div class="cmd-status-right">
+      <span class="cmd-dim">status </span>
+      <strong id="cmd-scan-status" class="cmd-scan-status">—</strong>
+    </div>
+  </div>
+  <div class="cmd-smith-panel">
+    <div class="cmd-smith-header">
+      <span class="cmd-smith-dot" id="cmd-smith-dot"></span>
+      <span class="cmd-smith-label" id="cmd-smith-label">Instruct Smith</span>
+      <span id="cmd-smith-hint" class="cmd-smith-hint"></span>
+    </div>
+    <div class="cmd-smith-row">
+      <textarea id="cmd-smith-input" class="cmd-smith-input"
+        placeholder="Type a steering instruction… (e.g. 'focus on /api/users', 'skip rate_limit cells', 'the JWT secret is HS256')"></textarea>
+      <button class="cmd-smith-send" id="cmd-smith-send-btn" onclick="sendCmdSmith()">Send</button>
+    </div>
+    <div class="cmd-quick-chips">
+      <span class="cmd-chip" onclick="setSmithChip('What are you currently doing and what cells are next?')">Status check</span>
+      <span class="cmd-chip" onclick="setSmithChip('Focus on the most critical untested endpoints and parameters')">Focus critical</span>
+      <span class="cmd-chip" onclick="setSmithChip('Skip the current cell and move to the next pending one')">Skip cell</span>
+      <span class="cmd-chip" onclick="setSmithChip('Summarize all findings discovered so far')">Summarize findings</span>
+    </div>
+    <div id="cmd-smith-feedback" class="cmd-smith-feedback"></div>
+  </div>
 </div>
 
 <!-- ── Tab nav ───────────────────────────────────────────────────────────── -->
@@ -681,8 +977,7 @@
   <button class="tab-btn"        onclick="switchTab('components')">Components</button>
   <button class="tab-btn"        onclick="switchTab('coverage')" id="tab-btn-coverage">Coverage</button>
   <button class="tab-btn"        onclick="switchTab('skills')" id="tab-btn-skills">Skills</button>
-  <button class="tab-btn"        onclick="switchTab('qa')" id="tab-btn-qa">QA Agent</button>
-  <button class="tab-btn"        onclick="switchTab('steering')" id="tab-btn-steering">Steering</button>
+  <button class="tab-btn"        onclick="switchTab('activity')" id="tab-btn-activity">Activity</button>
   <button class="tab-btn"        onclick="switchTab('threat-model')" id="tab-btn-threat-model">Threat Model</button>
   <button class="tab-btn"        onclick="switchTab('metrics')" id="tab-btn-metrics">Metrics</button>
   <button class="tab-btn"        onclick="switchTab('logs')">Logs</button>
@@ -691,6 +986,7 @@
 <!-- ── Tab: Findings ─────────────────────────────────────────────────────── -->
 <div id="tab-findings" class="tab-content active">
   <div id="stats"></div>
+  <div id="vstats"></div>
   <div id="findings-wrap"><div class="empty-placeholder">No findings yet — run a scan.</div></div>
 </div>
 
@@ -732,50 +1028,75 @@
   <div id="skills-wrap"><div class="empty-placeholder">No active scan session — start a scan to track skill usage.</div></div>
 </div>
 
-<!-- ── Tab: QA Agent ──────────────────────────────────────────────────────── -->
-<div id="tab-qa" class="tab-content">
-  <div class="qa-topbar">
-    <div class="qa-topbar-left">
-      <div class="qa-dot"></div>
-      <span class="qa-label">QA Agent</span>
+<!-- ── Tab: Activity (QA alerts + Steering + Tool log + Conversation) ── -->
+<div id="tab-activity" class="tab-content">
+  <!-- Stuck Events log -->
+  <div class="activity-section">
+    <div class="activity-section-header">
+      <span class="activity-dot" style="background:#f97316;box-shadow:0 0 5px #f97316"></span>
+      <span class="activity-section-title">Stuck Events</span>
+      <span class="activity-section-meta" style="color:var(--text-dim);font-size:0.7rem">HIR pauses · coverage stalls · gate blocks</span>
     </div>
-    <span id="qa-last-check" class="qa-last-check"></span>
+    <div id="stuck-log-wrap">
+      <div class="empty-placeholder">No stuck events yet — Smith is running smoothly.</div>
+    </div>
   </div>
-  <div id="qa-alerts-wrap">
-    <div class="empty-placeholder">Waiting for first QA cycle — runs every 30 s during an active scan.</div>
-  </div>
-  <div class="qa-divider">Activity log</div>
-  <div id="quicklog-wrap">
-    <div class="empty-placeholder">No tool activity yet.</div>
-  </div>
-  <div class="qa-divider">Cycle history</div>
-  <div id="cycle-history-wrap">
-    <div class="empty-placeholder">No cycles yet — QA starts 30 s after scan begins.</div>
-  </div>
-</div>
 
-<!-- ── Tab: Steering ──────────────────────────────────────────────────────── -->
-<div id="tab-steering" class="tab-content">
-  <div class="qa-topbar">
-    <div class="qa-topbar-left">
-      <div class="qa-dot" style="background:#f97316;box-shadow:0 0 6px #f97316"></div>
-      <span class="qa-label">QA → Smith Steering</span>
+  <!-- Live QA Alerts -->
+  <div class="activity-section">
+    <div class="activity-section-header">
+      <span class="activity-dot" style="background:var(--green);box-shadow:0 0 5px var(--green)"></span>
+      <span class="activity-section-title">QA Alerts</span>
+      <span id="qa-last-check" class="activity-section-meta"></span>
     </div>
-    <span id="steering-last-update" class="qa-last-check"></span>
+    <div id="qa-alerts-wrap">
+      <div class="empty-placeholder">Waiting for first QA cycle — runs every 2 min during an active scan.</div>
+    </div>
   </div>
-  <div style="font-size:0.74rem;color:var(--text-dim);margin-bottom:0.75rem;line-height:1.5;">
-    Active directives are injected automatically into Smith's tool responses.
-    Status: <span style="color:#f97316">●</span> pending &nbsp;
-            <span style="color:#facc15">●</span> injected &nbsp;
-            <span style="color:#4ade80">●</span> acknowledged &nbsp;
-            <span style="color:#60a5fa">●</span> auto-satisfied
+
+  <!-- Steering Directives -->
+  <div class="activity-section">
+    <div class="activity-section-header">
+      <span class="activity-dot" style="background:#f97316;box-shadow:0 0 5px #f97316"></span>
+      <span class="activity-section-title">Steering Directives</span>
+      <span id="steering-last-update" class="activity-section-meta"></span>
+    </div>
+    <div style="font-size:0.74rem;color:var(--text-dim);margin-bottom:0.65rem;line-height:1.5;">
+      Directives are injected automatically into Smith's tool responses.
+      <span style="color:#f97316">●</span> pending &nbsp;
+      <span style="color:#facc15">●</span> injected &nbsp;
+      <span style="color:#4ade80">●</span> acknowledged &nbsp;
+      <span style="color:#60a5fa">●</span> auto-satisfied
+    </div>
+    <div id="steering-active-wrap">
+      <div class="empty-placeholder">No active steering directives.</div>
+    </div>
+    <div class="qa-divider">Directive history</div>
+    <div id="steering-history-wrap">
+      <div class="empty-placeholder">No steering history yet.</div>
+    </div>
   </div>
-  <div id="steering-active-wrap">
-    <div class="empty-placeholder">No active steering directives.</div>
+
+  <!-- Tool Activity -->
+  <div class="activity-section">
+    <div class="activity-section-header">
+      <span class="activity-dot" style="background:var(--purple);box-shadow:0 0 5px var(--purple)"></span>
+      <span class="activity-section-title">Tool Activity</span>
+    </div>
+    <div id="quicklog-wrap">
+      <div class="empty-placeholder">No tool activity yet.</div>
+    </div>
   </div>
-  <div class="qa-divider">History</div>
-  <div id="steering-history-wrap">
-    <div class="empty-placeholder">No steering history yet.</div>
+
+  <!-- QA Conversation History -->
+  <div class="activity-section">
+    <div class="activity-section-header">
+      <span class="activity-dot" style="background:var(--text-dim)"></span>
+      <span class="activity-section-title">QA ↔ Smith Conversation</span>
+    </div>
+    <div id="cycle-history-wrap">
+      <div class="empty-placeholder">No cycles yet — QA starts 2 min after scan begins.</div>
+    </div>
   </div>
 </div>
 
@@ -855,17 +1176,62 @@
   const SEV_ORDER = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
 
   let filter     = 'all';
+  let vfilter    = 'all';
   let seenIds    = new Set();
   let scanDone   = false;   // true once session status is "complete" — stops polling
   let freshIds   = new Set();
   let allData    = { findings: [], diagrams: [] };
   let lastOk     = null;
   let _steeringData = null;
+  let _sessionData  = null;
   let _activeTab = 'findings';
   let _logLines  = [];
 
+  // ── Notification system ───────────────────────────────────────────────────
+  // Tracks state so we only fire once per event, not on every poll.
+  let _notifState = { hir: false, stall: false, alertCount: 0 };
+
+  function _requestNotifPermission() {
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission();
+    }
+  }
+
+  function _notify(title, body, urgency = 'normal') {
+    // Always update the page title
+    document.title = `⚠ ${title} — Pentest Dashboard`;
+    // Browser notification only when tab is not focused
+    if (document.hidden && 'Notification' in window && Notification.permission === 'granted') {
+      try {
+        const n = new Notification(title, {
+          body,
+          icon: '/logo.png',
+          tag: urgency === 'critical' ? 'hir' : 'alert',  // same tag = replaces previous
+          requireInteraction: urgency === 'critical',       // HIR stays until dismissed
+        });
+        n.onclick = () => { window.focus(); n.close(); };
+      } catch { /* ignore */ }
+    }
+  }
+
+  function _clearNotif() {
+    document.title = 'Pentest Dashboard';
+  }
+
+  function _updateTitleBadge(alertCount, stallActive, hirActive) {
+    if (hirActive) {
+      document.title = '⚠ PAUSED — Pentest Dashboard';
+    } else if (stallActive) {
+      document.title = '⟳ Smith needs guidance — Pentest Dashboard';
+    } else if (alertCount > 0) {
+      document.title = `(${alertCount}) Pentest Dashboard`;
+    } else {
+      document.title = 'Pentest Dashboard';
+    }
+  }
+
   // ── Tab switching ─────────────────────────────────────────────────────────
-  const TAB_NAMES = ['findings', 'topology', 'components', 'coverage', 'skills', 'qa', 'steering', 'threat-model', 'logs', 'metrics'];
+  const TAB_NAMES = ['findings', 'topology', 'components', 'coverage', 'skills', 'activity', 'threat-model', 'metrics', 'logs'];
 
   function switchTab(name) {
     _activeTab = name;
@@ -878,34 +1244,267 @@
     if (name === 'components')    renderComponentMap(allData.findings || []);
     if (name === 'coverage')      pollCoverage();
     if (name === 'skills')        pollSkills();
-    if (name === 'qa')        pollQA();
-    if (name === 'steering')  pollQA();
-    if (name === 'metrics')   pollMetrics();
+    if (name === 'activity')      pollQA();
+    if (name === 'metrics')       pollMetrics();
     if (name === 'threat-model')  pollThreatModel();
     if (name === 'logs')          pollLogs();
   }
 
-  // ── Session strip ─────────────────────────────────────────────────────────
+  // ── HIR panel ────────────────────────────────────────────────────────────
+  let _hirActive = false;
+  let _hirSelectedChoice = '';
+
+  async function pollIntervention() {
+    try {
+      const r = await fetch('/api/intervention?_=' + Date.now());
+      if (!r.ok) return;
+      const iv = await r.json();
+      const panel = document.getElementById('hir-panel');
+      if (iv.active) {
+        if (!_hirActive) {
+          // First time we see this HIR — fire OS notification
+          _notify(
+            'Smith needs your decision',
+            (iv.situation || 'Scan paused — human intervention required').slice(0, 120),
+            'critical'
+          );
+          _notifState.hir = true;
+        }
+        _hirActive = true;
+        panel.classList.add('visible');
+        document.getElementById('hir-code').textContent = iv.code || 'HIR';
+        document.getElementById('hir-situation').textContent = iv.situation || '';
+        const optEl = document.getElementById('hir-options');
+        optEl.innerHTML = '';
+        (iv.options || []).forEach(opt => {
+          const choice = opt.split('—')[0].trim().split(' ')[0];
+          const btn = document.createElement('button');
+          btn.className = 'hir-opt-btn';
+          btn.textContent = opt.length > 60 ? opt.slice(0, 60) + '…' : opt;
+          btn.title = opt;
+          btn.onclick = () => {
+            document.querySelectorAll('.hir-opt-btn').forEach(b => b.classList.remove('selected'));
+            btn.classList.add('selected');
+            _hirSelectedChoice = choice;
+            document.getElementById('hir-message').placeholder = `${choice} — add details or just click Send`;
+          };
+          optEl.appendChild(btn);
+        });
+        // Show tried items
+        const triedWrap = document.getElementById('hir-tried-wrap');
+        const triedEl   = document.getElementById('hir-tried');
+        const tried = iv.tried || [];
+        if (tried.length && triedWrap && triedEl) {
+          triedEl.innerHTML = tried.map((t, i) =>
+            `<div class="hir-tried-item"><span class="hir-tried-num">${i+1}.</span><span>${esc(t)}</span></div>`
+          ).join('');
+          triedWrap.style.display = '';
+        } else if (triedWrap) {
+          triedWrap.style.display = 'none';
+        }
+        // Highlight Smith command box as orange (HIR mode)
+        const inp = document.getElementById('cmd-smith-input');
+        const btn = document.getElementById('cmd-smith-send-btn');
+        const hint = document.getElementById('cmd-smith-hint');
+        if (inp) inp.classList.add('hir-active');
+        if (btn) btn.classList.add('hir-mode');
+        if (hint) hint.textContent = '— scan is paused, your response resumes it';
+        const dotEl = document.getElementById('cmd-smith-dot');
+        if (dotEl) { dotEl.style.background = '#f97316'; dotEl.style.boxShadow = '0 0 6px #f97316'; }
+        document.getElementById('status').innerHTML = '<span class="dot" style="background:#f97316;box-shadow:0 0 6px #f97316;animation:blink 1s infinite"></span>⚠ Scan paused — human intervention required';
+        // Update cmd-scan-status
+        const statusEl = document.getElementById('cmd-scan-status');
+        if (statusEl) { statusEl.textContent = 'intervention'; statusEl.className = 'cmd-scan-status intervention'; }
+      } else if (_hirActive) {
+        _hirActive = false;
+        _notifState.hir = false;
+        panel.classList.remove('visible');
+        _hirSelectedChoice = '';
+        const inp = document.getElementById('cmd-smith-input');
+        const btn = document.getElementById('cmd-smith-send-btn');
+        const hint = document.getElementById('cmd-smith-hint');
+        if (inp) inp.classList.remove('hir-active');
+        if (btn) btn.classList.remove('hir-mode');
+        if (hint) hint.textContent = '';
+        const dotEl = document.getElementById('cmd-smith-dot');
+        if (dotEl) { dotEl.style.background = ''; dotEl.style.boxShadow = ''; }
+        _updateTitleBadge(0, false, false);
+      }
+      _updateTitleBadge(_notifState.alertCount, _notifState.stall, _hirActive);
+    } catch { /* ignore */ }
+  }
+
+  function dismissHir() {
+    document.getElementById('hir-panel').classList.remove('visible');
+  }
+
+  async function sendHirResponse() {
+    const choice  = _hirSelectedChoice;
+    const message = document.getElementById('hir-message').value.trim();
+    if (!choice && !message) { alert('Select an option or type a message.'); return; }
+    const btn = document.getElementById('hir-send-btn');
+    btn.disabled = true; btn.textContent = 'Sending…';
+    try {
+      const r = await fetch('/api/intervention/respond', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({choice, message}),
+      });
+      const res = await r.json();
+      if (res.ok) {
+        document.getElementById('hir-panel').classList.remove('visible');
+        document.getElementById('hir-message').value = '';
+        _hirSelectedChoice = '';
+        _hirActive = false;
+      } else {
+        alert('Failed: ' + (res.error || 'unknown error'));
+      }
+    } catch(e) { alert('Request failed: ' + e.message); }
+    btn.disabled = false; btn.textContent = 'Send Response';
+  }
+
+  // ── Command center — Smith input ──────────────────────────────────────────
+  function setSmithChip(text) {
+    const inp = document.getElementById('cmd-smith-input');
+    if (inp) { inp.value = text; inp.focus(); }
+  }
+
+  async function sendCmdSmith() {
+    const inp = document.getElementById('cmd-smith-input');
+    const msg = inp ? inp.value.trim() : '';
+    if (!msg) return;
+    const btn = document.getElementById('cmd-smith-send-btn');
+    const fb  = document.getElementById('cmd-smith-feedback');
+    if (btn) btn.disabled = true;
+    if (fb)  fb.textContent = 'Sending…';
+    try {
+      const endpoint = _hirActive ? '/api/intervention/respond' : '/api/steer';
+      const payload  = _hirActive ? {choice: _hirSelectedChoice, message: msg} : {message: msg};
+      const r = await fetch(endpoint, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload),
+      });
+      const res = await r.json();
+      if (res.ok || res.ok === undefined) {
+        if (fb)  fb.textContent = '✓ Sent to Smith';
+        if (inp) inp.value = '';
+        if (_hirActive) {
+          document.getElementById('hir-panel').classList.remove('visible');
+          _hirSelectedChoice = '';
+          _hirActive = false;
+          const inpEl = document.getElementById('cmd-smith-input');
+          const btnEl = document.getElementById('cmd-smith-send-btn');
+          const hintEl = document.getElementById('cmd-smith-hint');
+          if (inpEl)  inpEl.classList.remove('hir-active');
+          if (btnEl)  btnEl.classList.remove('hir-mode');
+          if (hintEl) hintEl.textContent = '';
+        }
+        setTimeout(() => { if (fb) fb.textContent = ''; }, 3000);
+      } else {
+        if (fb) fb.textContent = '✗ Failed: ' + (res.error || 'unknown');
+      }
+    } catch(e) { if (fb) fb.textContent = '✗ Request failed'; }
+    if (btn) btn.disabled = false;
+  }
+
+  // ── Command center rendering ──────────────────────────────────────────────
+  function renderCmdCenter(session, coverage) {
+    if (!session || !session.target) return;
+
+    document.getElementById('cmd-target').textContent = session.target || '—';
+
+    // Benchmark mode badge
+    const benchBadge = document.getElementById('cmd-benchmark-badge');
+    if (benchBadge) benchBadge.style.display = session.scan_mode === 'benchmark' ? '' : 'none';
+
+    // Phase + skill pill
+    const pill    = document.getElementById('cmd-phase-pill');
+    const phTxt   = document.getElementById('cmd-phase-text');
+    const skSep   = document.getElementById('cmd-phase-skill-sep');
+    const skName  = document.getElementById('cmd-phase-skill');
+    if (pill) {
+      pill.style.display = '';
+      phTxt.textContent  = session.phase || 'recon';
+      if (session.skill) {
+        skSep.style.display = '';
+        skName.textContent  = '/' + session.skill;
+        skName.style.display = '';
+      } else {
+        skSep.style.display  = 'none';
+        skName.style.display = 'none';
+      }
+    }
+
+    // Coverage mini-bar
+    const covGroup = document.getElementById('cmd-cov-group');
+    if (coverage && coverage.meta && coverage.meta.total_cells > 0) {
+      const total    = coverage.meta.total_cells;
+      const addressed = coverage.meta.addressed || coverage.meta.tested || 0;
+      const pct      = Math.round(addressed / total * 100);
+      document.getElementById('cmd-cov-bar').style.width = pct + '%';
+      document.getElementById('cmd-cov-bar').className = 'cmd-cov-bar' + (pct < 40 ? ' warn' : '');
+      document.getElementById('cmd-cov-txt').textContent = `${addressed}/${total}`;
+      if (covGroup) covGroup.style.display = '';
+    } else if (covGroup) { covGroup.style.display = 'none'; }
+
+    // Pending gates
+    const gatesAlert = document.getElementById('cmd-gates-alert');
+    const pending = session.pending_gates || [];
+    if (pending.length && gatesAlert) {
+      document.getElementById('cmd-gates-count').textContent =
+        pending.length + ' gate' + (pending.length > 1 ? 's' : '') + ' pending';
+      gatesAlert.style.display = '';
+    } else if (gatesAlert) { gatesAlert.style.display = 'none'; }
+
+    // Status
+    const statusEl = document.getElementById('cmd-scan-status');
+    if (statusEl && session.status !== 'intervention_required') {
+      statusEl.textContent = session.status || '—';
+      statusEl.className   = 'cmd-scan-status ' + (session.status || 'running').replace(/_/g, '-');
+    }
+  }
+
+  let _lastCoverage = null;
+
   async function pollSession() {
     try {
-      const r = await fetch('/api/session?_=' + Date.now());
-      if (!r.ok) return;
-      const s = await r.json();
-      if (!s.target) return;
-      document.getElementById('session-strip').classList.add('visible');
-      document.getElementById('s-target').textContent = s.target || '—';
-      document.getElementById('s-depth').textContent  = s.depth_label || s.depth || '—';
-      document.getElementById('s-scope').textContent  = (s.scope || []).join(', ') || '—';
-      const statusEl = document.getElementById('s-status');
-      statusEl.textContent = s.status || '—';
-      statusEl.className   = `session-status-${s.status || 'running'}`;
+      const [sr, cr] = await Promise.all([
+        fetch('/api/session?_=' + Date.now()),
+        fetch('/api/coverage?_=' + Date.now()),
+      ]);
+      if (!sr.ok) return;
+      const s   = await sr.json();
+      const cov = cr.ok ? await cr.json() : null;
+      _lastCoverage = cov;
 
-      // Mark scan done for UI status only — findings still poll so the
-      // dashboard stays accurate across session restarts and force-completes.
+      if (!s.target) return;
+
+      _sessionData = s;
+      renderCmdCenter(s, cov);
+      if (_activeTab === 'activity') renderStuckLog();
+
+      // Cost
+      try {
+        const cr2 = await fetch('/api/cost?_=' + Date.now());
+        if (cr2.ok) {
+          const cost = await cr2.json();
+          const usd  = cost.est_cost_usd;
+          if (usd !== undefined) {
+            document.getElementById('cmd-cost-val').textContent = '$' + usd.toFixed(4);
+            document.getElementById('cmd-cost-group').style.display = '';
+          }
+        }
+      } catch { /* ignore */ }
+
       if (s.status === 'complete' && !scanDone) {
         scanDone = true;
         document.getElementById('status').innerHTML =
           '<span class="dot" style="background:#6e7681;animation:none"></span>Scan complete';
+        const statusEl = document.getElementById('cmd-scan-status');
+        if (statusEl) { statusEl.textContent = 'complete'; statusEl.className = 'cmd-scan-status complete'; }
+        _notify('Scan complete', 'Smith has finished — check the Findings tab.', 'normal');
+        setTimeout(_clearNotif, 8000);  // restore plain title after 8s
       }
     } catch { /* session may not exist yet */ }
   }
@@ -943,6 +1542,23 @@
     if (_activeTab === 'components') renderComponentMap(findings);
   }
 
+  const VS_ORDER = {
+    confirmed_dynamic:       0,
+    new_dynamic_finding:     1,
+    code_confirmed:          2,
+    not_accessible_external: 3,
+    not_confirmed:           4,
+    unverified:              5,
+  };
+  const VS_LABELS = {
+    confirmed_dynamic:       '✓ CONFIRMED',
+    new_dynamic_finding:     '+ NEW DISCOVERY',
+    code_confirmed:          '◉ CODE CONFIRMED',
+    not_accessible_external: '⊘ INTERNAL ONLY',
+    not_confirmed:           '? NOT CONFIRMED',
+    unverified:              '· UNVERIFIED',
+  };
+
   function renderStats(findings) {
     const c = { all: findings.length, critical:0, high:0, medium:0, low:0, info:0 };
     findings.forEach(f => { if (c[f.severity] !== undefined) c[f.severity]++; });
@@ -952,18 +1568,32 @@
           ${s==='all'?'ALL':s.toUpperCase()} ${c[s]}
         </span>`
       ).join('');
+
+    // Verification filter bar
+    const vc = {};
+    const vsKeys = Object.keys(VS_ORDER);
+    vsKeys.forEach(k => { vc[k] = 0; });
+    findings.forEach(f => { if (vc[f.verification_status] !== undefined) vc[f.verification_status]++; });
+    document.getElementById('vstats').innerHTML =
+      `<span class="vstat-label">verify:</span>` +
+      [['all', 'ALL ' + findings.length]].concat(vsKeys.filter(k => vc[k] > 0).map(k => [k, VS_LABELS[k] + ' ' + vc[k]])).map(([k, label]) =>
+        `<span class="stat vstat-${k}${vfilter===k?' active':''}" onclick="setVFilter('${k}')">${label}</span>`
+      ).join('');
   }
 
   function renderFindingsTable(findings) {
-    const filtered = filter === 'all' ? findings : findings.filter(f => f.severity === filter);
+    let filtered = filter === 'all' ? findings : findings.filter(f => f.severity === filter);
+    if (vfilter !== 'all') filtered = filtered.filter(f => f.verification_status === vfilter);
     filtered.sort((a, b) => {
+      const vd = (VS_ORDER[a.verification_status]??9) - (VS_ORDER[b.verification_status]??9);
+      if (vd !== 0) return vd;
       const d = (SEV_ORDER[a.severity]??5) - (SEV_ORDER[b.severity]??5);
       return d !== 0 ? d : new Date(b.timestamp) - new Date(a.timestamp);
     });
     const wrap = document.getElementById('findings-wrap');
     if (!filtered.length) {
       wrap.innerHTML = '<div class="empty-placeholder">No findings' +
-        (filter !== 'all' ? ` for <strong>${filter}</strong>` : ' yet — run a scan.') + '</div>';
+        (filter !== 'all' || vfilter !== 'all' ? ` matching current filters` : ' yet — run a scan.') + '</div>';
       return;
     }
     const openIds = new Set();
@@ -985,6 +1615,8 @@
     const statusBadge = f.status === 'false_positive'
       ? `<span class="badge" style="background:rgba(107,104,144,.2);color:var(--text-dim);margin-left:.4rem">false positive</span>`
       : '';
+    const vs = f.verification_status || 'unverified';
+    const vsBadge = `<span class="vbadge vbadge-${vs}" title="Verification status: ${vs.replace(/_/g,' ')}">${VS_LABELS[vs] || vs}</span>`;
     const ghBtn = f.gh_issue
       ? `<button class="copy-gh-btn" onclick="copyGhIssue(this,'${f.id}')" title="Copy GitHub issue">
            <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
@@ -1009,7 +1641,7 @@
       : '';
     return `<div class="finding-card sev-${f.severity}">
       <div class="finding-header">
-        <span class="badge badge-${f.severity}">${f.severity}</span>${statusBadge}
+        <span class="badge badge-${f.severity}">${f.severity}</span>${statusBadge}${vsBadge}
         <div class="finding-title-group">
           <div class="finding-title">${esc(f.title)}${newBadge}</div>
           <div class="finding-meta-row">
@@ -1097,6 +1729,12 @@
     renderFindingsTable(allData.findings || []);
   }
 
+  function setVFilter(vs) {
+    vfilter = vs;
+    renderStats(allData.findings || []);
+    renderFindingsTable(allData.findings || []);
+  }
+
   // ── Tunnel cleanup ─────────────────────────────────────────────────────
   function cleanupTunnels() {
     if (!confirm('Kill chisel tunnels and Meterpreter sessions? You will lose access to internal services.')) return;
@@ -1132,12 +1770,17 @@
         document.getElementById('status').innerHTML =
           '<span class="dot"></span>Live · refreshes every 5 s';
 
-        // ── Session strip ─────────────────────────────────────────────────
-        const strip = document.getElementById('session-strip');
-        strip.classList.remove('visible');
-        ['s-target','s-depth','s-scope','s-status'].forEach(id => {
-          document.getElementById(id).textContent = '—';
-        });
+        // ── Command Center reset ───────────────────────────────────────────
+        const cmdTarget = document.getElementById('cmd-target');
+        if (cmdTarget) cmdTarget.textContent = '—';
+        const cmdStatus = document.getElementById('cmd-scan-status');
+        if (cmdStatus) { cmdStatus.textContent = '—'; cmdStatus.className = 'cmd-scan-status'; }
+        const cmdPhase = document.getElementById('cmd-phase-pill');
+        if (cmdPhase) cmdPhase.style.display = 'none';
+        const cmdCov = document.getElementById('cmd-cov-group');
+        if (cmdCov) cmdCov.style.display = 'none';
+        const cmdCost = document.getElementById('cmd-cost-group');
+        if (cmdCost) cmdCost.style.display = 'none';
 
         // ── Findings tab ──────────────────────────────────────────────────
         renderStats([]);
@@ -1161,16 +1804,24 @@
         document.getElementById('skills-wrap').innerHTML =
           '<div class="empty-placeholder">No active scan session — start a scan to track skill usage.</div>';
 
-        // ── QA + Conversation tabs ────────────────────────────────────────
+        // ── Activity tab ──────────────────────────────────────────────────
         document.getElementById('qa-last-check').textContent = '';
         document.getElementById('qa-alerts-wrap').innerHTML =
           '<div class="empty-placeholder">Waiting for first QA cycle (runs every 2 min during an active scan).</div>';
         document.getElementById('quicklog-wrap').innerHTML =
           '<div class="empty-placeholder">No tool activity yet — start a scan.</div>';
+        document.getElementById('steering-active-wrap').innerHTML =
+          '<div class="empty-placeholder">No active steering directives.</div>';
+        document.getElementById('steering-history-wrap').innerHTML =
+          '<div class="empty-placeholder">No steering history yet.</div>';
         _qaData = null;
+        _steeringData = null;
+        _sessionData = null;
         _cycleRenderedCount = 0;
+        const stuckWrap = document.getElementById('stuck-log-wrap');
+        if (stuckWrap) stuckWrap.innerHTML = '<div class="empty-placeholder">No stuck events yet — Smith is running smoothly.</div>';
         document.getElementById('cycle-history-wrap').innerHTML =
-          '<div class="empty-placeholder">No cycles yet — QA starts 30 s after scan begins.</div>';
+          '<div class="empty-placeholder">No cycles yet — QA starts 2 min after scan begins.</div>';
 
         // ── Logs tab ──────────────────────────────────────────────────────
         document.getElementById('log-output').innerHTML = '';
@@ -2047,26 +2698,38 @@
         fetch(`/api/qa?_=${Date.now()}`),
         fetch(`/api/steering?_=${Date.now()}`),
       ]);
+      let alerts = [];
+      let active = [];
       if (rQA.ok) {
         _qaData = await rQA.json();
-        if (_activeTab === 'qa')           { renderQA(); renderQuickLog(); renderCycleHistory(); }
+        if (_activeTab === 'activity') { renderStuckLog(); renderQA(); renderQuickLog(); renderCycleHistory(); }
+        alerts = (_qaData.alerts || []);
 
-        // Badge: show alert count on QA tab button
-        const btn = document.getElementById('tab-btn-qa');
-        const alerts = (_qaData.alerts || []);
-        if (btn) btn.textContent = alerts.length ? `QA Agent (${alerts.length})` : 'QA Agent';
+        // Notify on new high-urgency QA alerts
+        const highAlerts = alerts.filter(a => a.urgency === 'high');
+        if (highAlerts.length > _notifState.alertCount && highAlerts.length > 0) {
+          if (!_hirActive) {  // HIR notification takes priority
+            _notify(
+              `QA: ${highAlerts.length} alert${highAlerts.length > 1 ? 's' : ''} need attention`,
+              highAlerts[0].message.slice(0, 120),
+              'normal'
+            );
+          }
+        }
+        _notifState.alertCount = highAlerts.length;
       }
       if (rSteering.ok) {
         _steeringData = await rSteering.json();
-        if (_activeTab === 'steering') renderSteering();
+        if (_activeTab === 'activity') { renderSteering(); renderStuckLog(); }
         updateStallBanner(_steeringData.directives || []);
-        // Badge: show active count on Steering tab button
-        const sBtn = document.getElementById('tab-btn-steering');
-        const active = (_steeringData.directives || []).filter(
+        active = (_steeringData.directives || []).filter(
           d => d.status === 'pending' || d.status === 'injected'
         );
-        if (sBtn) sBtn.textContent = active.length ? `Steering (${active.length})` : 'Steering';
       }
+      // Combined badge on Activity tab button
+      const btn = document.getElementById('tab-btn-activity');
+      if (btn) btn.textContent = alerts.length || active.length ? `Activity (${alerts.length + active.length})` : 'Activity';
+      _updateTitleBadge(_notifState.alertCount, _notifState.stall, _hirActive);
     } catch { /* ignore */ }
   }
 
@@ -2125,19 +2788,31 @@
   }
 
   function updateStallBanner(directives) {
-    const banner = document.getElementById('stall-banner');
-    const msgEl  = document.getElementById('stall-banner-msg');
-    if (!banner || !msgEl) return;
+    const dot  = document.getElementById('cmd-smith-dot');
+    const hint = document.getElementById('cmd-smith-hint');
+    if (!dot) return;
+    if (_hirActive) return; // HIR styling takes precedence
     const stall = directives.find(d =>
       d.code === 'RESUME_REQUIRED' && (d.status === 'pending' || d.status === 'injected')
     );
     if (stall) {
-      const match = (stall.message || '').match(/(\d+)\s*min/);
-      msgEl.textContent = match ? `last activity ${match[1]}min ago` : 'possible stall detected';
-      banner.style.display = 'block';
+      // Fire notification once when stall first detected, using the actual directive message
+      if (!_notifState.stall) {
+        _notify('Smith needs guidance', (stall.message || 'Smith may be stalled — send a steering instruction.').slice(0, 140), 'normal');
+        _notifState.stall = true;
+      }
+      dot.style.background  = '#f97316';
+      dot.style.boxShadow   = '0 0 6px #f97316';
+      dot.title = 'Smith may be stalled — send guidance';
+      if (hint && !_hirActive) hint.textContent = '— Smith may need guidance';
     } else {
-      banner.style.display = 'none';
+      _notifState.stall = false;
+      dot.style.background  = '';
+      dot.style.boxShadow   = '';
+      dot.title = '';
+      if (hint && !_hirActive) hint.textContent = '';
     }
+    _updateTitleBadge(_notifState.alertCount, !!stall, _hirActive);
   }
 
   // ── Metrics ───────────────────────────────────────────────────────────────
@@ -2243,20 +2918,127 @@
     `;
   }
 
+  // ── Stuck Events log ──────────────────────────────────────────────────────
+  function renderStuckLog() {
+    const wrap = document.getElementById('stuck-log-wrap');
+    if (!wrap) return;
+
+    const events = [];
+    const seen   = new Set();  // deduplicate by ts+code
+
+    // HIR events from session intervention_history (resolved pauses)
+    const hirHistory = (_sessionData || {}).intervention_history || [];
+    hirHistory.forEach(h => {
+      const key = (h.ts || h.triggered_at || '') + (h.code || '');
+      if (seen.has(key)) return;
+      seen.add(key);
+      events.push({
+        ts:         h.ts || h.triggered_at,
+        type:       'HIR',
+        code:       h.code || 'HIR',
+        reason:     h.situation || '',
+        tried:      h.tried || [],
+        resolved:   !!h.resolved_at,
+        resolution: h.choice ? (h.choice + (h.message ? ': ' + h.message : '')) : null,
+      });
+    });
+
+    // Active HIR (not yet in history)
+    const current = (_sessionData || {}).intervention;
+    if (current && current.code) {
+      const key = (current.ts || '') + (current.code || '');
+      if (!seen.has(key)) {
+        seen.add(key);
+        events.push({
+          ts:       current.ts,
+          type:     'HIR',
+          code:     current.code,
+          reason:   current.situation || '',
+          tried:    current.tried || [],
+          resolved: false,
+          resolution: null,
+        });
+      }
+    }
+
+    // Stall + gate-block directives from steering queue
+    const directives = (_steeringData || {}).directives || [];
+    directives
+      .filter(d => d.trigger === 'COVERAGE_STALL' || d.trigger === 'ENDPOINT_TRIGGER_GAP' || d.code === 'RESUME_REQUIRED')
+      .forEach(d => {
+        const key = (d.ts || '') + (d.id || d.code || '');
+        if (seen.has(key)) return;
+        seen.add(key);
+        events.push({
+          ts:       d.ts,
+          type:     d.trigger === 'COVERAGE_STALL' ? 'STALL' : 'GATE',
+          code:     d.trigger || d.code || '—',
+          reason:   d.message || '',
+          tried:    [],
+          resolved: d.status === 'acknowledged' || d.status === 'auto_satisfied',
+          resolution: d.ack_message || null,
+        });
+      });
+
+    if (!events.length) {
+      wrap.innerHTML = '<div class="empty-placeholder">No stuck events yet — Smith is running smoothly.</div>';
+      return;
+    }
+
+    // Sort newest first
+    events.sort((a, b) => new Date(b.ts || 0) - new Date(a.ts || 0));
+
+    const typeStyle = {
+      HIR:   { color: '#f97316', bg: 'rgba(249,115,22,0.13)', cls: 'stuck-entry-hir' },
+      STALL: { color: '#facc15', bg: 'rgba(250,204,21,0.1)',  cls: 'stuck-entry-stall' },
+      GATE:  { color: '#60a5fa', bg: 'rgba(96,165,250,0.1)',  cls: 'stuck-entry-stall' },
+    };
+
+    wrap.innerHTML = events.map(e => {
+      const s   = typeStyle[e.type] || typeStyle.STALL;
+      const ts  = e.ts ? new Date(e.ts).toLocaleTimeString() : '';
+      const statusColor = e.resolved ? 'var(--green)' : '#f97316';
+      const statusText  = e.resolved ? '✓ resolved' : '● active';
+      const triedHtml = e.tried.length
+        ? `<div style="margin:0.3rem 0 0.15rem">${e.tried.map((t, i) =>
+            `<div class="stuck-tried-item"><span class="stuck-tried-num">${i+1}.</span><span>${esc(t)}</span></div>`
+          ).join('')}</div>`
+        : '';
+      const resHtml = e.resolution
+        ? `<div class="stuck-resolution">↳ ${esc(e.resolution)}</div>`
+        : '';
+      return `<div class="stuck-entry ${s.cls}">
+        <div class="stuck-entry-header">
+          <span class="stuck-type-badge" style="color:${s.color};background:${s.bg};border-color:${s.color}">${e.type}</span>
+          <span class="stuck-code">${esc(e.code)}</span>
+          <span class="stuck-status" style="color:${statusColor}">${statusText}</span>
+          <span class="stuck-ts">${ts}</span>
+        </div>
+        <div class="stuck-reason">${esc(e.reason)}</div>
+        ${triedHtml}${resHtml}
+      </div>`;
+    }).join('');
+  }
+
   // ── Polling intervals ─────────────────────────────────────────────────────
-  setInterval(pollFindings,    POLL_MS);
-  setInterval(pollSession,     POLL_MS);
-  setInterval(pollCoverage,    POLL_MS);
-  setInterval(pollSkills,      POLL_MS);
-  setInterval(pollThreatModel, POLL_MS);
-  setInterval(pollQA,          POLL_MS);
-  setInterval(pollMetrics,     POLL_MS * 6);  // metrics update infrequently — check every ~30s
+  setInterval(pollFindings,      POLL_MS);
+  setInterval(pollSession,       POLL_MS);
+  setInterval(pollIntervention,  3000);    // HIR needs fast response — poll every 3s
+  setInterval(pollCoverage,      POLL_MS);
+  setInterval(pollSkills,        POLL_MS);
+  setInterval(pollThreatModel,   POLL_MS);
+  setInterval(pollQA,            POLL_MS);
+  setInterval(pollMetrics,       POLL_MS * 6);
   setInterval(() => { if (!scanDone && lastOk && _activeTab === 'findings') renderFindings(); }, 1000);
   setInterval(() => { if (!scanDone && _activeTab === 'logs') pollLogs(); }, 3000);
+
+  // Request browser notification permission on load
+  _requestNotifPermission();
 
   // Initial load
   pollFindings();
   pollSession();
+  pollIntervention();
   pollCoverage();
   pollSkills();
   pollThreatModel();

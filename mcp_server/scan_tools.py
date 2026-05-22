@@ -221,11 +221,17 @@ async def _handle_spider(target, flags, options):
 
 
 async def _handle_semgrep(target, flags, options):
-    return await _run("semgrep", path=target, flags=flags)
+    _record("semgrep")
+    raw = await _run("semgrep", path=target, flags=flags)
+    from mcp_server.scan_engine import wrap
+    return wrap("semgrep", raw, {"path": target})
 
 
 async def _handle_trufflehog(target, flags, options):
-    return await _run("trufflehog", path=target, flags=flags)
+    _record("trufflehog")
+    raw = await _run("trufflehog", path=target, flags=flags)
+    from mcp_server.scan_engine import wrap
+    return wrap("trufflehog", raw, {"path": target})
 
 
 async def _handle_fuzzyai(target, flags, options):

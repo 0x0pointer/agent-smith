@@ -15,10 +15,9 @@ from mcp_server._app import mcp, _ensure_dict, _session_tools_called
 
 _background_tasks: set[asyncio.Task] = set()  # keeps fire-and-forget tasks alive
 
-# Track completion attempts to break infinite loops in small models
+# Track completion attempts — after _MAX_COMPLETE_ATTEMPTS the scan escalates to HIR
 _complete_attempts = 0
-_MAX_COMPLETE_ATTEMPTS = 8   # raised to accommodate 3 real thorough iterations + quality fix rounds
-_force_completed = False
+_MAX_COMPLETE_ATTEMPTS = 8
 
 # Minimum complete() calls required before thorough scans are allowed to finish.
 # Each blocked call is one "iteration" — the model must go deeper and try again.
@@ -150,15 +149,21 @@ def _dispatch_sync_action(action: str, opts: dict) -> str:
         return _do_artifact(opts)
     if action == "pre_chain":
         return _do_pre_chain(opts)
-    return f"Unknown action '{action}'. Use: start, complete, status, qa_reply, recovery, artifact, pre_chain, set_skill, set_step, start_kali, stop_kali, start_metasploit, stop_metasploit, pull_images, set_codebase"
+    if action == "resume":
+        return _do_resume(opts)
+    if action == "intervene":
+        return _do_intervene(opts)
+    return f"Unknown action '{action}'. Use: start, complete, status, qa_reply, recovery, artifact, pre_chain, set_skill, set_step, resume, start_kali, stop_kali, start_metasploit, stop_metasploit, pull_images, set_codebase"
 
 
 def _do_start(opts):
-    global _complete_attempts, _analysis_passes, _force_completed
-    if _force_completed:
+    global _complete_attempts, _analysis_passes
+    existing = scan_session.get() or {}
+    if existing.get("status") == "intervention_required":
         return (
-            "BLOCKED: Scan was already force-completed. "
-            "STOP — do not call any more tools. The scan is done."
+            "SCAN PAUSED — awaiting human intervention. "
+            "Respond via session(action='resume', options={choice: '...', message: '...'}) "
+            "before starting a new scan."
         )
     _complete_attempts = 0
     _analysis_passes = 0
@@ -213,6 +218,9 @@ def _do_start(opts):
     # Same target with existing data — keep matrix as-is (resume or view results)
     is_resume = bool(prev_target and prev_target == target and has_data)
     depth = opts.get("depth", "standard")
+    scan_mode = str(opts.get("scan_mode", "pentest")).lower()
+    if scan_mode not in ("pentest", "benchmark"):
+        scan_mode = "pentest"
     cfg = scan_session.start(
         target=target, depth=depth,
         scope=opts.get("scope"),
@@ -222,6 +230,7 @@ def _do_start(opts):
         max_tool_calls=opts.get("max_tool_calls"),
         skill=opts.get("skill"),
         model_profile=opts.get("model_profile", "full"),
+        scan_mode=scan_mode,
     )
     lim = cfg["limits"]
     cost_str  = f"${lim['max_cost_usd']:.2f}" if lim['max_cost_usd'] is not None else "unlimited"
@@ -231,11 +240,19 @@ def _do_start(opts):
         f"Scan started — target={target}  depth={depth}  "
         f"limits: {cost_str} / {time_str} / {call_limit_str}"
     )
+    mode_label = "BENCHMARK (auto-exploit critical findings)" if scan_mode == "benchmark" else "Pentest (human-in-the-loop for exploitation decisions)"
     lines = [
         "Scan started.",
-        f"  Target: {target} | Depth: {cfg['depth_label']} | Limits: {cost_str}/{time_str}/{call_limit_str}",
+        f"  Target: {target} | Depth: {cfg['depth_label']} | Mode: {mode_label} | Limits: {cost_str}/{time_str}/{call_limit_str}",
         "",
     ]
+    if scan_mode == "benchmark":
+        lines += [
+            "BENCHMARK MODE: On critical/high findings, do NOT pause — exploit the chain autonomously.",
+            "Demonstrate full impact: RCE → execute commands, SQLi → dump data, SSRF → pivot internally.",
+            "Document every step as a finding. All other safety checks and HIR triggers remain active.",
+            "",
+        ]
 
     if is_resume:
         recovery_brief = _do_recovery()
@@ -941,25 +958,40 @@ def _do_complete(opts):
             blockers.append(brief)
 
     if blockers:
-        # Force-complete after max attempts to break model loops.
-        # Marks status as "incomplete_with_unresolved_blockers" so dashboards/exports
-        # distinguish this from a clean completion.
+        # After max attempts, escalate to HUMAN INTERVENTION REQUIRED.
+        # The scan pauses — no tool calls execute while intervention_required.
+        # The human decides via dashboard or session(action='resume').
         if _complete_attempts >= _MAX_COMPLETE_ATTEMPTS:
-            global _force_completed
             attempts = _complete_attempts
-            _force_completed = True
-            force_reason = f"FORCE-COMPLETED: {len(blockers)} blocker(s) unresolved after {attempts} attempts: {'; '.join(blockers)}"
-            log.note(f"Force-completing after {attempts} blocked attempts. Remaining blockers: {'; '.join(blockers)}")
-            scan_session.complete(notes, stop_reason=force_reason, quality_gate="failed")
-            _complete_attempts = 0
-            _analysis_passes = 0
-            _record_metrics(data, blockers, force_completed=True)
-            return (
-                f"Scan FORCE-COMPLETED (exceeded {attempts} attempt limit). "
-                f"status=incomplete_with_unresolved_blockers quality_gate=failed. "
-                f"{len(blockers)} blocker(s) were unresolved. session.json updated. "
-                f"STOP — do not call any more tools. The scan is done."
+            log.note(f"HIR triggered after {attempts} blocked complete() attempts. Blockers: {'; '.join(b[:80] for b in blockers)}")
+            scan_session.trigger_intervention(
+                code="HIR_FORCE_COMPLETE",
+                situation=(
+                    f"{len(blockers)} completion blocker(s) could not be resolved after "
+                    f"{attempts} attempts. The scan cannot complete automatically."
+                ),
+                tried=[f"complete() attempt {i+1}/{attempts}" for i in range(min(attempts, 5))],
+                options=[
+                    "SKIP_CELLS: Tell me which specific cells or endpoint types to mark as skipped — I will document them and complete",
+                    "REDUCE_SCOPE: Specify which checks to drop (e.g. 'skip all rate_limit cells', 'accept missing PoC for finding X')",
+                    "ACCEPT_PARTIAL: I will complete with current coverage and flag all unresolved items in the report",
+                    "CONTINUE: Provide specific instructions to resolve the remaining blockers and I will retry",
+                ],
             )
+            return json.dumps({
+                "status": "HUMAN_INTERVENTION_REQUIRED",
+                "code": "HIR_FORCE_COMPLETE",
+                "situation": f"{len(blockers)} blocker(s) unresolved after {attempts} complete() attempts.",
+                "blockers": blockers[:5],
+                "options": [
+                    "SKIP_CELLS — specify cells/endpoint types to skip",
+                    "REDUCE_SCOPE — drop specific checks",
+                    "ACCEPT_PARTIAL — complete with documented gaps",
+                    "CONTINUE — give me instructions to fix the blockers",
+                ],
+                "how_to_respond": "Use the dashboard 'Send to Smith' panel, or call session(action='resume', options={choice: '...', message: '...'})",
+                "scan_paused": True,
+            }, indent=2)
         depth = (scan_session.get() or {}).get("depth", "")
         if depth == "thorough" and _analysis_passes < _THOROUGH_MIN_ITERATIONS:
             header = (
@@ -1039,6 +1071,74 @@ async def _do_qa_reply(opts):
     if ack_id:
         return f"QA reply logged. Directive {ack_id} acknowledged."
     return "QA reply logged. (No active directive to acknowledge — reply recorded for audit trail.)"
+
+
+def _do_resume(opts: dict) -> str:
+    """Human responded to a HUMAN_INTERVENTION_REQUIRED event.
+
+    Transitions the scan back to 'running', records the human's choice,
+    and injects a steering directive so Smith immediately knows what to do.
+    """
+    from core.steering import steering_queue, RESUME_REQUIRED
+    choice  = str(opts.get("choice", "")).strip()
+    message = str(opts.get("message", "")).strip()
+    if not choice and not message:
+        return (
+            "resume requires choice= and/or message=. "
+            "Example: session(action='resume', options={choice: 'ACCEPT_PARTIAL', message: 'Complete with documented gaps'})"
+        )
+    current = scan_session.get() or {}
+    if current.get("status") not in ("intervention_required", "running"):
+        return f"No active intervention to resolve. Current status: {current.get('status', 'none')}"
+
+    scan_session.resolve_intervention(choice, message)
+    human_instruction = f"Human resolved HIR with choice='{choice}'" + (f": {message}" if message else "")
+    log.note(f"HIR resolved by human: {human_instruction}")
+    steering_queue.add_directive(
+        code=RESUME_REQUIRED,
+        message=(
+            f"HUMAN RESPONSE: {human_instruction}. "
+            "Act on this instruction now, then call session(action='complete') when ready."
+        ),
+        priority="high",
+        skill=None,
+        trigger="HIR_RESOLVED",
+    )
+    return json.dumps({
+        "status": "resumed",
+        "message": "Scan resumed. Human instruction injected as steering directive.",
+        "choice": choice,
+        "instruction": message,
+        "next": "Call session(action='recovery') to get your current position, then follow the steering directive.",
+    }, indent=2)
+
+
+def _do_intervene(opts: dict) -> str:
+    """Manually trigger a HUMAN_INTERVENTION_REQUIRED event.
+
+    Useful for QA checks that detect conditions warranting human review
+    (repeated tool failure, auth expiry, etc.).
+    """
+    code      = str(opts.get("code", "HIR_MANUAL")).strip()
+    situation = str(opts.get("situation", "Manual intervention requested.")).strip()
+    tried     = opts.get("tried", [])
+    options   = opts.get("options", [
+        "CONTINUE — provide instructions to proceed",
+        "ABORT — stop the scan",
+    ])
+    current = scan_session.get() or {}
+    if not current or current.get("status") != "running":
+        return f"No running scan to pause. Status: {current.get('status', 'none')}"
+    scan_session.trigger_intervention(code, situation, tried, options)
+    log.note(f"HIR manually triggered: {code} — {situation}")
+    return json.dumps({
+        "status": "HUMAN_INTERVENTION_REQUIRED",
+        "code":      code,
+        "situation": situation,
+        "options":   options,
+        "scan_paused": True,
+        "how_to_respond": "session(action='resume', options={choice: '...', message: '...'})",
+    }, indent=2)
 
 
 def _do_status():
@@ -1546,6 +1646,17 @@ def _do_set_skill(opts):
         if gate["status"] == "pending" and skill_name in gate["required_skills"]:
             scan_session.satisfy_gate(gate["id"], skill_name)
             satisfied_gates.append(gate["id"])
+
+    # Restore all previously deferred gates, then defer any that don't require THIS skill.
+    # This ensures only the one gate relevant to the active skill fires per response.
+    scan_session.restore_gates()
+    remaining_pending = scan_session.pending_gates()
+    gates_to_defer = [
+        g["id"] for g in remaining_pending
+        if skill_name not in g.get("required_skills", [])
+    ]
+    if gates_to_defer:
+        scan_session.defer_gates(gates_to_defer)
 
     log.skill_start(skill_name, reason=reason, chained_from=chained_from)
 

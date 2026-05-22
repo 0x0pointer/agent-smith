@@ -370,11 +370,12 @@ async def _do_coverage_tested(data: dict, cov: Any) -> str:
         notes=data.get("notes", ""),
         finding_id=data.get("finding_id"),
         tested_by=data.get("tested_by", ""),
+        artifact_id=data.get("artifact_id", ""),
     )
     if result is False:
         return f"Cell not found: {data.get('cell_id')}"
     if isinstance(result, str):
-        return f"Cell updated: {data.get('cell_id')} — {result}"
+        return result  # passes through REJECTED messages directly
     return f"Cell updated: {data.get('cell_id')}"
 
 

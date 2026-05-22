@@ -364,6 +364,78 @@ async def _cleanup_tunnels() -> str:
         return "cleanup error"
 
 
+@app.get("/api/intervention")
+async def api_intervention() -> JSONResponse:
+    """Return current HIR state if the scan is paused, else {active: false}."""
+    try:
+        from core import session as scan_session
+        iv = scan_session.get_intervention()
+        if iv:
+            return JSONResponse({"active": True, **iv})
+    except Exception:
+        pass
+    return JSONResponse({"active": False})
+
+
+@app.post("/api/intervention/respond")
+async def api_intervention_respond(request: Request) -> JSONResponse:
+    """Human responds to an HIR event from the dashboard.
+
+    Body: {"choice": "ACCEPT_PARTIAL", "message": "optional free text"}
+    Transitions scan back to running and injects a steering directive for Smith.
+    """
+    try:
+        body   = await request.json()
+        choice  = str(body.get("choice", "")).strip()
+        message = str(body.get("message", "")).strip()
+        if not choice and not message:
+            return JSONResponse({"ok": False, "error": "choice or message required"}, status_code=400)
+        from core import session as scan_session
+        from core.steering import steering_queue, RESUME_REQUIRED
+        scan_session.resolve_intervention(choice, message)
+        human_instruction = f"Human resolved HIR — choice='{choice}'" + (f": {message}" if message else "")
+        steering_queue.add_directive(
+            code=RESUME_REQUIRED,
+            message=(
+                f"HUMAN RESPONSE: {human_instruction}. "
+                "Act on this instruction now, then continue the scan."
+            ),
+            priority="high",
+            skill=None,
+            trigger="HIR_RESOLVED",
+        )
+        return JSONResponse({"ok": True, "resumed": True, "instruction": human_instruction})
+    except Exception as exc:
+        _log.error("api_intervention_respond failed: %s", exc)
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+
+@app.post("/api/steer")
+async def api_steer(request: Request) -> JSONResponse:
+    """Human sends a free-form steering instruction outside of an HIR event.
+
+    Creates a high-priority steering directive so Smith sees it on the next tool call.
+    Body: {"message": "..."}
+    """
+    try:
+        body    = await request.json()
+        message = str(body.get("message", "")).strip()
+        if not message:
+            return JSONResponse({"ok": False, "error": "message required"}, status_code=400)
+        from core.steering import steering_queue, RESUME_REQUIRED
+        steering_queue.add_directive(
+            code=RESUME_REQUIRED,
+            message=f"HUMAN INSTRUCTION: {message}",
+            priority="high",
+            skill=None,
+            trigger="HUMAN_STEER",
+        )
+        return JSONResponse({"ok": True})
+    except Exception as exc:
+        _log.error("api_steer failed: %s", exc)
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+
 @app.get("/api/qa")
 async def api_qa() -> JSONResponse:
     return JSONResponse(_read_json(_QA_STATE_FILE))

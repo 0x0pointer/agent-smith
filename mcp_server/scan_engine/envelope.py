@@ -50,6 +50,27 @@ def wrap(tool: str, raw_output: str, context: dict | None = None) -> str:
     Returns:
         JSON string of the canonical envelope
     """
+    # Block all tool calls while scan is paused for human intervention.
+    # session() calls are exempt so the agent can call session(action='resume').
+    if tool != "session":
+        try:
+            from core import session as _sess
+            iv = _sess.get_intervention()
+            if iv:
+                return json.dumps({
+                    "status": "HUMAN_INTERVENTION_REQUIRED",
+                    "code":   iv.get("code", "HIR_UNKNOWN"),
+                    "situation": iv.get("situation", ""),
+                    "options":   iv.get("options", []),
+                    "scan_paused": True,
+                    "how_to_respond": (
+                        "The scan is paused. Respond via the dashboard 'Send to Smith' panel, "
+                        "or call: session(action='resume', options={choice: '...', message: '...'})"
+                    ),
+                }, indent=2)
+        except Exception:
+            pass
+
     ctx = context or {}
 
     # 1. Store raw output as artifact
@@ -70,8 +91,12 @@ def wrap(tool: str, raw_output: str, context: dict | None = None) -> str:
 
     # Merge: planner required/recommended take priority, summarizer adds tool-specific ones
     merged_required = plan["required"] + result.required
-    merged_recommended = plan["recommended"] + result.recommended
+    # Cap recommended to 3 — Smith acts on item 1, rarely on 2-3, never on 4+
+    merged_recommended = (plan["recommended"] + result.recommended)[:3]
     warnings = plan["warnings"]
+
+    # Cap facts to 5 — full detail lives in the artifact; facts are orientation only
+    capped_facts = result.facts[:5]
 
     # 4. Build envelope — prepend first required action to summary so models see it
     summary = result.summary
@@ -85,12 +110,12 @@ def wrap(tool: str, raw_output: str, context: dict | None = None) -> str:
 
     env = Envelope(
         summary=summary,
-        facts=result.facts,
+        facts=capped_facts,
         anomalies=result.anomalies,
         evidence=result.evidence,
         next={"required": merged_required, "recommended": merged_recommended},
         artifact=artifact_id,
-        session_state=state,
+        session_state=_compact_state(state),
         warnings=warnings,
     )
 
@@ -98,18 +123,18 @@ def wrap(tool: str, raw_output: str, context: dict | None = None) -> str:
     budget = get_tool_budget(tool)
     enforced = enforce_budget(env, budget, artifact_id)
 
-    # 5.5. QA alerts — inject into warnings (high urgency also prepended to summary)
-    _inject_qa_alerts_into_envelope(enforced)
+    # 5.5. Steering directives — inject first; return value suppresses QA summary prepend
+    directive_injected = _inject_steering_directives(enforced)
 
-    # 5.6. Steering directives — inject pending QA steering directives
-    _inject_steering_directives(enforced)
+    # 5.6. QA alerts — high urgency only; skip summary prepend when directive already owns it
+    _inject_qa_alerts_into_envelope(enforced, suppress_summary_prepend=directive_injected)
 
     # 5.7. Duplicate tool call warning
     if is_duplicate:
         _inject_duplicate_warning(enforced, tool)
 
     # 5.8. Quick log — fire-and-forget, does not block
-    _quick_log_tool(tool, ctx, result.summary)
+    _quick_log_tool(tool, ctx, result.summary, result)
 
     # 6. Context tracking (P4) — charge, check pressure tiers, periodic snapshot
     json_str = enforced.to_json()
@@ -242,17 +267,59 @@ def _check_context_pressure(env: Envelope, json_str: str) -> str:
 
 
 def _maybe_write_recovery_snapshot(scan_session: Any) -> None:
-    """Write recovery_latest.json every 10 tool invocations as a passive fallback."""
+    """Write recovery_latest.json periodically as a structured, executable checkpoint.
+
+    Frequency: every 10 calls (standard) / every 20 calls (thorough) based on depth.
+    The checkpoint includes an executable EXECUTE_NOW so post-compaction resume is 1 call.
+    """
     try:
         current = scan_session.get() or {}
         if current.get("status") != "running":
             return
         seq = len(current.get("tool_invocations", []))
-        if seq > 0 and seq % 10 == 0:
-            from mcp_server.session_tools import _do_recovery
-            snap = _RECOVERY_SNAP_FILE.resolve()
-            if _REPO_ROOT.resolve() in snap.parents:
-                snap.write_text(_do_recovery(), encoding="utf-8")
+        if seq == 0:
+            return
+        interval = 20 if current.get("depth") == "thorough" else 10
+        if seq % interval != 0:
+            return
+        from mcp_server.session_tools import _do_recovery
+        from core.coverage import get_matrix
+        snap = _RECOVERY_SNAP_FILE.resolve()
+        if _REPO_ROOT.resolve() not in snap.parents:
+            return
+
+        # Build structured checkpoint enriched with coverage state
+        recovery = json.loads(_do_recovery())
+        cov = get_matrix()
+        meta = cov.get("meta", {})
+        ep_map = {ep["id"]: ep["path"] for ep in cov.get("endpoints", [])}
+
+        # Top 5 pending cells by injection priority for the checkpoint
+        priority_order = ["sqli", "xss", "ssti", "cmdi", "ssrf", "idor"]
+        pending = [c for c in cov.get("matrix", []) if c["status"] in ("pending", "in_progress")]
+        pending.sort(key=lambda c: (
+            priority_order.index(c["injection_type"]) if c["injection_type"] in priority_order else 99,
+            0 if c["status"] == "in_progress" else 1,
+        ))
+        recovery["checkpoint"] = {
+            "seq":           seq,
+            "ts":            __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
+            "depth":         current.get("depth", ""),
+            "phase":         current.get("phase", ""),
+            "active_skill":  current.get("skill", ""),
+            "coverage":      f"{meta.get('tested', 0)}/{meta.get('total_cells', 0)}",
+            "top_pending":   [
+                {
+                    "cell_id":   c["id"],
+                    "endpoint":  ep_map.get(c["endpoint_id"], "?"),
+                    "param":     c["param"],
+                    "injection": c["injection_type"],
+                    "status":    c["status"],
+                }
+                for c in pending[:5]
+            ],
+        }
+        snap.write_text(json.dumps(recovery, indent=2), encoding="utf-8")
     except Exception:
         pass
 
@@ -261,18 +328,20 @@ def _maybe_write_recovery_snapshot(scan_session: Any) -> None:
 # P5.6 — Steering directive injection
 # ---------------------------------------------------------------------------
 
-def _inject_steering_directives(env: Envelope) -> None:
+def _inject_steering_directives(env: Envelope) -> bool:
     """Inject pending QA steering directives into the envelope.
 
-    Pending directives are injected into warnings. High-priority directives are
-    also prepended to the summary so the model sees them immediately.
-    Each directive is marked injected after surfacing so the audit trail is accurate.
+    High-priority directives are prepended to the summary so the model sees them
+    immediately. All directives appear in warnings for the audit trail.
+    Each directive is marked injected after surfacing.
+
+    Returns True if any directive was injected (used to suppress QA alert prepend).
     """
     try:
         from core.steering import steering_queue
         pending = steering_queue.get_pending()
         if not pending:
-            return
+            return False
         for directive in pending:
             env.warnings.append(f"[QA STEER {directive.priority.upper()}] {directive.message}")
             if directive.priority == "high":
@@ -282,8 +351,9 @@ def _inject_steering_directives(env: Envelope) -> None:
                     + env.summary
                 )
             steering_queue.mark_injected(directive.id)
+        return True
     except Exception:
-        pass  # steering failures must never break tool dispatch
+        return False  # steering failures must never break tool dispatch
 
 
 def _inject_duplicate_warning(env: Envelope, tool: str) -> None:
@@ -308,13 +378,14 @@ def _inject_duplicate_warning(env: Envelope, tool: str) -> None:
 # P5 — QA alert injection
 # ---------------------------------------------------------------------------
 
-def _inject_qa_alerts_into_envelope(env: Envelope) -> None:
-    """Read qa_state.json and inject new alerts into the envelope.
+def _inject_qa_alerts_into_envelope(env: Envelope, suppress_summary_prepend: bool = False) -> None:
+    """Read qa_state.json and inject high-urgency alerts into the envelope.
 
-    High urgency  → appended to env.warnings AND prepended to env.summary.
-                    The model sees it whether it reads summary or warnings.
-    Medium urgency → env.warnings only (dashboard-visible, not summary-loud).
-    Low urgency   → skipped entirely (dashboard-only, not model-facing).
+    High urgency  → appended to env.warnings AND (unless suppressed) prepended to
+                    env.summary. Summary prepend is suppressed when a steering directive
+                    already owns that slot — one ⚠ header at a time.
+    Medium urgency → skipped (dashboard-only; not model-facing).
+    Low urgency   → skipped (dashboard-only; not model-facing).
 
     Uses a module-level timestamp so each alert is shown exactly once across
     consecutive tool calls, not repeated on every response.
@@ -327,19 +398,16 @@ def _inject_qa_alerts_into_envelope(env: Envelope) -> None:
         ts = state.get("ts", "")
         if not ts or ts <= _last_qa_shown_ts:
             return
-        alerts = [a for a in state.get("alerts", []) if a.get("urgency") in ("high", "medium")]
-        if not alerts:
+        high = [a for a in state.get("alerts", []) if a.get("urgency") == "high"]
+        if not high:
             _last_qa_shown_ts = ts
             return
         _last_qa_shown_ts = ts
 
-        # Structured entries into warnings[]
-        for a in alerts:
-            env.warnings.append(f"[QA {a['urgency'].upper()}] {a['message']}")
+        for a in high:
+            env.warnings.append(f"[QA HIGH] {a['message']}")
 
-        # High urgency: also surface in summary so no model misses it
-        high = [a for a in alerts if a.get("urgency") == "high"]
-        if high:
+        if not suppress_summary_prepend:
             alert_text = " | ".join(a["message"] for a in high)
             env.summary = (
                 f"⚠ QA ALERT: {alert_text}\n"
@@ -354,12 +422,15 @@ def _inject_qa_alerts_into_envelope(env: Envelope) -> None:
 # P6 — Quick log
 # ---------------------------------------------------------------------------
 
-def _quick_log_tool(tool: str, ctx: dict, summarizer_summary: str) -> None:
+def _quick_log_tool(tool: str, ctx: dict, summarizer_summary: str, result: Any = None) -> None:
     """Fire-and-forget quick_log entry. Called from within an async tool handler
     so asyncio.get_running_loop() is always available.
 
     Uses the summarizer's summary (before QA injection) so the log reflects
     what the tool actually found, not the alert state.
+
+    status_code and error fields are extracted from result.evidence when available
+    so the QA daemon can detect auth failures, unreachable targets, and tool failures.
     """
     import asyncio
     import re as _re
@@ -375,7 +446,39 @@ def _quick_log_tool(tool: str, ctx: dict, summarizer_summary: str) -> None:
             }
         else:
             entry = {"type": "TOOL", "name": tool, "target": target}
+            # Enrich http_request entries with status_code for auth failure detection
+            if result is not None and tool == "http_request":
+                ev = result.evidence or {}
+                sc = ev.get("status", 0)
+                if sc:
+                    entry["status_code"] = int(sc)
+            # Mark failed tool calls so QA can detect unreachable targets / repeated failures
+            if result is not None:
+                ev = result.evidence or {}
+                is_error = bool(
+                    ev.get("error")
+                    or (tool == "http_request" and int(ev.get("status", 200) or 200) == 0)
+                    or (result.anomalies and any("error" in str(a).lower() or "timeout" in str(a).lower() or "unreachable" in str(a).lower() for a in result.anomalies))
+                )
+                if is_error:
+                    entry["error"] = True
         loop = asyncio.get_running_loop()
         loop.create_task(_qlog.append(entry))
     except Exception:
         pass  # quick_log failures must never affect tool dispatch
+
+
+# ---------------------------------------------------------------------------
+# State compaction — strip fields the model doesn't need on every response
+# ---------------------------------------------------------------------------
+
+def _compact_state(state: dict) -> dict:
+    """Return a fingerprint of scan state for embedding in the envelope.
+
+    Drops `tools_run` (grows unboundedly, not useful per-response) and
+    `time_pct` (low-value scalar). Anything Smith needs beyond this is one
+    session(action='status') call away.
+    """
+    keep = ("target", "phase", "active_skill", "coverage", "findings",
+            "calls_used", "pending_escalations", "in_progress_cells")
+    return {k: state[k] for k in keep if k in state}
