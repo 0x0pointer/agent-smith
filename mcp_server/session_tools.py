@@ -163,7 +163,7 @@ def _reset_coverage_matrix(target: str, prev_target: str, has_data: bool) -> boo
     import shutil
 
     if prev_target and prev_target != target and has_data:
-        # Different target — archive the old matrix and wipe quick_log + qa_state
+        # Different target — archive the old matrix AND archive (not delete) quick_log + qa_state
         ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         archive_dir = COVERAGE_FILE.parent / "logs"
         archive_dir.mkdir(exist_ok=True)
@@ -172,7 +172,10 @@ def _reset_coverage_matrix(target: str, prev_target: str, has_data: bool) -> boo
         log.note(f"Coverage matrix archived to {archive_path.name} (previous target: {prev_target})")
         for stale in ("quick_log.json", _QA_STATE_FILENAME):
             p = COVERAGE_FILE.parent / stale
-            p.unlink(missing_ok=True)
+            if p.exists():
+                archive_stale = archive_dir / f"{p.stem}_{ts}.json"
+                shutil.copy2(p, archive_stale)
+                p.unlink()
         _cov_save({
             "meta": {
                 "created": datetime.now(timezone.utc).isoformat(),
@@ -183,8 +186,8 @@ def _reset_coverage_matrix(target: str, prev_target: str, has_data: bool) -> boo
             "endpoints": [],
             "matrix": [],
         })
-    elif not has_data:
-        # Empty matrix — just set the target
+    elif not has_data and not COVERAGE_FILE.exists():
+        # No coverage file at all — create an empty one
         _cov_save({
             "meta": {
                 "created": datetime.now(timezone.utc).isoformat(),
@@ -1025,12 +1028,6 @@ def _do_complete(opts):
     _complete_attempts = 0
     _analysis_passes = 0
     _record_metrics(data, [], force_completed=False)
-    # Clean up old artifacts (older than 24h) to prevent unbounded disk growth
-    try:
-        from mcp_server.scan_engine.artifacts import cleanup_artifacts
-        cleanup_artifacts(max_age_hours=24)
-    except Exception:
-        pass
     return f"Scan marked {status}. session.json updated. STOP — do not call any more tools. The scan is done."
 
 
