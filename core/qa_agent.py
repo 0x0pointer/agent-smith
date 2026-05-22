@@ -1,6 +1,6 @@
 """
-QA Agent
-========
+QA Agent — depth enforcer
+=========================
 Depth-enforcement daemon. Runs every 2 minutes during an active scan.
 
 Focus: push Smith to go deeper, not cut corners, and complete full scan cycles.
