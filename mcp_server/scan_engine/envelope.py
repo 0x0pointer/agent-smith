@@ -422,6 +422,41 @@ def _inject_qa_alerts_into_envelope(env: Envelope, suppress_summary_prepend: boo
 # P6 — Quick log
 # ---------------------------------------------------------------------------
 
+def _build_quick_log_entry(tool: str, target: str, summarizer_summary: str, result: Any) -> dict:
+    """Build and return the quick_log entry dict for a tool call.
+
+    Handles the spider vs TOOL branching, status_code extraction, and error
+    detection. Extracted from _quick_log_tool to reduce cognitive complexity.
+    """
+    import re as _re
+    if tool == "spider":
+        m = _re.search(r'(\d+)\s+unique\s+endpoint', summarizer_summary, _re.IGNORECASE)
+        return {
+            "type": "SPIDER",
+            "target": target,
+            "endpoints_found": int(m.group(1)) if m else 0,
+        }
+
+    entry: dict = {"type": "TOOL", "name": tool, "target": target}
+    # Enrich http_request entries with status_code for auth failure detection
+    if result is not None and tool == "http_request":
+        ev = result.evidence or {}
+        sc = ev.get("status", 0)
+        if sc:
+            entry["status_code"] = int(sc)
+    # Mark failed tool calls so QA can detect unreachable targets / repeated failures
+    if result is not None:
+        ev = result.evidence or {}
+        is_error = bool(
+            ev.get("error")
+            or (tool == "http_request" and int(ev.get("status", 200) or 200) == 0)
+            or (result.anomalies and any("error" in str(a).lower() or "timeout" in str(a).lower() or "unreachable" in str(a).lower() for a in result.anomalies))
+        )
+        if is_error:
+            entry["error"] = True
+    return entry
+
+
 def _quick_log_tool(tool: str, ctx: dict, summarizer_summary: str, result: Any = None) -> None:
     """Fire-and-forget quick_log entry. Called from within an async tool handler
     so asyncio.get_running_loop() is always available.
@@ -433,35 +468,10 @@ def _quick_log_tool(tool: str, ctx: dict, summarizer_summary: str, result: Any =
     so the QA daemon can detect auth failures, unreachable targets, and tool failures.
     """
     import asyncio
-    import re as _re
     try:
         from core.quick_log import quick_log as _qlog
         target = ctx.get("url", ctx.get("host", ctx.get("domain", ctx.get("path", ""))))
-        if tool == "spider":
-            m = _re.search(r'(\d+)\s+unique\s+endpoint', summarizer_summary, _re.IGNORECASE)
-            entry: dict = {
-                "type": "SPIDER",
-                "target": target,
-                "endpoints_found": int(m.group(1)) if m else 0,
-            }
-        else:
-            entry = {"type": "TOOL", "name": tool, "target": target}
-            # Enrich http_request entries with status_code for auth failure detection
-            if result is not None and tool == "http_request":
-                ev = result.evidence or {}
-                sc = ev.get("status", 0)
-                if sc:
-                    entry["status_code"] = int(sc)
-            # Mark failed tool calls so QA can detect unreachable targets / repeated failures
-            if result is not None:
-                ev = result.evidence or {}
-                is_error = bool(
-                    ev.get("error")
-                    or (tool == "http_request" and int(ev.get("status", 200) or 200) == 0)
-                    or (result.anomalies and any("error" in str(a).lower() or "timeout" in str(a).lower() or "unreachable" in str(a).lower() for a in result.anomalies))
-                )
-                if is_error:
-                    entry["error"] = True
+        entry = _build_quick_log_entry(tool, target, summarizer_summary, result)
         loop = asyncio.get_running_loop()
         loop.create_task(_qlog.append(entry))
     except Exception:

@@ -406,7 +406,7 @@ async def api_intervention_respond(request: Request) -> JSONResponse:
         )
         return JSONResponse({"ok": True, "resumed": True, "instruction": human_instruction})
     except Exception as exc:
-        _log.error("api_intervention_respond failed: %s", exc)
+        _log.exception("api_intervention_respond failed: %s", exc)
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
 
 
@@ -432,7 +432,7 @@ async def api_steer(request: Request) -> JSONResponse:
         )
         return JSONResponse({"ok": True})
     except Exception as exc:
-        _log.error("api_steer failed: %s", exc)
+        _log.exception("api_steer failed: %s", exc)
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
 
 
