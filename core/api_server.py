@@ -493,6 +493,7 @@ async def api_restart_smith() -> JSONResponse:
             directive_text = "\n\nAct on these pending human instructions immediately after recovery:\n" + \
                 "\n".join(f"- {d.message}" for d in active)
 
+        from core import session as scan_session
         # Resolve any active intervention so Smith isn't blocked from calling tools
         current = scan_session.get() or {}
         if current.get("status") == "intervention_required":
@@ -511,8 +512,10 @@ async def api_restart_smith() -> JSONResponse:
         log_path = _REPO_ROOT / "logs" / "smith_restart.log"
         log_path.parent.mkdir(exist_ok=True)
 
+        import shutil
+        claude_bin = shutil.which("claude") or "/opt/homebrew/bin/claude"
         proc = await asyncio.create_subprocess_exec(
-            "claude", "--dangerously-skip-permissions", "-p", prompt,
+            claude_bin, "--dangerously-skip-permissions", "-p", prompt,
             stdout=open(log_path, "a"),
             stderr=open(log_path, "a"),
             cwd=str(_REPO_ROOT),

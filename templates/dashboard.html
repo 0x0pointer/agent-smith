@@ -177,6 +177,11 @@
     .cmd-scan-status.complete      { color: var(--purple); }
     .cmd-scan-status.intervention  { color: #f97316; animation: blink 1.5s infinite; }
     .cmd-scan-status.limit_reached { color: #ff4d4f; }
+    .cmd-status-sep { color: var(--muted); margin: 0 0.35rem; }
+    .cmd-smith-process-status { font-weight: 700; }
+    .cmd-smith-process-unknown { color: var(--muted); }
+    .cmd-smith-process-running { color: var(--green); }
+    .cmd-smith-process-stopped { color: #ff4d4f; animation: blink 1.5s infinite; }
 
     /* ── Smith command panel ── */
     .cmd-smith-panel {
@@ -971,8 +976,11 @@
       </div>
     </div>
     <div class="cmd-status-right">
-      <span class="cmd-dim">status </span>
+      <span class="cmd-dim">scan </span>
       <strong id="cmd-scan-status" class="cmd-scan-status">—</strong>
+      <span class="cmd-status-sep">·</span>
+      <span class="cmd-dim">smith </span>
+      <strong id="cmd-smith-process-status" class="cmd-smith-process-status cmd-smith-process-unknown">—</strong>
     </div>
   </div>
   <div class="cmd-smith-panel">
@@ -1476,6 +1484,20 @@
         fetch(`/api/session?_=${Date.now()}`).then(r => r.json()).catch(() => ({})),
         fetch(`/api/smith-status?_=${Date.now()}`).then(r => r.json()).catch(() => ({running: false})),
       ]);
+
+      // Update Smith process status badge
+      const processEl = document.getElementById('cmd-smith-process-status');
+      if (processEl) {
+        if (smithRes.running) {
+          processEl.textContent = 'running';
+          processEl.className = 'cmd-smith-process-status cmd-smith-process-running';
+        } else {
+          processEl.textContent = 'stopped';
+          processEl.className = 'cmd-smith-process-status cmd-smith-process-stopped';
+        }
+      }
+
+      // Show/hide restart button
       const restartBtn = document.getElementById('cmd-restart-btn');
       const hint       = document.getElementById('cmd-smith-status-hint');
       if (!restartBtn) return;
