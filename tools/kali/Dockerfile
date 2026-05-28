@@ -2,38 +2,47 @@ FROM kalilinux/kali-rolling@sha256:287cd5cfa409e258e9ec3661db4dff0bfbb45fc95734e
 
 ENV DEBIAN_FRONTEND=noninteractive
 
+# Bootstrap CA certs over HTTP, then switch mirror to HTTPS for all subsequent layers.
+# This avoids 404s from out-of-sync round-robin mirrors (http.kali.org) while keeping
+# all package downloads encrypted once the cert store is in place.
+RUN echo "deb http://kali.download/kali kali-rolling main contrib non-free non-free-firmware" > /etc/apt/sources.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && echo "deb https://kali.download/kali kali-rolling main contrib non-free non-free-firmware" > /etc/apt/sources.list
+
 # Core apt tools — split into layers so a single failed package doesn't abort everything
 
 # Layer 1: network scanning
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get install -y --no-install-recommends --fix-missing \
     nmap masscan hping3 arp-scan nbtscan fping ncat tcpdump tshark \
     && rm -rf /var/lib/apt/lists/*
 
 # Layer 2: DNS / subdomain
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get install -y --no-install-recommends --fix-missing \
     dnsrecon dnsenum fierce dmitry dnstwist dnsmap whois bind9-dnsutils \
     && rm -rf /var/lib/apt/lists/*
 
 # Layer 3: web scanning + exploit-db + php (for running PHP exploits)
 # wpscan — WordPress plugin/theme/core CVE scanner (the authoritative source
 #   for WordPress plugin vulnerabilities — nuclei templates are incomplete)
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get install -y --no-install-recommends --fix-missing \
     nikto sqlmap whatweb wafw00f wapiti commix xsser davtest skipfish \
     zaproxy exploitdb php-cli wpscan \
     && rm -rf /var/lib/apt/lists/*
 
 # Layer 4: web fuzzing / discovery
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get install -y --no-install-recommends --fix-missing \
     ffuf gobuster feroxbuster dirb dirsearch wfuzz \
     && rm -rf /var/lib/apt/lists/*
 
 # Layer 5: SSL / TLS
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get install -y --no-install-recommends --fix-missing \
     sslscan sslyze testssl.sh openssl \
     && rm -rf /var/lib/apt/lists/*
 
 # Layer 6: credential testing
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get install -y --no-install-recommends --fix-missing \
     hydra ncrack john cewl crunch medusa \
     && rm -rf /var/lib/apt/lists/*
 
@@ -41,7 +50,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # rpcclient is bundled inside smbclient; ldapdomaindump is pip-only
 # certipy-ad — ADCS enumeration and exploitation (ESC1-ESC8)
 # bloodhound — BloodHound ingestor for AD attack path mapping
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get install -y --no-install-recommends --fix-missing \
     smbmap smbclient samba-common-bin impacket-scripts \
     enum4linux-ng netexec ldap-utils python3-pip \
     && rm -rf /var/lib/apt/lists/* \
@@ -50,20 +59,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Layer 8: service enumeration
 # snmpwalk is bundled in the snmp package; snmp-check not available on arm64
 # default-mysql-client — MySQL/MariaDB CLI for database enumeration and credential extraction
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get install -y --no-install-recommends --fix-missing \
     ssh-audit redis-tools snmp onesixtyone swaks \
     smtp-user-enum ike-scan finger rpcbind \
     default-mysql-client \
     && rm -rf /var/lib/apt/lists/*
 
 # Layer 9: OSINT / recon
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get install -y --no-install-recommends --fix-missing \
     theharvester nfs-common lbd \
     && rm -rf /var/lib/apt/lists/*
 
 # Layer 10: network utilities + wordlists + document tools + cross-compilation
 # gcc-mingw-w64 — cross-compile C exploits to Windows EXE/DLL from Kali
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get install -y --no-install-recommends --fix-missing \
     socat proxychains4 curl wget \
     seclists wordlists \
     gcc gcc-mingw-w64 unrar p7zip-full \
@@ -72,13 +81,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Optional: gcc-multilib (amd64 only) + freerdp (xfreerdp for RDP)
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends gcc-multilib 2>/dev/null || true \
-    && apt-get install -y --no-install-recommends freerdp2-x11 2>/dev/null \
-    || apt-get install -y --no-install-recommends xfreerdp 2>/dev/null || true \
+    && apt-get install -y --no-install-recommends --fix-missing gcc-multilib 2>/dev/null || true \
+    && apt-get install -y --no-install-recommends --fix-missing freerdp2-x11 2>/dev/null \
+    || apt-get install -y --no-install-recommends --fix-missing xfreerdp 2>/dev/null || true \
     && rm -rf /var/lib/apt/lists/*
 
 # ProjectDiscovery tools via apt (katana not in arm64 repo — installed via pre-built binary)
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get install -y --no-install-recommends --fix-missing \
     naabu httpx-toolkit subfinder amass dnsx nuclei \
     && rm -rf /var/lib/apt/lists/*
 
@@ -94,14 +103,14 @@ RUN ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') \
 
 # Official Kali MCP server — provides POST /api/command (and per-tool endpoints)
 # on port 5000. Replaces our hand-rolled server.py.
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get install -y --no-install-recommends --fix-missing \
     mcp-kali-server \
     && rm -rf /var/lib/apt/lists/*
 
 # AI red-teaming: Microsoft PyRIT + thin CLI runner
 # pyrit-runner wraps the PyRIT SDK for scripted multi-turn adversarial attacks.
 # base2048 (PyRIT dep) requires Rust to compile — install, build, then clean up.
-RUN apt-get update && apt-get install -y --no-install-recommends rustc cargo \
+RUN apt-get update && apt-get install -y --no-install-recommends --fix-missing rustc cargo \
     && rm -rf /var/lib/apt/lists/* \
     && pip3 install --no-cache-dir --ignore-installed pyrit==0.11.0 --break-system-packages \
     && apt-get purge -y rustc cargo \
@@ -116,14 +125,14 @@ RUN chmod +x /usr/local/bin/pyrit-runner
 # AI red-teaming: NVIDIA Garak — LLM vulnerability scanner (probe-based)
 # Installed in a venv to avoid conflicts with Debian-managed packages (no RECORD file).
 # --system-site-packages inherits system packages so only the delta is fetched.
-RUN apt-get update && apt-get install -y --no-install-recommends python3-venv \
+RUN apt-get update && apt-get install -y --no-install-recommends --fix-missing python3-venv \
     && rm -rf /var/lib/apt/lists/* \
     && python3 -m venv /opt/garak-venv --system-site-packages \
     && /opt/garak-venv/bin/pip install --no-cache-dir garak==0.15.0 \
     && ln -sf /opt/garak-venv/bin/garak /usr/local/bin/garak
 
 # AI red-teaming: promptfoo — LLM eval + red-team framework (npm)
-RUN apt-get update && apt-get install -y --no-install-recommends nodejs npm \
+RUN apt-get update && apt-get install -y --no-install-recommends --fix-missing nodejs npm \
     && rm -rf /var/lib/apt/lists/* \
     && npm install -g promptfoo@0.121.2
 
@@ -147,7 +156,7 @@ RUN git clone --depth=1 https://github.com/ambionics/phpggc /opt/phpggc \
 # kube-bench — CIS Kubernetes Benchmark auditor
 # kubectl — Kubernetes CLI (for K8s assessments from inside Kali)
 # dive — Docker image layer explorer (installed from GitHub release)
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get install -y --no-install-recommends --fix-missing \
     trivy kubectl \
     && rm -rf /var/lib/apt/lists/*
 
@@ -176,17 +185,17 @@ RUN ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') \
 RUN pip3 install --no-cache-dir awscli==1.44.63 --break-system-packages || true
 
 # Azure CLI
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get install -y --no-install-recommends --fix-missing \
     ca-certificates curl apt-transport-https lsb-release gnupg \
     && curl -sL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor > /etc/apt/keyrings/microsoft.gpg \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/microsoft.gpg] https://packages.microsoft.com/repos/azure-cli/ $(lsb_release -cs) main" > /etc/apt/sources.list.d/azure-cli.list \
-    && apt-get update && apt-get install -y --no-install-recommends azure-cli \
+    && apt-get update && apt-get install -y --no-install-recommends --fix-missing azure-cli \
     && rm -rf /var/lib/apt/lists/* || true
 
 # GCP CLI
 RUN echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" > /etc/apt/sources.list.d/google-cloud-sdk.list \
     && curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg \
-    && apt-get update && apt-get install -y --no-install-recommends google-cloud-cli \
+    && apt-get update && apt-get install -y --no-install-recommends --fix-missing google-cloud-cli \
     && rm -rf /var/lib/apt/lists/* || true
 
 # Prowler (AWS/Azure/GCP security auditor) + ScoutSuite (multi-cloud auditor)

@@ -237,6 +237,32 @@
       font-size: 0.69rem; color: var(--green); margin-top: 0.3rem;
       min-height: 1em; font-family: 'IBM Plex Mono', monospace;
     }
+    .cmd-smith-complete-row {
+      display: flex; align-items: center; gap: 0.75rem;
+      margin-top: 0.75rem; padding-top: 0.65rem;
+      border-top: 1px solid var(--border);
+    }
+    .cmd-smith-complete-btn {
+      flex-shrink: 0;
+      background: var(--green); color: #0d1117; border: none;
+      border-radius: 6px; padding: 0.4rem 0.9rem;
+      font-size: 0.78rem; font-weight: 600; cursor: pointer;
+      transition: background 0.15s, opacity 0.15s;
+    }
+    .cmd-smith-complete-btn:hover   { background: #3fb950; }
+    .cmd-smith-complete-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+    .cmd-smith-restart-btn {
+      flex-shrink: 0;
+      background: #f97316; color: #0d1117; border: none;
+      border-radius: 6px; padding: 0.4rem 0.9rem;
+      font-size: 0.78rem; font-weight: 600; cursor: pointer;
+      transition: background 0.15s, opacity 0.15s;
+    }
+    .cmd-smith-restart-btn:hover    { background: #ea6c0a; }
+    .cmd-smith-restart-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+    .cmd-smith-complete-hint {
+      font-size: 0.68rem; color: var(--muted); line-height: 1.35;
+    }
 
     /* ── Activity tab ── */
     .activity-section { margin-bottom: 1.5rem; }
@@ -967,6 +993,15 @@
       <span class="cmd-chip" onclick="setSmithChip('Summarize all findings discovered so far')">Summarize findings</span>
     </div>
     <div id="cmd-smith-feedback" class="cmd-smith-feedback"></div>
+    <div class="cmd-smith-complete-row">
+      <button class="cmd-smith-restart-btn" id="cmd-restart-btn" onclick="restartSmith()" style="display:none">
+        &#9654; Restart Smith
+      </button>
+      <button class="cmd-smith-complete-btn" id="cmd-complete-btn" onclick="completeScan()">
+        &#10003; Complete Scan
+      </button>
+      <span class="cmd-smith-complete-hint" id="cmd-smith-status-hint">Only you can end the scan — Smith will keep testing until you do.</span>
+    </div>
   </div>
 </div>
 
@@ -1406,6 +1441,84 @@
       }
     } catch(e) { if (fb) fb.textContent = '✗ Request failed'; }
     if (btn) btn.disabled = false;
+  }
+
+  async function restartSmith() {
+    const btn = document.getElementById('cmd-restart-btn');
+    const fb  = document.getElementById('cmd-smith-feedback');
+    const hint = document.getElementById('cmd-smith-status-hint');
+    if (btn) btn.disabled = true;
+    if (fb)  fb.textContent = 'Starting Smith…';
+    try {
+      const r = await fetch('/api/restart-smith', { method: 'POST' });
+      const res = await r.json();
+      if (res.ok) {
+        if (fb)   fb.textContent = '✓ Smith restarted (PID ' + res.pid + ')';
+        if (btn)  btn.style.display = 'none';
+        if (hint) hint.textContent = 'Smith is running — only you can end the scan.';
+        // Immediately refresh status badge, HIR panel, and intervention state
+        pollSession();
+        pollIntervention();
+        setTimeout(() => { if (fb) fb.textContent = ''; }, 4000);
+      } else {
+        if (fb)  fb.textContent = '✗ ' + (res.error || 'Failed');
+        if (btn) btn.disabled = false;
+      }
+    } catch(e) {
+      if (fb)  fb.textContent = '✗ Request failed';
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  async function _pollSmithStatus() {
+    try {
+      const [sessionRes, smithRes] = await Promise.all([
+        fetch(`/api/session?_=${Date.now()}`).then(r => r.json()).catch(() => ({})),
+        fetch(`/api/smith-status?_=${Date.now()}`).then(r => r.json()).catch(() => ({running: false})),
+      ]);
+      const restartBtn = document.getElementById('cmd-restart-btn');
+      const hint       = document.getElementById('cmd-smith-status-hint');
+      if (!restartBtn) return;
+
+      const scanActive = ['running', 'intervention_required'].includes(sessionRes?.status);
+      if (scanActive && !smithRes.running) {
+        restartBtn.style.display = 'inline-block';
+        if (hint) hint.textContent = 'Smith has stopped — restart it to continue the scan.';
+      } else {
+        restartBtn.style.display = 'none';
+        if (hint) hint.textContent = 'Only you can end the scan — Smith will keep testing until you do.';
+      }
+    } catch(e) {}
+  }
+
+  // Poll Smith process status every 10s
+  setInterval(_pollSmithStatus, 10000);
+  _pollSmithStatus();
+
+  async function completeScan() {
+    const btn = document.getElementById('cmd-complete-btn');
+    const fb  = document.getElementById('cmd-smith-feedback');
+    if (!confirm('Mark this scan as complete? Smith will stop testing.')) return;
+    if (btn) btn.disabled = true;
+    if (fb)  fb.textContent = 'Completing scan…';
+    try {
+      const r = await fetch('/api/complete', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({notes: 'Completed by human operator via dashboard'}),
+      });
+      const res = await r.json();
+      if (res.ok) {
+        if (fb) fb.textContent = '✓ Scan marked complete';
+        if (btn) btn.textContent = '✓ Completed';
+      } else {
+        if (fb) fb.textContent = '✗ Failed: ' + (res.error || 'unknown');
+        if (btn) btn.disabled = false;
+      }
+    } catch(e) {
+      if (fb) fb.textContent = '✗ Request failed';
+      if (btn) btn.disabled = false;
+    }
   }
 
   // ── Command center rendering ──────────────────────────────────────────────
@@ -2014,7 +2127,6 @@
   }
 
   async function pollCoverage() {
-    if (scanDone) return;
     try {
       const r = await fetch(`/api/coverage?_=${Date.now()}`);
       if (!r.ok) return;

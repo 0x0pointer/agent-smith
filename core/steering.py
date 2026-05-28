@@ -80,19 +80,22 @@ class SteeringQueue:
         priority: str = "high",
         skill: str | None = None,
         trigger: str = "",
+        force: bool = False,
     ) -> str | None:
         """Add a directive. Returns id if created, None if deduped.
 
         Dedup rule: skip if same code+skill already has status pending or injected.
+        Pass force=True to bypass dedup (used for human steering instructions).
         """
         directives = self._load()
-        for d in directives:
-            if (
-                d.get("code") == code
-                and d.get("skill") == skill
-                and d.get("status") in ("pending", "injected")
-            ):
-                return None  # already active — don't duplicate
+        if not force:
+            for d in directives:
+                if (
+                    d.get("code") == code
+                    and d.get("skill") == skill
+                    and d.get("status") in ("pending", "injected")
+                ):
+                    return None  # already active — don't duplicate
 
         directive_id = f"steer-{uuid.uuid4().hex[:8]}"
         directive = {

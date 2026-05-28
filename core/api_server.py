@@ -39,6 +39,7 @@ _QUICK_LOG_FILE    = _REPO_ROOT / "quick_log.json"
 _METRICS_FILE      = _REPO_ROOT / "pentest_metrics.jsonl"
 _TEMPLATES_DIR     = _REPO_ROOT / "templates"
 _THREAT_MODEL_DIR  = _REPO_ROOT / "threat-model"
+_SMITH_PID_FILE    = _REPO_ROOT / "logs" / "smith.pid"
 
 # ── FastAPI app ───────────────────────────────────────────────────────────────
 
@@ -431,11 +432,97 @@ async def api_steer(request: Request) -> JSONResponse:
             priority="high",
             skill=None,
             trigger="HUMAN_STEER",
+            force=True,  # human instructions always go through — never deduped
         )
         return JSONResponse({"ok": True})
     except Exception:
         _log.exception("api_steer failed")
         return JSONResponse({"ok": False, "error": "Request failed"}, status_code=500)
+
+
+@app.post("/api/complete")
+async def api_complete(request: Request) -> JSONResponse:
+    """Human-triggered scan completion.
+
+    Only this endpoint (called from the dashboard) can mark a scan complete.
+    Smith cannot complete a scan autonomously — session(action='complete') is blocked.
+    Body: {"notes": "optional completion notes"}
+    """
+    try:
+        body  = await request.json()
+        notes = str(body.get("notes", "")).strip()
+        cfg   = scan_session.complete(notes)
+        status = cfg.get("status", "complete")
+        return JSONResponse({"ok": True, "status": status})
+    except Exception:
+        _log.exception("api_complete failed")
+        return JSONResponse({"ok": False, "error": "Request failed"}, status_code=500)
+
+
+def _smith_running() -> bool:
+    """Return True if the tracked Smith (claude) process is still alive."""
+    try:
+        pid = int(_SMITH_PID_FILE.read_text().strip())
+        os.kill(pid, 0)  # signal 0 = existence check
+        return True
+    except Exception:
+        return False
+
+
+@app.get("/api/smith-status")
+async def api_smith_status() -> JSONResponse:
+    return JSONResponse({"running": _smith_running()})
+
+
+@app.post("/api/restart-smith")
+async def api_restart_smith() -> JSONResponse:
+    """Spawn a new claude process to continue the active scan.
+
+    Builds a recovery prompt that includes any pending HUMAN_STEER directives
+    so Smith acts on them immediately after recovering its position.
+    Blocked when Smith is already running to prevent duplicate sessions.
+    """
+    if _smith_running():
+        return JSONResponse({"ok": False, "error": "Smith is already running"}, status_code=409)
+
+    try:
+        from core.steering import steering_queue
+        active = steering_queue.get_active()
+        directive_text = ""
+        if active:
+            directive_text = "\n\nAct on these pending human instructions immediately after recovery:\n" + \
+                "\n".join(f"- {d.message}" for d in active)
+
+        # Resolve any active intervention so Smith isn't blocked from calling tools
+        current = scan_session.get() or {}
+        if current.get("status") == "intervention_required":
+            scan_session.resolve_intervention(
+                "CONTINUE",
+                "Smith restarted by human operator via dashboard",
+            )
+
+        prompt = (
+            "Recover the active pentest scan. "
+            "Call session(action='recovery') to get your current position "
+            "and continue from its EXECUTE_NOW field."
+            + directive_text
+        )
+
+        log_path = _REPO_ROOT / "logs" / "smith_restart.log"
+        log_path.parent.mkdir(exist_ok=True)
+
+        proc = await asyncio.create_subprocess_exec(
+            "claude", "--dangerously-skip-permissions", "-p", prompt,
+            stdout=open(log_path, "a"),
+            stderr=open(log_path, "a"),
+            cwd=str(_REPO_ROOT),
+            start_new_session=True,
+        )
+        _SMITH_PID_FILE.write_text(str(proc.pid))
+        return JSONResponse({"ok": True, "pid": proc.pid})
+    except Exception:
+        _log.exception("restart-smith failed")
+        return JSONResponse({"ok": False, "error": "Failed to start Smith"}, status_code=500)
 
 
 @app.get("/api/qa")

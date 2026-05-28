@@ -1022,13 +1022,45 @@ def _do_complete(opts):
         )
         return msg
 
-    cfg = scan_session.complete(notes)
-    status = cfg.get("status", "complete")
-    log.note(f"Scan complete — {notes}")
+    # Only the human operator can mark a scan complete.
+    # Smith passes all quality gates here — the scan is ready — but completion
+    # is deliberately reserved for the human via the dashboard "Complete Scan"
+    # button or the Instruct Smith panel.
+    log.note(
+        f"complete() called by Smith (attempt {_complete_attempts}) — "
+        "all quality gates passed; awaiting human completion via dashboard."
+    )
     _complete_attempts = 0
     _analysis_passes = 0
-    _record_metrics(data, [], force_completed=False)
-    return f"Scan marked {status}. session.json updated. STOP — do not call any more tools. The scan is done."
+
+    # Inject any active steering directives directly into this response so
+    # Smith sees them immediately without needing another tool call.
+    # (session() bypasses the envelope pipeline, so directives won't reach
+    # Smith otherwise if it stops making scan tool calls here.)
+    try:
+        from core.steering import steering_queue
+        active = steering_queue.get_active()
+        if active:
+            directive_lines = "\n".join(
+                f"  ⚠ STEERING [{d.priority.upper()}]: {d.message}" for d in active
+            )
+            steering_queue.mark_injected(active[0].id)
+            return (
+                "All quality gates passed — the scan is ready for completion. "
+                "Only the human operator can mark this scan complete via the dashboard. "
+                "Do NOT call session(action='complete') again.\n\n"
+                f"PENDING HUMAN INSTRUCTIONS — act on these now:\n{directive_lines}"
+            )
+    except Exception:
+        pass
+
+    return (
+        "All quality gates passed — the scan is ready for completion. "
+        "Only the human operator can mark this scan complete via the dashboard. "
+        "Do NOT call session(action='complete') again. "
+        "Continue testing additional endpoints or deepen existing findings "
+        "until the human sends an instruction via the dashboard."
+    )
 
 
 def _record_metrics(findings_data: dict, completion_blockers: list[str], force_completed: bool) -> None:

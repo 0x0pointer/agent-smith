@@ -1,0 +1,55 @@
+name: Release Bundle
+
+# Triggered when a GitHub release is published (pre-release or full release).
+# Builds a zip that includes the skills submodule content — the default
+# GitHub-generated tarball skips submodules, leaving skills/ empty.
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write   # needed to upload release assets
+
+jobs:
+  bundle:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          submodules: recursive   # pulls skills/ and any nested submodules
+          fetch-depth: 0
+
+      - name: Build release archive
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          ARCHIVE="agent-smith-${VERSION}.zip"
+
+          zip -r "$ARCHIVE" . \
+            --exclude "*.git*" \
+            --exclude ".env" \
+            --exclude ".env.*" \
+            --exclude "__pycache__/*" \
+            --exclude "*.pyc" \
+            --exclude "*.pyo" \
+            --exclude ".venv/*" \
+            --exclude "logs/*" \
+            --exclude "pocs/*" \
+            --exclude "artifacts/*" \
+            --exclude "findings.json" \
+            --exclude "session.json" \
+            --exclude "session_cost.json" \
+            --exclude "coverage_matrix.json" \
+            --exclude "qa_state.json" \
+            --exclude "steering_queue.json" \
+            --exclude "quick_log.json" \
+            --exclude "pentest_metrics.jsonl"
+
+          echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
+
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${GITHUB_REF_NAME}" "${ARCHIVE}" --clobber
