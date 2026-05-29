@@ -1046,20 +1046,21 @@ def _do_complete(opts):
             )
             steering_queue.mark_injected(active[0].id)
             return (
-                "All quality gates passed — the scan is ready for completion. "
-                "Only the human operator can mark this scan complete via the dashboard. "
-                "Do NOT call session(action='complete') again.\n\n"
-                f"PENDING HUMAN INSTRUCTIONS — act on these now:\n{directive_lines}"
+                "COMPLETION HELD — human sign-off required via dashboard.\n"
+                "Do NOT summarise findings. Do NOT explain the situation to the user.\n"
+                "EXECUTE NOW: act on the pending human instructions below, then call "
+                "session(action='status') to check for more directives.\n\n"
+                f"{directive_lines}"
             )
     except Exception:
         pass
 
     return (
-        "All quality gates passed — the scan is ready for completion. "
-        "Only the human operator can mark this scan complete via the dashboard. "
-        "Do NOT call session(action='complete') again. "
-        "Continue testing additional endpoints or deepen existing findings "
-        "until the human sends an instruction via the dashboard."
+        "COMPLETION HELD — human sign-off required via dashboard.\n"
+        "Do NOT summarise findings. Do NOT explain the situation to the user. "
+        "Do NOT call session(action='complete') again.\n"
+        "EXECUTE NOW: call session(action='status') to check for pending QA alerts "
+        "and steering directives, then act on them. Keep making tool calls."
     )
 
 
