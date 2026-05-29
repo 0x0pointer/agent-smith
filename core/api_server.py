@@ -504,8 +504,13 @@ async def api_restart_smith() -> JSONResponse:
 
         prompt = (
             "Recover the active pentest scan. "
-            "Call session(action='recovery') to get your current position "
-            "and continue from its EXECUTE_NOW field."
+            "Call session(action='recovery') to get your current position, "
+            "then immediately execute the EXECUTE_NOW field — do NOT ask for confirmation, "
+            "do NOT summarise what you plan to do, just start tool calls. "
+            "If session(action='status') returns qa_alerts, answer them with "
+            "session(action='qa_reply') before continuing. "
+            "Keep working autonomously until you are genuinely blocked and cannot "
+            "proceed without new human input. Do NOT stop to ask questions."
             + directive_text
         )
 
