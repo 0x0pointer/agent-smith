@@ -1531,8 +1531,13 @@
       });
       const res = await r.json();
       if (res.ok) {
-        if (fb) fb.textContent = '✓ Scan marked complete';
+        if (fb)  fb.textContent = '✓ Scan marked complete';
         if (btn) btn.textContent = '✓ Completed';
+        // Immediately refresh all dashboard state
+        pollSession();
+        pollFindings();
+        pollIntervention();
+        _pollSmithStatus();
       } else {
         if (fb) fb.textContent = '✗ Failed: ' + (res.error || 'unknown');
         if (btn) btn.disabled = false;
