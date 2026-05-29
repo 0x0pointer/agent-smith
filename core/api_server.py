@@ -449,6 +449,7 @@ async def api_complete(request: Request) -> JSONResponse:
     Body: {"notes": "optional completion notes"}
     """
     try:
+        from core import session as scan_session
         body  = await request.json()
         notes = str(body.get("notes", "")).strip()
         cfg   = scan_session.complete(notes)
