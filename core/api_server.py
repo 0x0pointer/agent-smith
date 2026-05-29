@@ -450,6 +450,7 @@ async def api_complete(request: Request) -> JSONResponse:
     """
     try:
         from core import session as scan_session
+        scan_session.load_from_disk()
         body  = await request.json()
         notes = str(body.get("notes", "")).strip()
         cfg   = scan_session.complete(notes)
@@ -495,6 +496,7 @@ async def api_restart_smith() -> JSONResponse:
                 "\n".join(f"- {d.message}" for d in active)
 
         from core import session as scan_session
+        scan_session.load_from_disk()
         # Resolve any active intervention so Smith isn't blocked from calling tools
         current = scan_session.get() or {}
         if current.get("status") == "intervention_required":

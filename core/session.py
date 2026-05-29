@@ -213,6 +213,21 @@ def get() -> dict | None:
     return _current
 
 
+def load_from_disk() -> dict | None:
+    """Populate _current from session.json if it is not already loaded.
+
+    Used by processes (e.g. the dashboard API server) that never called
+    start() but need to mutate session state.
+    """
+    global _current
+    if _current is None and _SESSION_FILE.exists():
+        try:
+            _current = json.loads(_SESSION_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return _current
+
+
 def set_skill(
     skill_name: str,
     reason: str = "",
