@@ -461,14 +461,39 @@ async def api_complete(request: Request) -> JSONResponse:
         return JSONResponse({"ok": False, "error": "Request failed"}, status_code=500)
 
 
+_SMITH_IDLE_SECONDS = 180  # >3 min with no scan activity → Smith is considered stopped
+
+
 def _smith_running() -> bool:
-    """Return True if the tracked Smith (claude) process is still alive."""
+    """Return True if any Smith (claude OR opencode, dashboard- or manually-launched) is active.
+
+    Two signals — either is sufficient:
+      1. The tracked PID (from a dashboard restart) is still alive.
+      2. session.json / quick_log.json was modified within _SMITH_IDLE_SECONDS,
+         meaning some MCP client is actively making tool calls.
+
+    The activity signal catches Smith processes the dashboard didn't spawn
+    (e.g. user started opencode or claude manually) while still using PID
+    tracking for the immediate-feedback case after the Restart Smith button.
+    """
+    # PID file (dashboard-spawned process)
     try:
         pid = int(_SMITH_PID_FILE.read_text().strip())
-        os.kill(pid, 0)  # signal 0 = existence check
+        os.kill(pid, 0)
         return True
     except Exception:
-        return False
+        pass
+
+    # Activity signal (any client)
+    import time
+    now = time.time()
+    for path in (_SESSION_FILE, _QUICK_LOG_FILE):
+        try:
+            if path.exists() and now - path.stat().st_mtime < _SMITH_IDLE_SECONDS:
+                return True
+        except Exception:
+            pass
+    return False
 
 
 @app.get("/api/smith-status")
