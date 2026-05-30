@@ -476,9 +476,21 @@ async def api_smith_status() -> JSONResponse:
     return JSONResponse({"running": _smith_running()})
 
 
+@app.get("/api/smith-clients")
+async def api_smith_clients() -> JSONResponse:
+    """Return which Smith clients are available on this host."""
+    import shutil
+    return JSONResponse({
+        "claude":   bool(shutil.which("claude")   or os.path.exists("/opt/homebrew/bin/claude")),
+        "opencode": bool(shutil.which("opencode") or os.path.exists("/Users/gibson/.opencode/bin/opencode")),
+    })
+
+
 @app.post("/api/restart-smith")
-async def api_restart_smith() -> JSONResponse:
-    """Spawn a new claude process to continue the active scan.
+async def api_restart_smith(request: Request) -> JSONResponse:
+    """Spawn a new Smith process (claude or opencode) to continue the active scan.
+
+    Body: {"client": "claude" | "opencode"} (defaults to "claude")
 
     Builds a recovery prompt that includes any pending HUMAN_STEER directives
     so Smith acts on them immediately after recovering its position.
@@ -486,6 +498,14 @@ async def api_restart_smith() -> JSONResponse:
     """
     if _smith_running():
         return JSONResponse({"ok": False, "error": "Smith is already running"}, status_code=409)
+
+    try:
+        body   = await request.json() if request.headers.get("content-length") else {}
+    except Exception:
+        body = {}
+    client = (body.get("client") or "claude").lower()
+    if client not in ("claude", "opencode"):
+        return JSONResponse({"ok": False, "error": f"Unknown client: {client}"}, status_code=400)
 
     try:
         from core.steering import steering_queue
@@ -521,16 +541,29 @@ async def api_restart_smith() -> JSONResponse:
         log_path.parent.mkdir(exist_ok=True)
 
         import shutil
-        claude_bin = shutil.which("claude") or "/opt/homebrew/bin/claude"
+        if client == "claude":
+            binary = shutil.which("claude") or "/opt/homebrew/bin/claude"
+            args = [binary, "--dangerously-skip-permissions", "-p", prompt]
+        else:  # opencode
+            binary = shutil.which("opencode") or "/Users/gibson/.opencode/bin/opencode"
+            # opencode run prints the message non-interactively (no -p flag — message is positional)
+            args = [binary, "run", prompt]
+
+        if not os.path.exists(binary):
+            return JSONResponse(
+                {"ok": False, "error": f"{client} binary not found at {binary}"},
+                status_code=500,
+            )
+
         proc = await asyncio.create_subprocess_exec(
-            claude_bin, "--dangerously-skip-permissions", "-p", prompt,
+            *args,
             stdout=open(log_path, "a"),
             stderr=open(log_path, "a"),
             cwd=str(_REPO_ROOT),
             start_new_session=True,
         )
         _SMITH_PID_FILE.write_text(str(proc.pid))
-        return JSONResponse({"ok": True, "pid": proc.pid})
+        return JSONResponse({"ok": True, "pid": proc.pid, "client": client})
     except Exception:
         _log.exception("restart-smith failed")
         return JSONResponse({"ok": False, "error": "Failed to start Smith"}, status_code=500)

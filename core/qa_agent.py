@@ -415,7 +415,8 @@ def _maybe_inject_web_exploit_directive(
             message=(
                 "Spider has crawled the application but /web-exploit was never started. "
                 "EXECUTE NOW: call session(action='set_skill', options={skill:'web-exploit', reason:'mandatory post-spider'}) "
-                "then Skill tool with skill='web-exploit'. "
+                "then invoke the /web-exploit skill (Claude Code: Skill tool skill='web-exploit'; "
+                "opencode/other: read ~/.config/opencode/commands/web-exploit.md and follow its workflow). "
                 "Do not run any other tool until this skill is started."
             ),
             priority="high", skill="web-exploit", trigger="MISSING_WEB_EXPLOIT",
@@ -446,7 +447,8 @@ def _maybe_inject_param_fuzz_directive(
             message=(
                 "/web-exploit is done but /param-fuzz was never chained. "
                 "EXECUTE NOW: call session(action='set_skill', options={skill:'param-fuzz', reason:'mandatory chain after web-exploit'}) "
-                "then Skill tool with skill='param-fuzz'."
+                "then invoke the /param-fuzz skill (Claude Code: Skill tool skill='param-fuzz'; "
+                "opencode/other: read ~/.config/opencode/commands/param-fuzz.md and follow its workflow)."
             ),
             priority="high", skill="param-fuzz", trigger="MISSING_PARAM_FUZZ",
         )
@@ -486,7 +488,8 @@ def _maybe_inject_business_logic_directive(
             message=(
                 "Thorough scan: /business-logic has not been run. "
                 "EXECUTE NOW: session(action='set_skill', options={skill:'business-logic', reason:'thorough depth requirement'}) "
-                "then Skill tool with skill='business-logic'."
+                "then invoke the /business-logic skill (Claude Code: Skill tool skill='business-logic'; "
+                "opencode/other: read ~/.config/opencode/commands/business-logic.md and follow its workflow)."
             ),
             priority="medium", skill="business-logic", trigger="MISSING_BUSINESS_LOGIC",
         )
