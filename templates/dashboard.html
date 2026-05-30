@@ -265,14 +265,6 @@
     }
     .cmd-smith-restart-btn:hover    { background: #ea6c0a; }
     .cmd-smith-restart-btn:disabled { opacity: 0.35; cursor: not-allowed; }
-    .cmd-restart-client {
-      flex-shrink: 0;
-      background: #161b22; color: var(--text); border: 1px solid var(--border);
-      border-radius: 6px; padding: 0.35rem 0.55rem;
-      font-size: 0.74rem; font-family: 'IBM Plex Mono', monospace;
-      cursor: pointer;
-    }
-    .cmd-restart-client:focus { border-color: #f97316; outline: none; }
     .cmd-smith-complete-hint {
       font-size: 0.68rem; color: var(--muted); line-height: 1.35;
     }
@@ -1010,12 +1002,8 @@
     </div>
     <div id="cmd-smith-feedback" class="cmd-smith-feedback"></div>
     <div class="cmd-smith-complete-row">
-      <select id="cmd-restart-client" class="cmd-restart-client" style="display:none" title="Which client should run Smith?">
-        <option value="claude">claude</option>
-        <option value="opencode">opencode</option>
-      </select>
       <button class="cmd-smith-restart-btn" id="cmd-restart-btn" onclick="restartSmith()" style="display:none">
-        &#9654; Restart Smith
+        &#9654; <span id="cmd-restart-label">Restart Smith</span>
       </button>
       <button class="cmd-smith-complete-btn" id="cmd-complete-btn" onclick="completeScan()">
         &#10003; Complete Scan
@@ -1463,26 +1451,22 @@
     if (btn) btn.disabled = false;
   }
 
+  let _activeClient = 'claude';   // refreshed from /api/smith-clients
+
   async function restartSmith() {
-    const btn       = document.getElementById('cmd-restart-btn');
-    const sel       = document.getElementById('cmd-restart-client');
-    const fb        = document.getElementById('cmd-smith-feedback');
-    const hint      = document.getElementById('cmd-smith-status-hint');
-    const client    = sel ? sel.value : 'claude';
-    if (sel) localStorage.setItem('smith_client', client);
+    const btn   = document.getElementById('cmd-restart-btn');
+    const label = document.getElementById('cmd-restart-label');
+    const fb    = document.getElementById('cmd-smith-feedback');
+    const hint  = document.getElementById('cmd-smith-status-hint');
     if (btn) btn.disabled = true;
-    if (fb)  fb.textContent = 'Starting ' + client + '…';
+    if (fb)  fb.textContent = 'Starting ' + _activeClient + '…';
     try {
-      const r = await fetch('/api/restart-smith', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({client}),
-      });
+      // No body — server auto-detects which client to spawn
+      const r = await fetch('/api/restart-smith', { method: 'POST' });
       const res = await r.json();
       if (res.ok) {
-        if (fb)   fb.textContent = '✓ ' + (res.client || client) + ' restarted (PID ' + res.pid + ')';
+        if (fb)   fb.textContent = '✓ ' + (res.client || _activeClient) + ' restarted (PID ' + res.pid + ')';
         if (btn)  btn.style.display = 'none';
-        if (sel)  sel.style.display = 'none';
         if (hint) hint.textContent = 'Smith is running — only you can end the scan.';
         pollSession();
         pollIntervention();
@@ -1497,25 +1481,17 @@
     }
   }
 
-  async function _initSmithClientSelector() {
+  async function _refreshActiveClient() {
     try {
-      const r = await fetch('/api/smith-clients');
+      const r  = await fetch('/api/smith-clients?_=' + Date.now());
       const av = await r.json();
-      const sel = document.getElementById('cmd-restart-client');
-      if (!sel) return;
-      // Hide options for clients that aren't installed
-      Array.from(sel.options).forEach(o => {
-        o.style.display = av[o.value] ? '' : 'none';
-        o.disabled      = !av[o.value];
-      });
-      // Restore the user's last choice, if installed
-      const saved = localStorage.getItem('smith_client');
-      if (saved && av[saved]) sel.value = saved;
-      else if (av.claude) sel.value = 'claude';
-      else if (av.opencode) sel.value = 'opencode';
+      _activeClient = av.active || 'claude';
+      const label = document.getElementById('cmd-restart-label');
+      if (label) label.textContent = 'Restart Smith (' + _activeClient + ')';
     } catch(e) {}
   }
-  _initSmithClientSelector();
+  _refreshActiveClient();
+  setInterval(_refreshActiveClient, 30000);
 
   async function _pollSmithStatus() {
     try {
@@ -1541,15 +1517,12 @@
       const hint       = document.getElementById('cmd-smith-status-hint');
       if (!restartBtn) return;
 
-      const restartSel = document.getElementById('cmd-restart-client');
       const scanActive = ['running', 'intervention_required'].includes(sessionRes?.status);
       if (scanActive && !smithRes.running) {
         restartBtn.style.display = 'inline-block';
-        if (restartSel) restartSel.style.display = 'inline-block';
         if (hint) hint.textContent = 'Smith has stopped — restart it to continue the scan.';
       } else {
         restartBtn.style.display = 'none';
-        if (restartSel) restartSel.style.display = 'none';
         if (hint) hint.textContent = 'Only you can end the scan — Smith will keep testing until you do.';
       }
     } catch(e) {}

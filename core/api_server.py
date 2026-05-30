@@ -40,6 +40,7 @@ _METRICS_FILE      = _REPO_ROOT / "pentest_metrics.jsonl"
 _TEMPLATES_DIR     = _REPO_ROOT / "templates"
 _THREAT_MODEL_DIR  = _REPO_ROOT / "threat-model"
 _SMITH_PID_FILE    = _REPO_ROOT / "logs" / "smith.pid"
+_SMITH_CLIENT_FILE = _REPO_ROOT / "logs" / "smith.client"
 
 # ── FastAPI app ───────────────────────────────────────────────────────────────
 
@@ -501,13 +502,60 @@ async def api_smith_status() -> JSONResponse:
     return JSONResponse({"running": _smith_running()})
 
 
+def _client_installed(name: str) -> bool:
+    import shutil
+    if name == "claude":
+        return bool(shutil.which("claude") or os.path.exists("/opt/homebrew/bin/claude"))
+    if name == "opencode":
+        return bool(shutil.which("opencode") or os.path.exists("/Users/gibson/.opencode/bin/opencode"))
+    return False
+
+
+def _client_process_running(name: str) -> bool:
+    """Check whether any process for the given client is currently running."""
+    import subprocess
+    try:
+        r = subprocess.run(
+            ["pgrep", "-f", name],
+            capture_output=True, text=True, timeout=2,
+        )
+        return bool(r.stdout.strip())
+    except Exception:
+        return False
+
+
+def _detect_active_client() -> str:
+    """Detect which client (claude or opencode) should be used for restart.
+
+    Resolution order:
+      1. Last client persisted in logs/smith.client (from a previous restart)
+      2. The client whose process is currently running on this host
+      3. opencode if installed (preferred when both are available, since claude
+         is the default elsewhere)
+      4. claude as last resort
+    """
+    try:
+        saved = _SMITH_CLIENT_FILE.read_text().strip().lower()
+        if saved in ("claude", "opencode") and _client_installed(saved):
+            return saved
+    except Exception:
+        pass
+    if _client_process_running("opencode") and _client_installed("opencode"):
+        return "opencode"
+    if _client_process_running("claude") and _client_installed("claude"):
+        return "claude"
+    if _client_installed("opencode"):
+        return "opencode"
+    return "claude"
+
+
 @app.get("/api/smith-clients")
 async def api_smith_clients() -> JSONResponse:
-    """Return which Smith clients are available on this host."""
-    import shutil
+    """Return available clients and the auto-detected active one."""
     return JSONResponse({
-        "claude":   bool(shutil.which("claude")   or os.path.exists("/opt/homebrew/bin/claude")),
-        "opencode": bool(shutil.which("opencode") or os.path.exists("/Users/gibson/.opencode/bin/opencode")),
+        "claude":   _client_installed("claude"),
+        "opencode": _client_installed("opencode"),
+        "active":   _detect_active_client(),
     })
 
 
@@ -525,12 +573,18 @@ async def api_restart_smith(request: Request) -> JSONResponse:
         return JSONResponse({"ok": False, "error": "Smith is already running"}, status_code=409)
 
     try:
-        body   = await request.json() if request.headers.get("content-length") else {}
+        body = await request.json() if request.headers.get("content-length") else {}
     except Exception:
         body = {}
-    client = (body.get("client") or "claude").lower()
+    # Body.client overrides auto-detection (for explicit user choice); otherwise auto-detect
+    client = (body.get("client") or _detect_active_client()).lower()
     if client not in ("claude", "opencode"):
         return JSONResponse({"ok": False, "error": f"Unknown client: {client}"}, status_code=400)
+    if not _client_installed(client):
+        return JSONResponse(
+            {"ok": False, "error": f"{client} is not installed on this host"},
+            status_code=400,
+        )
 
     try:
         from core.steering import steering_queue
@@ -588,6 +642,7 @@ async def api_restart_smith(request: Request) -> JSONResponse:
             start_new_session=True,
         )
         _SMITH_PID_FILE.write_text(str(proc.pid))
+        _SMITH_CLIENT_FILE.write_text(client)
         return JSONResponse({"ok": True, "pid": proc.pid, "client": client})
     except Exception:
         _log.exception("restart-smith failed")
