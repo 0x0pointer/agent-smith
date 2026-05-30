@@ -345,9 +345,18 @@ def _inject_steering_directives(env: Envelope) -> bool:
         for directive in pending:
             env.warnings.append(f"[QA STEER {directive.priority.upper()}] {directive.message}")
             if directive.priority == "high":
+                is_human = directive.trigger == "HUMAN_STEER"
+                ack_reminder = (
+                    "REPLY TO THE HUMAN NOW so they see your response on the dashboard: "
+                    "call session(action='qa_reply', options={message: '<your reply>'}). "
+                    "Without this call your terminal output never reaches the human."
+                ) if is_human else (
+                    "Acknowledge with session(action='qa_reply', options={message: '<your reply>'}) "
+                    "after acting on this directive."
+                )
                 env.summary = (
                     f"⚠ QA STEERING: {directive.message}\n"
-                    f"(Act on this before continuing.)\n\n"
+                    f"(Act on this before continuing. {ack_reminder})\n\n"
                     + env.summary
                 )
             steering_queue.mark_injected(directive.id)
