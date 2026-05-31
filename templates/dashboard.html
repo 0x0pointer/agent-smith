@@ -1466,7 +1466,7 @@
       const res = await r.json();
       if (res.ok) {
         if (fb)   fb.textContent = '✓ ' + (res.client || _activeClient) + ' restarted (PID ' + res.pid + ')';
-        if (btn)  btn.style.display = 'none';
+        if (btn) { btn.style.display = 'none'; btn.disabled = false; }
         if (hint) hint.textContent = 'Smith is running — only you can end the scan.';
         pollSession();
         pollIntervention();
@@ -1520,6 +1520,7 @@
       const scanActive = ['running', 'intervention_required'].includes(sessionRes?.status);
       if (scanActive && !smithRes.running) {
         restartBtn.style.display = 'inline-block';
+        restartBtn.disabled = false;   // reset in case a prior click left it disabled
         if (hint) hint.textContent = 'Smith has stopped — restart it to continue the scan.';
       } else {
         restartBtn.style.display = 'none';
