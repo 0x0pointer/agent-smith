@@ -340,8 +340,7 @@ def _inject_steering_directives(env: Envelope) -> bool:
     try:
         from core.steering import steering_queue
         pending = steering_queue.get_pending()
-        if not pending:
-            return False
+        injected = False
         for directive in pending:
             env.warnings.append(f"[QA STEER {directive.priority.upper()}] {directive.message}")
             if directive.priority == "high":
@@ -360,7 +359,32 @@ def _inject_steering_directives(env: Envelope) -> bool:
                     + env.summary
                 )
             steering_queue.mark_injected(directive.id)
-        return True
+            injected = True
+
+        # Nag mode: even after a directive is "injected", keep reminding Smith
+        # about unacknowledged HUMAN_STEER messages on every tool call until
+        # it actually calls qa_reply. Otherwise Smith reads the reminder once,
+        # acts on the substance, and the human never sees a reply.
+        active = steering_queue.get_active()  # pending + injected
+        unanswered_human = [
+            d for d in active
+            if d.trigger == "HUMAN_STEER" and d.status == "injected"
+        ]
+        if unanswered_human and not injected:
+            messages = "; ".join(f'"{d.message[:120]}"' for d in unanswered_human)
+            env.warnings.append(
+                f"UNANSWERED HUMAN STEER ({len(unanswered_human)}): {messages}"
+            )
+            env.summary = (
+                f"⚠ UNANSWERED HUMAN STEER ({len(unanswered_human)}): "
+                f"the human is waiting for a reply. "
+                f"CALL NOW: session(action='qa_reply', options={{message: '<your reply>'}}). "
+                f"Pending: {messages}\n\n"
+                + env.summary
+            )
+            injected = True
+
+        return injected
     except Exception:
         return False  # steering failures must never break tool dispatch
 
