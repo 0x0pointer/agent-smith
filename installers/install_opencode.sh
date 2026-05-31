@@ -77,6 +77,15 @@ mcp["pentest-agent"] = {
     "timeout": 9_000_000,
 }
 
+# Permissions — disable opencode's built-in "doom_loop" detector.
+# It triggers on repeated similar tool calls and defaults to "ask" — but in
+# `opencode run` (non-interactive) mode there's nobody to answer, so opencode
+# auto-rejects. Pentest fuzzing IS legitimate repeated tool use against the
+# same target (different payloads, headers, methods), so this detector kills
+# scans. "allow" lets Smith keep working.
+perm = data.setdefault("permission", {})
+perm["doom_loop"] = "allow"
+
 # Add CLAUDE.md to global instructions (avoid duplicates)
 instructions = data.setdefault("instructions", [])
 instructions_entry = str(repo_dir / "CLAUDE.md")
