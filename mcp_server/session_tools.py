@@ -1490,7 +1490,15 @@ def _do_recovery():
         unsatisfied_gates, pending_escalations, integrity_warnings,
         target, tools_run, action_list, next_call, resume_step,
     )
-    return json.dumps(result, indent=2)
+    try:
+        return json.dumps(result, indent=2)
+    except TypeError as e:
+        # In-memory state can drift over long MCP uptimes (e.g. dict keys that
+        # are tuples). Falling back to default=str lets the recovery brief
+        # serialize so Smith can resume, rather than failing the whole call.
+        log.note(f"recovery: json encoding fallback ({e}) — reloading from disk")
+        scan_session.load_from_disk()
+        return json.dumps(result, indent=2, default=str)
 
 
 def _build_recovery_result(
