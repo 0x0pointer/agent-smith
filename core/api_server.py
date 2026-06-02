@@ -485,15 +485,17 @@ def _smith_running() -> bool:
     except Exception:
         pass
 
-    # Activity signal (any client)
+    # Activity signal: quick_log.json mtime only. session.json is mutated by
+    # dashboard endpoints (resolve_intervention, complete, etc.) which would
+    # falsely make _smith_running() return True. quick_log is written only
+    # when an MCP client makes a tool call, so it's a true Smith heartbeat.
     import time
     now = time.time()
-    for path in (_SESSION_FILE, _QUICK_LOG_FILE):
-        try:
-            if path.exists() and now - path.stat().st_mtime < _SMITH_IDLE_SECONDS:
-                return True
-        except Exception:
-            pass
+    try:
+        if _QUICK_LOG_FILE.exists() and now - _QUICK_LOG_FILE.stat().st_mtime < _SMITH_IDLE_SECONDS:
+            return True
+    except Exception:
+        pass
     return False
 
 
@@ -569,13 +571,13 @@ async def api_restart_smith(request: Request) -> JSONResponse:
     so Smith acts on them immediately after recovering its position.
     Blocked when Smith is already running to prevent duplicate sessions.
     """
-    if _smith_running():
-        return JSONResponse({"ok": False, "error": "Smith is already running"}, status_code=409)
-
     try:
         body = await request.json() if request.headers.get("content-length") else {}
     except Exception:
         body = {}
+    force = bool(body.get("force", False))
+    if not force and _smith_running():
+        return JSONResponse({"ok": False, "error": "Smith is already running. Pass force=true to override."}, status_code=409)
     # Body.client overrides auto-detection (for explicit user choice); otherwise auto-detect
     client = (body.get("client") or _detect_active_client()).lower()
     if client not in ("claude", "opencode"):
