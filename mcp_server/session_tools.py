@@ -106,6 +106,12 @@ async def session(action: str, options: dict | None = None) -> str:
     start_kali, stop_kali, start_metasploit, stop_metasploit, pull_images: no options needed
     """
     opts = _ensure_dict(options) or {}
+    # After MCP restarts the in-memory _current dict is None until something
+    # calls start(). Load from disk first so every session action — recovery,
+    # status, complete, etc. — works against the persisted state instead of
+    # erroneously reporting "no session".
+    if action != "start":
+        scan_session.load_from_disk()
     result = await _dispatch_async_action(action, opts)
     if result is not None:
         return result
