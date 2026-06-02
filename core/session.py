@@ -135,6 +135,12 @@ def start(
         "known_assets": {
             "domains": [], "ips": [], "ports": [],
             "technologies": [], "endpoints": [],
+            # Authentication context — discovered creds, JWTs, and login endpoints.
+            # Smith reads these (surfaced in recovery brief) when an endpoint
+            # returns 401/403 instead of marking the cell "tested_clean".
+            "credentials":    [],   # [{username, password, source}]
+            "auth_tokens":    [],   # [{type, value, user_id?, role?, obtained_at}]
+            "auth_endpoints": [],   # [{path, method, body_template}]
         },
         "context_chars_sent": 0,
         "complete_attempts":  0,        # incremented each time session(complete) is called
@@ -490,6 +496,19 @@ def _update_scalar_assets(assets: dict, asset_type: str, items: list) -> None:
             existing.add(val)
 
 
+def _update_dict_assets(assets: dict, asset_type: str, items: list, dedup_keys: tuple[str, ...]) -> None:
+    """Deduplicate and append dict entries (credentials, tokens, endpoints) by composite key."""
+    target_list = assets.setdefault(asset_type, [])
+    existing = {tuple(e.get(k, "") for k in dedup_keys) for e in target_list if isinstance(e, dict)}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        key = tuple(item.get(k, "") for k in dedup_keys)
+        if any(key) and key not in existing:
+            target_list.append(item)
+            existing.add(key)
+
+
 def update_known_assets(asset_type: str, items: list) -> None:
     """Accumulate discovered assets into session.json['known_assets']."""
     if not _current or _current.get("status") != "running" or not items:
@@ -497,9 +516,16 @@ def update_known_assets(asset_type: str, items: list) -> None:
     assets = _current.setdefault("known_assets", {
         "domains": [], "ips": [], "ports": [],
         "technologies": [], "endpoints": [],
+        "credentials": [], "auth_tokens": [], "auth_endpoints": [],
     })
     if asset_type == "ports":
         _update_ports_assets(assets, items)
+    elif asset_type == "credentials":
+        _update_dict_assets(assets, asset_type, items, ("username",))
+    elif asset_type == "auth_tokens":
+        _update_dict_assets(assets, asset_type, items, ("value",))
+    elif asset_type == "auth_endpoints":
+        _update_dict_assets(assets, asset_type, items, ("path", "method"))
     else:
         _update_scalar_assets(assets, asset_type, items)
     _flush()

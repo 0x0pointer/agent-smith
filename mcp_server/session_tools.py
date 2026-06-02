@@ -1536,6 +1536,28 @@ def _build_recovery_result(
             f"({'complete — quality gates only' if remaining == 0 else f'{remaining} more required'})"
         )
 
+    # Auth context — credentials, JWTs, and login endpoints accumulated during
+    # the scan. Surfaced prominently so Smith can authenticate before testing
+    # auth-protected endpoints instead of marking them tested_clean on 401.
+    known_assets = current.get("known_assets", {})
+    auth_context = {}
+    creds = known_assets.get("credentials", [])
+    tokens = known_assets.get("auth_tokens", [])
+    auth_eps = known_assets.get("auth_endpoints", [])
+    if creds:
+        auth_context["credentials"] = creds[-5:]  # most recent 5
+    if tokens:
+        # Most recent token first; only most recent 3 to keep brief compact
+        auth_context["jwt_tokens"] = tokens[-3:]
+    if auth_eps:
+        auth_context["login_endpoints"] = auth_eps[:3]
+    if auth_context:
+        auth_context["how_to_use"] = (
+            "When an endpoint returns 401/403, send the JWT as 'Authorization: Bearer <value>'. "
+            "If no token is valid, POST to a login endpoint with credentials to mint a new one. "
+            "DO NOT mark cells tested_clean on 401/403 — the server returns 'REJECTED' now."
+        )
+
     result = {
         "EXECUTE_NOW": next_call,
         "target": target,
@@ -1550,6 +1572,8 @@ def _build_recovery_result(
             "report(action, data) | session(action)"
         ),
     }
+    if auth_context:
+        result["auth_context"] = auth_context
     if iter_status:
         result["iteration_progress"] = iter_status
 

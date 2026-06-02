@@ -191,6 +191,70 @@ def _persist_port_scan_assets(scan_session: Any, evidence: dict, ctx: dict) -> N
         scan_session.update_known_assets("domains", hosts)
 
 
+_JWT_RE = __import__("re").compile(r"eyJ[A-Za-z0-9_-]{4,}\.eyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]+")
+_AUTH_PATH_HINTS = ("login", "signin", "auth", "token", "session")
+
+
+def _persist_http_auth_assets(scan_session: Any, evidence: dict, ctx: dict) -> None:
+    """Extract JWTs, credentials, and auth endpoints from an http_request.
+
+    Triggers:
+      - Any JWT-looking string in the response body or Authorization headers
+        is added to known_assets.auth_tokens.
+      - A 2xx response to POST to an auth-looking path whose request body
+        contained username/password adds the credentials to known_assets.credentials
+        AND registers the auth endpoint in known_assets.auth_endpoints.
+    """
+    import json
+    from datetime import datetime, timezone
+
+    status     = evidence.get("status", 0)
+    body_prev  = evidence.get("body_preview", "")
+    url        = ctx.get("url", "")
+    method     = (ctx.get("method") or "GET").upper()
+    req_body   = ctx.get("body", "") or ""
+    req_headers = ctx.get("headers") or {}
+
+    # 1. JWT extraction — search response body and any Authorization-like input
+    haystack = body_prev
+    for k, v in req_headers.items():
+        if isinstance(v, str) and "auth" in k.lower():
+            haystack += " " + v
+    tokens = []
+    for m in _JWT_RE.findall(haystack):
+        tokens.append({
+            "type":        "jwt",
+            "value":       m,
+            "obtained_at": datetime.now(timezone.utc).isoformat(),
+            "source_url":  url,
+        })
+    if tokens:
+        scan_session.update_known_assets("auth_tokens", tokens)
+
+    # 2. Credential + auth_endpoint extraction — POST to auth-y path with 2xx
+    path_lower = url.lower()
+    is_auth_path = any(h in path_lower for h in _AUTH_PATH_HINTS)
+    if method == "POST" and 200 <= status < 300 and is_auth_path and req_body:
+        try:
+            req_data = json.loads(req_body) if req_body.lstrip().startswith("{") else None
+        except Exception:
+            req_data = None
+        if isinstance(req_data, dict):
+            uname = req_data.get("username") or req_data.get("user") or req_data.get("email")
+            pword = req_data.get("password") or req_data.get("pass") or req_data.get("pwd")
+            if uname and pword:
+                scan_session.update_known_assets("credentials", [{
+                    "username": str(uname),
+                    "password": str(pword),
+                    "source":   f"login_success {url}",
+                }])
+                scan_session.update_known_assets("auth_endpoints", [{
+                    "path":         url,
+                    "method":       method,
+                    "body_template": {"username": "$USERNAME", "password": "$PASSWORD"},
+                }])
+
+
 def _extract_and_persist_assets(tool: str, result: Any, ctx: dict) -> None:
     """Extract discovered assets from summarizer result and persist to session."""
     from core import session as scan_session
@@ -210,6 +274,8 @@ def _extract_and_persist_assets(tool: str, result: Any, ctx: dict) -> None:
             scan_session.update_known_assets(
                 "endpoints",
                 [ep.get("path", "") for ep in endpoints if ep.get("path")])
+    elif tool == "http_request":
+        _persist_http_auth_assets(scan_session, evidence, ctx)
 
 
 # ---------------------------------------------------------------------------
