@@ -27,6 +27,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffuf gobuster feroxbuster dirb dirsearch wfuzz \
     && rm -rf /var/lib/apt/lists/*
 
+# jwt_tool — JWT attack toolkit (none alg, alg confusion, kid injection, key brute)
+# KOAuth   — automated OAuth 2.0 security scanner (22 checks)
+# interactsh-client — out-of-band callback listener for blind SSRF / DNS exfil
+RUN pip3 install --no-cache-dir jwt_tool --break-system-packages || true \
+    && apt-get update && apt-get install -y --no-install-recommends golang-go \
+    && rm -rf /var/lib/apt/lists/* \
+    && git clone --depth=1 https://github.com/morganc3/KOAuth /opt/KOAuth \
+    && cd /opt/KOAuth && go build -o /usr/local/bin/KOAuth . \
+    && apt-get purge -y golang-go && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/* \
+    && ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') \
+    && INTERACTSH_VERSION=1.2.1 \
+    && curl -fsSL "https://github.com/projectdiscovery/interactsh/releases/download/v${INTERACTSH_VERSION}/interactsh-client_${INTERACTSH_VERSION}_linux_${ARCH}.zip" \
+        -o /tmp/interactsh.zip \
+    && unzip /tmp/interactsh.zip interactsh-client -d /usr/local/bin/ \
+    && chmod +x /usr/local/bin/interactsh-client \
+    && rm /tmp/interactsh.zip
+
 # Layer 5: SSL / TLS
 RUN apt-get update && apt-get install -y --no-install-recommends \
     sslscan sslyze testssl.sh openssl \
