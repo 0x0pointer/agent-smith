@@ -133,6 +133,14 @@ def wrap(tool: str, raw_output: str, context: dict | None = None) -> str:
     if is_duplicate:
         _inject_duplicate_warning(enforced, tool)
 
+    # 5.7b. Missing-Authorization warning. When an http_request returns 401/403
+    # and the caller did NOT send an Authorization header, but known_assets has
+    # at least one valid JWT, inject a high-pri warning telling Smith to retry
+    # with the token. This catches the loop where Smith fires injection payloads
+    # at /api/* without auth and accumulates 401s until HIR_AUTH_FAILURE fires.
+    if tool == "http_request":
+        _inject_missing_auth_warning(enforced, ctx)
+
     # 5.8. Quick log — fire-and-forget, does not block
     _quick_log_tool(tool, ctx, result.summary, result)
 
@@ -453,6 +461,86 @@ def _inject_steering_directives(env: Envelope) -> bool:
         return injected
     except Exception:
         return False  # steering failures must never break tool dispatch
+
+
+# Headers commonly used by web apps to carry authentication. Authorization
+# (JWT bearer / basic / digest), Cookie (session), and any X-*-Token /
+# X-*-Auth / X-Api-Key / X-Access-Key variant most APIs adopt.
+_AUTH_HEADER_NAMES_LOWER = ("authorization", "cookie", "x-csrf-token")
+_AUTH_HEADER_PATTERNS = (
+    "auth", "token", "api-key", "apikey", "access-key",
+    "session", "credential", "bearer",
+)
+# Query-string params Smith may have used to embed a token.
+_AUTH_QUERY_PATTERNS = ("token", "access_token", "api_key", "apikey", "auth", "session")
+
+
+def _request_carries_auth(ctx: dict) -> bool:
+    """True if the request sent SOME form of authentication.
+
+    Generic across auth styles: JWT bearer, basic, cookies, custom X-* headers,
+    or query-string tokens. If none of these are present the 401/403 is most
+    likely caused by Smith forgetting auth entirely (vs sending an invalid one).
+    """
+    headers = ctx.get("headers") or {}
+    for k in headers.keys():
+        kl = k.lower()
+        if kl in _AUTH_HEADER_NAMES_LOWER:
+            return True
+        if any(p in kl for p in _AUTH_HEADER_PATTERNS):
+            return True
+    # Query-string auth (e.g. ?token=..., ?access_token=...)
+    url = ctx.get("url", "")
+    if "?" in url:
+        qs = url.split("?", 1)[1].lower()
+        if any(f"{p}=" in qs for p in _AUTH_QUERY_PATTERNS):
+            return True
+    return False
+
+
+def _inject_missing_auth_warning(env: Envelope, ctx: dict) -> None:
+    """When an http_request gets 401/403 and Smith sent NO auth at all but
+    valid JWTs/credentials exist in known_assets, prepend an actionable warning
+    so Smith retries with the token on the next call.
+
+    Skipped when:
+      - response was not 401/403 (auth presumably worked or unrelated error)
+      - the request carried any auth form (header, cookie, query token) —
+        the token is invalid, not missing
+      - this was a credential-validation attempt (login flow)
+      - no JWT is yet available in known_assets
+    """
+    status = env.evidence.get("status", 0) if env.evidence else 0
+    if status not in (401, 403):
+        return
+    if _request_carries_auth(ctx):
+        return  # some auth WAS sent; the issue is the value, not absence
+    if _is_auth_attempt(ctx):
+        return  # legitimate login attempt — 401 is the test signal
+    try:
+        from core import session as _sess
+        tokens = (_sess.get() or {}).get("known_assets", {}).get("auth_tokens", [])
+        valid_tokens = [t for t in tokens if isinstance(t, dict) and t.get("value")]
+        if not valid_tokens:
+            return
+        latest_token = valid_tokens[-1].get("value", "")
+        url = ctx.get("url", "")
+        message = (
+            f"AUTH_MISSING: {url} returned HTTP {status} but the request carried "
+            f"NO authentication (no Authorization / Cookie / X-Api-Key / X-Auth-* "
+            f"header, no ?token= query). known_assets.auth_tokens has "
+            f"{len(valid_tokens)} valid token(s). "
+            f"RETRY with whatever auth form this app uses — try header "
+            f"'Authorization: Bearer {latest_token[:30]}...' first; if 401 persists "
+            f"the app may use a Cookie (re-login at the discovered auth_endpoint "
+            f"and reuse Set-Cookie) or a custom header (X-Api-Key / X-Auth-Token). "
+            f"401/403 with NO auth sent is NOT a test result — the server never "
+            f"evaluated your payload."
+        )
+        env.warnings.append(message)
+        env.summary = f"⚠ {message}\n\n" + env.summary
+    except Exception:
+        pass  # never break tool dispatch
 
 
 def _inject_duplicate_warning(env: Envelope, tool: str) -> None:
