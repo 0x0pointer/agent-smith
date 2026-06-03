@@ -593,10 +593,21 @@ def _check_auth_failure(entries: list[dict]) -> dict | None:
     ever_authed = any(200 <= e.get("status_code", 0) < 300 for e in http_entries)
     if not ever_authed:
         return None
+    # Exclude credential-validation attempts (entries flagged as auth_attempt
+    # by the envelope — request body contained password/secret/api_key/etc.,
+    # or URL matched a known auth endpoint). 401s on those are credential
+    # tests, not session expiry — counting them here causes false-positive HIRs
+    # while Smith is actively logging in.
     recent = http_entries[-10:]
-    auth_failures = [e for e in recent if e.get("status_code") in (401, 403)]
-    if len(auth_failures) / len(recent) < 0.6:
+    non_auth_recent = [e for e in recent if not e.get("auth_attempt")]
+    if len(non_auth_recent) < 5:
+        return None  # too few non-auth signals to judge session validity
+    auth_failures = [e for e in non_auth_recent if e.get("status_code") in (401, 403)]
+    if len(auth_failures) / len(non_auth_recent) < 0.6:
         return None
+    # Rebind `recent` for the message below so target/counts reflect the
+    # signal we actually triggered on, not credential-attempt noise.
+    recent = non_auth_recent
     target = recent[-1].get("target", "target")
     _hir(
         code="HIR_AUTH_FAILURE",
