@@ -27,9 +27,14 @@ ok "Prerequisites satisfied (docker, poetry, codex)"
 mkdir -p "$CODEX_HOME"
 
 echo ""
-echo "Pulling skills submodule..."
-git -C "$REPO_DIR" submodule update --init --recursive
-ok "Skills submodule up to date"
+echo "Updating skills submodule from upstream..."
+if git -C "$REPO_DIR" submodule update --init --recursive --remote skills; then
+    ok "Skills submodule updated to $(git -C "$REPO_DIR/skills" rev-parse --short HEAD)"
+else
+    warn "Could not update skills from upstream - falling back to the pinned submodule commit"
+    git -C "$REPO_DIR" submodule update --init --recursive skills
+    ok "Skills submodule checked out at pinned commit $(git -C "$REPO_DIR/skills" rev-parse --short HEAD)"
+fi
 
 echo ""
 echo "Installing Python dependencies..."
@@ -126,7 +131,7 @@ done
 
 ok "$_SKILL_OK Codex skills installed"
 if [ ${#_SKILL_MISSING[@]} -gt 0 ]; then
-    warn "Missing skills (run 'git submodule update --init --recursive' to fetch): ${_SKILL_MISSING[*]}"
+    warn "Missing skills (re-run the installer to fetch the latest skills submodule): ${_SKILL_MISSING[*]}"
 fi
 
 echo ""
