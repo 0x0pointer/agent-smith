@@ -29,9 +29,14 @@ ok "Prerequisites satisfied (docker, poetry, opencode)"
 
 # ── Pull skills submodule ────────────────────────────────────────────────────
 echo ""
-echo "Pulling skills submodule..."
-git -C "$REPO_DIR" submodule update --init --recursive
-ok "Skills submodule up to date"
+echo "Updating skills submodule from upstream..."
+if git -C "$REPO_DIR" submodule update --init --recursive --remote skills; then
+    ok "Skills submodule updated to $(git -C "$REPO_DIR/skills" rev-parse --short HEAD)"
+else
+    warn "Could not update skills from upstream — falling back to the pinned submodule commit"
+    git -C "$REPO_DIR" submodule update --init --recursive skills
+    ok "Skills submodule checked out at pinned commit $(git -C "$REPO_DIR/skills" rev-parse --short HEAD)"
+fi
 
 # ── Python dependencies ───────────────────────────────────────────────────────
 echo ""
@@ -139,7 +144,11 @@ echo "Installing slash commands..."
 mkdir -p "$OPENCODE_COMMANDS_DIR"
 
 # /pentester — top-level command
-_cp "$REPO_DIR/skills/pentester.md" "$OPENCODE_COMMANDS_DIR/pentester.md"
+if [ -f "$REPO_DIR/skills/pentester-opencode/SKILL.md" ]; then
+    _cp "$REPO_DIR/skills/pentester-opencode/SKILL.md" "$OPENCODE_COMMANDS_DIR/pentester.md"
+else
+    _cp "$REPO_DIR/skills/pentester.md" "$OPENCODE_COMMANDS_DIR/pentester.md"
+fi
 ok "/pentester command installed"
 
 # Skill commands — each gets its own file
@@ -157,51 +166,43 @@ _install_skill() {
     _SKILL_OK=$((_SKILL_OK + 1))
 }
 
-_install_skill "analyze-cve"            "$REPO_DIR/skills/analyze-cve/SKILL.md"
-_install_skill "threat-model"           "$REPO_DIR/skills/threat-modeling/SKILL.md"
-_install_skill "aikido-triage"          "$REPO_DIR/skills/aikido-triage/SKILL.md"
-_install_skill "gh-export"              "$REPO_DIR/skills/gh-export/SKILL.md"
-_install_skill "ai-redteam"             "$REPO_DIR/skills/ai-redteam/SKILL.md"
-_install_skill "colang-gen"             "$REPO_DIR/skills/colang-gen/SKILL.md"
-_install_skill "container-k8s-security" "$REPO_DIR/skills/container-k8s-security/SKILL.md"
-_install_skill "cloud-security"         "$REPO_DIR/skills/cloud-security/SKILL.md"
-_install_skill "ad-assessment"          "$REPO_DIR/skills/ad-assessment/SKILL.md"
-_install_skill "email-security"         "$REPO_DIR/skills/email-security/SKILL.md"
-_install_skill "metasploit"             "$REPO_DIR/skills/metasploit/SKILL.md"
-_install_skill "reverse-shell"          "$REPO_DIR/skills/reverse-shell/SKILL.md"
-_install_skill "web-exploit"            "$REPO_DIR/skills/web-exploit/SKILL.md"
-_install_skill "api-security"           "$REPO_DIR/skills/api-security/SKILL.md"
-_install_skill "codebase"               "$REPO_DIR/skills/codebase/SKILL.md"
-_install_skill "remediate"              "$REPO_DIR/skills/remediate/SKILL.md"
-_install_skill "credential-audit"       "$REPO_DIR/skills/credential-audit/SKILL.md"
-_install_skill "lateral-movement"       "$REPO_DIR/skills/lateral-movement/SKILL.md"
-_install_skill "network-assess"         "$REPO_DIR/skills/network-assess/SKILL.md"
-_install_skill "osint"                  "$REPO_DIR/skills/osint/SKILL.md"
-_install_skill "post-exploit"           "$REPO_DIR/skills/post-exploit/SKILL.md"
-_install_skill "ssl-tls-audit"          "$REPO_DIR/skills/ssl-tls-audit/SKILL.md"
-_install_skill "request-cves"           "$REPO_DIR/skills/request-cves/SKILL.md"
-_install_skill "param-fuzz"             "$REPO_DIR/skills/param-fuzz/SKILL.md"
-_install_skill "business-logic"         "$REPO_DIR/skills/business-logic/SKILL.md"
-ok "$_SKILL_OK skill commands installed"
-if [ ${#_SKILL_MISSING[@]} -gt 0 ]; then
-    warn "Missing skills (run \`git submodule update --init --recursive\` to fetch): ${_SKILL_MISSING[*]}"
+for _skill_file in "$REPO_DIR"/skills/*/SKILL.md; do
+    [ -e "$_skill_file" ] || continue
+    _skill_name="$(basename "$(dirname "$_skill_file")")"
+
+    # /pentester is installed from the OpenCode-specific variant above.
+    [ "$_skill_name" = "pentester-opencode" ] && continue
+
+    _install_skill "$_skill_name" "$_skill_file"
+done
+
+# Backwards-compatible alias used by older docs and installs.
+if [ -f "$REPO_DIR/skills/threat-modeling/SKILL.md" ]; then
+    _install_skill "threat-model" "$REPO_DIR/skills/threat-modeling/SKILL.md"
 fi
 
-# ── Install web-exploit reference files (lazy-loaded per injection type) ─────
-echo ""
-echo "Installing web-exploit reference files..."
-REFS_SRC="$REPO_DIR/skills/web-exploit/refs"
-REFS_DST="$OPENCODE_COMMANDS_DIR/web-exploit-refs"
-if [ -d "$REFS_SRC" ]; then
-    mkdir -p "$REFS_DST"
-    for _ref_src in "$REFS_SRC"/*.md; do
-        _cp "$_ref_src" "$REFS_DST/$(basename "$_ref_src")"
-    done
-    REF_COUNT=$(ls "$REFS_DST"/*.md 2>/dev/null | wc -l | tr -d ' ')
-    ok "$REF_COUNT injection reference files installed (lazy-loaded to save context)"
-else
-    warn "web-exploit/refs/ not found — refs will be read from repo at runtime"
+ok "$_SKILL_OK skill commands installed"
+if [ ${#_SKILL_MISSING[@]} -gt 0 ]; then
+    warn "Missing skills (re-run the installer to fetch the latest skills submodule): ${_SKILL_MISSING[*]}"
 fi
+
+# ── Install skill reference files (lazy-loaded support material) ─────────────
+echo ""
+echo "Installing skill reference files..."
+_REF_OK=0
+for _refs_src in "$REPO_DIR"/skills/*/refs; do
+    [ -d "$_refs_src" ] || continue
+    _skill_name="$(basename "$(dirname "$_refs_src")")"
+    _refs_dst="$OPENCODE_COMMANDS_DIR/${_skill_name}-refs"
+
+    [[ "$_FORCE_SKILLS" == false ]] && continue
+
+    rm -rf "$_refs_dst"
+    mkdir -p "$_refs_dst"
+    cp -R "$_refs_src"/. "$_refs_dst"/
+    _REF_OK=$((_REF_OK + 1))
+done
+ok "$_REF_OK skill reference directories installed"
 
 # ── AI testing API keys (FuzzyAI + PyRIT) ────────────────────────────────────
 echo ""
