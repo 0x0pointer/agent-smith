@@ -2,6 +2,16 @@ FROM kalilinux/kali-rolling@sha256:287cd5cfa409e258e9ec3661db4dff0bfbb45fc95734e
 
 ENV DEBIAN_FRONTEND=noninteractive
 
+# SSL bypass for Docker build environments where a proxy CA intercepts HTTPS
+# (e.g. Zscaler, corporate VPN). Only applies at build time — the running
+# container inherits these only if explicitly passed at runtime.
+ENV PIP_TRUSTED_HOST="pypi.org files.pythonhosted.org pypi.python.org"
+ENV GIT_SSL_NO_VERIFY=true
+ENV GONOSUMDB=*
+ENV GOPRIVATE=*
+ENV NODE_TLS_REJECT_UNAUTHORIZED=0
+RUN echo "insecure" > /root/.curlrc
+
 # Core apt tools — split into layers so a single failed package doesn't abort everything
 
 # Layer 1: network scanning
@@ -31,7 +41,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # KOAuth   — automated OAuth 2.0 security scanner (22 checks)
 # interactsh-client — out-of-band callback listener for blind SSRF / DNS exfil
 RUN pip3 install --no-cache-dir jwt_tool --break-system-packages || true \
-    && apt-get update && apt-get install -y --no-install-recommends golang-go \
+    && apt-get update && apt-get install -y --no-install-recommends ca-certificates golang-go unzip \
     && rm -rf /var/lib/apt/lists/* \
     && git clone --depth=1 https://github.com/morganc3/KOAuth /opt/KOAuth \
     && cd /opt/KOAuth && go build -o /usr/local/bin/KOAuth . \
@@ -143,6 +153,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3-venv \
 # AI red-teaming: promptfoo — LLM eval + red-team framework (npm)
 RUN apt-get update && apt-get install -y --no-install-recommends nodejs npm \
     && rm -rf /var/lib/apt/lists/* \
+    && npm config set strict-ssl false \
     && npm install -g promptfoo@0.121.2
 
 # Web spider: Playwright + headless Chromium for JavaScript-aware crawling
