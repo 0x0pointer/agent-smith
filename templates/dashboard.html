@@ -2664,8 +2664,8 @@
   // ── QA Agent tab ──────────────────────────────────────────────────────────
   let _qaData = null;
 
-  const QL_ICONS = { SKILL: '🎯', TOOL: '🔧', SPIDER: '🕷', FINDING: '🔍', COVERAGE: '📋' };
-  const QL_LABELS = { SKILL: 'SKILL', TOOL: 'TOOL', SPIDER: 'SPIDER', FINDING: 'FINDING', COVERAGE: 'COVERAGE' };
+  const QL_ICONS = { SKILL: '🎯', TOOL: '🔧', SPIDER: '🕷', FINDING: '🔍', COVERAGE: '📋', QA_REPLY: '💬' };
+  const QL_LABELS = { SKILL: 'SKILL', TOOL: 'TOOL', SPIDER: 'SPIDER', FINDING: 'FINDING', COVERAGE: 'COVERAGE', QA_REPLY: 'QA_REPLY' };
 
   function _qlTime(ts) {
     try { return new Date(ts).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}); }
@@ -2678,6 +2678,10 @@
     if (e.type === 'SPIDER')   return `<span class="ql-type SPIDER">SPIDER</span> ${e.endpoints_found ?? '?'} endpoints found${e.target ? ' — ' + esc(e.target) : ''}`;
     if (e.type === 'FINDING')  return `<span class="ql-type FINDING">${esc(e.severity?.toUpperCase() || 'FINDING')}</span> ${esc(e.title || '')}`;
     if (e.type === 'COVERAGE') return `<span class="ql-type COVERAGE">COVERAGE</span> ${e.registered ?? '?'} endpoints · ${e.tested ?? 0} tested · ${e.pending ?? 0} pending`;
+    if (e.type === 'QA_REPLY') {
+      const msg = (e.message || '').slice(0, 180);
+      return `<span class="ql-type COVERAGE">QA_REPLY</span> ${esc(msg)}${(e.message || '').length > 180 ? '…' : ''}`;
+    }
     return esc(JSON.stringify(e));
   }
 
@@ -2706,6 +2710,9 @@
     // fetch separately since it's a different endpoint
   }
 
+  const QUICKLOG_RENDER_CAP = 500;  // newest N entries; capping prevents the
+                                    // Activity tab from stalling on multi-day scans
+
   async function renderQuickLog() {
     try {
       const r = await fetch(`/api/quicklog?_=${Date.now()}`);
@@ -2717,8 +2724,15 @@
         wrap.innerHTML = '<div class="empty-placeholder">No tool activity yet — start a scan.</div>';
         return;
       }
-      const reversed = [...entries].reverse();
-      wrap.innerHTML = reversed.map(e => `
+      // Slice to newest first, then cap. With multi-day scans the unbounded
+      // innerHTML write was producing 6000+ DOM nodes and making the tab
+      // appear empty until the browser unfroze.
+      const reversed = [...entries].reverse().slice(0, QUICKLOG_RENDER_CAP);
+      const moreCount = entries.length - reversed.length;
+      const header = moreCount > 0
+        ? `<div class="empty-placeholder" style="text-align:left;padding:0.4rem 0.6rem;border-bottom:1px solid var(--border);margin-bottom:0.5rem">Showing newest ${reversed.length} of ${entries.length} entries (${moreCount} older hidden — scroll for live tail)</div>`
+        : '';
+      wrap.innerHTML = header + reversed.map(e => `
         <div class="ql-entry">
           <span class="ql-time">${_qlTime(e.ts)}</span>
           <span class="ql-icon">${QL_ICONS[e.type] || '·'}</span>
