@@ -23,6 +23,13 @@ _STEERING_FILE      = _REPO_ROOT / "steering_queue.json"
 _RECOVERY_SNAP_FILE = _REPO_ROOT / "recovery_latest.json"
 _last_qa_shown_ts: str = ""  # ISO timestamp of last alert batch shown to the model
 
+# Content-based dedup for QA alerts. Maps (code, message) → ISO timestamp last shown.
+# Suppresses re-injection of an identical alert that Smith has already seen until
+# either (a) the content changes, (b) the alert clears, or (c) the cooldown expires.
+# Prevents Smith answering the same "553 cells lack tested_by" message every 120s.
+_qa_alert_last_shown: dict[tuple, str] = {}
+_QA_ALERT_DEDUP_SECONDS = 30 * 60  # 30 min cooldown per identical alert
+
 
 @dataclass
 class Envelope:
@@ -574,8 +581,12 @@ def _inject_qa_alerts_into_envelope(env: Envelope, suppress_summary_prepend: boo
     Medium urgency → skipped (dashboard-only; not model-facing).
     Low urgency   → skipped (dashboard-only; not model-facing).
 
-    Uses a module-level timestamp so each alert is shown exactly once across
-    consecutive tool calls, not repeated on every response.
+    Dedup strategy:
+      1. Timestamp gate: skip the whole qa_state.json tick if its `ts` hasn't moved.
+      2. Per-alert content dedup: even within a fresh tick, suppress any alert
+         whose (code, message) was already shown within _QA_ALERT_DEDUP_SECONDS.
+         This stops Smith answering the same "X cells lack tested_by" message
+         every 120s. Cooldown resets when the message content changes.
     """
     global _last_qa_shown_ts
     try:
@@ -591,11 +602,16 @@ def _inject_qa_alerts_into_envelope(env: Envelope, suppress_summary_prepend: boo
             return
         _last_qa_shown_ts = ts
 
-        for a in high:
+        # Per-alert content dedup
+        fresh = _filter_qa_alerts_by_dedup(high, ts)
+        if not fresh:
+            return  # everything is stale-dup; no point injecting
+
+        for a in fresh:
             env.warnings.append(f"[QA HIGH] {a['message']}")
 
         if not suppress_summary_prepend:
-            alert_text = " | ".join(a["message"] for a in high)
+            alert_text = " | ".join(a["message"] for a in fresh)
             env.summary = (
                 f"⚠ QA ALERT: {alert_text}\n"
                 f"(Address before continuing or call session(action='status') to review.)\n\n"
@@ -603,6 +619,36 @@ def _inject_qa_alerts_into_envelope(env: Envelope, suppress_summary_prepend: boo
             )
     except Exception:
         pass  # never break tool dispatch
+
+
+def _filter_qa_alerts_by_dedup(alerts: list[dict], current_ts: str) -> list[dict]:
+    """Return only alerts not shown within the cooldown window.
+
+    Fingerprint = (code, message). When the message text changes (e.g. count
+    grew from 553 to 612 cells), the fingerprint changes too and the alert
+    re-fires. Identical repeats are suppressed for _QA_ALERT_DEDUP_SECONDS.
+    """
+    from datetime import datetime, timezone
+    try:
+        now_dt = datetime.fromisoformat(current_ts.replace("Z", "+00:00"))
+    except Exception:
+        # Falls back to no dedup if we can't parse the timestamp.
+        return alerts
+
+    fresh: list[dict] = []
+    for a in alerts:
+        fp = (a.get("code", ""), a.get("message", ""))
+        last = _qa_alert_last_shown.get(fp)
+        if last:
+            try:
+                last_dt = datetime.fromisoformat(last.replace("Z", "+00:00"))
+                if (now_dt - last_dt).total_seconds() < _QA_ALERT_DEDUP_SECONDS:
+                    continue  # dedup
+            except Exception:
+                pass
+        fresh.append(a)
+        _qa_alert_last_shown[fp] = current_ts
+    return fresh
 
 
 # ---------------------------------------------------------------------------

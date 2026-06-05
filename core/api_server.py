@@ -49,16 +49,24 @@ from fastapi.responses import FileResponse, JSONResponse
 
 app = FastAPI(title="pentest-agent")
 
-_qa_task: asyncio.Task | None = None  # kept alive to prevent GC
+_qa_task:        asyncio.Task | None = None  # kept alive to prevent GC
+_watchdog_task:  asyncio.Task | None = None
+# Auto-restart watchdog state
+_watchdog_last_restart_ts: float = 0.0
+_watchdog_restart_count_window: list[float] = []  # epoch seconds of restarts in trailing hour
+_WATCHDOG_POLL_SECONDS  = 60
+_WATCHDOG_MIN_GAP_SECONDS = 90       # min seconds between auto-restarts
+_WATCHDOG_MAX_PER_HOUR  = 20         # safety cap to avoid restart storms
 
 
 @app.on_event("startup")
-async def _start_qa_daemon() -> None:
-    global _qa_task
+async def _start_background_tasks() -> None:
+    global _qa_task, _watchdog_task
     from mcp_server._app import _load_dotenv
     _load_dotenv()
     from core.qa_agent import qa_daemon
     _qa_task = asyncio.create_task(qa_daemon.run(interval_s=120))
+    _watchdog_task = asyncio.create_task(_smith_watchdog_loop())
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -561,33 +569,11 @@ async def api_smith_clients() -> JSONResponse:
     })
 
 
-@app.post("/api/restart-smith")
-async def api_restart_smith(request: Request) -> JSONResponse:
-    """Spawn a new Smith process (claude or opencode) to continue the active scan.
-
-    Body: {"client": "claude" | "opencode"} (defaults to "claude")
-
-    Builds a recovery prompt that includes any pending HUMAN_STEER directives
-    so Smith acts on them immediately after recovering its position.
-    Blocked when Smith is already running to prevent duplicate sessions.
+async def _spawn_smith(client: str, source: str = "api") -> tuple[bool, int | str]:
+    """Core spawn logic shared by the /api/restart-smith endpoint and the
+    watchdog. Returns (ok, pid_or_error_message). source is logged so the
+    audit trail distinguishes manual restarts from auto-restarts.
     """
-    try:
-        body = await request.json() if request.headers.get("content-length") else {}
-    except Exception:
-        body = {}
-    force = bool(body.get("force", False))
-    if not force and _smith_running():
-        return JSONResponse({"ok": False, "error": "Smith is already running. Pass force=true to override."}, status_code=409)
-    # Body.client overrides auto-detection (for explicit user choice); otherwise auto-detect
-    client = (body.get("client") or _detect_active_client()).lower()
-    if client not in ("claude", "opencode"):
-        return JSONResponse({"ok": False, "error": f"Unknown client: {client}"}, status_code=400)
-    if not _client_installed(client):
-        return JSONResponse(
-            {"ok": False, "error": f"{client} is not installed on this host"},
-            status_code=400,
-        )
-
     try:
         from core.steering import steering_queue
         active = steering_queue.get_active()
@@ -598,12 +584,11 @@ async def api_restart_smith(request: Request) -> JSONResponse:
 
         from core import session as scan_session
         scan_session.load_from_disk()
-        # Resolve any active intervention so Smith isn't blocked from calling tools
         current = scan_session.get() or {}
         if current.get("status") == "intervention_required":
             scan_session.resolve_intervention(
                 "CONTINUE",
-                "Smith restarted by human operator via dashboard",
+                f"Smith restarted (source={source})",
             )
 
         prompt = (
@@ -620,21 +605,20 @@ async def api_restart_smith(request: Request) -> JSONResponse:
 
         log_path = _REPO_ROOT / "logs" / "smith_restart.log"
         log_path.parent.mkdir(exist_ok=True)
+        # Audit marker so watchdog vs manual restarts are visible in the log
+        with open(log_path, "a") as f:
+            f.write(f"\n=== [{source}] spawning {client} at {asyncio.get_event_loop().time()} ===\n")
 
         import shutil
         if client == "claude":
             binary = shutil.which("claude") or "/opt/homebrew/bin/claude"
             args = [binary, "--dangerously-skip-permissions", "-p", prompt]
-        else:  # opencode
+        else:
             binary = shutil.which("opencode") or "/Users/gibson/.opencode/bin/opencode"
-            # opencode run prints the message non-interactively (no -p flag — message is positional)
             args = [binary, "run", prompt]
 
         if not os.path.exists(binary):
-            return JSONResponse(
-                {"ok": False, "error": f"{client} binary not found at {binary}"},
-                status_code=500,
-            )
+            return False, f"{client} binary not found at {binary}"
 
         proc = await asyncio.create_subprocess_exec(
             *args,
@@ -645,10 +629,111 @@ async def api_restart_smith(request: Request) -> JSONResponse:
         )
         _SMITH_PID_FILE.write_text(str(proc.pid))
         _SMITH_CLIENT_FILE.write_text(client)
-        return JSONResponse({"ok": True, "pid": proc.pid, "client": client})
+        return True, proc.pid
+    except Exception as e:
+        _log.exception("spawn_smith failed")
+        return False, f"spawn failed: {e}"
+
+
+async def _smith_watchdog_loop() -> None:
+    """Background task: auto-restart Smith when it dies mid-scan.
+
+    Conditions for an auto-restart:
+      - session.status == "running"
+      - no active intervention (HIR_*) — human still needs to resolve
+      - Smith process is not alive (per _smith_running)
+      - at least _WATCHDOG_MIN_GAP_SECONDS since the last auto-restart
+      - fewer than _WATCHDOG_MAX_PER_HOUR restarts in the trailing hour
+
+    Idle when status != "running" or session is gone. Runs forever as long
+    as the dashboard process lives. Safety cap prevents storms when Smith
+    dies immediately on startup repeatedly (e.g. config error).
+    """
+    global _watchdog_last_restart_ts
+    import time as _time
+    while True:
+        try:
+            await asyncio.sleep(_WATCHDOG_POLL_SECONDS)
+            session_data = _read_json(_SESSION_FILE)
+            if session_data.get("status") != "running":
+                continue
+            if (session_data.get("intervention") or {}).get("code"):
+                continue
+            if _smith_running():
+                continue
+            now = _time.time()
+            if now - _watchdog_last_restart_ts < _WATCHDOG_MIN_GAP_SECONDS:
+                continue
+            # Prune restarts older than 1h
+            _watchdog_restart_count_window[:] = [
+                t for t in _watchdog_restart_count_window if now - t < 3600
+            ]
+            if len(_watchdog_restart_count_window) >= _WATCHDOG_MAX_PER_HOUR:
+                _log.warning(
+                    "watchdog suppressed: %d restarts in last hour exceeds cap %d",
+                    len(_watchdog_restart_count_window), _WATCHDOG_MAX_PER_HOUR,
+                )
+                continue
+
+            client = _detect_active_client()
+            _log.info("watchdog: smith stopped while scan running — auto-restart (%s)", client)
+            ok, result = await _spawn_smith(client, source="watchdog")
+            if ok:
+                _watchdog_last_restart_ts = now
+                _watchdog_restart_count_window.append(now)
+                _log.info("watchdog: spawned pid=%s", result)
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            _log.exception("watchdog loop error (continuing)")
+
+
+@app.get("/api/watchdog")
+async def api_watchdog_status() -> JSONResponse:
+    """Diagnostic: report watchdog state — last restart, count in last hour."""
+    import time as _time
+    now = _time.time()
+    recent = [t for t in _watchdog_restart_count_window if now - t < 3600]
+    return JSONResponse({
+        "enabled": _watchdog_task is not None and not (_watchdog_task and _watchdog_task.done()),
+        "last_restart_ago_s": int(now - _watchdog_last_restart_ts) if _watchdog_last_restart_ts else None,
+        "restarts_in_last_hour": len(recent),
+        "max_per_hour": _WATCHDOG_MAX_PER_HOUR,
+        "poll_seconds": _WATCHDOG_POLL_SECONDS,
+        "min_gap_seconds": _WATCHDOG_MIN_GAP_SECONDS,
+    })
+
+
+@app.post("/api/restart-smith")
+async def api_restart_smith(request: Request) -> JSONResponse:
+    """Spawn a new Smith process (claude or opencode) to continue the active scan.
+
+    Body: {"client": "claude" | "opencode", "force": bool}
+
+    Builds a recovery prompt that includes any pending HUMAN_STEER directives
+    so Smith acts on them immediately after recovering its position.
+    Blocked when Smith is already running to prevent duplicate sessions.
+    """
+    try:
+        body = await request.json() if request.headers.get("content-length") else {}
     except Exception:
-        _log.exception("restart-smith failed")
-        return JSONResponse({"ok": False, "error": "Failed to start Smith"}, status_code=500)
+        body = {}
+    force = bool(body.get("force", False))
+    if not force and _smith_running():
+        return JSONResponse({"ok": False, "error": "Smith is already running. Pass force=true to override."}, status_code=409)
+    client = (body.get("client") or _detect_active_client()).lower()
+    if client not in ("claude", "opencode"):
+        return JSONResponse({"ok": False, "error": f"Unknown client: {client}"}, status_code=400)
+    if not _client_installed(client):
+        return JSONResponse(
+            {"ok": False, "error": f"{client} is not installed on this host"},
+            status_code=400,
+        )
+
+    ok, result = await _spawn_smith(client, source="api")
+    if ok:
+        return JSONResponse({"ok": True, "pid": result, "client": client})
+    return JSONResponse({"ok": False, "error": str(result)}, status_code=500)
 
 
 @app.get("/api/qa")
