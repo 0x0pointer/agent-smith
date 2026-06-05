@@ -603,18 +603,28 @@ def trigger_intervention(
 
 
 def resolve_intervention(choice: str, message: str = "") -> dict:
-    """Human responded — transition back to running and record their decision."""
+    """Human responded — transition back to running and record their decision.
+
+    Idempotent: if there is no active intervention (already resolved), only
+    the running-status flip is applied. Previously this path was appending
+    a None entry to intervention_history every time it was called twice in
+    a row (e.g. operator clicks REAUTH then watchdog also calls us), which
+    broke the dashboard renderer that iterated history without null checks.
+    """
     global _current
     if not _current:
         return {}
-    intervention = _current.get("intervention", {})
+    intervention = _current.get("intervention")
+    history = _current.setdefault("intervention_history", [])
+    # Sanitize legacy entries: drop any None left from earlier bug.
+    if any(h is None for h in history):
+        history[:] = [h for h in history if h is not None]
     if intervention:
         intervention["resolved_at"] = datetime.now(timezone.utc).isoformat()
         intervention["resolution"]  = {"choice": choice, "message": message}
+        history.append(intervention)
+        _current["intervention"] = None
     _current["status"] = "running"
-    _current["intervention_history"] = _current.get("intervention_history", [])
-    _current["intervention_history"].append(intervention)
-    _current["intervention"] = None
     _flush()
     return _current
 

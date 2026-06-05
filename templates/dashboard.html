@@ -3119,8 +3119,10 @@
     const events = [];
     const seen   = new Set();  // deduplicate by ts+code
 
-    // HIR events from session intervention_history (resolved pauses)
-    const hirHistory = (_sessionData || {}).intervention_history || [];
+    // HIR events from session intervention_history (resolved pauses).
+    // Filter null entries — session.resolve_intervention has occasionally
+    // pushed None into the history, and the loop crashes on h.ts otherwise.
+    const hirHistory = ((_sessionData || {}).intervention_history || []).filter(h => h && typeof h === 'object');
     hirHistory.forEach(h => {
       const key = (h.ts || h.triggered_at || '') + (h.code || '');
       if (seen.has(key)) return;
@@ -3138,7 +3140,7 @@
 
     // Active HIR (not yet in history)
     const current = (_sessionData || {}).intervention;
-    if (current && current.code) {
+    if (current && typeof current === 'object' && current.code) {
       const key = (current.ts || '') + (current.code || '');
       if (!seen.has(key)) {
         seen.add(key);
@@ -3155,7 +3157,7 @@
     }
 
     // Stall + gate-block directives from steering queue
-    const directives = (_steeringData || {}).directives || [];
+    const directives = ((_steeringData || {}).directives || []).filter(d => d && typeof d === 'object');
     directives
       .filter(d => d.trigger === 'COVERAGE_STALL' || d.trigger === 'ENDPOINT_TRIGGER_GAP' || d.code === 'RESUME_REQUIRED')
       .forEach(d => {
