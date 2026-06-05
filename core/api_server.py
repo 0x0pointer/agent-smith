@@ -642,6 +642,24 @@ async def _spawn_smith(client: str, source: str = "api") -> tuple[bool, int | st
         return False, f"spawn failed: {e}"
 
 
+async def _mcp_sse_alive() -> bool:
+    """Quick liveness check on the MCP SSE server (port 7778).
+
+    Used by the watchdog to skip restarts when MCP is dead — restarting
+    Smith into a dead MCP causes a 30–60s burn of subprocess fallbacks
+    that always fail and end the opencode -p run with a text response.
+    """
+    import socket
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(0.8)
+        result = sock.connect_ex(("127.0.0.1", 7778))
+        sock.close()
+        return result == 0
+    except Exception:
+        return False
+
+
 async def _smith_watchdog_loop() -> None:
     """Background task: auto-restart Smith when it dies mid-scan.
 
@@ -667,6 +685,13 @@ async def _smith_watchdog_loop() -> None:
             if (session_data.get("intervention") or {}).get("code"):
                 continue
             if _smith_running():
+                continue
+            # Gate on MCP SSE health. Without MCP, restarted Smith burns a turn
+            # bouncing off "Invalid request parameters" and producing a text
+            # response that ends the opencode -p run — causing the watchdog to
+            # respawn into the same wall every minute.
+            if not await _mcp_sse_alive():
+                _log.warning("watchdog suppressed: MCP SSE server unreachable on 127.0.0.1:7778")
                 continue
             now = _time.time()
             if now - _watchdog_last_restart_ts < _WATCHDOG_MIN_GAP_SECONDS:
