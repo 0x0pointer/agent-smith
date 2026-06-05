@@ -160,6 +160,13 @@ async def logo() -> FileResponse:
     return FileResponse(_TEMPLATES_DIR / "FullLogo_Transparent.png", media_type="image/png")
 
 
+@app.get("/favicon.ico")
+async def favicon() -> FileResponse:
+    # Browser default favicon probe. Serve the existing transparent logo so
+    # we stop spamming the access log with 404s on every page load.
+    return FileResponse(_TEMPLATES_DIR / "FullLogo_Transparent.png", media_type="image/png")
+
+
 @app.get("/api/findings")
 async def api_findings() -> JSONResponse:
     data = _read_json(_FINDINGS_FILE)

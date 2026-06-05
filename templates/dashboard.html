@@ -3,6 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <title>Pentest Dashboard</title>
+  <link rel="icon" type="image/png" href="/logo.png">
+  <link rel="shortcut icon" type="image/png" href="/logo.png">
   <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked@9/marked.min.js"></script>
   <style>
@@ -1235,9 +1237,18 @@
   let _notifState = { hir: false, stall: false, alertCount: 0 };
 
   function _requestNotifPermission() {
-    if ('Notification' in window && Notification.permission === 'default') {
-      Notification.requestPermission();
-    }
+    // Browsers (Firefox in particular) now reject requestPermission() unless
+    // it is called inside a short-running user gesture (click/keydown).
+    // We piggy-back on the FIRST user interaction with the page, then remove
+    // the listeners so this runs at most once.
+    if (!('Notification' in window) || Notification.permission !== 'default') return;
+    const handler = () => {
+      document.removeEventListener('click',   handler, true);
+      document.removeEventListener('keydown', handler, true);
+      try { Notification.requestPermission().catch(() => {}); } catch {}
+    };
+    document.addEventListener('click',   handler, true);
+    document.addEventListener('keydown', handler, true);
   }
 
   function _notify(title, body, urgency = 'normal') {
