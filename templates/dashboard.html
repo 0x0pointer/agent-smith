@@ -1287,7 +1287,16 @@
     if (name === 'components')    renderComponentMap(allData.findings || []);
     if (name === 'coverage')      pollCoverage();
     if (name === 'skills')        pollSkills();
-    if (name === 'activity')      pollQA();
+    if (name === 'activity') {
+      // Immediately paint whatever data we already have so the tab is not
+      // empty while pollQA's fetch is in flight, then refresh from the wire.
+      _safeRender('stuckLog',     renderStuckLog);
+      _safeRender('QA',           renderQA);
+      _safeRender('steering',     renderSteering);
+      _safeRender('quickLog',     renderQuickLog);
+      _safeRender('cycleHistory', renderCycleHistory);
+      pollQA();
+    }
     if (name === 'metrics')       pollMetrics();
     if (name === 'threat-model')  pollThreatModel();
     if (name === 'logs')          pollLogs();
@@ -2861,6 +2870,13 @@
     _cycleRenderedCount = history.length;
   }
 
+  // Run a single render call defensively so one failing renderer doesn't
+  // silently kill the rest of the Activity tab.
+  function _safeRender(name, fn) {
+    try { fn(); }
+    catch (e) { console.error(`Activity render '${name}' failed:`, e); }
+  }
+
   async function pollQA() {
     try {
       const [rQA, rSteering] = await Promise.all([
@@ -2871,7 +2887,12 @@
       let active = [];
       if (rQA.ok) {
         _qaData = await rQA.json();
-        if (_activeTab === 'activity') { renderStuckLog(); renderQA(); renderQuickLog(); renderCycleHistory(); }
+        if (_activeTab === 'activity') {
+          _safeRender('stuckLog',     renderStuckLog);
+          _safeRender('QA',           renderQA);
+          _safeRender('quickLog',     renderQuickLog);
+          _safeRender('cycleHistory', renderCycleHistory);
+        }
         alerts = (_qaData.alerts || []);
 
         // Notify on new high-urgency QA alerts
@@ -2889,7 +2910,10 @@
       }
       if (rSteering.ok) {
         _steeringData = await rSteering.json();
-        if (_activeTab === 'activity') { renderSteering(); renderStuckLog(); }
+        if (_activeTab === 'activity') {
+          _safeRender('steering', renderSteering);
+          _safeRender('stuckLog', renderStuckLog);
+        }
         updateStallBanner(_steeringData.directives || []);
         active = (_steeringData.directives || []).filter(
           d => d.status === 'pending' || d.status === 'injected'
