@@ -30,7 +30,7 @@ Skills teach *methodology*; the LLM invents the actual attacks. No two scans loo
 - 🛠 **Bring your own LLM.** 
 
 
-Works with Claude Code, [OpenCode](https://opencode.ai) (any provider — OpenAI, Gemini, Ollama, OpenRouter, local models), or any MCP-capable client.
+Works with Claude Code, OpenAI Codex, [OpenCode](https://opencode.ai) (any provider — OpenAI, Gemini, Ollama, OpenRouter, local models), or any MCP-capable client.
 - 📦 **End-to-end deliverables.** 
 
 
@@ -105,9 +105,9 @@ The skills are inspiration. The LLM is the operator.
 
 ## Use cases
 
-Drop in any of these the moment you start your client/agent. No setup beyond `./installers/install.sh`
+Drop in any of these the moment you start your client/agent. No setup beyond the installer for your client.
 
-Below are the skills you can use in your OpenCode or Claude Code, these are just a couple examples and use cases as we have more then 25+ Cyber Security skills.
+Below are the skills you can use in Codex, OpenCode, or Claude Code, these are just a couple examples and use cases as we have more then 25+ Cyber Security skills.
 
 ### 1. Run a full pentest, hands-off
 
@@ -178,9 +178,10 @@ agent-smith ships an MCP server. Anything that speaks MCP can drive it.
 
 <table>
   <tr>
-    <th width="33%">Claude Code</th>
-    <th width="33%">OpenCode (BYO LLM)</th>
-    <th width="33%">Custom MCP client</th>
+    <th width="25%">Claude Code</th>
+    <th width="25%">Codex</th>
+    <th width="25%">OpenCode (BYO LLM)</th>
+    <th width="25%">Custom MCP client</th>
   </tr>
   <tr>
     <td>
@@ -189,6 +190,13 @@ agent-smith ships an MCP server. Anything that speaks MCP can drive it.
 cd agent-smith
 ./installers/install.sh</code></pre>
       Requires <a href="https://docs.anthropic.com/en/docs/claude-code">Claude Code</a> + an Anthropic API key.
+    </td>
+    <td>
+      OpenAI's coding agent. Installs AGENTS.md instructions, Codex skills, and the stdio MCP server.
+      <pre><code>git clone --recursive &lt;repo&gt;
+cd agent-smith
+./installers/install_codex.sh</code></pre>
+      Requires <a href="https://developers.openai.com/codex">Codex</a>. Restart Codex after install so the MCP server and skills reload.
     </td>
     <td>
       Open-source coding agent that supports <strong>any</strong> provider — OpenAI, Anthropic, Google, OpenRouter, Ollama, llama.cpp, vLLM, your own endpoint.
@@ -243,7 +251,7 @@ The LLM decides what to run. Each tool's output is aggregated and returned to th
 ```mermaid
 flowchart TD
     User["You<br/>/pentester · /codebase · /ai-redteam · /threat-modeling"]
-    Agent["Your LLM client<br/>Claude Code · OpenCode · MCP-capable IDE"]
+    Agent["Your LLM client<br/>Claude Code · Codex · OpenCode · MCP-capable IDE"]
     MCP["mcp_server/<br/>5 consolidated tools<br/>scan · kali · http · report · session"]
     Docker["Docker containers<br/>ephemeral --rm · 2 GB RAM · 1.5 CPU<br/>nmap · nuclei · httpx · ffuf · semgrep · trufflehog"]
     Kali["Kali Linux container<br/>persistent · port 5001<br/>nikto · sqlmap · hydra · testssl · pyrit"]
@@ -560,9 +568,13 @@ docs/gifs/               Demo gifs (drop your recordings here)
 
 installers/
   install.sh                     Claude Code installer
+  install_codex.sh               Codex installer
   install_opencode.sh            OpenCode installer (BYO LLM)
   uninstall.sh                   Remove MCP config and installed skills
   opencode-pentest-recovery.mjs  Compaction recovery plugin for OpenCode
+
+.codex/                          Codex project hooks
+AGENTS.md                        Codex project instructions
 ```
 </details>
 
