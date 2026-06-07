@@ -647,9 +647,9 @@ async def _spawn_smith(client: str, source: str = "api") -> tuple[bool, int | st
         _SMITH_PID_FILE.write_text(str(proc.pid))
         _SMITH_CLIENT_FILE.write_text(client)
         return True, proc.pid
-    except Exception as e:
+    except Exception:
         _log.exception("spawn_smith failed")
-        return False, f"spawn failed: {e}"
+        return False, "spawn failed"
 
 
 async def _mcp_sse_alive() -> bool:
