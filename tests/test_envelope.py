@@ -251,18 +251,16 @@ class TestBuildQuickLogEntry:
         result = _build_quick_log_entry("http_request", "https://example.com", "", r)
         assert result.get("error") is True
 
-    def test_http_request_with_status_zero_does_not_set_error(self):
-        """status=0 is treated as absent (defaults to 200 via `or 200`), so no error flag."""
+    def test_http_request_with_status_zero_sets_error_true(self):
+        """status=0 means no HTTP response was received, so mark as tool error."""
         r = _mock_result(evidence={"status": 0})
         result = _build_quick_log_entry("http_request", "https://example.com", "", r)
-        # The expression `int(ev.get("status", 200) or 200)` evaluates 0 as falsy,
-        # so falls back to 200 — not an error condition.
-        assert result.get("error") is not True
+        assert result.get("error") is True
 
-    def test_non_http_tool_with_error_in_anomalies_sets_error_true(self):
+    def test_non_http_tool_with_error_in_anomalies_does_not_set_error(self):
         r = _mock_result(evidence={}, anomalies=["connection error: timed out"])
         result = _build_quick_log_entry("nuclei", "https://example.com", "", r)
-        assert result.get("error") is True
+        assert result.get("error") is not True
 
     def test_result_none_does_not_crash(self):
         result = _build_quick_log_entry("nmap", "10.0.0.1", "scan done", None)

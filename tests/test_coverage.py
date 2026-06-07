@@ -392,7 +392,7 @@ async def test_meta_counters_accurate(coverage_file):
     await core.coverage.update_cell(cells[1]["id"], "in_progress")
     await core.coverage.update_cell(
         cells[1]["id"], "vulnerable",
-        tested_by="sqlmap", artifact_id=_make_artifact("sqlmap"),
+        tested_by="sqlmap", artifact_id=_make_artifact("sqlmap"), finding_id="finding-1",
     )
     await core.coverage.update_cell(cells[2]["id"], "not_applicable")
 
