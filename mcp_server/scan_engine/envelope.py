@@ -78,6 +78,36 @@ def wrap(tool: str, raw_output: str, context: dict | None = None) -> str:
         except Exception:
             pass
 
+    # Block all tool calls when the scan reached a terminal state
+    # (human clicked Complete Scan, cost/time/call limit hit, etc.).
+    # session() is exempt so Smith can still call session(action='status')
+    # to confirm what happened — but every scan-progressing tool returns a
+    # stop signal so opencode -p exits via Smith's final summary response.
+    if tool != "session":
+        try:
+            from core import session as _sess
+            current = _sess.get() or {}
+            scan_status = current.get("status", "")
+            if scan_status in (
+                "complete", "incomplete_with_unresolved_blockers", "limit_reached",
+            ):
+                return json.dumps({
+                    "status": "SCAN_COMPLETED",
+                    "scan_status": scan_status,
+                    "message": (
+                        f"This scan has been marked '{scan_status}' by the human operator "
+                        "via the dashboard (or a budget/time limit was reached). Stop "
+                        "calling tools. Write one final brief summary message — "
+                        "do NOT make any further tool calls — and end your turn."
+                    ),
+                    "how_to_resume": (
+                        "If the human wants more testing they will start a fresh scan via "
+                        "session(action='start') — do not call that yourself."
+                    ),
+                }, indent=2)
+        except Exception:
+            pass
+
     ctx = context or {}
 
     # 1. Store raw output as artifact

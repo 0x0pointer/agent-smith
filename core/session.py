@@ -624,7 +624,14 @@ def resolve_intervention(choice: str, message: str = "") -> dict:
         intervention["resolution"]  = {"choice": choice, "message": message}
         history.append(intervention)
         _current["intervention"] = None
-    _current["status"] = "running"
+    # Only return to 'running' if we weren't already in a terminal state.
+    # complete / incomplete_with_unresolved_blockers / limit_reached are
+    # definitive end-states; resolving a stale intervention should not undo
+    # the human's Complete Scan click or a budget/time stop.
+    if _current.get("status") not in (
+        "complete", "incomplete_with_unresolved_blockers", "limit_reached",
+    ):
+        _current["status"] = "running"
     _flush()
     return _current
 

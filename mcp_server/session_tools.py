@@ -1418,6 +1418,28 @@ def _check_coverage_integrity(matrix: list[dict], tools_run: set[str]) -> list[s
 def _do_recovery():
     """Compact recovery brief — one call gives the agent everything to resume."""
     current = scan_session.get() or {}
+    # Terminal status: the previous scan is finished. Surface that explicitly
+    # instead of falling through to the "no_session → start a new one" path,
+    # because Smith would otherwise try to start a new scan over the top of
+    # a completed one.
+    scan_status = current.get("status", "") if current else ""
+    if scan_status in (
+        "complete", "incomplete_with_unresolved_blockers", "limit_reached",
+    ):
+        return json.dumps({
+            "status": "SCAN_COMPLETED",
+            "scan_status":  scan_status,
+            "target":       current.get("target", ""),
+            "finished":     current.get("finished", ""),
+            "notes":        current.get("notes", ""),
+            "message": (
+                f"This scan is already marked '{scan_status}' on disk. Stop calling "
+                "tools. Write one final brief summary and end your turn. Do NOT call "
+                "session(action='start') to begin a new scan — the human will trigger "
+                "that themselves when they want fresh work."
+            ),
+        }, indent=2)
+
     if not current or current.get("status") != "running":
         # No session exists — tell the model to start one
         return json.dumps({
