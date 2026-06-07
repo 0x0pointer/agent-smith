@@ -339,155 +339,32 @@ _AUTH_GATED_TYPES = {
 # Default severity inferred from injection_type when Smith doesn't file a
 # finding. These are reasonable defaults — Smith can later upgrade via
 # report(action='update_finding').
-_SEVERITY_BY_INJECTION = {
-    "sqli":             "critical",
-    "nosqli":           "critical",
-    "cmdi":             "critical",
-    "ssti":             "critical",
-    "xxe":              "high",
-    "ssrf":             "high",
-    "traversal":        "high",
-    "idor":             "high",
-    "bfla":             "high",
-    "jwt":              "high",
-    "mass_assignment":  "high",
-    "prototype":        "high",
-    "xss":              "high",
-    "crlf":             "medium",
-    "redirect":         "medium",
-    "csrf":             "medium",
-    "race":             "medium",
-    "cors":             "medium",
-    "method_tampering": "low",
-    "rate_limit":       "low",
-    "security_headers": "low",
-    "cache":            "low",
-}
+def _validate_finding_link(status: str, finding_id: str | None) -> str:
+    """Reject closing a cell as 'vulnerable' without a finding_id.
 
+    Replaces the old auto-file path: instead of creating a finding on
+    Smith's behalf (which produced per-cell-granularity duplicates for
+    app-wide misconfigs like security_headers/cors/rate_limit — 33×
+    inflation observed), force Smith to call report(action='finding')
+    first and pass the returned id back here.
 
-def _autofile_finding_for_cell(
-    cell: dict, endpoint_path: str, artifact_id: str, notes: str,
-) -> str | None:
-    """When Smith marks a cell vulnerable without filing a formal report
-    via report(action='finding'), auto-create a self-contained finding so
-    no vulnerability is lost. Returns the new finding_id, or None if the
-    auto-file fails (in which case the cell still gets marked vulnerable
-    but without a linked finding).
-
-    The auto-filed finding pulls evidence directly from the artifact body
-    so it stands on its own without requiring Smith to enrich it later.
+    Tested_clean / not_applicable / skipped cells don't trigger this —
+    only vulnerable closures. If finding_id is already populated (Smith
+    is updating notes on an existing link), pass through unchanged.
     """
-    try:
-        import json as _json
-        from core import findings as findings_store
-
-        inj  = cell.get("injection_type", "unknown")
-        param = cell.get("param", "")
-        cell_id = cell.get("id", "")
-        sev = _SEVERITY_BY_INJECTION.get(inj, "medium")
-
-        # Pull a body excerpt from the artifact as concrete evidence
-        evidence_body = ""
-        if artifact_id:
-            art_path = _ARTIFACTS_DIR / f"{artifact_id}.txt"
-            if art_path.exists():
-                try:
-                    art_data = _json.loads(art_path.read_text(encoding="utf-8"))
-                    status_code = art_data.get("status", "")
-                    body_snip   = (art_data.get("body", "") or "")[:600]
-                    evidence_body = (
-                        f"artifact_id={artifact_id} | response_status={status_code}\n"
-                        f"response_body[:600]={body_snip}"
-                    )
-                except Exception:
-                    evidence_body = f"artifact_id={artifact_id} (binary or non-JSON artifact)"
-            else:
-                evidence_body = f"artifact_id={artifact_id} (artifact file missing)"
-
-        # Build a descriptive title and description
-        title = (
-            f"{inj.upper()} on {endpoint_path}"
-            + (f" param={param}" if param and param != "_endpoint" else "")
-        )
-        description = (
-            (notes or f"Cell {cell_id} marked vulnerable for {inj} on {endpoint_path}.")
-            + f"\n\nAuto-filed by coverage tool because Smith marked the cell vulnerable "
-            + f"without invoking report(action='finding'). Smith can enrich via "
-            + f"report(action='update_finding', data={{id: <finding_id>, ...}})."
-        )
-
-        # findings.add_finding is async — run it in a loop-safe way.
-        import asyncio
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
-
-        async def _do():
-            entry = await findings_store.add_finding(
-                title=title,
-                severity=sev,
-                target=endpoint_path,
-                description=description,
-                evidence=evidence_body or "no artifact evidence captured",
-                tool_used="coverage_autofile",
-            )
-            return entry.get("id")
-
-        if loop and loop.is_running():
-            # Schedule the coroutine and wait for it via run_coroutine_threadsafe
-            # only if we're in a thread. In the normal MCP async path, the caller
-            # is already inside the event loop — we await directly from update_cell
-            # via a task. Simplest: create a task and let it run in background;
-            # but we need the finding_id NOW to link the cell. Use asyncio.run_coroutine_threadsafe
-            # would not work from the same loop. So instead, run synchronously
-            # using a temporary loop in another thread is also complex.
-            #
-            # Solution: extract the synchronous portion. add_finding is a thin
-            # wrapper over _load/_save with a lock. Recreate the write here
-            # without awaiting the async lock — file writes are atomic enough
-            # for an append-only findings.json.
-            return _sync_add_finding(title, sev, endpoint_path, description, evidence_body)
-        else:
-            return asyncio.run(_do())
-    except Exception:
-        return None
-
-
-def _sync_add_finding(
-    title: str, severity: str, target: str, description: str, evidence: str,
-) -> str | None:
-    """Synchronous append to findings.json — used by auto-file path that runs
-    inside the MCP event loop where awaiting findings_store.add_finding would
-    require restructuring. The schema is identical."""
-    try:
-        import json as _json
-        from core import findings as findings_store
-
-        entry = {
-            "id":          str(uuid.uuid4()),
-            "timestamp":   datetime.now(timezone.utc).isoformat(),
-            "title":       title,
-            "severity":    severity,
-            "target":      target,
-            "description": description,
-            "evidence":    evidence,
-            "tool_used":   "coverage_autofile",
-            "cve":         "",
-        }
-        fp = findings_store.FINDINGS_FILE
-        if fp.exists():
-            try:
-                data = _json.loads(fp.read_text(encoding="utf-8"))
-            except Exception:
-                data = {"meta": {"created": "", "target": ""}, "findings": [], "diagrams": []}
-        else:
-            data = {"meta": {"created": "", "target": ""}, "findings": [], "diagrams": []}
-        data.setdefault("findings", []).append(entry)
-        fp.write_text(_json.dumps(data, indent=2), encoding="utf-8")
-        return entry["id"]
-    except Exception:
-        return None
+    if status != "vulnerable":
+        return ""
+    if finding_id and finding_id.strip():
+        return ""
+    return (
+        "REJECTED: closing a cell as 'vulnerable' requires a finding_id. "
+        "First call report(action='finding', data={title, severity, target, "
+        "description, evidence, tool_used, ...}) — capture the returned 'id' "
+        "from that response — then pass it back here as finding_id alongside "
+        "the artifact_id. This avoids creating duplicate findings for app-wide "
+        "misconfigs and keeps the finding/cell linkage honest. "
+        "Cell status will remain in_progress until the link exists."
+    )
 
 
 def _validate_auth_response(
@@ -559,10 +436,15 @@ async def update_cell(
     rejection = _validate_artifact(artifact_id, status)
     if rejection:
         return rejection
+    # Vulnerable closures require an existing finding_id — Smith must call
+    # report(action='finding') first. Auto-filing on Smith's behalf produced
+    # per-cell-granularity duplicates that polluted the export.
+    link_reject = _validate_finding_link(status, finding_id)
+    if link_reject:
+        return link_reject
 
     async with _lock:
         data = _load()
-        ep_map = {ep["id"]: ep.get("path", "?") for ep in data.get("endpoints", [])}
         for cell in data["matrix"]:
             if cell["id"] == cell_id:
                 # Auth-failure block: a 401/403 on an injection cell is not clean,
@@ -574,16 +456,6 @@ async def update_cell(
                     cell_id, cell["status"], status,
                     cell.get("injection_type", ""), notes,
                 )
-                # Auto-file a finding when Smith marks vulnerable without one.
-                # Closes the gap where vulnerable cells lack a corresponding
-                # findings.json entry (caught 43 lost findings in prod).
-                if status == "vulnerable" and not finding_id:
-                    ep_path = ep_map.get(cell.get("endpoint_id", ""), "?")
-                    auto_id = _autofile_finding_for_cell(
-                        cell, ep_path, artifact_id, notes,
-                    )
-                    if auto_id:
-                        finding_id = auto_id
                 cell["status"]      = status
                 cell["notes"]       = notes
                 cell["tested_by"]   = tested_by
@@ -598,7 +470,11 @@ async def update_cell(
 
 
 def _apply_bulk_cell(cell: dict, upd: dict, warnings: list[str], ep_path: str = "?") -> None:
-    """Apply one bulk-update entry to a cell in-place, appending any warnings."""
+    """Apply one bulk-update entry to a cell in-place, appending any warnings.
+
+    Caller is expected to have already vetted the (artifact, auth, finding-link)
+    gates in bulk_update — this only handles the mutation + integrity warning.
+    """
     st = upd.get("status", "")
     notes_text = upd.get("notes", "")
     warning = _integrity_warning_for_status(
@@ -607,19 +483,12 @@ def _apply_bulk_cell(cell: dict, upd: dict, warnings: list[str], ep_path: str = 
     )
     if warning:
         warnings.append(warning)
-    finding_id = upd.get("finding_id", "")
-    artifact_id = upd.get("artifact_id", "")
-    # Auto-file finding for vulnerable cells without finding_id (same as update_cell)
-    if st == "vulnerable" and not finding_id:
-        auto_id = _autofile_finding_for_cell(cell, ep_path, artifact_id, notes_text)
-        if auto_id:
-            finding_id = auto_id
     cell["status"]      = st
     cell["notes"]       = notes_text
     cell["tested_by"]   = upd.get("tested_by", "")
-    cell["artifact_id"] = artifact_id
-    if finding_id:
-        cell["finding_id"] = finding_id
+    cell["artifact_id"] = upd.get("artifact_id", "")
+    if upd.get("finding_id"):
+        cell["finding_id"] = upd["finding_id"]
     cell["tested_at"] = datetime.now(timezone.utc).isoformat()
 
 
@@ -658,6 +527,13 @@ async def bulk_update(updates: list[dict]) -> dict:
                 )
                 if auth_reject:
                     warnings.append(f"REJECTED cell {cid}: {auth_reject}")
+                    rejected += 1
+                    continue
+                # Vulnerable cells must already have a finding_id — force Smith
+                # to call report(action='finding') first instead of auto-filing.
+                link_reject = _validate_finding_link(st, upd.get("finding_id", ""))
+                if link_reject:
+                    warnings.append(f"REJECTED cell {cid}: {link_reject}")
                     rejected += 1
                     continue
             ep_path = ep_map.get(cell_map[cid].get("endpoint_id", ""), "?")
