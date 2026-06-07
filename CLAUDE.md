@@ -36,15 +36,18 @@ Raw HTTP requests and PoC saving.
 
 ### `report(action, data)`
 Log findings, diagrams, notes, and coverage matrix updates.
-- `action="finding"` — data: `{title, severity, target, description, evidence, tool_used, cve}`
+- `action="finding"` — data: `{title, severity, target, description, evidence, tool_used, cve}` — returns `{id: "<finding_id>"}`. **Always file the finding BEFORE closing the related coverage cell** so you can pass the returned `id` as `finding_id`.
 - `action="diagram"` — data: `{title, mermaid}`
 - `action="note"` — data: `{message}`
-- `action="dashboard"` — data: `{port: 8888}`
+- `action="dashboard"` — data: `{port: 7777}` (default)
 - `action="coverage"` — data: `{type, ...}` — manage the coverage matrix:
   - `type="endpoint"` — register endpoint + auto-generate cells: `{path, method, params=[{name, type, value_hint}], discovered_by, auth_context}`
-  - `type="tested"` — mark cell tested: `{cell_id, status (tested_clean|vulnerable|not_applicable|skipped), notes, finding_id}`
-  - `type="bulk_tested"` — mark multiple cells: `{updates=[{cell_id, status, notes, finding_id}]}`
-  - `type="reset"` — clear the matrix
+  - `type="tested"` — mark cell tested: `{cell_id, status (tested_clean|vulnerable|not_applicable|skipped), notes, artifact_id, finding_id?}`
+    - `artifact_id` is **required** for `tested_clean` / `vulnerable` — the artifact file must exist on disk.
+    - `finding_id` is **required** for `vulnerable` — the server rejects vulnerable closures without a linked finding (no auto-file; file a `report(action='finding', …)` first and pass its returned `id`).
+    - On an **injection cell** (sqli/xss/ssti/cmdi/ssrf/nosqli/xxe/traversal/crlf/prototype/mass_assignment/redirect), `tested_clean` is also rejected when the artifact response status is 401/403 — that means auth blocked the payload, not that the payload was filtered. Re-test under auth before closing.
+  - `type="bulk_tested"` — mark multiple cells: `{updates=[{cell_id, status, notes, artifact_id, finding_id?}, ...]}`. Same per-update rules as `type="tested"`; rejected updates appear in `warnings` and don't block the batch.
+  - `type="reset"` — clear the matrix (blocked during a running/intervention scan)
 
 ### `session(action, options)`
 Scan lifecycle and infrastructure.
@@ -73,6 +76,26 @@ session(action="set_skill", options={
 ```
 
 This writes a `SKILL_START` or `SKILL_CHAIN` entry to `pentest.log` and enriches `session.json`'s `skill_history` with the decision context. It is mandatory — always call it immediately before the Skill tool invocation.
+
+## Envelope signals to respect
+
+Every non-`session()` tool response is wrapped in a canonical envelope. Beyond the standard `summary` / `facts` / `evidence`, several `status` fields short-circuit the normal flow — you MUST handle them as described instead of continuing with more tool calls.
+
+| Envelope field | When fired | What to do |
+|---|---|---|
+| `status: "HUMAN_INTERVENTION_REQUIRED"` | Scan is paused by an HIR — auth failure, stuck-on-target, force-complete, etc. The dashboard is showing options to the operator. | Do NOT call any scan-progressing tool. You may call `session(action='status')` to read context. Otherwise wait — the operator will respond via the dashboard, which injects a high-priority steering directive on your next tool call. |
+| `status: "SCAN_COMPLETED"` | The human clicked **Complete Scan** or a budget/time/call limit fired. The session is in a terminal state on disk. | Do NOT call any scan-progressing tool, including `session(action='start')` to start a new scan. Write one final brief summary message and end your turn. `opencode run` / `claude -p` will exit cleanly. |
+| `AUTH_MISSING` warning prepended to summary | An `http_request` returned 401 / 403 AND the request carried no Authorization / Cookie / X-Api-Key / X-Auth-* / X-Session-* header AND no `?token=`-style query param AND `known_assets.auth_tokens` has at least one valid JWT. | Retry the exact same request with `Authorization: Bearer <token_from_known_assets.auth_tokens[-1].value>`. If 401 persists with auth attached, the token may be expired — POST to a discovered `known_assets.auth_endpoints[*]` with `known_assets.credentials[*]` to mint a fresh one. |
+| `REJECTED: closing a cell as 'vulnerable' requires a finding_id` | You called `report(action='coverage', data={status:'vulnerable', ...})` without a `finding_id`. | First call `report(action='finding', data={title, severity, target, description, evidence, tool_used})` — capture the returned `id` — then re-submit the coverage update with `finding_id=<that_id>`. |
+| `REJECTED: cannot mark cell <id> tested_clean — artifact ... shows HTTP 4xx` | Closing an injection cell `tested_clean` when the artifact response is 401/403. | The server never evaluated your payload — auth blocked it. Read `auth_context` from `session(action='recovery')`, retry with `Authorization: Bearer …` (or whatever auth form previously worked on the target), and re-close based on the AUTHENTICATED response. |
+| `REJECTED: artifact_id 'X' not found on disk` | Closing a cell with a placeholder / never-existed artifact_id. | Run the actual tool first; pass the real artifact_id from its response. |
+
+## Recovery brief shape
+
+`session(action='recovery')` returns a compact JSON brief. Beyond `EXECUTE_NOW` (the single concrete next call) and `coverage` / `findings` / `phase`, watch for:
+
+- `auth_context` — most recent credentials, JWT tokens, and login endpoints automatically extracted during the scan. Use these instead of re-discovering or hand-asking the operator.
+- `status: "SCAN_COMPLETED"` — recovery surfaced on a terminal scan; do NOT try to start a new session.
 
 ## Available Skills
 

@@ -252,12 +252,27 @@ class TestBuildQuickLogEntry:
         assert result.get("error") is True
 
     def test_http_request_with_status_zero_sets_error_true(self):
-        """status=0 means no HTTP response was received, so mark as tool error."""
+        """status=0 means no HTTP response was received (aiohttp exception path);
+        this IS a real tool failure and should be flagged.
+
+        Replaces the earlier `*_does_not_set_error` test which codified a
+        latent bug: `int(ev.get("status", 200) or 200) == 0` short-circuited
+        any real 0 to 200 and silently swallowed the failure. The expression
+        is now a direct `ev.get("status") == 0` check.
+        """
         r = _mock_result(evidence={"status": 0})
         result = _build_quick_log_entry("http_request", "https://example.com", "", r)
         assert result.get("error") is True
 
     def test_non_http_tool_with_error_in_anomalies_does_not_set_error(self):
+        """Anomaly text mentioning 'error'/'timeout'/'unreachable' is NOT a
+        tool failure — those are findings (SQL error message disclosure,
+        target reporting a timeout in its response, etc.).
+
+        Replaces the earlier `*_sets_error_true` test that codified the
+        overzealous keyword-scan behavior which flagged 53 of 100 successful
+        http_request entries as failures and fired spurious HIR_TOOL_FAILURE.
+        """
         r = _mock_result(evidence={}, anomalies=["connection error: timed out"])
         result = _build_quick_log_entry("nuclei", "https://example.com", "", r)
         assert result.get("error") is not True
