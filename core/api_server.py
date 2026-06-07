@@ -385,9 +385,15 @@ async def _cleanup_tunnels() -> str:
 
 @app.get("/api/intervention")
 async def api_intervention() -> JSONResponse:
-    """Return current HIR state if the scan is paused, else {active: false}."""
+    """Return current HIR state if the scan is paused, else {active: false}.
+
+    Force-reloads from disk: the MCP process (separate from this dashboard
+    uvicorn process) writes session.json on every tool call, so our cached
+    _current would otherwise stay stuck on the snapshot taken at startup.
+    """
     try:
         from core import session as scan_session
+        scan_session.load_from_disk(force=True)
         iv = scan_session.get_intervention()
         if iv:
             return JSONResponse({"active": True, **iv})
@@ -411,6 +417,8 @@ async def api_intervention_respond(request: Request) -> JSONResponse:
             return JSONResponse({"ok": False, "error": "choice or message required"}, status_code=400)
         from core import session as scan_session
         from core.steering import steering_queue, RESUME_REQUIRED
+        # Force-reload before mutating — see api_intervention docstring for why.
+        scan_session.load_from_disk(force=True)
         scan_session.resolve_intervention(choice, message)
         human_instruction = f"Human resolved HIR — choice='{choice}'" + (f": {message}" if message else "")
         steering_queue.add_directive(
@@ -466,7 +474,9 @@ async def api_complete(request: Request) -> JSONResponse:
     """
     try:
         from core import session as scan_session
-        scan_session.load_from_disk()
+        # Force-reload so we mutate against the freshest disk state, not a
+        # cached _current snapshot.
+        scan_session.load_from_disk(force=True)
         body  = await request.json()
         notes = str(body.get("notes", "")).strip()
         cfg   = scan_session.complete(notes)
@@ -590,7 +600,7 @@ async def _spawn_smith(client: str, source: str = "api") -> tuple[bool, int | st
                 "\n".join(f"- {d.message}" for d in active)
 
         from core import session as scan_session
-        scan_session.load_from_disk()
+        scan_session.load_from_disk(force=True)
         current = scan_session.get() or {}
         if current.get("status") == "intervention_required":
             scan_session.resolve_intervention(

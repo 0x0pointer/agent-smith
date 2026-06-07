@@ -219,13 +219,24 @@ def get() -> dict | None:
     return _current
 
 
-def load_from_disk() -> dict | None:
-    """Populate _current from session.json if it is not already loaded.
+def load_from_disk(force: bool = False) -> dict | None:
+    """Populate _current from session.json.
 
     Used by processes (e.g. the dashboard API server) that never called
-    start() but need to mutate session state.
+    start() but need to read/mutate session state.
+
+    Default behavior loads only when _current is None (one-shot bootstrap).
+    Pass force=True to ALWAYS reload from disk — required for the dashboard
+    process whose in-memory _current goes stale as the MCP process keeps
+    writing to session.json from another process.
     """
     global _current
+    if force and _SESSION_FILE.exists():
+        try:
+            _current = json.loads(_SESSION_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+        return _current
     if _current is None and _SESSION_FILE.exists():
         try:
             _current = json.loads(_SESSION_FILE.read_text(encoding="utf-8"))
