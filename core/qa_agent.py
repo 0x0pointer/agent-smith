@@ -806,8 +806,19 @@ def _check_exploit_escalation(entries: list[dict], findings_data: dict, session_
     return None
 
 
+# Tools that run in-process (Python aiohttp / requests / playwright) and
+# therefore have NO Docker dependency. Failure modes here are network /
+# target / DNS / SSL, not container infrastructure.
+_PYTHON_NATIVE_TOOLS = {"http_request", "spider"}
+
+
 def _check_repeated_tool_failure(entries: list[dict]) -> dict | None:
-    """HIR when the same tool fails 3+ times in a row — likely an infrastructure issue."""
+    """HIR when the same tool fails 3+ times in a row — likely an infrastructure issue.
+
+    Message + remediation options are tool-aware: Python-native tools
+    (http_request, spider) get a target-reachability framing; Docker-backed
+    tools (kali, metasploit, nuclei, ...) keep the container/infra framing.
+    """
     tool_entries = [e for e in entries if e.get("type") == "TOOL" and e.get("error")]
     if len(tool_entries) < 3:
         return None
@@ -821,23 +832,49 @@ def _check_repeated_tool_failure(entries: list[dict]) -> dict | None:
     now = datetime.now(timezone.utc)
     if any(_ts_age_secs(e.get("ts", ""), now) > 1200 for e in last_three):
         return None
-    _hir(
-        code="HIR_TOOL_FAILURE",
-        situation=(
+
+    is_python_native = broken_tool in _PYTHON_NATIVE_TOOLS
+    if is_python_native:
+        situation = (
+            f"Tool '{broken_tool}' has failed 3 times in a row in the last 20 minutes. "
+            f"'{broken_tool}' runs in-process (Python aiohttp/requests) and has no "
+            "container dependency — most likely a target reachability problem: target "
+            "down, DNS failure, SSL/TLS error, or proxy/network block."
+        )
+        options = [
+            "WAIT: Target may be temporarily down — tell me how long to wait before retrying",
+            "VERIFY: Confirm the target URL is correct (DNS, port, scheme) and I will retry",
+            "ROTATE: Provide an alternative proxy / User-Agent / endpoint to bypass blocks",
+            "SKIP_TOOL: Stop using this tool and rely on alternatives for the rest of the scan",
+            "ABORT: Stop the scan",
+        ]
+        message = (
+            f"Tool '{broken_tool}' failed 3 times in a row — target reachability / network suspected"
+        )
+    else:
+        situation = (
             f"Tool '{broken_tool}' has failed 3 times in a row in the last 20 minutes. "
             "This is likely a Docker/infrastructure issue rather than a target problem."
-        ),
-        tried=[f"'{broken_tool}' called 3 times, all failed with errors"],
-        options=[
+        )
+        options = [
             "RESTART_INFRA: I will run session(action='start_kali') to restart the Kali container and retry",
             "SKIP_TOOL: Tell me to avoid this tool for the rest of the scan and use alternatives",
             "INVESTIGATE: Check the logs — run `docker ps` to verify containers are healthy",
             "ABORT: Stop the scan",
-        ],
+        ]
+        message = (
+            f"Tool '{broken_tool}' failed 3 times in a row — infrastructure issue suspected"
+        )
+
+    _hir(
+        code="HIR_TOOL_FAILURE",
+        situation=situation,
+        tried=[f"'{broken_tool}' called 3 times, all failed with errors"],
+        options=options,
     )
     return {
         "code": "HIR_TOOL_FAILURE", "urgency": "high", "blocking": False,
-        "message": f"Tool '{broken_tool}' failed 3 times in a row — infrastructure issue suspected",
+        "message": message,
     }
 
 

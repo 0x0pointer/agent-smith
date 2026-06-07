@@ -727,13 +727,24 @@ def _build_quick_log_entry(
         # a password is a wrong-creds test, not a sign that auth broke.
         if ctx and _is_auth_attempt(ctx):
             entry["auth_attempt"] = True
-    # Mark failed tool calls so QA can detect unreachable targets / repeated failures
+    # Mark a tool call as a failure ONLY when the call itself did not produce
+    # a real response. Two narrow signals:
+    #   1. The tool wrapper set evidence.error (aiohttp exception, Docker
+    #      container missing, kali server unreachable, etc.) — set by the
+    #      *tool*, not by the summarizer.
+    #   2. http_request returned status == 0 — no HTTP response received.
+    # We deliberately DO NOT scan result.anomalies for "error"/"timeout"/
+    # "unreachable" keywords: those describe what was *found* in the response
+    # body (SQL error messages, target reporting a timeout, etc.) and are
+    # findings, not tool failures. The old keyword scan caused 53% of
+    # successful http_request entries to be falsely flagged error=True,
+    # which in turn fired spurious HIR_TOOL_FAILURE alerts whenever Smith
+    # was actually finding bugs.
     if result is not None:
         ev = result.evidence or {}
         is_error = bool(
             ev.get("error")
-            or (tool == "http_request" and int(ev.get("status", 200) or 200) == 0)
-            or (result.anomalies and any("error" in str(a).lower() or "timeout" in str(a).lower() or "unreachable" in str(a).lower() for a in result.anomalies))
+            or (tool == "http_request" and ev.get("status") == 0)
         )
         if is_error:
             entry["error"] = True
