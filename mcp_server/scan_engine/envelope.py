@@ -30,6 +30,9 @@ _last_qa_shown_ts: str = ""  # ISO timestamp of last alert batch shown to the mo
 _qa_alert_last_shown: dict[tuple, str] = {}
 _QA_ALERT_DEDUP_SECONDS = 30 * 60  # 30 min cooldown per identical alert
 
+import logging as _logging
+_log = _logging.getLogger(__name__)
+
 
 @dataclass
 class Envelope:
@@ -75,8 +78,10 @@ def wrap(tool: str, raw_output: str, context: dict | None = None) -> str:
                         "or call: session(action='resume', options={choice: '...', message: '...'})"
                     ),
                 }, indent=2)
-        except Exception:
-            pass
+        except (ImportError, AttributeError, OSError) as e:
+            # We never want a session-read error to break tool dispatch — but
+            # we log so the failure isn't silent.
+            _log.warning("intervention check failed: %s", e)
 
     # Block all tool calls when the scan reached a terminal state
     # (human clicked Complete Scan, cost/time/call limit hit, etc.).
@@ -105,8 +110,9 @@ def wrap(tool: str, raw_output: str, context: dict | None = None) -> str:
                         "session(action='start') — do not call that yourself."
                     ),
                 }, indent=2)
-        except Exception:
-            pass
+        except (ImportError, AttributeError, OSError) as e:
+            # Same narrow swallow as the intervention check — surface via log.
+            _log.warning("terminal-status check failed: %s", e)
 
     ctx = context or {}
 
@@ -700,6 +706,21 @@ _AUTH_FIELD_RE = __import__("re").compile(
 )
 
 
+def _is_zero_status(raw: Any) -> bool:
+    """Return True if `raw` represents HTTP status 0 — i.e. no response was
+    received (aiohttp/requests exception path).
+
+    Accepts both numeric 0 and the string "0" so we don't silently miss a
+    status that was serialized through a JSON round-trip. Anything else
+    (including None, malformed strings, real status codes) returns False.
+    """
+    if raw == 0:
+        return True
+    if isinstance(raw, str) and raw.strip() == "0":
+        return True
+    return False
+
+
 def _is_auth_attempt(ctx: dict) -> bool:
     """True if this http_request looks like a credential validation attempt.
 
@@ -774,7 +795,7 @@ def _build_quick_log_entry(
         ev = result.evidence or {}
         is_error = bool(
             ev.get("error")
-            or (tool == "http_request" and ev.get("status") == 0)
+            or (tool == "http_request" and _is_zero_status(ev.get("status")))
         )
         if is_error:
             entry["error"] = True

@@ -502,13 +502,19 @@ def _smith_running() -> bool:
     (e.g. user started opencode or claude manually) while still using PID
     tracking for the immediate-feedback case after the Restart Smith button.
     """
-    # PID file (dashboard-spawned process)
+    # PID file (dashboard-spawned process). Cap the parsed PID at 2**22 (the
+    # POSIX kernel.pid_max upper bound on common Linux/macOS) so a maliciously
+    # large value in the file can't blow up os.kill with an OverflowError.
     try:
-        pid = int(_SMITH_PID_FILE.read_text().strip())
-        os.kill(pid, 0)
-        return True
-    except Exception:
-        pass
+        raw_pid = _SMITH_PID_FILE.read_text().strip()
+        pid = int(raw_pid)
+        if 0 < pid < (1 << 22):
+            os.kill(pid, 0)
+            return True
+    except (FileNotFoundError, ValueError, ProcessLookupError, PermissionError) as e:
+        _log.debug("smith_running: pid file check skipped: %s", e)
+    except OSError as e:
+        _log.debug("smith_running: os.kill failed: %s", e)
 
     # Activity signal: quick_log.json mtime only. session.json is mutated by
     # dashboard endpoints (resolve_intervention, complete, etc.) which would
@@ -519,8 +525,8 @@ def _smith_running() -> bool:
     try:
         if _QUICK_LOG_FILE.exists() and now - _QUICK_LOG_FILE.stat().st_mtime < _SMITH_IDLE_SECONDS:
             return True
-    except Exception:
-        pass
+    except OSError as e:
+        _log.debug("smith_running: quick_log mtime check failed: %s", e)
     return False
 
 
@@ -658,15 +664,18 @@ async def _mcp_sse_alive() -> bool:
     Used by the watchdog to skip restarts when MCP is dead — restarting
     Smith into a dead MCP causes a 30–60s burn of subprocess fallbacks
     that always fail and end the opencode -p run with a text response.
+
+    Socket is wrapped in contextlib.closing so the file descriptor is
+    released even when settimeout/connect_ex raises before our own .close().
     """
+    import contextlib
     import socket
     try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(0.8)
-        result = sock.connect_ex(("127.0.0.1", 7778))
-        sock.close()
-        return result == 0
-    except Exception:
+        with contextlib.closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as sock:
+            sock.settimeout(0.8)
+            return sock.connect_ex(("127.0.0.1", 7778)) == 0
+    except (OSError, socket.gaierror) as e:
+        _log.debug("mcp_sse_alive check failed: %s", e)
         return False
 
 

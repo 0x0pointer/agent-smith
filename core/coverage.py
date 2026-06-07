@@ -393,9 +393,15 @@ def _validate_auth_response(
     # Only inspect http_request artifacts (other tools have different schemas)
     if not artifact_id.startswith("http_request_"):
         return ""
+    # Bound the JSON read: an http_request artifact JSON should never be
+    # larger than a few hundred KB. Reject anything anomalously large
+    # rather than risk a DoS by trying to json.loads a gigabyte.
+    _MAX_ARTIFACT_BYTES = 10 * 1024 * 1024  # 10 MB ceiling
     try:
+        if artifact_file.stat().st_size > _MAX_ARTIFACT_BYTES:
+            return ""  # too big to safely parse; let the cell close
         data = json.loads(artifact_file.read_text(encoding="utf-8"))
-    except Exception:
+    except (OSError, json.JSONDecodeError, ValueError):
         return ""
     response_status = data.get("status")
     if response_status not in (401, 403):
