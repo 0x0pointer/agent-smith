@@ -25,6 +25,9 @@ case "${1:-start}" in
             echo "✗ Could not determine venv Python path — run 'poetry -C $REPO_DIR install' first"
             exit 1
         fi
+        # cd into REPO_DIR so the spawned process inherits the correct CWD
+        # (findings.json / session.json / coverage_matrix.json are written relative to cwd).
+        cd "$REPO_DIR"
         nohup env PYTHONPATH="$REPO_DIR" "$VENV_PYTHON" -m mcp_server --transport sse \
             --host 127.0.0.1 --port "$PORT" >> "$LOG_FILE" 2>&1 &
         echo $! > "$PID_FILE"
