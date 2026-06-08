@@ -392,3 +392,71 @@ class TestSmithWatchdogLoop:
              patch.object(api, "_spawn_smith", spawn):
             self._run_watchdog()
         spawn.assert_awaited_once()
+
+    def test_loop_continues_after_non_cancel_exception(self, sandbox_session, monkeypatch):
+        """Exception in tick body must not crash the loop — only CancelledError exits."""
+        ticks = {"n": 0}
+
+        async def fake_sleep(_s):
+            ticks["n"] += 1
+            if ticks["n"] > 1:
+                raise asyncio.CancelledError()
+
+        async def boom(_now):
+            raise RuntimeError("synthetic tick error")
+
+        monkeypatch.setattr("asyncio.sleep", fake_sleep)
+        monkeypatch.setattr(api, "_watchdog_tick", boom)
+        import contextlib
+        with contextlib.suppress(asyncio.CancelledError):
+            asyncio.run(api._smith_watchdog_loop())
+        assert ticks["n"] == 2  # second sleep fired → loop survived the exception
+
+
+# ---------------------------------------------------------------------------
+# _watchdog_tick — guard condition unit tests
+# ---------------------------------------------------------------------------
+
+class TestWatchdogTick:
+
+    def _run_tick(self, now=9999.0):
+        asyncio.run(api._watchdog_tick(now))
+
+    def test_skips_when_intervention_active(self, sandbox_session):
+        _write_session(sandbox_session, status="running",
+                       intervention={"code": "HIR_AUTH_FAILURE", "situation": ""})
+        spawn = AsyncMock()
+        with patch.object(api, "_spawn_smith", spawn):
+            self._run_tick()
+        spawn.assert_not_awaited()
+
+    def test_skips_when_smith_already_running(self, sandbox_session):
+        _write_session(sandbox_session, status="running")
+        spawn = AsyncMock()
+        with patch.object(api, "_smith_running", return_value=True), \
+             patch.object(api, "_spawn_smith", spawn):
+            self._run_tick()
+        spawn.assert_not_awaited()
+
+    def test_skips_when_min_gap_not_elapsed(self, sandbox_session):
+        _write_session(sandbox_session, status="running")
+        spawn = AsyncMock()
+        api._watchdog_last_restart_ts = 9000.0  # now=9999, gap=999 < MIN_GAP
+        with patch.object(api, "_smith_running", return_value=False), \
+             patch.object(api, "_mcp_sse_alive", return_value=True), \
+             patch.object(api, "_spawn_smith", spawn):
+            self._run_tick(now=9000.0 + api._WATCHDOG_MIN_GAP_SECONDS - 1)
+        spawn.assert_not_awaited()
+        api._watchdog_last_restart_ts = 0.0  # reset for other tests
+
+    def test_skips_when_hourly_cap_exceeded(self, sandbox_session):
+        _write_session(sandbox_session, status="running")
+        spawn = AsyncMock()
+        now = 9999.0
+        api._watchdog_restart_count_window[:] = [now - 10] * api._WATCHDOG_MAX_PER_HOUR
+        with patch.object(api, "_smith_running", return_value=False), \
+             patch.object(api, "_mcp_sse_alive", return_value=True), \
+             patch.object(api, "_spawn_smith", spawn):
+            self._run_tick(now=now)
+        spawn.assert_not_awaited()
+        api._watchdog_restart_count_window.clear()
