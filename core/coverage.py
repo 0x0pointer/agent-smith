@@ -327,6 +327,98 @@ def _validate_artifact(artifact_id: str, status: str) -> str:
     return ""
 
 
+# Injection cell types where 401/403 is meaningless evidence of cleanliness —
+# the test payload was never evaluated because auth blocked the request first.
+# Excluded: auth/access-control cell types where 401/403 IS the finding signal.
+_AUTH_GATED_TYPES = {
+    "sqli", "nosqli", "xss", "ssti", "cmdi", "ssrf", "xxe",
+    "traversal", "crlf", "prototype", "mass_assignment", "redirect",
+}
+
+
+# Default severity inferred from injection_type when Smith doesn't file a
+# finding. These are reasonable defaults — Smith can later upgrade via
+# report(action='update_finding').
+def _validate_finding_link(status: str, finding_id: str | None) -> str:
+    """Reject closing a cell as 'vulnerable' without a finding_id.
+
+    Replaces the old auto-file path: instead of creating a finding on
+    Smith's behalf (which produced per-cell-granularity duplicates for
+    app-wide misconfigs like security_headers/cors/rate_limit — 33×
+    inflation observed), force Smith to call report(action='finding')
+    first and pass the returned id back here.
+
+    Tested_clean / not_applicable / skipped cells don't trigger this —
+    only vulnerable closures. If finding_id is already populated (Smith
+    is updating notes on an existing link), pass through unchanged.
+    """
+    if status != "vulnerable":
+        return ""
+    if finding_id and finding_id.strip():
+        return ""
+    return (
+        "REJECTED: closing a cell as 'vulnerable' requires a finding_id. "
+        "First call report(action='finding', data={title, severity, target, "
+        "description, evidence, tool_used, ...}) — capture the returned 'id' "
+        "from that response — then pass it back here as finding_id alongside "
+        "the artifact_id. This avoids creating duplicate findings for app-wide "
+        "misconfigs and keeps the finding/cell linkage honest. "
+        "Cell status will remain in_progress until the link exists."
+    )
+
+
+def _validate_auth_response(
+    artifact_id: str, status: str, cell: dict | None,
+) -> str:
+    """Reject tested_clean when the artifact response was 401/403 on an injection cell.
+
+    An HTTP 401/403 means "we never even ran your injection payload — auth blocked
+    you at the door". Marking the cell tested_clean on that basis silently skips
+    real testing. Force Smith to authenticate and re-test.
+
+    Only enforces for injection-class cells (sqli, xss, ssti, etc.) — auth/cors/
+    rate_limit/jwt cells legitimately use 401/403 as the test signal.
+    """
+    import json
+    if status != "tested_clean":
+        return ""
+    if not cell:
+        return ""
+    inj_type = cell.get("injection_type", "")
+    if inj_type not in _AUTH_GATED_TYPES:
+        return ""
+    artifact_file = _ARTIFACTS_DIR / f"{artifact_id}.txt"
+    if not artifact_file.exists():
+        return ""  # _validate_artifact already handled this
+    # Only inspect http_request artifacts (other tools have different schemas)
+    if not artifact_id.startswith("http_request_"):
+        return ""
+    # Bound the JSON read: an http_request artifact JSON should never be
+    # larger than a few hundred KB. Reject anything anomalously large
+    # rather than risk a DoS by trying to json.loads a gigabyte.
+    _MAX_ARTIFACT_BYTES = 10 * 1024 * 1024  # 10 MB ceiling
+    try:
+        if artifact_file.stat().st_size > _MAX_ARTIFACT_BYTES:
+            return ""  # too big to safely parse; let the cell close
+        data = json.loads(artifact_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return ""
+    response_status = data.get("status")
+    if response_status not in (401, 403):
+        return ""
+    return (
+        f"REJECTED: cannot mark cell {cell.get('id', '?')} ({inj_type}) tested_clean — "
+        f"artifact {artifact_id} shows HTTP {response_status}. An auth failure is NOT "
+        f"evidence the injection payload was filtered; the server never evaluated it. "
+        f"Required steps before closing this cell:\n"
+        f"  1. Check known_assets.auth_tokens / known_assets.credentials for a valid JWT or login.\n"
+        f"  2. If none, POST to the login endpoint and capture the Authorization: Bearer <jwt>.\n"
+        f"  3. Re-send the {inj_type} payload with the Authorization header.\n"
+        f"  4. THEN mark the cell based on the AUTHENTICATED response (2xx/4xx/5xx that is NOT 401/403).\n"
+        f"Cell status remains in_progress."
+    )
+
+
 async def update_cell(
     cell_id: str,
     status: str,
@@ -350,11 +442,22 @@ async def update_cell(
     rejection = _validate_artifact(artifact_id, status)
     if rejection:
         return rejection
+    # Vulnerable closures require an existing finding_id — Smith must call
+    # report(action='finding') first. Auto-filing on Smith's behalf produced
+    # per-cell-granularity duplicates that polluted the export.
+    link_reject = _validate_finding_link(status, finding_id)
+    if link_reject:
+        return link_reject
 
     async with _lock:
         data = _load()
         for cell in data["matrix"]:
             if cell["id"] == cell_id:
+                # Auth-failure block: a 401/403 on an injection cell is not clean,
+                # it's untested. Force Smith to authenticate and retry.
+                auth_reject = _validate_auth_response(artifact_id, status, cell)
+                if auth_reject:
+                    return auth_reject
                 warning = _integrity_warning_for_status(
                     cell_id, cell["status"], status,
                     cell.get("injection_type", ""), notes,
@@ -372,8 +475,12 @@ async def update_cell(
     return False
 
 
-def _apply_bulk_cell(cell: dict, upd: dict, warnings: list[str]) -> None:
-    """Apply one bulk-update entry to a cell in-place, appending any warnings."""
+def _apply_bulk_cell(cell: dict, upd: dict, warnings: list[str], ep_path: str = "?") -> None:
+    """Apply one bulk-update entry to a cell in-place, appending any warnings.
+
+    Caller is expected to have already vetted the (artifact, auth, finding-link)
+    gates in bulk_update — this only handles the mutation + integrity warning.
+    """
     st = upd.get("status", "")
     notes_text = upd.get("notes", "")
     warning = _integrity_warning_for_status(
@@ -406,6 +513,7 @@ async def bulk_update(updates: list[dict]) -> dict:
     async with _lock:
         data = _load()
         cell_map = {c["id"]: c for c in data["matrix"]}
+        ep_map = {ep["id"]: ep.get("path", "?") for ep in data.get("endpoints", [])}
         count = 0
         rejected = 0
         warnings: list[str] = []
@@ -420,7 +528,22 @@ async def bulk_update(updates: list[dict]) -> dict:
                     warnings.append(f"REJECTED cell {cid}: {rejection}")
                     rejected += 1
                     continue
-            _apply_bulk_cell(cell_map[cid], upd, warnings)
+                auth_reject = _validate_auth_response(
+                    upd.get("artifact_id", ""), st, cell_map[cid],
+                )
+                if auth_reject:
+                    warnings.append(f"REJECTED cell {cid}: {auth_reject}")
+                    rejected += 1
+                    continue
+                # Vulnerable cells must already have a finding_id — force Smith
+                # to call report(action='finding') first instead of auto-filing.
+                link_reject = _validate_finding_link(st, upd.get("finding_id", ""))
+                if link_reject:
+                    warnings.append(f"REJECTED cell {cid}: {link_reject}")
+                    rejected += 1
+                    continue
+            ep_path = ep_map.get(cell_map[cid].get("endpoint_id", ""), "?")
+            _apply_bulk_cell(cell_map[cid], upd, warnings, ep_path)
             count += 1
         _recount(data)
         _save(data)

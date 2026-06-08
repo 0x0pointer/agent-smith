@@ -382,7 +382,10 @@ async def test_meta_counters_accurate(coverage_file):
     assert data["meta"]["tested"] == 0
     assert data["meta"]["vulnerable"] == 0
 
-    # Mark one tested, one vulnerable, one N/A
+    # Mark one tested, one vulnerable, one N/A.
+    # Vulnerable closures now require a finding_id (see _validate_finding_link
+    # in core/coverage.py) — the validator forces Smith to call
+    # report(action='finding') first instead of auto-filing on his behalf.
     cells = data["matrix"]
     await core.coverage.update_cell(cells[0]["id"], "in_progress")
     await core.coverage.update_cell(
@@ -392,7 +395,7 @@ async def test_meta_counters_accurate(coverage_file):
     await core.coverage.update_cell(cells[1]["id"], "in_progress")
     await core.coverage.update_cell(
         cells[1]["id"], "vulnerable",
-        tested_by="sqlmap", artifact_id=_make_artifact("sqlmap"),
+        tested_by="sqlmap", artifact_id=_make_artifact("sqlmap"), finding_id="finding-1",
     )
     await core.coverage.update_cell(cells[2]["id"], "not_applicable")
 

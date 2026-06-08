@@ -18,8 +18,12 @@ _SEVERITY_MAP = {"ERROR": "high", "WARNING": "medium", "INFO": "info"}
 # ---------------------------------------------------------------------------
 
 def _build_args(path: str = "/target", flags: str = "") -> list[str]:
-    # /target is the mount point inside the container (see needs_mount=True)
-    args = ["--config=auto", "--json", path]
+    # /target is the mount point inside the container (see needs_mount=True).
+    # The semgrep/semgrep image has no ENTRYPOINT, so the binary name must lead.
+    # User-supplied host paths are remapped to /target since only the mount is visible inside the container.
+    if path != "/target" and not path.startswith("/target"):
+        path = "/target"
+    args = ["semgrep", "--config=auto", "--json", "--metrics=off", path]
     if flags:
         args += flags.split()
     return args

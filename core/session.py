@@ -135,6 +135,12 @@ def start(
         "known_assets": {
             "domains": [], "ips": [], "ports": [],
             "technologies": [], "endpoints": [],
+            # Authentication context — discovered creds, JWTs, and login endpoints.
+            # Smith reads these (surfaced in recovery brief) when an endpoint
+            # returns 401/403 instead of marking the cell "tested_clean".
+            "credentials":    [],   # [{username, password, source}]
+            "auth_tokens":    [],   # [{type, value, user_id?, role?, obtained_at}]
+            "auth_endpoints": [],   # [{path, method, body_template}]
         },
         "context_chars_sent": 0,
         "complete_attempts":  0,        # incremented each time session(complete) is called
@@ -210,6 +216,32 @@ def complete(
 
 
 def get() -> dict | None:
+    return _current
+
+
+def load_from_disk(force: bool = False) -> dict | None:
+    """Populate _current from session.json.
+
+    Used by processes (e.g. the dashboard API server) that never called
+    start() but need to read/mutate session state.
+
+    Default behavior loads only when _current is None (one-shot bootstrap).
+    Pass force=True to ALWAYS reload from disk — required for the dashboard
+    process whose in-memory _current goes stale as the MCP process keeps
+    writing to session.json from another process.
+    """
+    global _current
+    if force and _SESSION_FILE.exists():
+        try:
+            _current = json.loads(_SESSION_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+        return _current
+    if _current is None and _SESSION_FILE.exists():
+        try:
+            _current = json.loads(_SESSION_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
     return _current
 
 
@@ -475,6 +507,19 @@ def _update_scalar_assets(assets: dict, asset_type: str, items: list) -> None:
             existing.add(val)
 
 
+def _update_dict_assets(assets: dict, asset_type: str, items: list, dedup_keys: tuple[str, ...]) -> None:
+    """Deduplicate and append dict entries (credentials, tokens, endpoints) by composite key."""
+    target_list = assets.setdefault(asset_type, [])
+    existing = {tuple(e.get(k, "") for k in dedup_keys) for e in target_list if isinstance(e, dict)}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        key = tuple(item.get(k, "") for k in dedup_keys)
+        if any(key) and key not in existing:
+            target_list.append(item)
+            existing.add(key)
+
+
 def update_known_assets(asset_type: str, items: list) -> None:
     """Accumulate discovered assets into session.json['known_assets']."""
     if not _current or _current.get("status") != "running" or not items:
@@ -482,9 +527,16 @@ def update_known_assets(asset_type: str, items: list) -> None:
     assets = _current.setdefault("known_assets", {
         "domains": [], "ips": [], "ports": [],
         "technologies": [], "endpoints": [],
+        "credentials": [], "auth_tokens": [], "auth_endpoints": [],
     })
     if asset_type == "ports":
         _update_ports_assets(assets, items)
+    elif asset_type == "credentials":
+        _update_dict_assets(assets, asset_type, items, ("username",))
+    elif asset_type == "auth_tokens":
+        _update_dict_assets(assets, asset_type, items, ("value",))
+    elif asset_type == "auth_endpoints":
+        _update_dict_assets(assets, asset_type, items, ("path", "method"))
     else:
         _update_scalar_assets(assets, asset_type, items)
     _flush()
@@ -562,18 +614,35 @@ def trigger_intervention(
 
 
 def resolve_intervention(choice: str, message: str = "") -> dict:
-    """Human responded — transition back to running and record their decision."""
+    """Human responded — transition back to running and record their decision.
+
+    Idempotent: if there is no active intervention (already resolved), only
+    the running-status flip is applied. Previously this path was appending
+    a None entry to intervention_history every time it was called twice in
+    a row (e.g. operator clicks REAUTH then watchdog also calls us), which
+    broke the dashboard renderer that iterated history without null checks.
+    """
     global _current
     if not _current:
         return {}
-    intervention = _current.get("intervention", {})
+    intervention = _current.get("intervention")
+    history = _current.setdefault("intervention_history", [])
+    # Sanitize legacy entries: drop any None left from earlier bug.
+    if any(h is None for h in history):
+        history[:] = [h for h in history if h is not None]
     if intervention:
         intervention["resolved_at"] = datetime.now(timezone.utc).isoformat()
         intervention["resolution"]  = {"choice": choice, "message": message}
-    _current["status"] = "running"
-    _current["intervention_history"] = _current.get("intervention_history", [])
-    _current["intervention_history"].append(intervention)
-    _current["intervention"] = None
+        history.append(intervention)
+        _current["intervention"] = None
+    # Only return to 'running' if we weren't already in a terminal state.
+    # complete / incomplete_with_unresolved_blockers / limit_reached are
+    # definitive end-states; resolving a stale intervention should not undo
+    # the human's Complete Scan click or a budget/time stop.
+    if _current.get("status") not in (
+        "complete", "incomplete_with_unresolved_blockers", "limit_reached",
+    ):
+        _current["status"] = "running"
     _flush()
     return _current
 

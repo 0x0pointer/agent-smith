@@ -106,6 +106,12 @@ async def session(action: str, options: dict | None = None) -> str:
     start_kali, stop_kali, start_metasploit, stop_metasploit, pull_images: no options needed
     """
     opts = _ensure_dict(options) or {}
+    # After MCP restarts the in-memory _current dict is None until something
+    # calls start(). Load from disk first so every session action — recovery,
+    # status, complete, etc. — works against the persisted state instead of
+    # erroneously reporting "no session".
+    if action != "start":
+        scan_session.load_from_disk()
     result = await _dispatch_async_action(action, opts)
     if result is not None:
         return result
@@ -1022,13 +1028,46 @@ def _do_complete(opts):
         )
         return msg
 
-    cfg = scan_session.complete(notes)
-    status = cfg.get("status", "complete")
-    log.note(f"Scan complete — {notes}")
+    # Only the human operator can mark a scan complete.
+    # Smith passes all quality gates here — the scan is ready — but completion
+    # is deliberately reserved for the human via the dashboard "Complete Scan"
+    # button or the Instruct Smith panel.
+    log.note(
+        f"complete() called by Smith (attempt {_complete_attempts}) — "
+        "all quality gates passed; awaiting human completion via dashboard."
+    )
     _complete_attempts = 0
     _analysis_passes = 0
-    _record_metrics(data, [], force_completed=False)
-    return f"Scan marked {status}. session.json updated. STOP — do not call any more tools. The scan is done."
+
+    # Inject any active steering directives directly into this response so
+    # Smith sees them immediately without needing another tool call.
+    # (session() bypasses the envelope pipeline, so directives won't reach
+    # Smith otherwise if it stops making scan tool calls here.)
+    try:
+        from core.steering import steering_queue
+        active = steering_queue.get_active()
+        if active:
+            directive_lines = "\n".join(
+                f"  ⚠ STEERING [{d.priority.upper()}]: {d.message}" for d in active
+            )
+            steering_queue.mark_injected(active[0].id)
+            return (
+                "COMPLETION HELD — human sign-off required via dashboard.\n"
+                "Do NOT summarise findings. Do NOT explain the situation to the user.\n"
+                "EXECUTE NOW: act on the pending human instructions below, then call "
+                "session(action='status') to check for more directives.\n\n"
+                f"{directive_lines}"
+            )
+    except Exception:
+        pass
+
+    return (
+        "COMPLETION HELD — human sign-off required via dashboard.\n"
+        "Do NOT summarise findings. Do NOT explain the situation to the user. "
+        "Do NOT call session(action='complete') again.\n"
+        "EXECUTE NOW: call session(action='status') to check for pending QA alerts "
+        "and steering directives, then act on them. Keep making tool calls."
+    )
 
 
 def _record_metrics(findings_data: dict, completion_blockers: list[str], force_completed: bool) -> None:
@@ -1379,6 +1418,28 @@ def _check_coverage_integrity(matrix: list[dict], tools_run: set[str]) -> list[s
 def _do_recovery():
     """Compact recovery brief — one call gives the agent everything to resume."""
     current = scan_session.get() or {}
+    # Terminal status: the previous scan is finished. Surface that explicitly
+    # instead of falling through to the "no_session → start a new one" path,
+    # because Smith would otherwise try to start a new scan over the top of
+    # a completed one.
+    scan_status = current.get("status", "") if current else ""
+    if scan_status in (
+        "complete", "incomplete_with_unresolved_blockers", "limit_reached",
+    ):
+        return json.dumps({
+            "status": "SCAN_COMPLETED",
+            "scan_status":  scan_status,
+            "target":       current.get("target", ""),
+            "finished":     current.get("finished", ""),
+            "notes":        current.get("notes", ""),
+            "message": (
+                f"This scan is already marked '{scan_status}' on disk. Stop calling "
+                "tools. Write one final brief summary and end your turn. Do NOT call "
+                "session(action='start') to begin a new scan — the human will trigger "
+                "that themselves when they want fresh work."
+            ),
+        }, indent=2)
+
     if not current or current.get("status") != "running":
         # No session exists — tell the model to start one
         return json.dumps({
@@ -1457,7 +1518,15 @@ def _do_recovery():
         unsatisfied_gates, pending_escalations, integrity_warnings,
         target, tools_run, action_list, next_call, resume_step,
     )
-    return json.dumps(result, indent=2)
+    try:
+        return json.dumps(result, indent=2)
+    except TypeError as e:
+        # In-memory state can drift over long MCP uptimes (e.g. dict keys that
+        # are tuples). Falling back to default=str lets the recovery brief
+        # serialize so Smith can resume, rather than failing the whole call.
+        log.note(f"recovery: json encoding fallback ({e}) — reloading from disk")
+        scan_session.load_from_disk()
+        return json.dumps(result, indent=2, default=str)
 
 
 def _build_recovery_result(
@@ -1489,6 +1558,28 @@ def _build_recovery_result(
             f"({'complete — quality gates only' if remaining == 0 else f'{remaining} more required'})"
         )
 
+    # Auth context — credentials, JWTs, and login endpoints accumulated during
+    # the scan. Surfaced prominently so Smith can authenticate before testing
+    # auth-protected endpoints instead of marking them tested_clean on 401.
+    known_assets = current.get("known_assets", {})
+    auth_context = {}
+    creds = known_assets.get("credentials", [])
+    tokens = known_assets.get("auth_tokens", [])
+    auth_eps = known_assets.get("auth_endpoints", [])
+    if creds:
+        auth_context["credentials"] = creds[-5:]  # most recent 5
+    if tokens:
+        # Most recent token first; only most recent 3 to keep brief compact
+        auth_context["jwt_tokens"] = tokens[-3:]
+    if auth_eps:
+        auth_context["login_endpoints"] = auth_eps[:3]
+    if auth_context:
+        auth_context["how_to_use"] = (
+            "When an endpoint returns 401/403, send the JWT as 'Authorization: Bearer <value>'. "
+            "If no token is valid, POST to a login endpoint with credentials to mint a new one. "
+            "DO NOT mark cells tested_clean on 401/403 — the server returns 'REJECTED' now."
+        )
+
     result = {
         "EXECUTE_NOW": next_call,
         "target": target,
@@ -1503,6 +1594,8 @@ def _build_recovery_result(
             "report(action, data) | session(action)"
         ),
     }
+    if auth_context:
+        result["auth_context"] = auth_context
     if iter_status:
         result["iteration_progress"] = iter_status
 

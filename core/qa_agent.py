@@ -415,7 +415,8 @@ def _maybe_inject_web_exploit_directive(
             message=(
                 "Spider has crawled the application but /web-exploit was never started. "
                 "EXECUTE NOW: call session(action='set_skill', options={skill:'web-exploit', reason:'mandatory post-spider'}) "
-                "then Skill tool with skill='web-exploit'. "
+                "then invoke the /web-exploit skill (Claude Code: Skill tool skill='web-exploit'; "
+                "opencode/other: read ~/.config/opencode/commands/web-exploit.md and follow its workflow). "
                 "Do not run any other tool until this skill is started."
             ),
             priority="high", skill="web-exploit", trigger="MISSING_WEB_EXPLOIT",
@@ -446,7 +447,8 @@ def _maybe_inject_param_fuzz_directive(
             message=(
                 "/web-exploit is done but /param-fuzz was never chained. "
                 "EXECUTE NOW: call session(action='set_skill', options={skill:'param-fuzz', reason:'mandatory chain after web-exploit'}) "
-                "then Skill tool with skill='param-fuzz'."
+                "then invoke the /param-fuzz skill (Claude Code: Skill tool skill='param-fuzz'; "
+                "opencode/other: read ~/.config/opencode/commands/param-fuzz.md and follow its workflow)."
             ),
             priority="high", skill="param-fuzz", trigger="MISSING_PARAM_FUZZ",
         )
@@ -486,7 +488,8 @@ def _maybe_inject_business_logic_directive(
             message=(
                 "Thorough scan: /business-logic has not been run. "
                 "EXECUTE NOW: session(action='set_skill', options={skill:'business-logic', reason:'thorough depth requirement'}) "
-                "then Skill tool with skill='business-logic'."
+                "then invoke the /business-logic skill (Claude Code: Skill tool skill='business-logic'; "
+                "opencode/other: read ~/.config/opencode/commands/business-logic.md and follow its workflow)."
             ),
             priority="medium", skill="business-logic", trigger="MISSING_BUSINESS_LOGIC",
         )
@@ -590,10 +593,21 @@ def _check_auth_failure(entries: list[dict]) -> dict | None:
     ever_authed = any(200 <= e.get("status_code", 0) < 300 for e in http_entries)
     if not ever_authed:
         return None
+    # Exclude credential-validation attempts (entries flagged as auth_attempt
+    # by the envelope — request body contained password/secret/api_key/etc.,
+    # or URL matched a known auth endpoint). 401s on those are credential
+    # tests, not session expiry — counting them here causes false-positive HIRs
+    # while Smith is actively logging in.
     recent = http_entries[-10:]
-    auth_failures = [e for e in recent if e.get("status_code") in (401, 403)]
-    if len(auth_failures) / len(recent) < 0.6:
+    non_auth_recent = [e for e in recent if not e.get("auth_attempt")]
+    if len(non_auth_recent) < 5:
+        return None  # too few non-auth signals to judge session validity
+    auth_failures = [e for e in non_auth_recent if e.get("status_code") in (401, 403)]
+    if len(auth_failures) / len(non_auth_recent) < 0.6:
         return None
+    # Rebind `recent` for the message below so target/counts reflect the
+    # signal we actually triggered on, not credential-attempt noise.
+    recent = non_auth_recent
     target = recent[-1].get("target", "target")
     _hir(
         code="HIR_AUTH_FAILURE",
@@ -792,8 +806,19 @@ def _check_exploit_escalation(entries: list[dict], findings_data: dict, session_
     return None
 
 
+# Tools that run in-process (Python aiohttp / requests / playwright) and
+# therefore have NO Docker dependency. Failure modes here are network /
+# target / DNS / SSL, not container infrastructure.
+_PYTHON_NATIVE_TOOLS = {"http_request", "spider"}
+
+
 def _check_repeated_tool_failure(entries: list[dict]) -> dict | None:
-    """HIR when the same tool fails 3+ times in a row — likely an infrastructure issue."""
+    """HIR when the same tool fails 3+ times in a row — likely an infrastructure issue.
+
+    Message + remediation options are tool-aware: Python-native tools
+    (http_request, spider) get a target-reachability framing; Docker-backed
+    tools (kali, metasploit, nuclei, ...) keep the container/infra framing.
+    """
     tool_entries = [e for e in entries if e.get("type") == "TOOL" and e.get("error")]
     if len(tool_entries) < 3:
         return None
@@ -807,23 +832,49 @@ def _check_repeated_tool_failure(entries: list[dict]) -> dict | None:
     now = datetime.now(timezone.utc)
     if any(_ts_age_secs(e.get("ts", ""), now) > 1200 for e in last_three):
         return None
-    _hir(
-        code="HIR_TOOL_FAILURE",
-        situation=(
+
+    is_python_native = broken_tool in _PYTHON_NATIVE_TOOLS
+    if is_python_native:
+        situation = (
+            f"Tool '{broken_tool}' has failed 3 times in a row in the last 20 minutes. "
+            f"'{broken_tool}' runs in-process (Python aiohttp/requests) and has no "
+            "container dependency — most likely a target reachability problem: target "
+            "down, DNS failure, SSL/TLS error, or proxy/network block."
+        )
+        options = [
+            "WAIT: Target may be temporarily down — tell me how long to wait before retrying",
+            "VERIFY: Confirm the target URL is correct (DNS, port, scheme) and I will retry",
+            "ROTATE: Provide an alternative proxy / User-Agent / endpoint to bypass blocks",
+            "SKIP_TOOL: Stop using this tool and rely on alternatives for the rest of the scan",
+            "ABORT: Stop the scan",
+        ]
+        message = (
+            f"Tool '{broken_tool}' failed 3 times in a row — target reachability / network suspected"
+        )
+    else:
+        situation = (
             f"Tool '{broken_tool}' has failed 3 times in a row in the last 20 minutes. "
             "This is likely a Docker/infrastructure issue rather than a target problem."
-        ),
-        tried=[f"'{broken_tool}' called 3 times, all failed with errors"],
-        options=[
+        )
+        options = [
             "RESTART_INFRA: I will run session(action='start_kali') to restart the Kali container and retry",
             "SKIP_TOOL: Tell me to avoid this tool for the rest of the scan and use alternatives",
             "INVESTIGATE: Check the logs — run `docker ps` to verify containers are healthy",
             "ABORT: Stop the scan",
-        ],
+        ]
+        message = (
+            f"Tool '{broken_tool}' failed 3 times in a row — infrastructure issue suspected"
+        )
+
+    _hir(
+        code="HIR_TOOL_FAILURE",
+        situation=situation,
+        tried=[f"'{broken_tool}' called 3 times, all failed with errors"],
+        options=options,
     )
     return {
         "code": "HIR_TOOL_FAILURE", "urgency": "high", "blocking": False,
-        "message": f"Tool '{broken_tool}' failed 3 times in a row — infrastructure issue suspected",
+        "message": message,
     }
 
 

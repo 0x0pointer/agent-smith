@@ -91,7 +91,16 @@ async def _do_request(url, method, headers, body, opts):
     log.tool_result("http_request", result)
 
     from mcp_server.scan_engine import wrap
-    return wrap("http_request", result, {"url": url, "method": method})
+    # Pass body + headers so the envelope can detect credential-validation
+    # attempts (password/secret/api_key fields). Without these the QA daemon
+    # cannot exclude legitimate login traffic from its session-expiry check
+    # and fires false-positive HIR_AUTH_FAILURE on every login attempt.
+    return wrap("http_request", result, {
+        "url":     url,
+        "method":  method,
+        "body":    body or "",
+        "headers": headers or {},
+    })
 
 
 async def _do_save_poc(url, method, headers, body, opts):
