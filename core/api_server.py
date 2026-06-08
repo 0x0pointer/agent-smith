@@ -706,8 +706,7 @@ async def _watchdog_tick(now: float) -> None:
         )
         return
     client = _detect_active_client()
-    safe_client = client if client in ("claude", "opencode") else "unknown"
-    _log.info("watchdog: smith stopped while scan running — auto-restart (%s)", safe_client)
+    _log.info("watchdog: smith stopped while scan running — auto-restart")
     ok, result = await _spawn_smith(client, source="watchdog")
     if ok:
         _watchdog_last_restart_ts = now
