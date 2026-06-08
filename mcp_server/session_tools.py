@@ -140,7 +140,7 @@ def _dispatch_sync_action(action: str, opts: dict) -> str:
     if action == "start":
         return _do_start(opts)
     if action == "complete":
-        return _do_complete(opts)
+        return _do_complete()
     if action == "status":
         return _do_status()
     if action == "set_skill":
@@ -1021,7 +1021,7 @@ def _build_blocker_response(blockers: list) -> str:
     return msg
 
 
-def _do_complete(opts):
+def _do_complete():
     global _complete_attempts, _analysis_passes
     _complete_attempts += 1
 
