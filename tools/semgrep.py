@@ -11,18 +11,19 @@ import json
 from tools.base import Tool
 
 _SEVERITY_MAP = {"ERROR": "high", "WARNING": "medium", "INFO": "info"}
+_TARGET_MOUNT = "/target"
 
 
 # ---------------------------------------------------------------------------
 # Arg builder
 # ---------------------------------------------------------------------------
 
-def _build_args(path: str = "/target", flags: str = "") -> list[str]:
-    # /target is the mount point inside the container (see needs_mount=True).
+def _build_args(path: str = _TARGET_MOUNT, flags: str = "") -> list[str]:
+    # _TARGET_MOUNT is the mount point inside the container (see needs_mount=True).
     # The semgrep/semgrep image has no ENTRYPOINT, so the binary name must lead.
-    # User-supplied host paths are remapped to /target since only the mount is visible inside the container.
-    if path != "/target" and not path.startswith("/target"):
-        path = "/target"
+    # User-supplied host paths are remapped to _TARGET_MOUNT since only the mount is visible inside the container.
+    if path != _TARGET_MOUNT and not path.startswith(_TARGET_MOUNT):
+        path = _TARGET_MOUNT
     args = ["semgrep", "--config=auto", "--json", "--metrics=off", path]
     if flags:
         args += flags.split()

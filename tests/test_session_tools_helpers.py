@@ -495,7 +495,7 @@ class TestDeepenSteps:
 
     def test_pass1_returns_non_empty_list_of_strings(self):
         steps = _deepen_steps_pass1(
-            criticals=[], has_ai_ep=False, skills_run=set(), unchained=[]
+            has_ai_ep=False, skills_run=set(), unchained=[]
         )
         assert isinstance(steps, list)
         assert len(steps) > 0
@@ -503,20 +503,20 @@ class TestDeepenSteps:
 
     def test_pass1_includes_ai_redteam_step_when_ai_ep(self):
         steps = _deepen_steps_pass1(
-            criticals=[], has_ai_ep=True, skills_run=set(), unchained=[]
+            has_ai_ep=True, skills_run=set(), unchained=[]
         )
         assert any("ai-redteam" in s for s in steps)
 
     def test_pass1_excludes_ai_redteam_step_when_no_ai(self):
         steps = _deepen_steps_pass1(
-            criticals=[], has_ai_ep=False, skills_run=set(), unchained=[]
+            has_ai_ep=False, skills_run=set(), unchained=[]
         )
         assert not any("ai-redteam" in s for s in steps)
 
     def test_pass1_includes_unchained_step_when_unchained_present(self):
         unchained = [{"title": "SQL Injection on login", "escalation_leads": []}]
         steps = _deepen_steps_pass1(
-            criticals=unchained, has_ai_ep=False, skills_run=set(), unchained=unchained
+            has_ai_ep=False, skills_run=set(), unchained=unchained
         )
         assert any("unchained" in s.lower() or "chain" in s.lower() for s in steps)
 
@@ -610,8 +610,6 @@ class TestBuildRecoveryResult:
                      "status": "running", "skill_history": [], "known_assets": {}},
             cov={"meta": {"tested": 0, "total_cells": 0}, "endpoints": [], "matrix": []},
             data={"findings": [], "diagrams": []},
-            in_progress_cells=[],
-            pending_count=0,
             extra_cells=0,
             unsatisfied_gates=[],
             pending_escalations=[],
@@ -776,7 +774,7 @@ class TestDeepenStepsPass2SkillsRun:
     def test_pass1_includes_ai_redteam_when_in_skills_run(self):
         from mcp_server.session_tools import _deepen_steps_pass1
         steps = _deepen_steps_pass1(
-            criticals=[], has_ai_ep=False, skills_run={"ai-redteam"}, unchained=[]
+            has_ai_ep=False, skills_run={"ai-redteam"}, unchained=[]
         )
         assert any("ai-redteam" in s for s in steps)
 
@@ -928,7 +926,7 @@ class TestDoComplete:
         with patch("mcp_server.session_tools._effective_tools", return_value=set()), \
              patch("mcp_server.session_tools._collect_completion_blockers",
                    return_value=["NO DIAGRAM: call report(action='diagram')"]):
-            result = _do_complete({"notes": "done"})
+            result = _do_complete()
         assert "complete BLOCKED" in result
         assert "NO DIAGRAM" in result
 
@@ -939,7 +937,7 @@ class TestDoComplete:
         with patch("mcp_server.session_tools._effective_tools", return_value=set()), \
              patch("mcp_server.session_tools._collect_completion_blockers",
                    return_value=["BLOCKER"]):
-            _do_complete({"notes": ""})
+            _do_complete()
         assert st._complete_attempts == initial + 1
 
     def test_no_blockers_standard_depth_marks_complete(self, tmp_path, monkeypatch):
@@ -947,7 +945,7 @@ class TestDoComplete:
         with patch("mcp_server.session_tools._effective_tools", return_value=set()), \
              patch("mcp_server.session_tools._collect_completion_blockers", return_value=[]), \
              patch("mcp_server.session_tools._record_metrics"):
-            result = _do_complete({"notes": "all done"})
+            result = _do_complete()
         assert "complete" in result.lower() or "Scan marked" in result
 
     def test_thorough_depth_no_blockers_adds_iteration_gate(self, tmp_path, monkeypatch):
@@ -958,7 +956,7 @@ class TestDoComplete:
              patch("mcp_server.session_tools._collect_completion_blockers", return_value=[]), \
              patch("mcp_server.session_tools._is_whitebox_scan", return_value=False), \
              patch("mcp_server.session_tools._deepen_brief", return_value="ITERATION GATE: pass 1"):
-            result = _do_complete({"notes": ""})
+            result = _do_complete()
         assert "ITERATION GATE" in result or "complete BLOCKED" in result
 
     def test_multiple_blockers_listed(self, tmp_path, monkeypatch):
@@ -966,7 +964,7 @@ class TestDoComplete:
         with patch("mcp_server.session_tools._effective_tools", return_value=set()), \
              patch("mcp_server.session_tools._collect_completion_blockers",
                    return_value=["NO DIAGRAM", "NO SPIDER", "NO POC"]):
-            result = _do_complete({"notes": ""})
+            result = _do_complete()
         assert "NO DIAGRAM" in result
         assert "NO SPIDER" in result
 

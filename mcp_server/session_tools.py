@@ -140,7 +140,7 @@ def _dispatch_sync_action(action: str, opts: dict) -> str:
     if action == "start":
         return _do_start(opts)
     if action == "complete":
-        return _do_complete(opts)
+        return _do_complete()
     if action == "status":
         return _do_status()
     if action == "set_skill":
@@ -589,7 +589,6 @@ def _deepen_brief_whitebox(analysis_pass: int) -> str:
     findings = data.get("findings", [])
     criticals = [f for f in findings if f.get("severity") == "critical"]
     highs = [f for f in findings if f.get("severity") == "high"]
-    current = scan_session.get() or {}
     finding_summary = f"{len(findings)} findings ({len(criticals)} critical, {len(highs)} high)"
 
     steps: list[str] = []
@@ -717,7 +716,7 @@ def _deepen_brief_whitebox(analysis_pass: int) -> str:
 
 
 def _deepen_steps_pass1(
-    criticals: list, has_ai_ep: bool, skills_run: set, unchained: list
+    has_ai_ep: bool, skills_run: set, unchained: list
 ) -> list[str]:
     steps: list[str] = []
     steps.append(
@@ -850,7 +849,7 @@ def _deepen_brief(iteration: int) -> str:
 
     # ── Build the ordered mandatory re-run list ─────────────────────────────────
     if iteration == 1:
-        steps = _deepen_steps_pass1(criticals, has_ai_ep, skills_run, unchained)
+        steps = _deepen_steps_pass1(has_ai_ep, skills_run, unchained)
         intro = (
             f"⛔ ITERATION GATE: Pass 1/{_THOROUGH_MIN_ITERATIONS} done — "
             "thorough depth requires {_THOROUGH_MIN_ITERATIONS} full passes. "
@@ -940,93 +939,101 @@ def _collect_completion_blockers(data: dict, effective: set) -> list[str]:
     return blockers
 
 
-def _do_complete(opts):
-    global _complete_attempts, _analysis_passes
-    _complete_attempts += 1
-    notes = opts.get("notes", "")
-
-    data = findings_store._load()
-
-    # Persist attempt counters to session.json so they survive context compaction.
+def _persist_completion_counters() -> dict:
+    """Flush attempt/pass counters to session.json and return current session."""
     current = scan_session.get() or {}
     if current:
         current["complete_attempts"] = _complete_attempts
         current["analysis_passes"] = _analysis_passes
         scan_session._flush()
+    return current
+
+
+def _apply_thorough_depth_gate(blockers: list, current: dict) -> list:
+    """Increment analysis pass counter when quality-clean and append iteration blocker if needed.
+
+    Returns the (possibly appended) blockers list.
+    """
+    global _analysis_passes
+    depth = (scan_session.get() or {}).get("depth", "")
+    if blockers or depth != "thorough":
+        return blockers
+    _analysis_passes += 1
+    if current:
+        current["analysis_passes"] = _analysis_passes
+        scan_session._flush()
+    if _analysis_passes < _THOROUGH_MIN_ITERATIONS:
+        brief = (
+            _deepen_brief_whitebox(_analysis_passes)
+            if _is_whitebox_scan()
+            else _deepen_brief(_analysis_passes)
+        )
+        blockers.append(brief)
+    return blockers
+
+
+def _build_blocker_response(blockers: list) -> str:
+    """Build the blocked-completion response string or HIR JSON."""
+    if _complete_attempts >= _MAX_COMPLETE_ATTEMPTS:
+        attempts = _complete_attempts
+        log.note(f"HIR triggered after {attempts} blocked complete() attempts. Blockers: {'; '.join(b[:80] for b in blockers)}")
+        scan_session.trigger_intervention(
+            code="HIR_FORCE_COMPLETE",
+            situation=(
+                f"{len(blockers)} completion blocker(s) could not be resolved after "
+                f"{attempts} attempts. The scan cannot complete automatically."
+            ),
+            tried=[f"complete() attempt {i+1}/{attempts}" for i in range(min(attempts, 5))],
+            options=[
+                "SKIP_CELLS: Tell me which specific cells or endpoint types to mark as skipped — I will document them and complete",
+                "REDUCE_SCOPE: Specify which checks to drop (e.g. 'skip all rate_limit cells', 'accept missing PoC for finding X')",
+                "ACCEPT_PARTIAL: I will complete with current coverage and flag all unresolved items in the report",
+                "CONTINUE: Provide specific instructions to resolve the remaining blockers and I will retry",
+            ],
+        )
+        return json.dumps({
+            "status": "HUMAN_INTERVENTION_REQUIRED",
+            "code": "HIR_FORCE_COMPLETE",
+            "situation": f"{len(blockers)} blocker(s) unresolved after {attempts} complete() attempts.",
+            "blockers": blockers[:5],
+            "options": [
+                "SKIP_CELLS — specify cells/endpoint types to skip",
+                "REDUCE_SCOPE — drop specific checks",
+                "ACCEPT_PARTIAL — complete with documented gaps",
+                "CONTINUE — give me instructions to fix the blockers",
+            ],
+            "how_to_respond": "Use the dashboard 'Send to Smith' panel, or call session(action='resume', options={choice: '...', message: '...'})",
+            "scan_paused": True,
+        }, indent=2)
+    depth = (scan_session.get() or {}).get("depth", "")
+    if depth == "thorough" and _analysis_passes < _THOROUGH_MIN_ITERATIONS:
+        header = (
+            f"complete BLOCKED — thorough scan requires {_THOROUGH_MIN_ITERATIONS} analysis passes "
+            f"(quality-clean passes: {_analysis_passes}/{_THOROUGH_MIN_ITERATIONS}):\n\n"
+        )
+    else:
+        header = f"complete BLOCKED (attempt {_complete_attempts}/{_MAX_COMPLETE_ATTEMPTS}) — fix the following first:\n\n"
+    msg = header + "\n\n".join(f"  [{i+1}] {b}" for i, b in enumerate(blockers))
+    log.note(
+        f"complete blocked (attempt {_complete_attempts}, analysis_passes={_analysis_passes}): "
+        f"{'; '.join(b[:80] for b in blockers)}"
+    )
+    return msg
+
+
+def _do_complete():
+    global _complete_attempts, _analysis_passes
+    _complete_attempts += 1
+
+    data = findings_store._load()
+    current = _persist_completion_counters()
 
     effective = _effective_tools()
     blockers = _collect_completion_blockers(data, effective)
-
-    # ── Thorough-depth iteration gate ────────────────────────────────────────
-    # _analysis_passes counts complete() calls that had NO quality blockers — i.e. genuine
-    # analysis passes.  Quality-fix attempts (where the model only added missing PoC files or
-    # reproduction steps) do NOT increment this counter, so they cannot satisfy the gate.
-    # This prevents the bug where 2 quality-fix attempts consumed the entire 3-pass budget.
-    depth = (scan_session.get() or {}).get("depth", "")
-    if not blockers and depth == "thorough":
-        # This call is quality-clean: count it as a real analysis pass.
-        _analysis_passes += 1
-        if current:
-            current["analysis_passes"] = _analysis_passes
-            scan_session._flush()
-
-        if _analysis_passes < _THOROUGH_MIN_ITERATIONS:
-            brief = (
-                _deepen_brief_whitebox(_analysis_passes)
-                if _is_whitebox_scan()
-                else _deepen_brief(_analysis_passes)
-            )
-            blockers.append(brief)
+    blockers = _apply_thorough_depth_gate(blockers, current)
 
     if blockers:
-        # After max attempts, escalate to HUMAN INTERVENTION REQUIRED.
-        # The scan pauses — no tool calls execute while intervention_required.
-        # The human decides via dashboard or session(action='resume').
-        if _complete_attempts >= _MAX_COMPLETE_ATTEMPTS:
-            attempts = _complete_attempts
-            log.note(f"HIR triggered after {attempts} blocked complete() attempts. Blockers: {'; '.join(b[:80] for b in blockers)}")
-            scan_session.trigger_intervention(
-                code="HIR_FORCE_COMPLETE",
-                situation=(
-                    f"{len(blockers)} completion blocker(s) could not be resolved after "
-                    f"{attempts} attempts. The scan cannot complete automatically."
-                ),
-                tried=[f"complete() attempt {i+1}/{attempts}" for i in range(min(attempts, 5))],
-                options=[
-                    "SKIP_CELLS: Tell me which specific cells or endpoint types to mark as skipped — I will document them and complete",
-                    "REDUCE_SCOPE: Specify which checks to drop (e.g. 'skip all rate_limit cells', 'accept missing PoC for finding X')",
-                    "ACCEPT_PARTIAL: I will complete with current coverage and flag all unresolved items in the report",
-                    "CONTINUE: Provide specific instructions to resolve the remaining blockers and I will retry",
-                ],
-            )
-            return json.dumps({
-                "status": "HUMAN_INTERVENTION_REQUIRED",
-                "code": "HIR_FORCE_COMPLETE",
-                "situation": f"{len(blockers)} blocker(s) unresolved after {attempts} complete() attempts.",
-                "blockers": blockers[:5],
-                "options": [
-                    "SKIP_CELLS — specify cells/endpoint types to skip",
-                    "REDUCE_SCOPE — drop specific checks",
-                    "ACCEPT_PARTIAL — complete with documented gaps",
-                    "CONTINUE — give me instructions to fix the blockers",
-                ],
-                "how_to_respond": "Use the dashboard 'Send to Smith' panel, or call session(action='resume', options={choice: '...', message: '...'})",
-                "scan_paused": True,
-            }, indent=2)
-        depth = (scan_session.get() or {}).get("depth", "")
-        if depth == "thorough" and _analysis_passes < _THOROUGH_MIN_ITERATIONS:
-            header = (
-                f"complete BLOCKED — thorough scan requires {_THOROUGH_MIN_ITERATIONS} analysis passes "
-                f"(quality-clean passes: {_analysis_passes}/{_THOROUGH_MIN_ITERATIONS}):\n\n"
-            )
-        else:
-            header = f"complete BLOCKED (attempt {_complete_attempts}/{_MAX_COMPLETE_ATTEMPTS}) — fix the following first:\n\n"
-        msg = header + "\n\n".join(f"  [{i+1}] {b}" for i, b in enumerate(blockers))
-        log.note(
-            f"complete blocked (attempt {_complete_attempts}, analysis_passes={_analysis_passes}): "
-            f"{'; '.join(b[:80] for b in blockers)}"
-        )
-        return msg
+        return _build_blocker_response(blockers)
 
     # Only the human operator can mark a scan complete.
     # Smith passes all quality gates here — the scan is ready — but completion
@@ -1514,7 +1521,7 @@ def _do_recovery():
     next_call = _concrete_next_call(target, tools_run, in_progress_cells, pending_count)
 
     result = _build_recovery_result(
-        current, cov, data, in_progress_cells, pending_count, extra_cells,
+        current, cov, data, extra_cells,
         unsatisfied_gates, pending_escalations, integrity_warnings,
         target, tools_run, action_list, next_call, resume_step,
     )
@@ -1533,8 +1540,6 @@ def _build_recovery_result(
     current: dict,
     cov: dict,
     data: dict,
-    in_progress_cells: list,
-    pending_count: int,
     extra_cells: int,
     unsatisfied_gates: list,
     pending_escalations: list,
