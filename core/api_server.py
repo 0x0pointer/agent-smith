@@ -27,6 +27,7 @@ import sys
 from pathlib import Path
 
 _log = logging.getLogger(__name__)
+_ERR_REQUEST_FAILED = "Request failed"
 
 _REPO_ROOT         = Path(__file__).parent.parent
 _FINDINGS_FILE     = _REPO_ROOT / "findings.json"
@@ -242,9 +243,9 @@ async def api_patch_finding(finding_id: str, request: Request) -> JSONResponse:
             escalation_leads=body.get("escalation_leads"),
         )
         return JSONResponse({"ok": updated})
-    except Exception as exc:
-        _log.error("api_update_finding failed: %s", exc)
-        return JSONResponse({"ok": False, "error": "Request failed"}, status_code=400)
+    except Exception:
+        _log.exception("api_update_finding failed")
+        return JSONResponse({"ok": False, "error": _ERR_REQUEST_FAILED}, status_code=400)
 
 
 @app.delete("/api/findings/{finding_id}")
@@ -253,9 +254,9 @@ async def api_delete_finding(finding_id: str) -> JSONResponse:
     try:
         archived = await delete_finding(finding_id)
         return JSONResponse({"ok": archived})
-    except Exception as exc:
-        _log.error("api_delete_finding failed: %s", exc)
-        return JSONResponse({"ok": False, "error": "Request failed"}, status_code=400)
+    except Exception:
+        _log.exception("api_delete_finding failed")
+        return JSONResponse({"ok": False, "error": _ERR_REQUEST_FAILED}, status_code=400)
 
 
 def _safe_unlink(path) -> None:
@@ -378,8 +379,8 @@ async def _cleanup_tunnels() -> str:
         )
         stdout, _ = await proc.communicate()
         return stdout.decode().strip()
-    except Exception as exc:
-        _log.error("cleanup_tunnels failed: %s", exc)
+    except Exception:
+        _log.exception("cleanup_tunnels failed")
         return "cleanup error"
 
 
@@ -434,7 +435,7 @@ async def api_intervention_respond(request: Request) -> JSONResponse:
         return JSONResponse({"ok": True, "resumed": True, "instruction": human_instruction})
     except Exception:
         _log.exception("api_intervention_respond failed")
-        return JSONResponse({"ok": False, "error": "Request failed"}, status_code=500)
+        return JSONResponse({"ok": False, "error": _ERR_REQUEST_FAILED}, status_code=500)
 
 
 @app.post("/api/steer")
@@ -461,7 +462,7 @@ async def api_steer(request: Request) -> JSONResponse:
         return JSONResponse({"ok": True})
     except Exception:
         _log.exception("api_steer failed")
-        return JSONResponse({"ok": False, "error": "Request failed"}, status_code=500)
+        return JSONResponse({"ok": False, "error": _ERR_REQUEST_FAILED}, status_code=500)
 
 
 @app.post("/api/complete")
@@ -484,7 +485,7 @@ async def api_complete(request: Request) -> JSONResponse:
         return JSONResponse({"ok": True, "status": status})
     except Exception:
         _log.exception("api_complete failed")
-        return JSONResponse({"ok": False, "error": "Request failed"}, status_code=500)
+        return JSONResponse({"ok": False, "error": _ERR_REQUEST_FAILED}, status_code=500)
 
 
 _SMITH_IDLE_SECONDS = 180  # >3 min with no scan activity → Smith is considered stopped
@@ -627,10 +628,10 @@ async def _spawn_smith(client: str, source: str = "api") -> tuple[bool, int | st
         )
 
         log_path = _REPO_ROOT / "logs" / "smith_restart.log"
-        log_path.parent.mkdir(exist_ok=True)
-        # Audit marker so watchdog vs manual restarts are visible in the log
-        with open(log_path, "a") as f:
-            f.write(f"\n=== [{source}] spawning {client} at {asyncio.get_event_loop().time()} ===\n")
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, log_path.parent.mkdir, True, True)
+        audit_line = f"\n=== [{source}] spawning {client} at {loop.time()} ===\n"
+        await loop.run_in_executor(None, lambda: log_path.open("a").write(audit_line))
 
         import shutil
         if client == "claude":
@@ -643,10 +644,11 @@ async def _spawn_smith(client: str, source: str = "api") -> tuple[bool, int | st
         if not os.path.exists(binary):
             return False, f"{client} binary not found at {binary}"
 
+        log_fh = await loop.run_in_executor(None, lambda: log_path.open("a"))
         proc = await asyncio.create_subprocess_exec(
             *args,
-            stdout=open(log_path, "a"),
-            stderr=open(log_path, "a"),
+            stdout=log_fh,
+            stderr=log_fh,
             cwd=str(_REPO_ROOT),
             start_new_session=True,
         )
@@ -658,7 +660,7 @@ async def _spawn_smith(client: str, source: str = "api") -> tuple[bool, int | st
         return False, "spawn failed"
 
 
-async def _mcp_sse_alive() -> bool:
+def _mcp_sse_alive() -> bool:
     """Quick liveness check on the MCP SSE server (port 7778).
 
     Used by the watchdog to skip restarts when MCP is dead — restarting
@@ -674,9 +676,43 @@ async def _mcp_sse_alive() -> bool:
         with contextlib.closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as sock:
             sock.settimeout(0.8)
             return sock.connect_ex(("127.0.0.1", 7778)) == 0
-    except (OSError, socket.gaierror) as e:
+    except OSError as e:
         _log.debug("mcp_sse_alive check failed: %s", e)
         return False
+
+
+async def _watchdog_tick(now: float) -> None:
+    """Single watchdog tick: restart Smith if all guard conditions pass."""
+    global _watchdog_last_restart_ts
+    session_data = _read_json(_SESSION_FILE)
+    if session_data.get("status") != "running":
+        return
+    if (session_data.get("intervention") or {}).get("code"):
+        return
+    if _smith_running():
+        return
+    if not _mcp_sse_alive():
+        _log.warning("watchdog suppressed: MCP SSE server unreachable on 127.0.0.1:7778")
+        return
+    if now - _watchdog_last_restart_ts < _WATCHDOG_MIN_GAP_SECONDS:
+        return
+    _watchdog_restart_count_window[:] = [
+        t for t in _watchdog_restart_count_window if now - t < 3600
+    ]
+    if len(_watchdog_restart_count_window) >= _WATCHDOG_MAX_PER_HOUR:
+        _log.warning(
+            "watchdog suppressed: %d restarts in last hour exceeds cap %d",
+            len(_watchdog_restart_count_window), _WATCHDOG_MAX_PER_HOUR,
+        )
+        return
+    client = _detect_active_client()
+    safe_client = client if client in ("claude", "opencode") else "unknown"
+    _log.info("watchdog: smith stopped while scan running — auto-restart (%s)", safe_client)
+    ok, result = await _spawn_smith(client, source="watchdog")
+    if ok:
+        _watchdog_last_restart_ts = now
+        _watchdog_restart_count_window.append(now)
+        _log.info("watchdog: spawned pid=%s", result)
 
 
 async def _smith_watchdog_loop() -> None:
@@ -693,48 +729,13 @@ async def _smith_watchdog_loop() -> None:
     as the dashboard process lives. Safety cap prevents storms when Smith
     dies immediately on startup repeatedly (e.g. config error).
     """
-    global _watchdog_last_restart_ts
     import time as _time
     while True:
         try:
             await asyncio.sleep(_WATCHDOG_POLL_SECONDS)
-            session_data = _read_json(_SESSION_FILE)
-            if session_data.get("status") != "running":
-                continue
-            if (session_data.get("intervention") or {}).get("code"):
-                continue
-            if _smith_running():
-                continue
-            # Gate on MCP SSE health. Without MCP, restarted Smith burns a turn
-            # bouncing off "Invalid request parameters" and producing a text
-            # response that ends the opencode -p run — causing the watchdog to
-            # respawn into the same wall every minute.
-            if not await _mcp_sse_alive():
-                _log.warning("watchdog suppressed: MCP SSE server unreachable on 127.0.0.1:7778")
-                continue
-            now = _time.time()
-            if now - _watchdog_last_restart_ts < _WATCHDOG_MIN_GAP_SECONDS:
-                continue
-            # Prune restarts older than 1h
-            _watchdog_restart_count_window[:] = [
-                t for t in _watchdog_restart_count_window if now - t < 3600
-            ]
-            if len(_watchdog_restart_count_window) >= _WATCHDOG_MAX_PER_HOUR:
-                _log.warning(
-                    "watchdog suppressed: %d restarts in last hour exceeds cap %d",
-                    len(_watchdog_restart_count_window), _WATCHDOG_MAX_PER_HOUR,
-                )
-                continue
-
-            client = _detect_active_client()
-            _log.info("watchdog: smith stopped while scan running — auto-restart (%s)", client)
-            ok, result = await _spawn_smith(client, source="watchdog")
-            if ok:
-                _watchdog_last_restart_ts = now
-                _watchdog_restart_count_window.append(now)
-                _log.info("watchdog: spawned pid=%s", result)
+            await _watchdog_tick(_time.time())
         except asyncio.CancelledError:
-            return
+            raise
         except Exception:
             _log.exception("watchdog loop error (continuing)")
 

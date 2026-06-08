@@ -741,7 +741,7 @@ def _check_target_unreachable(entries: list[dict]) -> dict | None:
             "WAIT: Target may be temporarily down — tell me how long to wait before retrying",
             "ROTATE: Provide an alternative IP, proxy, or User-Agent to bypass the block",
             "SKIP_TARGET: Mark this target as unreachable and continue with remaining scope",
-            "ABORT: Stop the scan",
+            _ABORT_OPTION,
         ],
     )
     return {
@@ -810,6 +810,7 @@ def _check_exploit_escalation(entries: list[dict], findings_data: dict, session_
 # therefore have NO Docker dependency. Failure modes here are network /
 # target / DNS / SSL, not container infrastructure.
 _PYTHON_NATIVE_TOOLS = {"http_request", "spider"}
+_ABORT_OPTION = "ABORT: Stop the scan"
 
 
 def _check_repeated_tool_failure(entries: list[dict]) -> dict | None:
@@ -846,7 +847,7 @@ def _check_repeated_tool_failure(entries: list[dict]) -> dict | None:
             "VERIFY: Confirm the target URL is correct (DNS, port, scheme) and I will retry",
             "ROTATE: Provide an alternative proxy / User-Agent / endpoint to bypass blocks",
             "SKIP_TOOL: Stop using this tool and rely on alternatives for the rest of the scan",
-            "ABORT: Stop the scan",
+            _ABORT_OPTION,
         ]
         message = (
             f"Tool '{broken_tool}' failed 3 times in a row — target reachability / network suspected"
@@ -860,7 +861,7 @@ def _check_repeated_tool_failure(entries: list[dict]) -> dict | None:
             "RESTART_INFRA: I will run session(action='start_kali') to restart the Kali container and retry",
             "SKIP_TOOL: Tell me to avoid this tool for the rest of the scan and use alternatives",
             "INVESTIGATE: Check the logs — run `docker ps` to verify containers are healthy",
-            "ABORT: Stop the scan",
+            _ABORT_OPTION,
         ]
         message = (
             f"Tool '{broken_tool}' failed 3 times in a row — infrastructure issue suspected"

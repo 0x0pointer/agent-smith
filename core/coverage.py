@@ -401,7 +401,7 @@ def _validate_auth_response(
         if artifact_file.stat().st_size > _MAX_ARTIFACT_BYTES:
             return ""  # too big to safely parse; let the cell close
         data = json.loads(artifact_file.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, ValueError):
+    except (OSError, ValueError):
         return ""
     response_status = data.get("status")
     if response_status not in (401, 403):
@@ -475,7 +475,7 @@ async def update_cell(
     return False
 
 
-def _apply_bulk_cell(cell: dict, upd: dict, warnings: list[str], ep_path: str = "?") -> None:
+def _apply_bulk_cell(cell: dict, upd: dict, warnings: list[str]) -> None:
     """Apply one bulk-update entry to a cell in-place, appending any warnings.
 
     Caller is expected to have already vetted the (artifact, auth, finding-link)
@@ -513,7 +513,6 @@ async def bulk_update(updates: list[dict]) -> dict:
     async with _lock:
         data = _load()
         cell_map = {c["id"]: c for c in data["matrix"]}
-        ep_map = {ep["id"]: ep.get("path", "?") for ep in data.get("endpoints", [])}
         count = 0
         rejected = 0
         warnings: list[str] = []
@@ -542,8 +541,7 @@ async def bulk_update(updates: list[dict]) -> dict:
                     warnings.append(f"REJECTED cell {cid}: {link_reject}")
                     rejected += 1
                     continue
-            ep_path = ep_map.get(cell_map[cid].get("endpoint_id", ""), "?")
-            _apply_bulk_cell(cell_map[cid], upd, warnings, ep_path)
+            _apply_bulk_cell(cell_map[cid], upd, warnings)
             count += 1
         _recount(data)
         _save(data)

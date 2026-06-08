@@ -85,37 +85,22 @@ def _build_httpx_facts(result: SummaryResult, status: Any, server: str, content_
         result.facts.append(f"CDN/WAF: {cdn_or_waf}")
 
 
-def _summarize_httpx(raw: str, ctx: dict) -> SummaryResult:
-    """Parse httpx output to extract tech stack, status, WAF, headers."""
-    result = SummaryResult()
-    lines = raw.strip().splitlines()
-
-    parsed: dict | None = None
-    url = ctx.get("url", "")
-
+def _find_parsed_httpx_line(lines: list[str], url: str) -> dict | None:
+    """Return the first successfully parsed line from httpx output, or None."""
     for line in lines:
         line = line.strip()
-        if line.startswith("{"):
-            parsed = _parse_httpx_json_line(line, url)
-            if parsed:
-                break
-        else:
-            parsed = _parse_httpx_text_line(line, url)
-            if parsed:
-                break
+        parsed = (
+            _parse_httpx_json_line(line, url)
+            if line.startswith("{")
+            else _parse_httpx_text_line(line, url)
+        )
+        if parsed:
+            return parsed
+    return None
 
-    if parsed:
-        status = parsed["status"]
-        url = parsed["url"]
-        server = parsed["server"]
-        tech = parsed["tech"]
-        content_type = parsed["content_type"]
-        title = parsed["title"]
-        cdn_or_waf = parsed["cdn_or_waf"]
-    else:
-        status = None
-        server = tech = content_type = title = cdn_or_waf = ""
 
+def _build_httpx_summary(result: "SummaryResult", url: str, status: object, server: str) -> None:
+    """Populate result.summary and anomalies based on parsed httpx status."""
     if status:
         result.summary = f"{url} is live (HTTP {status})"
         if server:
@@ -124,6 +109,26 @@ def _summarize_httpx(raw: str, ctx: dict) -> SummaryResult:
         result.summary = f"httpx scan of {url} — could not parse status"
         result.anomalies.append("Could not parse httpx output format")
 
+
+def _summarize_httpx(raw: str, ctx: dict) -> SummaryResult:
+    """Parse httpx output to extract tech stack, status, WAF, headers."""
+    result = SummaryResult()
+    url = ctx.get("url", "")
+    parsed = _find_parsed_httpx_line(raw.strip().splitlines(), url)
+
+    if parsed:
+        status       = parsed["status"]
+        url          = parsed["url"]
+        server       = parsed["server"]
+        tech         = parsed["tech"]
+        content_type = parsed["content_type"]
+        title        = parsed["title"]
+        cdn_or_waf   = parsed["cdn_or_waf"]
+    else:
+        status = None
+        server = tech = content_type = title = cdn_or_waf = ""
+
+    _build_httpx_summary(result, url, status, server)
     _build_httpx_facts(result, status, server, content_type, title, tech, cdn_or_waf)
 
     result.evidence = {

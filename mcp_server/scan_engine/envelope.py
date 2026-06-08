@@ -49,6 +49,58 @@ class Envelope:
         return json.dumps(asdict(self), indent=2)
 
 
+def _check_scan_gate(tool: str) -> str | None:
+    """Return a blocking JSON string if this tool call should be short-circuited, else None.
+
+    Checks (in order):
+    1. Scan is paused for human intervention — all tools except session() blocked.
+    2. Scan reached a terminal state — all tools except session() blocked.
+    """
+    if tool == "session":
+        return None
+    try:
+        from core import session as _sess
+        iv = _sess.get_intervention()
+        if iv:
+            return json.dumps({
+                "status": "HUMAN_INTERVENTION_REQUIRED",
+                "code":   iv.get("code", "HIR_UNKNOWN"),
+                "situation": iv.get("situation", ""),
+                "options":   iv.get("options", []),
+                "scan_paused": True,
+                "how_to_respond": (
+                    "The scan is paused. Respond via the dashboard 'Send to Smith' panel, "
+                    "or call: session(action='resume', options={choice: '...', message: '...'})"
+                ),
+            }, indent=2)
+    except (ImportError, AttributeError, OSError) as e:
+        _log.warning("intervention check failed: %s", e)
+    try:
+        from core import session as _sess
+        current = _sess.get() or {}
+        scan_status = current.get("status", "")
+        if scan_status in (
+            "complete", "incomplete_with_unresolved_blockers", "limit_reached",
+        ):
+            return json.dumps({
+                "status": "SCAN_COMPLETED",
+                "scan_status": scan_status,
+                "message": (
+                    f"This scan has been marked '{scan_status}' by the human operator "
+                    "via the dashboard (or a budget/time limit was reached). Stop "
+                    "calling tools. Write one final brief summary message — "
+                    "do NOT make any further tool calls — and end your turn."
+                ),
+                "how_to_resume": (
+                    "If the human wants more testing they will start a fresh scan via "
+                    "session(action='start') — do not call that yourself."
+                ),
+            }, indent=2)
+    except (ImportError, AttributeError, OSError) as e:
+        _log.warning("terminal-status check failed: %s", e)
+    return None
+
+
 def wrap(tool: str, raw_output: str, context: dict | None = None) -> str:
     """Central entry point: raw tool output in, canonical envelope JSON out.
 
@@ -60,59 +112,9 @@ def wrap(tool: str, raw_output: str, context: dict | None = None) -> str:
     Returns:
         JSON string of the canonical envelope
     """
-    # Block all tool calls while scan is paused for human intervention.
-    # session() calls are exempt so the agent can call session(action='resume').
-    if tool != "session":
-        try:
-            from core import session as _sess
-            iv = _sess.get_intervention()
-            if iv:
-                return json.dumps({
-                    "status": "HUMAN_INTERVENTION_REQUIRED",
-                    "code":   iv.get("code", "HIR_UNKNOWN"),
-                    "situation": iv.get("situation", ""),
-                    "options":   iv.get("options", []),
-                    "scan_paused": True,
-                    "how_to_respond": (
-                        "The scan is paused. Respond via the dashboard 'Send to Smith' panel, "
-                        "or call: session(action='resume', options={choice: '...', message: '...'})"
-                    ),
-                }, indent=2)
-        except (ImportError, AttributeError, OSError) as e:
-            # We never want a session-read error to break tool dispatch — but
-            # we log so the failure isn't silent.
-            _log.warning("intervention check failed: %s", e)
-
-    # Block all tool calls when the scan reached a terminal state
-    # (human clicked Complete Scan, cost/time/call limit hit, etc.).
-    # session() is exempt so Smith can still call session(action='status')
-    # to confirm what happened — but every scan-progressing tool returns a
-    # stop signal so opencode -p exits via Smith's final summary response.
-    if tool != "session":
-        try:
-            from core import session as _sess
-            current = _sess.get() or {}
-            scan_status = current.get("status", "")
-            if scan_status in (
-                "complete", "incomplete_with_unresolved_blockers", "limit_reached",
-            ):
-                return json.dumps({
-                    "status": "SCAN_COMPLETED",
-                    "scan_status": scan_status,
-                    "message": (
-                        f"This scan has been marked '{scan_status}' by the human operator "
-                        "via the dashboard (or a budget/time limit was reached). Stop "
-                        "calling tools. Write one final brief summary message — "
-                        "do NOT make any further tool calls — and end your turn."
-                    ),
-                    "how_to_resume": (
-                        "If the human wants more testing they will start a fresh scan via "
-                        "session(action='start') — do not call that yourself."
-                    ),
-                }, indent=2)
-        except (ImportError, AttributeError, OSError) as e:
-            # Same narrow swallow as the intervention check — surface via log.
-            _log.warning("terminal-status check failed: %s", e)
+    blocked = _check_scan_gate(tool)
+    if blocked:
+        return blocked
 
     ctx = context or {}
 
@@ -246,6 +248,49 @@ _JWT_RE = __import__("re").compile(r"eyJ[A-Za-z0-9_-]{4,}\.eyJ[A-Za-z0-9_-]{4,}\
 _AUTH_PATH_HINTS = ("login", "signin", "auth", "token", "session")
 
 
+def _update_jwt_tokens(scan_session: Any, req_headers: dict, body_prev: str, url: str) -> None:
+    """Scan response body + auth-y request headers for JWT strings and persist any found."""
+    from datetime import datetime, timezone
+    haystack = body_prev
+    for k, v in req_headers.items():
+        if isinstance(v, str) and "auth" in k.lower():
+            haystack += " " + v
+    tokens = [
+        {"type": "jwt", "value": m,
+         "obtained_at": datetime.now(timezone.utc).isoformat(), "source_url": url}
+        for m in _JWT_RE.findall(haystack)
+    ]
+    if tokens:
+        scan_session.update_known_assets("auth_tokens", tokens)
+
+
+def _update_credentials(
+    scan_session: Any, url: str, method: str, status: int, req_body: str
+) -> None:
+    """Persist credentials and auth endpoint when a POST login succeeds."""
+    import json
+    if not (method == "POST" and 200 <= status < 300
+            and any(h in url.lower() for h in _AUTH_PATH_HINTS) and req_body):
+        return
+    try:
+        req_data = json.loads(req_body) if req_body.lstrip().startswith("{") else None
+    except Exception:
+        req_data = None
+    if not isinstance(req_data, dict):
+        return
+    uname = req_data.get("username") or req_data.get("user") or req_data.get("email")
+    pword = req_data.get("password") or req_data.get("pass") or req_data.get("pwd")
+    if uname and pword:
+        scan_session.update_known_assets("credentials", [{
+            "username": str(uname), "password": str(pword),
+            "source": f"login_success {url}",
+        }])
+        scan_session.update_known_assets("auth_endpoints", [{
+            "path": url, "method": method,
+            "body_template": {"username": "$USERNAME", "password": "$PASSWORD"},
+        }])
+
+
 def _persist_http_auth_assets(scan_session: Any, evidence: dict, ctx: dict) -> None:
     """Extract JWTs, credentials, and auth endpoints from an http_request.
 
@@ -256,54 +301,15 @@ def _persist_http_auth_assets(scan_session: Any, evidence: dict, ctx: dict) -> N
         contained username/password adds the credentials to known_assets.credentials
         AND registers the auth endpoint in known_assets.auth_endpoints.
     """
-    import json
-    from datetime import datetime, timezone
-
-    status     = evidence.get("status", 0)
-    body_prev  = evidence.get("body_preview", "")
-    url        = ctx.get("url", "")
-    method     = (ctx.get("method") or "GET").upper()
-    req_body   = ctx.get("body", "") or ""
+    status      = evidence.get("status", 0)
+    body_prev   = evidence.get("body_preview", "")
+    url         = ctx.get("url", "")
+    method      = (ctx.get("method") or "GET").upper()
+    req_body    = ctx.get("body", "") or ""
     req_headers = ctx.get("headers") or {}
 
-    # 1. JWT extraction — search response body and any Authorization-like input
-    haystack = body_prev
-    for k, v in req_headers.items():
-        if isinstance(v, str) and "auth" in k.lower():
-            haystack += " " + v
-    tokens = []
-    for m in _JWT_RE.findall(haystack):
-        tokens.append({
-            "type":        "jwt",
-            "value":       m,
-            "obtained_at": datetime.now(timezone.utc).isoformat(),
-            "source_url":  url,
-        })
-    if tokens:
-        scan_session.update_known_assets("auth_tokens", tokens)
-
-    # 2. Credential + auth_endpoint extraction — POST to auth-y path with 2xx
-    path_lower = url.lower()
-    is_auth_path = any(h in path_lower for h in _AUTH_PATH_HINTS)
-    if method == "POST" and 200 <= status < 300 and is_auth_path and req_body:
-        try:
-            req_data = json.loads(req_body) if req_body.lstrip().startswith("{") else None
-        except Exception:
-            req_data = None
-        if isinstance(req_data, dict):
-            uname = req_data.get("username") or req_data.get("user") or req_data.get("email")
-            pword = req_data.get("password") or req_data.get("pass") or req_data.get("pwd")
-            if uname and pword:
-                scan_session.update_known_assets("credentials", [{
-                    "username": str(uname),
-                    "password": str(pword),
-                    "source":   f"login_success {url}",
-                }])
-                scan_session.update_known_assets("auth_endpoints", [{
-                    "path":         url,
-                    "method":       method,
-                    "body_template": {"username": "$USERNAME", "password": "$PASSWORD"},
-                }])
+    _update_jwt_tokens(scan_session, req_headers, body_prev, url)
+    _update_credentials(scan_session, url, method, status, req_body)
 
 
 def _extract_and_persist_assets(tool: str, result: Any, ctx: dict) -> None:
@@ -732,7 +738,6 @@ def _is_auth_attempt(ctx: dict) -> bool:
     """
     body  = (ctx.get("body") or "")
     query = (ctx.get("query") or "")
-    headers = ctx.get("headers") or {}
     haystack = body + " " + query
     # Auth-bearing request headers should NOT trigger this (we're sending auth, not testing it)
     if _AUTH_FIELD_RE.search(haystack):
@@ -767,39 +772,35 @@ def _build_quick_log_entry(
         }
 
     entry: dict = {"type": "TOOL", "name": tool, "target": target}
-    # Enrich http_request entries with status_code for auth failure detection
-    if result is not None and tool == "http_request":
-        ev = result.evidence or {}
-        sc = ev.get("status", 0)
-        if sc:
-            entry["status_code"] = int(sc)
-        # Flag credential-validation attempts so the QA daemon can exclude
-        # them from its "session expired" detection. A 401 to /login with
-        # a password is a wrong-creds test, not a sign that auth broke.
-        if ctx and _is_auth_attempt(ctx):
-            entry["auth_attempt"] = True
-    # Mark a tool call as a failure ONLY when the call itself did not produce
-    # a real response. Two narrow signals:
-    #   1. The tool wrapper set evidence.error (aiohttp exception, Docker
-    #      container missing, kali server unreachable, etc.) — set by the
-    #      *tool*, not by the summarizer.
-    #   2. http_request returned status == 0 — no HTTP response received.
-    # We deliberately DO NOT scan result.anomalies for "error"/"timeout"/
-    # "unreachable" keywords: those describe what was *found* in the response
-    # body (SQL error messages, target reporting a timeout, etc.) and are
-    # findings, not tool failures. The old keyword scan caused 53% of
-    # successful http_request entries to be falsely flagged error=True,
-    # which in turn fired spurious HIR_TOOL_FAILURE alerts whenever Smith
-    # was actually finding bugs.
-    if result is not None:
-        ev = result.evidence or {}
-        is_error = bool(
-            ev.get("error")
-            or (tool == "http_request" and _is_zero_status(ev.get("status")))
-        )
-        if is_error:
-            entry["error"] = True
+    _enrich_http_request_entry(entry, tool, result, ctx)
+    _mark_tool_error(entry, tool, result)
     return entry
+
+
+def _enrich_http_request_entry(
+    entry: dict, tool: str, result: Any, ctx: dict | None
+) -> None:
+    """Add status_code and auth_attempt fields to http_request log entries."""
+    if result is None or tool != "http_request":
+        return
+    ev = result.evidence or {}
+    sc = ev.get("status", 0)
+    if sc:
+        entry["status_code"] = int(sc)
+    if ctx and _is_auth_attempt(ctx):
+        entry["auth_attempt"] = True
+
+
+def _mark_tool_error(entry: dict, tool: str, result: Any) -> None:
+    """Set entry["error"] = True when the tool call itself produced no real response.
+
+    Only two narrow signals qualify (see _build_quick_log_entry for rationale).
+    """
+    if result is None:
+        return
+    ev = result.evidence or {}
+    if ev.get("error") or (tool == "http_request" and _is_zero_status(ev.get("status"))):
+        entry["error"] = True
 
 
 def _quick_log_tool(tool: str, ctx: dict, summarizer_summary: str, result: Any = None) -> None:

@@ -322,36 +322,21 @@ class TestWatchdogStatus:
 class TestMcpSseAlive:
 
     def test_returns_false_when_port_closed(self):
-        # 127.0.0.1:1 is a reserved low port nobody listens on — connect_ex
-        # returns non-zero quickly.
-        with patch.dict("os.environ", {}, clear=False):
-            ok = asyncio.run(api._mcp_sse_alive())
         # Depending on the test host, MCP might actually be running on 7778.
         # We just need the function to return a bool without raising.
+        ok = api._mcp_sse_alive()
         assert isinstance(ok, bool)
 
     def test_handles_socket_oserror(self):
-        # We can't patch `socket.socket` globally without breaking asyncio's
-        # own internal use. Wrap the test in a custom loop and patch only
-        # the lookup-time `connect_ex` instead — same code path.
-        async def _run():
-            import socket
-            real_socket = socket.socket
+        import socket
+        real_socket = socket.socket
 
-            class _FailingSocket(real_socket):
-                def connect_ex(self, _addr):
-                    raise OSError("synthetic")
+        class _FailingSocket(real_socket):
+            def connect_ex(self, _addr):
+                raise OSError("synthetic")
 
-            with patch("socket.socket", _FailingSocket):
-                return await api._mcp_sse_alive()
-
-        # Use a fresh loop so the failing-socket patch only affects our
-        # `_mcp_sse_alive` call, not the loop setup that already happened.
-        loop = asyncio.new_event_loop()
-        try:
-            result = loop.run_until_complete(_run())
-        finally:
-            loop.close()
+        with patch("socket.socket", _FailingSocket):
+            result = api._mcp_sse_alive()
         assert result is False
 
 
@@ -363,7 +348,7 @@ class TestSmithWatchdogLoop:
 
     def _make_loop_runner(self, monkeypatch):
         """Patch asyncio.sleep so the watchdog loop body runs exactly once
-        then exits via CancelledError."""
+        then exits via CancelledError on the second sleep call."""
         ticks = {"n": 0}
 
         async def fake_sleep(_s):
@@ -374,20 +359,26 @@ class TestSmithWatchdogLoop:
         monkeypatch.setattr("asyncio.sleep", fake_sleep)
         return ticks
 
+    def _run_watchdog(self):
+        """Run the watchdog loop and absorb the expected CancelledError exit."""
+        import contextlib
+        with contextlib.suppress(asyncio.CancelledError):
+            asyncio.run(api._smith_watchdog_loop())
+
     def test_skips_when_session_not_running(self, sandbox_session, monkeypatch):
         self._make_loop_runner(monkeypatch)
         _write_session(sandbox_session, status="complete")
-        # Loop body should hit the early-`continue` for status != running
-        asyncio.run(api._smith_watchdog_loop())
+        # Loop body should hit the early-return for status != running
+        self._run_watchdog()
 
     def test_skips_when_mcp_unreachable(self, sandbox_session, sandbox_smith_files, monkeypatch):
         self._make_loop_runner(monkeypatch)
         _write_session(sandbox_session, status="running")
         spawn = AsyncMock()
         with patch.object(api, "_smith_running", return_value=False), \
-             patch.object(api, "_mcp_sse_alive", AsyncMock(return_value=False)), \
+             patch.object(api, "_mcp_sse_alive", return_value=False), \
              patch.object(api, "_spawn_smith", spawn):
-            asyncio.run(api._smith_watchdog_loop())
+            self._run_watchdog()
         # MCP-health gate must have prevented the spawn
         spawn.assert_not_awaited()
 
@@ -396,8 +387,8 @@ class TestSmithWatchdogLoop:
         _write_session(sandbox_session, status="running")
         spawn = AsyncMock(return_value=(True, 4242))
         with patch.object(api, "_smith_running", return_value=False), \
-             patch.object(api, "_mcp_sse_alive", AsyncMock(return_value=True)), \
+             patch.object(api, "_mcp_sse_alive", return_value=True), \
              patch.object(api, "_detect_active_client", return_value="opencode"), \
              patch.object(api, "_spawn_smith", spawn):
-            asyncio.run(api._smith_watchdog_loop())
+            self._run_watchdog()
         spawn.assert_awaited_once()

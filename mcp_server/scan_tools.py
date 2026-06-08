@@ -109,6 +109,7 @@ async def _handle_ffuf(target, flags, options):
 
 async def _run_spider_thorough(target: str, flags: str, cookies: dict, depth: str, max_pages: str, timeout: int) -> str:
     """Run katana + playwright + ZAP AJAX spider in thorough mode and return merged raw output."""
+    import asyncio as _asyncio
     from tools import kali_runner
     import json as _json
 
@@ -142,7 +143,8 @@ async def _run_spider_thorough(target: str, flags: str, cookies: dict, depth: st
         ("=== playwright ===", playwright_cmd, per_subtool),
         ("=== zap-ajax ===", zap_cmd, per_subtool),
     ]:
-        out = _clip(await kali_runner.exec_command(cmd, timeout=t), 4_000)
+        async with _asyncio.timeout(t):
+            out = _clip(await kali_runner.exec_command(cmd), 4_000)
         parts.append(f"{label}\n{out}")
 
     return "\n\n".join(parts)
@@ -150,6 +152,7 @@ async def _run_spider_thorough(target: str, flags: str, cookies: dict, depth: st
 
 async def _run_spider_fast(target: str, flags: str, cookies: dict, depth: str, max_pages: str, mode: str, timeout: int) -> str:
     """Run the fast/playwright/deep spider mode and return raw output."""
+    import asyncio as _asyncio
     from tools import kali_runner
     import json as _json
 
@@ -173,7 +176,8 @@ async def _run_spider_fast(target: str, flags: str, cookies: dict, depth: str, m
         if safe_flags:
             cmd += f" {safe_flags}"
 
-    return _clip(await kali_runner.exec_command(cmd, timeout=timeout), 8_000)
+    async with _asyncio.timeout(timeout):
+        return _clip(await kali_runner.exec_command(cmd), 8_000)
 
 
 async def _handle_spider(target, flags, options):
