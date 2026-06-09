@@ -8,6 +8,10 @@ set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# Codex Desktop may launch MCP servers with a very small PATH. Include common
+# macOS CLI locations so Docker Desktop and Homebrew binaries are visible.
+export PATH="$PATH:/usr/local/bin:/opt/homebrew/bin:/snap/bin:/Applications/Docker.app/Contents/Resources/bin"
+
 _find_poetry() {
     if command -v poetry >/dev/null 2>&1; then
         command -v poetry

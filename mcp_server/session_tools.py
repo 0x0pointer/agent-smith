@@ -1888,6 +1888,7 @@ async def _do_stop_metasploit():
 
 async def _do_pull_images():
     from tools import REGISTRY
+    from tools.docker_cli import docker_executable
     log.tool_call("pull_images", {})
     images = [tool.image for tool in REGISTRY.values() if not tool.needs_mount]
     seen: set[str] = set()
@@ -1895,7 +1896,7 @@ async def _do_pull_images():
     lines: list[str] = []
     for image in unique:
         proc = await asyncio.create_subprocess_exec(
-            "docker", "pull", image,
+            docker_executable(), "pull", image,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
         )

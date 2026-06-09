@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import os
 
+from tools.docker_cli import docker_executable
+
 DEFAULT_TIMEOUT = 600
 PULL_TIMEOUT = 300  # 5 min max for pulling a single image
 
@@ -12,7 +14,7 @@ _pulled_images: set[str] = set()
 async def image_exists(image: str) -> bool:
     """Check if a Docker image exists locally (no pull)."""
     proc = await asyncio.create_subprocess_exec(
-        "docker", "image", "inspect", image,
+        docker_executable(), "image", "inspect", image,
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL,
     )
@@ -28,7 +30,7 @@ async def _ensure_image(image: str) -> None:
         _pulled_images.add(image)
         return
     pull = await asyncio.create_subprocess_exec(
-        "docker", "pull", image,
+        docker_executable(), "pull", image,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
@@ -67,7 +69,7 @@ async def run_container(
     env_vars: environment variables to inject into the container via -e flags.
     """
     await _ensure_image(image)
-    cmd = ["docker", "run", "--rm", "--network=host", "--memory=2g", "--cpus=1.5"]
+    cmd = [docker_executable(), "run", "--rm", "--network=host", "--memory=2g", "--cpus=1.5"]
 
     for key, val in (env_vars or {}).items():
         cmd += ["-e", f"{key}={val}"]
