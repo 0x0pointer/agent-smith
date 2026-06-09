@@ -1517,28 +1517,37 @@
     try {
       const [sessionRes, smithRes] = await Promise.all([
         fetch(`/api/session?_=${Date.now()}`).then(r => r.json()).catch(() => ({})),
-        fetch(`/api/smith-status?_=${Date.now()}`).then(r => r.json()).catch(() => ({running: false})),
+        fetch(`/api/smith-status?_=${Date.now()}`).then(r => r.ok ? r.json() : {running: null}).catch(() => ({running: null})),
       ]);
 
       // Update Smith process status badge
+      // smithRes.running: true=running, false=confirmed stopped, null=unknown (old server / no endpoint)
+      // Only show red "stopped" when a scan is actively running AND Smith is confirmed stopped.
+      // Without an active scan, Smith being "idle" is expected — show it as running/ready, not broken.
       const processEl = document.getElementById('cmd-smith-process-status');
+      const scanActive = ['running', 'intervention_required'].includes(sessionRes?.status);
       if (processEl) {
-        if (smithRes.running) {
-          processEl.textContent = 'running';
+        const confirmedStopped = smithRes.running === false && scanActive;
+        if (smithRes.running === true || !scanActive) {
+          // Running, OR no active scan (idle is fine — not an error state)
+          processEl.textContent = smithRes.running === true ? 'running' : 'idle';
           processEl.className = 'cmd-smith-process-status cmd-smith-process-running';
-        } else {
+        } else if (confirmedStopped) {
           processEl.textContent = 'stopped';
           processEl.className = 'cmd-smith-process-status cmd-smith-process-stopped';
+        } else {
+          // null = endpoint unavailable — default to running to avoid false alarms
+          processEl.textContent = 'running';
+          processEl.className = 'cmd-smith-process-status cmd-smith-process-running';
         }
       }
 
-      // Show/hide restart button
+      // Show/hide restart button — only when scan is active AND Smith is confirmed stopped
       const restartBtn = document.getElementById('cmd-restart-btn');
       const hint       = document.getElementById('cmd-smith-status-hint');
       if (!restartBtn) return;
 
-      const scanActive = ['running', 'intervention_required'].includes(sessionRes?.status);
-      if (scanActive && !smithRes.running) {
+      if (scanActive && smithRes.running === false) {
         restartBtn.style.display = 'inline-block';
         restartBtn.disabled = false;   // reset in case a prior click left it disabled
         if (hint) hint.textContent = 'Smith has stopped — restart it to continue the scan.';
@@ -1813,7 +1822,7 @@
     const vs = f.verification_status || 'unverified';
     const vsBadge = `<span class="vbadge vbadge-${vs}" title="Verification status: ${vs.replace(/_/g,' ')}">${VS_LABELS[vs] || vs}</span>`;
     const ghBtn = f.gh_issue
-      ? `<button class="copy-gh-btn" onclick="copyGhIssue(this,'${f.id}')" title="Copy GitHub issue">
+      ? `<button class="copy-gh-btn" data-id="${esc(f.id)}" onclick="copyGhIssue(this,this.dataset.id)" title="Copy GitHub issue">
            <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
              <path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"/><path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"/>
            </svg>
@@ -1821,10 +1830,10 @@
          </button>`
       : '';
     const replayBtn = f.reproduction?.command
-      ? `<button class="replay-btn" onclick="copyReplay(this,'${f.id}')" title="Copy reproduction command">&#9654; Replay</button>`
+      ? `<button class="replay-btn" data-id="${esc(f.id)}" onclick="copyReplay(this,this.dataset.id)" title="Copy reproduction command">&#9654; Replay</button>`
       : '';
     const fixBtn = f.remediation
-      ? `<button class="fix-btn" onclick="toggleFix('${f.id}')" title="Show remediation">&#128295; Fix</button>`
+      ? `<button class="fix-btn" data-id="${esc(f.id)}" onclick="toggleFix(this.dataset.id)" title="Show remediation">&#128295; Fix</button>`
       : '';
     const fixDetail  = f.remediation ? buildFixDetail(f) : '';
     const impactHtml = f.business_impact
@@ -2319,7 +2328,7 @@
       const arrow = isOpen ? '&#9660;' : '&#9654;';
 
       // Endpoint header row (clickable)
-      bodyRows += `<tr class="cov-ep-header" onclick="toggleCovEndpoint('${ep.id}')" style="cursor:pointer">
+      bodyRows += `<tr class="cov-ep-header" data-id="${esc(ep.id)}" onclick="toggleCovEndpoint(this.dataset.id)" style="cursor:pointer">
         <td style="font-weight:600;color:#f0f6fc">
           <span style="margin-right:.4rem;font-size:.7rem">${arrow}</span>
           ${ep.method} ${esc(ep.path)}
@@ -2619,8 +2628,9 @@
     }
 
     // Build invoked-skills map: name → first history entry
+    // pentester is always shown as invoked since all scans flow through it
     const history = s.skill_history || [];
-    const invokedMap = {};
+    const invokedMap = { pentester: { skill: 'pentester', reason: 'default orchestrator' } };
     for (const h of history) {
       if (h.skill && !invokedMap[h.skill]) invokedMap[h.skill] = h;
     }
@@ -2738,11 +2748,14 @@
     if (!alerts.length) {
       alertsWrap.innerHTML = '<div class="empty-placeholder">No alerts — QA agent found no workflow gaps, or cycle has not run yet.</div>';
     } else {
-      alertsWrap.innerHTML = alerts.map(a => `
-        <div class="qa-alert urgency-${a.urgency || 'low'}">
-          <span class="qa-urgency ${a.urgency || 'low'}">${esc(a.urgency || 'low')}</span>
+      const _safeUrgency = u => ['high','medium','low'].includes(u) ? u : 'low';
+      alertsWrap.innerHTML = alerts.map(a => {
+        const u = _safeUrgency(a.urgency);
+        return `<div class="qa-alert urgency-${u}">
+          <span class="qa-urgency ${u}">${esc(u)}</span>
           <span class="qa-msg">${esc(a.message || '')}</span>
-        </div>`).join('');
+        </div>`;
+      }).join('');
     }
 
     // ── Quick Log ──
