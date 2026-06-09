@@ -610,6 +610,20 @@ def trigger_intervention(
         "resolution":   None,
     }
     _flush()
+    # Out-of-band notification (Telegram etc.) — optional, fire-and-forget.
+    # No-op when nothing is configured in .env. Wrapped so a notifier import
+    # error never breaks the HIR fire path itself.
+    try:
+        from core.notifiers import notify as _notify
+        _notify(
+            title=code,
+            body=situation,
+            urgency="high",
+            code=code,
+            options=options,
+        )
+    except Exception:
+        pass
     return _current
 
 

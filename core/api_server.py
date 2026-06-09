@@ -52,6 +52,7 @@ app = FastAPI(title="pentest-agent")
 
 _qa_task:        asyncio.Task | None = None  # kept alive to prevent GC
 _watchdog_task:  asyncio.Task | None = None
+_status_task:    asyncio.Task | None = None
 # Auto-restart watchdog state
 _watchdog_last_restart_ts: float = 0.0
 _watchdog_restart_count_window: list[float] = []  # epoch seconds of restarts in trailing hour
@@ -59,15 +60,58 @@ _WATCHDOG_POLL_SECONDS  = 60
 _WATCHDOG_MIN_GAP_SECONDS = 90       # min seconds between auto-restarts
 _WATCHDOG_MAX_PER_HOUR  = 20         # safety cap to avoid restart storms
 
+# Periodic status update — interval is configurable via .env so an operator
+# can dial it down for a long-running engagement. 0 disables the loop.
+_STATUS_UPDATE_DEFAULT_MINUTES = 30
+
 
 @app.on_event("startup")
 async def _start_background_tasks() -> None:
-    global _qa_task, _watchdog_task
+    global _qa_task, _watchdog_task, _status_task
     from mcp_server._app import _load_dotenv
     _load_dotenv()
     from core.qa_agent import qa_daemon
     _qa_task = asyncio.create_task(qa_daemon.run(interval_s=120))
     _watchdog_task = asyncio.create_task(_smith_watchdog_loop())
+    _status_task = asyncio.create_task(_status_update_loop())
+
+
+async def _status_update_loop() -> None:
+    """Fire a notifier status update every STATUS_UPDATE_INTERVAL_MINUTES.
+
+    Skips when no scan is running so operators don't get idle pings.
+    Reads the interval from env at startup so editing .env takes effect
+    on the next dashboard restart (cheaper than re-reading every tick).
+    Set STATUS_UPDATE_INTERVAL_MINUTES=0 to disable entirely.
+    """
+    import os
+    raw = os.environ.get("STATUS_UPDATE_INTERVAL_MINUTES", "").strip()
+    try:
+        interval_min = int(raw) if raw else _STATUS_UPDATE_DEFAULT_MINUTES
+    except ValueError:
+        interval_min = _STATUS_UPDATE_DEFAULT_MINUTES
+    if interval_min <= 0:
+        return  # disabled
+    interval_s = interval_min * 60
+
+    from core import notifiers, status_reporter
+    while True:
+        try:
+            await asyncio.sleep(interval_s)
+            if not status_reporter.should_emit():
+                continue
+            msg = status_reporter.compose_status_message()
+            if msg:
+                notifiers.notify(**msg)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Never let a status-update failure kill the loop — the
+            # operator notices the next tick anyway. Log and continue.
+            import logging
+            logging.getLogger(__name__).exception(
+                "status update tick failed"
+            )
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

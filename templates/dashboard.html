@@ -1553,10 +1553,29 @@
   setInterval(_pollSmithStatus, 10000);
   _pollSmithStatus();
 
+  let _completeConfirmExpires = 0;
+
   async function completeScan() {
     const btn = document.getElementById('cmd-complete-btn');
     const fb  = document.getElementById('cmd-smith-feedback');
-    if (!confirm('Mark this scan as complete? Smith will stop testing.')) return;
+    const now = Date.now();
+    // Two-step inline confirm. First click arms; second click within 5s fires.
+    // Replaces the browser-native confirm() dialog which was being silently
+    // suppressed by Firefox/Chrome's "prevent additional dialogs" toggle —
+    // once the user ticked that, the button stopped doing anything visible.
+    if (now > _completeConfirmExpires) {
+      _completeConfirmExpires = now + 5000;
+      if (btn) btn.textContent = '⚠ Click again to confirm';
+      if (fb)  fb.textContent = 'Click again within 5 s to complete the scan.';
+      setTimeout(() => {
+        if (Date.now() >= _completeConfirmExpires) {
+          if (btn && !btn.disabled) btn.textContent = '✓ Complete Scan';
+          if (fb) fb.textContent = '';
+        }
+      }, 5000);
+      return;
+    }
+    _completeConfirmExpires = 0;
     if (btn) btn.disabled = true;
     if (fb)  fb.textContent = 'Completing scan…';
     try {
@@ -1576,11 +1595,11 @@
         _pollSmithStatus();
       } else {
         if (fb) fb.textContent = '✗ Failed: ' + (res.error || 'unknown');
-        if (btn) btn.disabled = false;
+        if (btn) { btn.disabled = false; btn.textContent = '✓ Complete Scan'; }
       }
     } catch(e) {
       if (fb) fb.textContent = '✗ Request failed';
-      if (btn) btn.disabled = false;
+      if (btn) { btn.disabled = false; btn.textContent = '✓ Complete Scan'; }
     }
   }
 

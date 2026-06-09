@@ -40,6 +40,22 @@ echo "Installing Python dependencies..."
 poetry -C "$REPO_DIR" install --no-interaction
 ok "Poetry dependencies installed"
 
+# ── Disarm any existing launchd plist before restarting the MCP ──────────────
+# launchd's plist runs start-mcp-server.sh every 5 s under KeepAlive=true. If a
+# previous install left one loaded — especially one pointing at a different
+# REPO_DIR — both that script and ours race `lsof -ti tcp:7778 | xargs kill -9`,
+# SIGKILLing each other. Unload first; we reload the rewritten plist after the
+# MCP is up.
+PLIST_DST="$HOME/Library/LaunchAgents/com.agent-smith.mcp-sse.plist"
+if [[ -f "$PLIST_DST" ]]; then
+    _OLD_REPO="$(awk '/WorkingDirectory/{getline; gsub(/^[[:space:]]*<string>|<\/string>[[:space:]]*$/, ""); print; exit}' "$PLIST_DST")"
+    if [[ -n "$_OLD_REPO" && "$_OLD_REPO" != "$REPO_DIR" ]]; then
+        warn "Existing launchd plist points at: $_OLD_REPO"
+        warn "This install will replace it to point at: $REPO_DIR"
+    fi
+    launchctl unload "$PLIST_DST" 2>/dev/null || true
+fi
+
 # ── Start MCP SSE daemon ──────────────────────────────────────────────────────
 echo ""
 echo "Starting MCP SSE server..."
@@ -69,10 +85,11 @@ else
 fi
 
 # ── Install launchd plist for auto-start on login ────────────────────────────
+# PLIST_DST was set earlier (pre-disarm step); the unload is a no-op now but
+# keeps this section idempotent if someone runs it standalone.
 echo ""
 echo "Installing launchd plist..."
 PLIST_SRC="$REPO_DIR/installers/com.agent-smith.mcp-sse.plist"
-PLIST_DST="$HOME/Library/LaunchAgents/com.agent-smith.mcp-sse.plist"
 sed "s|REPO_DIR|$REPO_DIR|g" "$PLIST_SRC" > "$PLIST_DST"
 launchctl unload "$PLIST_DST" 2>/dev/null || true
 launchctl load "$PLIST_DST"
@@ -210,6 +227,66 @@ _ask_key "ANTHROPIC_API_KEY" \
     "Powers FuzzyAI and PyRIT scoring (anthropic provider) — API key (sk-ant-...), NOT your Claude.ai login"
 _ask_key "AZURE_OPENAI_API_KEY" \
     "Powers FuzzyAI with azure provider"
+
+# ── Telegram bridge (optional) ────────────────────────────────────────────────
+echo ""
+echo "  Telegram bridge (optional) — get HIR / scan-complete alerts on your phone."
+echo "  Press Enter twice to skip; the bridge is a no-op when either key is blank."
+echo ""
+echo "  PREREQUISITE: install the Telegram app (https://telegram.org/apps)."
+echo "  Once installed, inside Telegram:"
+echo "    1. Open a chat with @BotFather → send /newbot → follow prompts → copy token"
+echo "    2. Search for your new bot → open the chat → send /start,"
+echo "       then send any text message (e.g. \"hi\") — getUpdates only returns"
+echo "       real messages, so /start alone may not surface the chat"
+echo "    3. In any browser, visit https://api.telegram.org/bot<TOKEN>/getUpdates"
+echo "       → copy the \"chat\":{\"id\": …} value (positive int for direct chats)"
+echo "       If you get {\"result\":[]}, send another message and refresh"
+echo ""
+
+_ask_key "TELEGRAM_BOT_TOKEN" \
+    "Bot token from @BotFather (format 123456:ABC-...)"
+_ask_key "TELEGRAM_CHAT_ID" \
+    "Your Telegram chat ID — receives alerts; only this chat is allowlisted"
+
+# ── Slack bridge (optional) ───────────────────────────────────────────────────
+echo ""
+echo "  Slack bridge (optional) — same HIR / status alerts in a Slack channel."
+echo "  Press Enter to skip. Any combination of Telegram/Slack/Discord can run."
+echo ""
+echo "  Setup (inside Slack):"
+echo "    1. https://api.slack.com/apps → Create New App → From scratch"
+echo "    2. Activate Incoming Webhooks → Add New Webhook to Workspace"
+echo "    3. Pick the channel that should receive alerts; copy the webhook URL"
+echo "       (https://hooks.slack.com/services/T…/B…/…)"
+echo ""
+
+_ask_key "SLACK_WEBHOOK_URL" \
+    "Slack incoming webhook URL — must start with https://hooks.slack.com/"
+
+# ── Discord bridge (optional) ─────────────────────────────────────────────────
+echo ""
+echo "  Discord bridge (optional) — same alerts in a Discord channel."
+echo "  Press Enter to skip."
+echo ""
+echo "  Setup (inside Discord):"
+echo "    1. Open the channel → Settings → Integrations → Webhooks → New Webhook"
+echo "    2. Name it (e.g. \"agent-smith\"), confirm the channel"
+echo "    3. Copy the webhook URL (https://discord.com/api/webhooks/<id>/<token>)"
+echo ""
+
+_ask_key "DISCORD_WEBHOOK_URL" \
+    "Discord webhook URL — must start with https://discord.com/api/webhooks/"
+
+# ── Periodic status updates ───────────────────────────────────────────────────
+echo ""
+echo "  Periodic status updates send a short scan-summary to every configured"
+echo "  notifier sink. Defaults to every 30 min. Set to 0 to disable. The"
+echo "  message contains NO target, NO finding titles — only counts."
+echo ""
+
+_ask_key "STATUS_UPDATE_INTERVAL_MINUTES" \
+    "Status update interval in minutes (default 30; 0 disables)"
 
 # ── Auto-approve pentest-agent MCP tools ──────────────────────────────────────
 echo ""
