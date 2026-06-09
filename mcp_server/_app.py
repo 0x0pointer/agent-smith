@@ -211,7 +211,12 @@ async def _run(name: str, **kwargs) -> str:
 # ── .env loader ───────────────────────────────────────────────────────────────
 
 def _load_dotenv() -> None:
-    """Read .env from the project root into os.environ (only sets missing keys)."""
+    """Read .env from the project root into os.environ.
+
+    .env values always win over inherited environment so that editing the file
+    and restarting the dashboard picks up the new values without requiring a
+    full MCP server restart.
+    """
     env_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env")
     if not os.path.isfile(env_file):
         return
@@ -223,5 +228,5 @@ def _load_dotenv() -> None:
             key, _, val = line.partition("=")
             key = key.strip()
             val = val.strip().strip('"').strip("'")
-            if key and key not in os.environ:
+            if key:
                 os.environ[key] = val

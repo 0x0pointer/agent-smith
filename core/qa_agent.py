@@ -1053,5 +1053,20 @@ class QADaemon:
 
         _log.info("QA Daemon: %d alert(s) written", len(final_alerts))
 
+        # Out-of-band notification for new high-urgency alerts.
+        # Notifier dedup (30 min window) prevents repeat spam on every cycle.
+        try:
+            from core.notifiers import notify as _notify
+            for alert in unique_alerts:
+                if alert.get("urgency") == "high":
+                    _notify(
+                        title=f"[QA] {alert['code']}",
+                        body=alert.get("message", ""),
+                        urgency="high",
+                        code=alert["code"],
+                    )
+        except Exception:
+            pass
+
 
 qa_daemon = QADaemon()

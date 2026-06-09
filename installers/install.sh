@@ -240,7 +240,7 @@ echo "    2. Search for your new bot → open the chat → send /start,"
 echo "       then send any text message (e.g. \"hi\") — getUpdates only returns"
 echo "       real messages, so /start alone may not surface the chat"
 echo "    3. In any browser, visit https://api.telegram.org/bot<TOKEN>/getUpdates"
-echo "       → copy the \"chat\":{\"id\": …} value (positive int for direct chats)"
+echo "       → copy the \"chat\":{\"id\": …} value (positive int for DMs, negative for groups/channels)"
 echo "       If you get {\"result\":[]}, send another message and refresh"
 echo ""
 
