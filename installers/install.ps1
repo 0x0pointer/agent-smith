@@ -241,6 +241,75 @@ if ($settings.permissions.allow -notcontains $entry) {
 $settings | ConvertTo-Json -Depth 100 | Out-File -FilePath $ClaudeSettings -Encoding utf8
 Write-Ok 'pentest-agent tools auto-approved'
 
+# ── Docker images ────────────────────────────────────────────────────────────
+#
+# WSL2 prerequisite: Docker Desktop must use the WSL 2 based engine
+# (Settings -> General). Hyper-V classic backend cannot build the Linux
+# images Kali ships. `docker build` will fail loudly if the wrong backend
+# is in use; we fall through to "build later" in that case.
+Write-Host ''
+Write-Host '  Docker images'
+Write-Host '  -------------'
+Write-Host ''
+
+function Confirm-Yes {
+    param([string]$Prompt)
+    $ans = Read-Host "$Prompt [Y/n]"
+    return ($ans -eq '' -or $ans -match '^[Yy]')
+}
+
+# Lightweight scanner images — pulled, not built
+$ScannerImages = @(
+    'instrumentisto/nmap'
+    'projectdiscovery/naabu'
+    'projectdiscovery/httpx'
+    'projectdiscovery/nuclei'
+    'projectdiscovery/subfinder'
+    'semgrep/semgrep'
+    'trufflesecurity/trufflehog'
+)
+
+if (Confirm-Yes '  Pull lightweight scanner images? (~2 min)') {
+    foreach ($img in $ScannerImages) {
+        docker pull $img 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            Write-Ok "Pulled $img"
+        } else {
+            Write-Warn "Failed to pull $img (will auto-pull on first use)"
+        }
+    }
+} else {
+    Write-Warn 'Scanner image pull skipped — images will auto-pull on first use'
+}
+
+Write-Host ''
+$KaliCtx = Join-Path $RepoDir 'tools\kali\'
+if (Confirm-Yes '  Build Kali image? (~10 min — required for most skills)') {
+    Write-Host '  Building pentest-agent/kali-mcp (this may take a while)...'
+    docker build -t pentest-agent/kali-mcp $KaliCtx
+    if ($LASTEXITCODE -eq 0) {
+        Write-Ok 'Kali image built: pentest-agent/kali-mcp'
+    } else {
+        Write-Warn "Kali build failed — run manually: docker build -t pentest-agent/kali-mcp $KaliCtx"
+    }
+} else {
+    Write-Warn "Kali build skipped — run later: docker build -t pentest-agent/kali-mcp $KaliCtx"
+}
+
+Write-Host ''
+$MsfCtx = Join-Path $RepoDir 'tools\metasploit\'
+if (Confirm-Yes '  Build Metasploit image? (~5 min — required for /metasploit skill)') {
+    Write-Host '  Building pentest-agent/metasploit...'
+    docker build -t pentest-agent/metasploit $MsfCtx
+    if ($LASTEXITCODE -eq 0) {
+        Write-Ok 'Metasploit image built: pentest-agent/metasploit'
+    } else {
+        Write-Warn "Metasploit build failed — run manually: docker build -t pentest-agent/metasploit $MsfCtx"
+    }
+} else {
+    Write-Warn "Metasploit build skipped — run later: docker build -t pentest-agent/metasploit $MsfCtx"
+}
+
 # ── Done ─────────────────────────────────────────────────────────────────────
 Write-Host ''
 Write-Host '  Install complete!'
@@ -249,9 +318,13 @@ Write-Host '  Available commands:'
 Write-Host '    /pentester scan https://target.com depth=thorough'
 Write-Host '    /api-security https://api.example.com'
 Write-Host '    /analyze-cve <pkg> <ver> <cve>'
+Write-Host '    /threat-model'
+Write-Host '    /ai-redteam https://ai-app.com/api/chat'
+Write-Host '    /cloud-security my-aws-account provider=aws'
+Write-Host '    /metasploit 10.0.0.5 cve=CVE-2017-0144'
+Write-Host '    /gh-export'
 Write-Host ''
-Write-Warn 'Docker images (Kali / Metasploit) build via Docker Desktop''s WSL2 backend.'
-Write-Warn 'Build them later with, yes they are NEEDED:'
-Write-Warn "  docker build -t pentest-agent/kali-mcp $RepoDir\tools\kali\"
-Write-Warn "  docker build -t pentest-agent/metasploit $RepoDir\tools\metasploit\"
+Write-Host '  To rebuild images after adding new skills:'
+Write-Host "    docker build -t pentest-agent/kali-mcp $KaliCtx"
+Write-Host "    docker build -t pentest-agent/metasploit $MsfCtx"
 Write-Host ''
