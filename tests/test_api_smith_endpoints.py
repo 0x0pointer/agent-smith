@@ -55,10 +55,11 @@ def sandbox_session(tmp_path, monkeypatch):
 
 @pytest.fixture
 def sandbox_smith_files(tmp_path, monkeypatch):
-    """Quick-log + smith.pid + smith.client paths in tmp_path."""
+    """Quick-log + smith.pid + smith.client + session paths in tmp_path."""
     monkeypatch.setattr(api, "_QUICK_LOG_FILE", tmp_path / "quick_log.json")
     monkeypatch.setattr(api, "_SMITH_PID_FILE", tmp_path / "smith.pid")
     monkeypatch.setattr(api, "_SMITH_CLIENT_FILE", tmp_path / "smith.client")
+    monkeypatch.setattr(api, "_SESSION_FILE", tmp_path / "session.json")
 
 
 def _write_session(session_file: Path, **overrides):
@@ -239,13 +240,13 @@ class TestSmithClients:
             with patch.object(api, "_client_process_running", return_value=False):
                 assert api._detect_active_client() == "claude"
 
-    def test_detect_prefers_opencode_when_both_installed_and_no_history(
+    def test_detect_prefers_claude_when_both_installed_and_no_history(
         self, sandbox_smith_files
     ):
-        # No smith.client persisted, no running process → opencode wins
+        # No smith.client persisted, no running process → claude is the default fallback
         with patch.object(api, "_client_installed", return_value=True):
             with patch.object(api, "_client_process_running", return_value=False):
-                assert api._detect_active_client() == "opencode"
+                assert api._detect_active_client() == "claude"
 
     def test_client_process_running_handles_pgrep_failure(self):
         # Force subprocess.run to raise — _client_process_running must
