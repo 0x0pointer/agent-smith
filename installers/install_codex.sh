@@ -181,6 +181,60 @@ _ask_key "ANTHROPIC_API_KEY"    "Anthropic key - FuzzyAI anthropic provider"
 _ask_key "AZURE_OPENAI_API_KEY" "Azure OpenAI key - FuzzyAI azure provider"
 
 echo ""
+echo "  Telegram bridge (optional) - get HIR / scan-complete alerts on your phone."
+echo "  Press Enter twice to skip; the bridge is a no-op when either key is blank."
+echo ""
+echo "  PREREQUISITE: install the Telegram app (https://telegram.org/apps)."
+echo "  Once installed, inside Telegram:"
+echo "    1. Open a chat with @BotFather -> send /newbot -> follow prompts -> copy token"
+echo "    2. Search for your new bot -> open the chat -> send /start,"
+echo "       then send any text message (e.g. \"hi\") - getUpdates only returns"
+echo "       real messages, so /start alone may not surface the chat"
+echo "    3. In any browser, visit https://api.telegram.org/bot<TOKEN>/getUpdates"
+echo "       -> copy the \"chat\":{\"id\": ...} value (positive int for direct chats)"
+echo "       If you get {\"result\":[]}, send another message and refresh"
+echo ""
+
+_ask_key "TELEGRAM_BOT_TOKEN" "Bot token from @BotFather (format 123456:ABC-...)"
+_ask_key "TELEGRAM_CHAT_ID"   "Your Telegram chat ID - receives alerts; only this chat is allowlisted"
+
+# ── Slack bridge (optional) ───────────────────────────────────────────────────
+echo ""
+echo "  Slack bridge (optional) - same HIR / status alerts in a Slack channel."
+echo "  Press Enter to skip. Any combination of Telegram/Slack/Discord can run."
+echo ""
+echo "  Setup (inside Slack):"
+echo "    1. https://api.slack.com/apps -> Create New App -> From scratch"
+echo "    2. Activate Incoming Webhooks -> Add New Webhook to Workspace"
+echo "    3. Pick the channel; copy the webhook URL"
+echo "       (https://hooks.slack.com/services/T.../B.../...)"
+echo ""
+
+_ask_key "SLACK_WEBHOOK_URL"   "Slack incoming webhook URL - must start with https://hooks.slack.com/"
+
+# ── Discord bridge (optional) ─────────────────────────────────────────────────
+echo ""
+echo "  Discord bridge (optional) - same alerts in a Discord channel."
+echo "  Press Enter to skip."
+echo ""
+echo "  Setup (inside Discord):"
+echo "    1. Open the channel -> Settings -> Integrations -> Webhooks -> New Webhook"
+echo "    2. Name it (e.g. \"agent-smith\"), confirm the channel"
+echo "    3. Copy the webhook URL (https://discord.com/api/webhooks/<id>/<token>)"
+echo ""
+
+_ask_key "DISCORD_WEBHOOK_URL" "Discord webhook URL - must start with https://discord.com/api/webhooks/"
+
+# ── Periodic status updates ───────────────────────────────────────────────────
+echo ""
+echo "  Periodic status updates push a short scan-summary to every configured"
+echo "  notifier sink. Defaults to every 30 min. Set to 0 to disable. The"
+echo "  message contains NO target, NO finding titles - only counts."
+echo ""
+
+_ask_key "STATUS_UPDATE_INTERVAL_MINUTES" "Status update interval in minutes (default 30; 0 disables)"
+
+echo ""
 echo "  Docker images"
 echo "  -------------"
 echo ""
