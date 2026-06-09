@@ -547,19 +547,23 @@ def _smith_running() -> bool:
     (e.g. user started opencode or claude manually) while still using PID
     tracking for the immediate-feedback case after the Restart Smith button.
     """
-    # PID file (dashboard-spawned process). Cap the parsed PID at 2**22 (the
-    # POSIX kernel.pid_max upper bound on common Linux/macOS) so a maliciously
-    # large value in the file can't blow up os.kill with an OverflowError.
+    # PID file (dashboard-spawned process). Cap the parsed PID at 2**22 so a
+    # malformed value can't blow up the liveness probe with weird arithmetic.
+    # psutil.pid_exists works identically on macOS/Linux/Windows — the older
+    # os.kill(pid, 0) probe was POSIX-only and raised OSError WinError 22 on
+    # Windows for valid PIDs.
     try:
+        import psutil
         raw_pid = _SMITH_PID_FILE.read_text().strip()
         pid = int(raw_pid)
-        if 0 < pid < (1 << 22):
-            os.kill(pid, 0)
+        if 0 < pid < (1 << 22) and psutil.pid_exists(pid):
             return True
-    except (FileNotFoundError, ValueError, ProcessLookupError, PermissionError) as e:
+    except (FileNotFoundError, ValueError, PermissionError) as e:
         _log.debug("smith_running: pid file check skipped: %s", e)
+    except ImportError:
+        _log.debug("smith_running: psutil missing; skipping pid-file check")
     except OSError as e:
-        _log.debug("smith_running: os.kill failed: %s", e)
+        _log.debug("smith_running: pid_exists failed: %s", e)
 
     # Primary heartbeat: quick_log.json mtime. Written only by MCP tool calls,
     # never by dashboard endpoints — so it's a true Smith activity signal.
@@ -602,27 +606,44 @@ _KNOWN_CLIENTS = ("claude", "opencode", "codex")
 
 
 def _client_installed(name: str) -> bool:
+    """Check whether the named client CLI is on $PATH (cross-platform).
+
+    The older form fell back to hardcoded macOS paths (/opt/homebrew/bin and a
+    literal user home), which broke on Windows and made the function lie on
+    fresh systems where the user installed the CLI via npm/cargo to a
+    different prefix. shutil.which() handles ``$PATHEXT`` on Windows so an
+    ``opencode.cmd`` shim is detected correctly."""
     import shutil
-    if name == "claude":
-        return bool(shutil.which("claude") or os.path.exists("/opt/homebrew/bin/claude"))
-    if name == "opencode":
-        return bool(shutil.which("opencode") or os.path.exists("/Users/gibson/.opencode/bin/opencode"))
-    if name == "codex":
-        return bool(shutil.which("codex"))
+    if name in ("claude", "opencode", "codex"):
+        return bool(shutil.which(name))
     return False
 
 
 def _client_process_running(name: str) -> bool:
-    """Check whether any process for the given client is currently running."""
-    import subprocess
+    """Check whether any process for the given client is currently running.
+
+    Cross-platform via psutil — replaces the older ``pgrep -f <name>`` shell
+    call which only ran on Unix. Matches against the full command line so an
+    opencode wrapper running as ``node /path/to/.opencode/...`` still hits."""
     try:
-        r = subprocess.run(
-            ["pgrep", "-f", name],
-            capture_output=True, text=True, timeout=2,
-        )
-        return bool(r.stdout.strip())
-    except Exception:
+        import psutil
+    except ImportError:
         return False
+    needle = name.lower()
+    try:
+        for proc in psutil.process_iter(["name", "cmdline"]):
+            try:
+                pname = (proc.info.get("name") or "").lower()
+                if needle in pname:
+                    return True
+                cmd = " ".join(proc.info.get("cmdline") or []).lower()
+                if needle in cmd:
+                    return True
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+    except (psutil.AccessDenied, OSError):
+        return False
+    return False
 
 
 def _detect_active_client() -> str:
@@ -708,24 +729,39 @@ async def _spawn_smith(client: str, source: str = "api") -> tuple[bool, int | st
         await loop.run_in_executor(None, lambda: log_path.open("a").write(audit_line))
 
         import shutil
+        binary = shutil.which(client)
+        if not binary:
+            return False, f"{client} binary not found on PATH"
         if client == "claude":
-            binary = shutil.which("claude") or "/opt/homebrew/bin/claude"
             args = [binary, "--dangerously-skip-permissions", "-p", prompt]
         else:
-            binary = shutil.which("opencode") or "/Users/gibson/.opencode/bin/opencode"
             args = [binary, "run", prompt]
 
-        if not os.path.exists(binary):
-            return False, f"{client} binary not found at {binary}"
-
         log_fh = await loop.run_in_executor(None, lambda: log_path.open("a"))
-        proc = await asyncio.create_subprocess_exec(
-            *args,
-            stdout=log_fh,
-            stderr=log_fh,
-            cwd=str(_REPO_ROOT),
-            start_new_session=True,
-        )
+
+        # Detach the child so signals to the dashboard process don't reach it.
+        # POSIX uses os.setsid() via start_new_session; Windows uses the
+        # CREATE_NEW_PROCESS_GROUP creationflag. Same intent, different API.
+        spawn_kwargs: dict = {
+            "stdout": log_fh,
+            "stderr": log_fh,
+            "cwd": str(_REPO_ROOT),
+        }
+        import sys as _sys
+        if _sys.platform == "win32":
+            # subprocess.CREATE_NEW_PROCESS_GROUP is only defined on Windows
+            # builds of CPython. The literal value is the documented Win32
+            # CREATE_NEW_PROCESS_GROUP creation flag (0x00000200), used as a
+            # fallback so cross-platform tests that force sys.platform="win32"
+            # still resolve to the expected integer.
+            import subprocess as _subprocess
+            spawn_kwargs["creationflags"] = getattr(
+                _subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200
+            )
+        else:
+            spawn_kwargs["start_new_session"] = True
+
+        proc = await asyncio.create_subprocess_exec(*args, **spawn_kwargs)
         _SMITH_PID_FILE.write_text(str(proc.pid))
         _SMITH_CLIENT_FILE.write_text(client)
         return True, proc.pid
@@ -756,7 +792,14 @@ def _mcp_sse_alive() -> bool:
 
 
 async def _watchdog_tick(now: float) -> None:
-    """Single watchdog tick: restart Smith if all guard conditions pass."""
+    """Single watchdog tick: restart Smith if all guard conditions pass.
+
+    Fires out-of-band notifications (Telegram/Slack/Discord) at three
+    decision points so the operator sees stuck-scan states even when
+    they're not watching the dashboard. Each notification has its own
+    dedup code so the 30-min BaseNotifier cooldown prevents spam — one
+    alert per condition per window, not one per watchdog tick.
+    """
     global _watchdog_last_restart_ts
     session_data = _read_json(_SESSION_FILE)
     if session_data.get("status") != "running":
@@ -765,8 +808,41 @@ async def _watchdog_tick(now: float) -> None:
         return
     if _smith_running():
         return
+    # Smith is stopped while the scan is still running — that's the
+    # condition the operator wants to know about. Fire BEFORE the MCP /
+    # cap / gap guards so we don't go silent on the most actionable case.
+    try:
+        from core import notifiers as _nfr
+        _nfr.notify(
+            title="Smith stopped while scan running",
+            body=(
+                "Watchdog detected Smith exited with the scan still "
+                "marked running. Auto-restart will fire if MCP is alive "
+                "and the per-hour cap allows. Check the dashboard if "
+                "the scan stays stuck."
+            ),
+            urgency="high",
+            code="WATCHDOG_SMITH_STOPPED",
+        )
+    except Exception:
+        # Notifier failures must never break the watchdog loop.
+        pass
     if not _mcp_sse_alive():
         _log.warning("watchdog suppressed: MCP SSE server unreachable on 127.0.0.1:7778")
+        try:
+            from core import notifiers as _nfr
+            _nfr.notify(
+                title="MCP SSE server unreachable",
+                body=(
+                    "Watchdog can't restart Smith because the MCP server "
+                    "on 127.0.0.1:7778 isn't responding. Restart it with "
+                    "`./installers/start-mcp-server.sh start`."
+                ),
+                urgency="high",
+                code="WATCHDOG_MCP_DOWN",
+            )
+        except Exception:
+            pass
         return
     if now - _watchdog_last_restart_ts < _WATCHDOG_MIN_GAP_SECONDS:
         return
@@ -778,6 +854,20 @@ async def _watchdog_tick(now: float) -> None:
             "watchdog suppressed: %d restarts in last hour exceeds cap %d",
             len(_watchdog_restart_count_window), _WATCHDOG_MAX_PER_HOUR,
         )
+        try:
+            from core import notifiers as _nfr
+            _nfr.notify(
+                title="Smith respawn cap reached",
+                body=(
+                    f"Watchdog gave up after {len(_watchdog_restart_count_window)} "
+                    f"restarts in the last hour (cap {_WATCHDOG_MAX_PER_HOUR}). "
+                    "Scan is stuck — please intervene from the dashboard."
+                ),
+                urgency="high",
+                code="WATCHDOG_RESPAWN_CAP",
+            )
+        except Exception:
+            pass
         return
     client = _detect_active_client()
     _log.info("watchdog: smith stopped while scan running — auto-restart")
@@ -931,10 +1021,15 @@ def _write_pid(pid: int) -> None:
 
 
 def _pid_alive(pid: int) -> bool:
+    """Cross-platform PID liveness check via psutil.pid_exists.
+
+    The older ``os.kill(pid, 0)`` form was POSIX-only — on Windows it raises
+    ``OSError: WinError 87`` (invalid parameter) for valid PIDs because the
+    NT kernel doesn't model signal 0 the way POSIX does."""
     try:
-        os.kill(pid, 0)  # NOSONAR - signal 0 is a POSIX liveness probe, not a real signal
-        return True
-    except OSError:
+        import psutil
+        return bool(psutil.pid_exists(pid))
+    except (ImportError, OSError):
         return False
 
 
@@ -967,10 +1062,14 @@ async def serve(port: int = 7777) -> str:
 
     # Old process died, code changed, or never existed — kill stale process if running
     if saved_pid and _pid_alive(saved_pid):
+        # psutil.Process.terminate() abstracts SIGTERM (POSIX) vs
+        # TerminateProcess (Windows). Older form was os.kill(SIGTERM)
+        # which Windows doesn't support for foreign processes.
         try:
-            os.kill(saved_pid, signal.SIGTERM)  # NOSONAR - SIGTERM sent only to our own spawned dashboard child process
+            import psutil
+            psutil.Process(saved_pid).terminate()
             await asyncio.sleep(0.3)
-        except OSError:
+        except (psutil.NoSuchProcess, psutil.AccessDenied, ImportError, OSError):
             pass
 
     # Fire-and-forget: process runs independently in a new session.

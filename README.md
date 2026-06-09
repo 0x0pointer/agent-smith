@@ -218,6 +218,36 @@ poetry run python -m mcp_server</code></pre>
 
 > ⚠️ **After install, fully restart your client.** The MCP server connects at startup.
 
+### Running on Windows
+
+The installers above are bash-only (macOS / Linux / WSL). For native Windows
+PowerShell, use the `.ps1` siblings:
+
+```powershell
+# Clone the repo, then from an elevated PowerShell window:
+cd agent-smith
+.\installers\install.ps1            # Claude Code
+.\installers\install_opencode.ps1   # opencode
+.\installers\install_codex.ps1      # Codex
+```
+
+What's different on Windows:
+
+- **Auto-start:** the bash installer wires the MCP daemon into macOS launchd.
+  The PowerShell installer wires it into **Windows Task Scheduler** instead —
+  same intent ("run at logon, restart on failure"), different service manager.
+  Elevation is required for the Task Scheduler registration; everything else
+  runs without admin.
+- **Docker:** the Kali and Metasploit images are Linux containers. They work
+  via **Docker Desktop's WSL2 backend** with no code changes. Make sure WSL2
+  is enabled in Docker Desktop settings before the first scan.
+- **Process management:** the dashboard now uses `psutil` for cross-platform
+  process introspection (PID liveness, client detection). No Unix tools
+  (`lsof`, `pgrep`, `ps`) are required at runtime.
+- **CLIs on `$PATH`:** the installer looks up `claude` / `opencode` / `codex`
+  through `Get-Command` (PATHEXT-aware) — no hardcoded `/opt/homebrew/`-style
+  fallbacks.
+
 ### Optional images
 
 ```bash

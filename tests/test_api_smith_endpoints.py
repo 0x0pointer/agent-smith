@@ -279,10 +279,35 @@ class TestSmithClients:
             with patch.object(api, "_client_process_running", return_value=False):
                 assert api._detect_active_client() == "claude"
 
-    def test_client_process_running_handles_pgrep_failure(self):
-        # Force subprocess.run to raise — _client_process_running must
-        # swallow + return False rather than crash the watchdog loop.
-        with patch("subprocess.run", side_effect=FileNotFoundError("pgrep")):
+    def test_client_process_running_finds_match_in_name(self):
+        import psutil
+        fake = MagicMock()
+        fake.info = {"name": "claude", "cmdline": ["claude", "--foo"]}
+        with patch.object(psutil, "process_iter", return_value=[fake]):
+            assert api._client_process_running("claude") is True
+
+    def test_client_process_running_finds_match_in_cmdline(self):
+        """opencode runs as 'node /path/to/opencode' — name is 'node' but the
+        cmdline contains 'opencode'. Must match either way."""
+        import psutil
+        fake = MagicMock()
+        fake.info = {"name": "node", "cmdline": ["node", "/Users/u/.opencode/bin/opencode", "run"]}
+        with patch.object(psutil, "process_iter", return_value=[fake]):
+            assert api._client_process_running("opencode") is True
+
+    def test_client_process_running_returns_false_when_no_match(self):
+        import psutil
+        fake = MagicMock()
+        fake.info = {"name": "bash", "cmdline": ["bash", "-l"]}
+        with patch.object(psutil, "process_iter", return_value=[fake]):
+            assert api._client_process_running("claude") is False
+
+    def test_client_process_running_handles_iter_failure(self):
+        """psutil.process_iter raising → swallow and return False so the
+        watchdog loop doesn't blow up on transient errors."""
+        import psutil
+        with patch.object(psutil, "process_iter",
+                          side_effect=psutil.AccessDenied(pid=0)):
             assert api._client_process_running("claude") is False
 
     def test_client_installed_codex_true_when_on_path(self):
@@ -424,7 +449,6 @@ class TestSpawnSmith:
         with patch.dict("sys.modules", {"core.steering": env["steering_module"]}), \
              patch("core.session.load_from_disk"), \
              patch("core.session.get", return_value={}), \
-             patch("os.path.exists", return_value=False), \
              patch("shutil.which", return_value=None):
             ok, result = asyncio.get_event_loop().run_until_complete(
                 api._spawn_smith("claude", source="test")
@@ -432,6 +456,114 @@ class TestSpawnSmith:
 
         assert ok is False
         assert "not found" in result
+
+    def test_no_hardcoded_homebrew_fallback(self, spawn_env):
+        """The old code fell back to /opt/homebrew/bin/claude when shutil.which
+        returned None; that broke on Linux/Windows. Verify we now fail cleanly
+        instead of trying a non-existent path."""
+        env = spawn_env
+
+        # shutil.which returns None — must NOT silently substitute homebrew path
+        with patch.dict("sys.modules", {"core.steering": env["steering_module"]}), \
+             patch("core.session.load_from_disk"), \
+             patch("core.session.get", return_value={}), \
+             patch("shutil.which", return_value=None), \
+             patch("asyncio.create_subprocess_exec") as spawn:
+            ok, result = asyncio.get_event_loop().run_until_complete(
+                api._spawn_smith("claude", source="test")
+            )
+
+        assert ok is False
+        # subprocess should NEVER be called when the binary is missing
+        spawn.assert_not_called()
+
+    def test_posix_uses_start_new_session(self, spawn_env):
+        """On macOS/Linux _spawn_smith must pass start_new_session=True to
+        detach the child from the dashboard's process group."""
+        env = spawn_env
+        fake_proc = MagicMock(); fake_proc.pid = 11111
+        spawn_calls: list = []
+
+        async def _record_spawn(*args, **kw):
+            spawn_calls.append(kw)
+            return fake_proc
+
+        with patch.dict("sys.modules", {"core.steering": env["steering_module"]}), \
+             patch("core.session.load_from_disk"), \
+             patch("core.session.get", return_value={}), \
+             patch("shutil.which", return_value="/usr/local/bin/opencode"), \
+             patch("sys.platform", "linux"), \
+             patch("asyncio.create_subprocess_exec", side_effect=_record_spawn):
+            ok, _ = asyncio.get_event_loop().run_until_complete(
+                api._spawn_smith("opencode", source="test")
+            )
+
+        assert ok is True
+        assert spawn_calls[0].get("start_new_session") is True
+        assert "creationflags" not in spawn_calls[0]
+
+    def test_windows_uses_create_new_process_group(self, spawn_env):
+        """On Windows _spawn_smith must use CREATE_NEW_PROCESS_GROUP instead
+        of start_new_session (the latter raises ValueError on Windows
+        asyncio's ProactorEventLoop)."""
+        env = spawn_env
+        fake_proc = MagicMock(); fake_proc.pid = 22222
+        spawn_calls: list = []
+
+        async def _record_spawn(*args, **kw):
+            spawn_calls.append(kw)
+            return fake_proc
+
+        with patch.dict("sys.modules", {"core.steering": env["steering_module"]}), \
+             patch("core.session.load_from_disk"), \
+             patch("core.session.get", return_value={}), \
+             patch("shutil.which", return_value="C:\\opencode\\opencode.exe"), \
+             patch("sys.platform", "win32"), \
+             patch("asyncio.create_subprocess_exec", side_effect=_record_spawn):
+            ok, _ = asyncio.get_event_loop().run_until_complete(
+                api._spawn_smith("opencode", source="test")
+            )
+
+        assert ok is True
+        # On Windows: creationflags must be set, start_new_session must NOT be.
+        # Use the documented Win32 constant value (0x00000200) since
+        # subprocess.CREATE_NEW_PROCESS_GROUP only exists on Windows builds
+        # of CPython — the api_server.py code also falls back to the same
+        # literal so cross-platform CI works.
+        assert "start_new_session" not in spawn_calls[0]
+        import subprocess as _sp
+        expected = getattr(_sp, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+        assert spawn_calls[0].get("creationflags") == expected
+
+
+# ---------------------------------------------------------------------------
+# _pid_alive — cross-platform liveness probe
+# ---------------------------------------------------------------------------
+
+class TestPidAlive:
+
+    def test_alive_returns_true_for_running_process(self):
+        import os as _os
+        with patch("psutil.pid_exists", return_value=True):
+            assert api._pid_alive(_os.getpid()) is True
+
+    def test_alive_returns_false_for_dead_process(self):
+        with patch("psutil.pid_exists", return_value=False):
+            assert api._pid_alive(9999999) is False
+
+    def test_alive_returns_false_when_psutil_missing(self):
+        """If psutil import fails (shouldn't happen given it's a dep) we
+        must return False rather than crash the watchdog."""
+        import builtins
+        real_import = builtins.__import__
+
+        def _no_psutil(name, *a, **kw):
+            if name == "psutil":
+                raise ImportError("psutil unavailable")
+            return real_import(name, *a, **kw)
+
+        with patch("builtins.__import__", side_effect=_no_psutil):
+            assert api._pid_alive(1) is False
 
 
 # ---------------------------------------------------------------------------
@@ -599,3 +731,152 @@ class TestWatchdogTick:
             self._run_tick(now=now)
         spawn.assert_not_awaited()
         api._watchdog_restart_count_window.clear()
+
+
+# ---------------------------------------------------------------------------
+# Watchdog → notifier wiring
+#
+# The user wants out-of-band alerts (Telegram/Slack/Discord) when the
+# watchdog observes a stuck-scan state, not just dashboard logs. Three
+# distinct conditions each get their own code so the BaseNotifier 30-min
+# dedup suppresses repeats per condition rather than across conditions.
+# ---------------------------------------------------------------------------
+
+class TestWatchdogNotifies:
+
+    def setup_method(self):
+        # Module-level state leaks between watchdog tests if we don't reset
+        # it. _watchdog_last_restart_ts in particular would otherwise trip
+        # the MIN_GAP guard and bail before the cap / spawn paths we're
+        # actually asserting on here.
+        api._watchdog_last_restart_ts = 0.0
+        api._watchdog_restart_count_window.clear()
+
+    def teardown_method(self):
+        api._watchdog_last_restart_ts = 0.0
+        api._watchdog_restart_count_window.clear()
+
+    def _run_tick(self, now=9999.0):
+        asyncio.run(api._watchdog_tick(now))
+
+    def test_notifies_when_smith_stopped_with_scan_running(self, sandbox_session):
+        """The case the operator asked for: scan still running but Smith died."""
+        _write_session(sandbox_session, status="running")
+        sent: list[dict] = []
+
+        def _capture(title, body, **kw):
+            sent.append({"title": title, "body": body, **kw})
+
+        with patch.object(api, "_smith_running", return_value=False), \
+             patch.object(api, "_mcp_sse_alive", return_value=True), \
+             patch.object(api, "_spawn_smith", AsyncMock(return_value=(True, 12345))), \
+             patch("core.notifiers.notify", _capture):
+            self._run_tick()
+
+        # First notify must be the smith-stopped one — it fires before the
+        # MCP / gap / cap guards so the most actionable case is never silent.
+        assert sent, "watchdog should have notified"
+        first = sent[0]
+        assert first["code"] == "WATCHDOG_SMITH_STOPPED"
+        assert first["urgency"] == "high"
+        assert "scan" in first["body"].lower()
+
+    def test_notifies_when_mcp_is_down(self, sandbox_session):
+        """If MCP is unreachable, watchdog can't restart — operator needs to know."""
+        _write_session(sandbox_session, status="running")
+        sent: list[dict] = []
+
+        def _capture(title, body, **kw):
+            sent.append({"title": title, "body": body, **kw})
+
+        with patch.object(api, "_smith_running", return_value=False), \
+             patch.object(api, "_mcp_sse_alive", return_value=False), \
+             patch.object(api, "_spawn_smith", AsyncMock()) as spawn, \
+             patch("core.notifiers.notify", _capture):
+            self._run_tick()
+
+        # Both the generic "smith stopped" and the MCP-down notice should fire,
+        # since the MCP guard suppresses the restart but the underlying
+        # condition (smith dead while scan running) is still true.
+        codes = [s["code"] for s in sent]
+        assert "WATCHDOG_SMITH_STOPPED" in codes
+        assert "WATCHDOG_MCP_DOWN" in codes
+        # No restart attempted while MCP is dead.
+        spawn.assert_not_awaited()
+
+    def test_notifies_when_respawn_cap_reached(self, sandbox_session):
+        """Watchdog gave up after too many restarts — escalate via notifier."""
+        _write_session(sandbox_session, status="running")
+        sent: list[dict] = []
+
+        def _capture(title, body, **kw):
+            sent.append({"title": title, "body": body, **kw})
+
+        now = 9999.0
+        api._watchdog_restart_count_window[:] = [now - 10] * api._WATCHDOG_MAX_PER_HOUR
+        with patch.object(api, "_smith_running", return_value=False), \
+             patch.object(api, "_mcp_sse_alive", return_value=True), \
+             patch.object(api, "_spawn_smith", AsyncMock()) as spawn, \
+             patch("core.notifiers.notify", _capture):
+            self._run_tick(now=now)
+
+        codes = [s["code"] for s in sent]
+        assert "WATCHDOG_RESPAWN_CAP" in codes
+        # The cap-hit notification carries the actual count and the cap
+        # so the operator can tell at a glance what gave up.
+        cap_msg = next(s for s in sent if s["code"] == "WATCHDOG_RESPAWN_CAP")
+        assert str(api._WATCHDOG_MAX_PER_HOUR) in cap_msg["body"]
+        spawn.assert_not_awaited()
+        api._watchdog_restart_count_window.clear()
+
+    def test_no_notify_when_scan_not_running(self, sandbox_session):
+        """No active scan → no out-of-band noise, even if Smith is dead."""
+        _write_session(sandbox_session, status="complete")
+        sent: list[dict] = []
+
+        def _capture(title, body, **kw):
+            sent.append(title)
+
+        with patch.object(api, "_smith_running", return_value=False), \
+             patch("core.notifiers.notify", _capture):
+            self._run_tick()
+
+        assert sent == []
+
+    def test_no_notify_when_intervention_active(self, sandbox_session):
+        """When an HIR is active the operator already saw an alert for IT —
+        we don't pile a watchdog ping on top of an unresolved intervention."""
+        _write_session(sandbox_session, status="running",
+                       intervention={"code": "HIR_AUTH_FAILURE", "situation": "."})
+        sent: list[dict] = []
+
+        def _capture(title, body, **kw):
+            sent.append(title)
+
+        with patch.object(api, "_smith_running", return_value=False), \
+             patch("core.notifiers.notify", _capture):
+            self._run_tick()
+
+        assert sent == []
+
+    def test_notify_failure_does_not_break_watchdog(self, sandbox_session):
+        """A broken notifier must never short-circuit the restart logic.
+
+        This is the never-raise contract that BaseNotifier already enforces,
+        but the watchdog has its own try/except wrappers — verify they hold
+        even when notify() itself blows up before delivery scheduling."""
+        _write_session(sandbox_session, status="running")
+
+        def _explode(*a, **kw):
+            raise RuntimeError("notifier registry is on fire")
+
+        spawn = AsyncMock(return_value=(True, 12345))
+        with patch.object(api, "_smith_running", return_value=False), \
+             patch.object(api, "_mcp_sse_alive", return_value=True), \
+             patch.object(api, "_spawn_smith", spawn), \
+             patch("core.notifiers.notify", _explode):
+            # Must not raise.
+            self._run_tick()
+
+        # And the restart still happened despite the notify explosion.
+        spawn.assert_awaited_once()

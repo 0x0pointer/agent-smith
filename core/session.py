@@ -33,6 +33,7 @@ Output file
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -68,9 +69,124 @@ PRESETS: dict[str, dict] = {
 _REPO_ROOT = Path(__file__).parent.parent
 _SESSION_FILE = _REPO_ROOT / "session.json"
 
+# MCP SSE listen port — must match start-mcp-server.sh. The caller-detection
+# helper below uses this to identify the Smith client across the TCP socket.
+_MCP_SSE_PORT = 7778
+
+
 # ── In-memory state ───────────────────────────────────────────────────────────
 
 _current: dict | None = None
+
+
+# ── Caller detection ──────────────────────────────────────────────────────────
+#
+# When session.start() is called via MCP, we want a precise way to ask later
+# "is the Smith process driving this scan still alive?". The old heuristic
+# (quick_log mtime + smith.pid file written only by dashboard-spawned restarts)
+# gives false positives for interactive runs where Smith is alive but the LLM
+# is doing long thinking-mode reasoning between tool calls.
+#
+# Strategy: at start(), inspect the TCP connections to the MCP SSE port (7778)
+# to find a process with an ESTABLISHED connection whose command line matches
+# a known client (claude / opencode / codex). Stdio MCP falls back to the
+# parent process (the MCP server is launched as a subprocess of the client).
+
+def _detect_smith_caller(port: int = _MCP_SSE_PORT) -> dict | None:
+    """Identify the calling Smith client.
+
+    Returns ``{"pid": int, "client": "claude" | "opencode" | "codex"}`` for
+    the most likely caller, or ``None`` when nothing recognizable is connected.
+    Never raises — failure to detect is a routine outcome, not an error.
+    """
+    for pid in _connected_pids(port):
+        client = _resolve_client_for_pid(pid)
+        if client:
+            return {"pid": pid, "client": client}
+    # Stdio MCP fallback: the MCP server runs as a child of the client process.
+    try:
+        parent_pid = os.getppid()
+        client = _resolve_client_for_pid(parent_pid)
+        if client:
+            return {"pid": parent_pid, "client": client}
+    except OSError:
+        pass
+    return None
+
+
+def _connected_pids(port: int) -> list[int]:
+    """PIDs with an ESTABLISHED TCP connection involving the given port.
+
+    Uses psutil so it works identically on macOS, Linux, and Windows — the
+    older shell-out (``lsof -tnP -iTCP:<port> -sTCP:ESTABLISHED``) only ran
+    on Unix and silently returned an empty list on Windows.
+    """
+    try:
+        import psutil
+    except ImportError:
+        return []
+    pids: list[int] = []
+    try:
+        for conn in psutil.net_connections(kind="tcp"):
+            if conn.status != psutil.CONN_ESTABLISHED or conn.pid is None:
+                continue
+            # The connection is "involving" the port when either the local
+            # or remote endpoint matches. Local match = the server side;
+            # remote match = the client side. We want both: client PIDs
+            # are the interesting ones, server PID is filtered later by
+            # the cmdline check in _resolve_client_for_pid.
+            local_match = conn.laddr and conn.laddr.port == port
+            remote_match = conn.raddr and conn.raddr.port == port
+            if local_match or remote_match:
+                pids.append(conn.pid)
+    except (psutil.AccessDenied, OSError, RuntimeError):
+        # net_connections can require root on some platforms; rather than
+        # crash, fall back to "no detection" and let the legacy heuristic
+        # handle this. macOS works without root; Linux often needs CAP_NET_ADMIN.
+        return []
+    return pids
+
+
+def _resolve_client_for_pid(pid: int) -> str | None:
+    """Map a PID to a known Smith client by command-line inspection.
+
+    Returns the client name or ``None`` when the process doesn't look like a
+    Smith client (e.g., the MCP server itself, vLLM, or unrelated processes).
+    Cross-platform via ``psutil`` — replaces the Unix-only ``ps -o command=``.
+    """
+    try:
+        import psutil
+    except ImportError:
+        return None
+    try:
+        proc = psutil.Process(pid)
+        cmd = " ".join(proc.cmdline()).lower()
+    except (psutil.NoSuchProcess, psutil.AccessDenied, ValueError, OSError):
+        return None
+    if not cmd:
+        return None
+    if "claude" in cmd and ("dangerously-skip-permissions" in cmd or " -p " in cmd):
+        return "claude"
+    if "/opencode" in cmd or "opencode run" in cmd or cmd.startswith("opencode"):
+        return "opencode"
+    if "codex" in cmd and ("run" in cmd or "mcp" in cmd):
+        return "codex"
+    return None
+
+
+def _persist_smith_caller(info: dict) -> None:
+    """Mirror the captured caller into logs/smith.pid + logs/smith.client so
+    the dashboard's existing PID-file check picks it up unchanged. Failure
+    is non-fatal — the in-memory smith_proc field is still authoritative."""
+    if not info:
+        return
+    try:
+        log_dir = _REPO_ROOT / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        (log_dir / "smith.pid").write_text(str(info["pid"]))
+        (log_dir / "smith.client").write_text(info["client"])
+    except OSError:
+        pass
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -145,6 +261,18 @@ def start(
         "context_chars_sent": 0,
         "complete_attempts":  0,        # incremented each time session(complete) is called
     }
+    # Capture which Smith process drove this start() call so the dashboard
+    # watchdog can ask "is THIS PID still alive?" instead of falling back to
+    # the quick_log mtime heuristic (which gives false positives during long
+    # thinking-mode reasoning).
+    caller = _detect_smith_caller()
+    if caller:
+        _current["smith_proc"] = {
+            **caller,
+            "captured_at": datetime.now(timezone.utc).isoformat(),
+            "source":      "interactive_mcp",
+        }
+        _persist_smith_caller(caller)
     _flush()
     return _current
 
