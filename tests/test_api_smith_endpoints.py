@@ -297,6 +297,83 @@ class TestRestartSmith:
 
 
 # ---------------------------------------------------------------------------
+# _spawn_smith unit tests
+# ---------------------------------------------------------------------------
+
+class TestSpawnSmith:
+    """Unit tests for _spawn_smith — the core spawn logic.
+
+    Every external side-effect is mocked so no real subprocess fires.
+    The key invariant: the function must succeed (return True, pid) even
+    when the logs/ directory already exists — that was the bug fixed by
+    switching from run_in_executor(None, mkdir, True, True) to a lambda
+    that passes parents=True, exist_ok=True by keyword.
+    """
+
+    @pytest.fixture
+    def spawn_env(self, tmp_path, monkeypatch):
+        """Sandbox all file paths and mock every external call."""
+        logs_dir = tmp_path / "logs"
+        logs_dir.mkdir()  # pre-create so exist_ok=True is actually exercised
+
+        monkeypatch.setattr(api, "_SMITH_PID_FILE", logs_dir / "smith.pid")
+        monkeypatch.setattr(api, "_SMITH_CLIENT_FILE", logs_dir / "smith.client")
+        monkeypatch.setattr(api, "_REPO_ROOT", tmp_path)
+
+        # Steering queue — return no active directives
+        steering_mock = MagicMock()
+        steering_mock.get_active.return_value = []
+        steering_module = MagicMock()
+        steering_module.steering_queue = steering_mock
+
+        # Session — no active scan, so no intervention to resolve
+        session_mock = MagicMock()
+        session_mock.get.return_value = {}
+
+        return {
+            "tmp_path": tmp_path,
+            "logs_dir": logs_dir,
+            "steering_module": steering_module,
+            "session_mock": session_mock,
+        }
+
+    def test_succeeds_when_logs_dir_already_exists(self, spawn_env):
+        """mkdir must not raise FileExistsError when logs/ is present."""
+        env = spawn_env
+        fake_proc = MagicMock()
+        fake_proc.pid = 12321
+
+        with patch.dict("sys.modules", {"core.steering": env["steering_module"]}), \
+             patch("core.session.load_from_disk"), \
+             patch("core.session.get", return_value={}), \
+             patch("os.path.exists", return_value=True), \
+             patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=fake_proc)), \
+             patch("shutil.which", return_value="/usr/bin/claude"):
+            ok, result = asyncio.get_event_loop().run_until_complete(
+                api._spawn_smith("claude", source="test")
+            )
+
+        assert ok is True
+        assert result == 12321
+
+    def test_returns_error_when_binary_missing(self, spawn_env):
+        """Returns (False, 'binary not found') when the client binary is absent."""
+        env = spawn_env
+
+        with patch.dict("sys.modules", {"core.steering": env["steering_module"]}), \
+             patch("core.session.load_from_disk"), \
+             patch("core.session.get", return_value={}), \
+             patch("os.path.exists", return_value=False), \
+             patch("shutil.which", return_value=None):
+            ok, result = asyncio.get_event_loop().run_until_complete(
+                api._spawn_smith("claude", source="test")
+            )
+
+        assert ok is False
+        assert "not found" in result
+
+
+# ---------------------------------------------------------------------------
 # GET /api/watchdog
 # ---------------------------------------------------------------------------
 
