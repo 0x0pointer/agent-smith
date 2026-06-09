@@ -214,6 +214,37 @@ class TestSmithRunning:
             r = client.get("/api/smith-status")
         assert r.json() == {"running": True}
 
+    def test_running_true_via_session_fallback_when_quick_log_missing(
+        self, sandbox_smith_files, tmp_path
+    ):
+        # quick_log absent + session running + started < 2 h ago → True
+        from datetime import datetime, timezone, timedelta
+        import json as _json
+        session_file = tmp_path / "session.json"
+        session_file.write_text(_json.dumps({
+            "status": "running",
+            "finished": None,
+            "started": (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat(),
+        }))
+        monkeypatch_session = patch.object(api, "_SESSION_FILE", session_file)
+        with monkeypatch_session:
+            assert api._smith_running() is True
+
+    def test_running_false_via_session_fallback_when_session_old(
+        self, sandbox_smith_files, tmp_path
+    ):
+        # quick_log absent + session running but started > 2 h ago → False
+        from datetime import datetime, timezone, timedelta
+        import json as _json
+        session_file = tmp_path / "session.json"
+        session_file.write_text(_json.dumps({
+            "status": "running",
+            "finished": None,
+            "started": (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat(),
+        }))
+        with patch.object(api, "_SESSION_FILE", session_file):
+            assert api._smith_running() is False
+
 
 # ---------------------------------------------------------------------------
 # GET /api/smith-clients + _client_installed / _detect_active_client
@@ -253,6 +284,36 @@ class TestSmithClients:
         # swallow + return False rather than crash the watchdog loop.
         with patch("subprocess.run", side_effect=FileNotFoundError("pgrep")):
             assert api._client_process_running("claude") is False
+
+    def test_client_installed_codex_true_when_on_path(self):
+        with patch("shutil.which", return_value="/usr/local/bin/codex"):
+            assert api._client_installed("codex") is True
+
+    def test_client_installed_codex_false_when_absent(self):
+        with patch("shutil.which", return_value=None):
+            assert api._client_installed("codex") is False
+
+    def test_client_installed_claude_true_when_on_path(self):
+        with patch("shutil.which", return_value="/usr/local/bin/claude"), \
+             patch("os.path.exists", return_value=False):
+            assert api._client_installed("claude") is True
+
+    def test_client_installed_opencode_false_when_absent(self):
+        with patch("shutil.which", return_value=None), \
+             patch("os.path.exists", return_value=False):
+            assert api._client_installed("opencode") is False
+
+    def test_client_installed_unknown_returns_false(self):
+        assert api._client_installed("vim") is False
+
+    def test_detect_reads_client_from_session_json(self, sandbox_smith_files, tmp_path):
+        # Step 1: client stored in session.json at scan start takes priority
+        import json as _json
+        session_file = tmp_path / "session.json"
+        session_file.write_text(_json.dumps({"client": "opencode"}))
+        with patch.object(api, "_SESSION_FILE", session_file), \
+             patch.object(api, "_client_installed", return_value=True):
+            assert api._detect_active_client() == "opencode"
 
 
 # ---------------------------------------------------------------------------
