@@ -1543,3 +1543,46 @@ def test_repeated_tool_failure_fires():
         assert alert["code"] == "HIR_TOOL_FAILURE"
         assert "nmap" in alert["message"]
         mock_trigger.assert_called_once()
+
+
+# ── _cycle() Telegram notification path ───────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_cycle_calls_notify_for_high_urgency_alerts(tmp_path, monkeypatch):
+    import core.steering as st_mod
+    monkeypatch.setattr(st_mod, "_STEERING_FILE", tmp_path / "steering_queue.json")
+    _setup_cycle_files(tmp_path, monkeypatch)
+    monkeypatch.setattr(core.quick_log, "quick_log",
+                        _mock_ql(entries=[_coverage_entry(na_untooled=15)]))
+
+    high_alert = {"code": "BULK_MARKING", "urgency": "high", "blocking": False,
+                  "message": "too many untooled"}
+    with patch("core.qa_agent._deterministic_qa_checks", return_value=[high_alert]), \
+         patch("core.notifiers.notify") as mock_notify:
+        daemon = QADaemon()
+        await daemon._cycle()
+
+    mock_notify.assert_called_once_with(
+        title="[QA] BULK_MARKING",
+        body="too many untooled",
+        urgency="high",
+        code="BULK_MARKING",
+    )
+
+
+@pytest.mark.asyncio
+async def test_cycle_notify_exception_is_swallowed(tmp_path, monkeypatch):
+    import core.steering as st_mod
+    monkeypatch.setattr(st_mod, "_STEERING_FILE", tmp_path / "steering_queue.json")
+    qa_state = _setup_cycle_files(tmp_path, monkeypatch)
+    monkeypatch.setattr(core.quick_log, "quick_log",
+                        _mock_ql(entries=[_coverage_entry(na_untooled=15)]))
+
+    high_alert = {"code": "BULK_MARKING", "urgency": "high", "blocking": False,
+                  "message": "too many untooled"}
+    with patch("core.qa_agent._deterministic_qa_checks", return_value=[high_alert]), \
+         patch("core.notifiers.notify", side_effect=RuntimeError("sink down")):
+        daemon = QADaemon()
+        await daemon._cycle()  # must not raise
+
+    assert qa_state.exists()  # cycle still wrote state despite notification failure
