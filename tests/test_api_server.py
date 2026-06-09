@@ -461,14 +461,16 @@ async def test_cleanup_tunnels_exception_handling():
 def test_read_pid_returns_none_for_missing_file(tmp_path, monkeypatch):
     import core.api_server as srv
     monkeypatch.setattr(srv, "_PID_FILE", tmp_path / "dashboard.pid")
-    assert srv._read_pid() is None
+    assert srv._read_pid() == (None, None)
 
 def test_read_pid_returns_int_when_file_exists(tmp_path, monkeypatch):
     import core.api_server as srv
     pid_file = tmp_path / "dashboard.pid"
     pid_file.write_text("12345")
     monkeypatch.setattr(srv, "_PID_FILE", pid_file)
-    assert srv._read_pid() == 12345
+    pid, mtime = srv._read_pid()
+    assert pid == 12345
+    assert mtime is None  # no timestamp in legacy format
 
 def test_write_pid_creates_file(tmp_path, monkeypatch):
     import core.api_server as srv
@@ -476,7 +478,7 @@ def test_write_pid_creates_file(tmp_path, monkeypatch):
     pid_file.parent.mkdir()
     monkeypatch.setattr(srv, "_PID_FILE", pid_file)
     srv._write_pid(99999)
-    assert pid_file.read_text() == "99999"
+    assert pid_file.read_text().split(":")[0] == "99999"
 
 def test_pid_alive_returns_false_for_dead_pid():
     import core.api_server as srv

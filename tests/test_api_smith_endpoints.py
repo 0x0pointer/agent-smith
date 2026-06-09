@@ -55,10 +55,11 @@ def sandbox_session(tmp_path, monkeypatch):
 
 @pytest.fixture
 def sandbox_smith_files(tmp_path, monkeypatch):
-    """Quick-log + smith.pid + smith.client paths in tmp_path."""
+    """Quick-log + smith.pid + smith.client + session paths in tmp_path."""
     monkeypatch.setattr(api, "_QUICK_LOG_FILE", tmp_path / "quick_log.json")
     monkeypatch.setattr(api, "_SMITH_PID_FILE", tmp_path / "smith.pid")
     monkeypatch.setattr(api, "_SMITH_CLIENT_FILE", tmp_path / "smith.client")
+    monkeypatch.setattr(api, "_SESSION_FILE", tmp_path / "session.json")
 
 
 def _write_session(session_file: Path, **overrides):
@@ -213,6 +214,37 @@ class TestSmithRunning:
             r = client.get("/api/smith-status")
         assert r.json() == {"running": True}
 
+    def test_running_true_via_session_fallback_when_quick_log_missing(
+        self, sandbox_smith_files, tmp_path
+    ):
+        # quick_log absent + session running + started < 2 h ago → True
+        from datetime import datetime, timezone, timedelta
+        import json as _json
+        session_file = tmp_path / "session.json"
+        session_file.write_text(_json.dumps({
+            "status": "running",
+            "finished": None,
+            "started": (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat(),
+        }))
+        monkeypatch_session = patch.object(api, "_SESSION_FILE", session_file)
+        with monkeypatch_session:
+            assert api._smith_running() is True
+
+    def test_running_false_via_session_fallback_when_session_old(
+        self, sandbox_smith_files, tmp_path
+    ):
+        # quick_log absent + session running but started > 2 h ago → False
+        from datetime import datetime, timezone, timedelta
+        import json as _json
+        session_file = tmp_path / "session.json"
+        session_file.write_text(_json.dumps({
+            "status": "running",
+            "finished": None,
+            "started": (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat(),
+        }))
+        with patch.object(api, "_SESSION_FILE", session_file):
+            assert api._smith_running() is False
+
 
 # ---------------------------------------------------------------------------
 # GET /api/smith-clients + _client_installed / _detect_active_client
@@ -239,19 +271,49 @@ class TestSmithClients:
             with patch.object(api, "_client_process_running", return_value=False):
                 assert api._detect_active_client() == "claude"
 
-    def test_detect_prefers_opencode_when_both_installed_and_no_history(
+    def test_detect_prefers_claude_when_both_installed_and_no_history(
         self, sandbox_smith_files
     ):
-        # No smith.client persisted, no running process → opencode wins
+        # No smith.client persisted, no running process → claude is the default fallback
         with patch.object(api, "_client_installed", return_value=True):
             with patch.object(api, "_client_process_running", return_value=False):
-                assert api._detect_active_client() == "opencode"
+                assert api._detect_active_client() == "claude"
 
     def test_client_process_running_handles_pgrep_failure(self):
         # Force subprocess.run to raise — _client_process_running must
         # swallow + return False rather than crash the watchdog loop.
         with patch("subprocess.run", side_effect=FileNotFoundError("pgrep")):
             assert api._client_process_running("claude") is False
+
+    def test_client_installed_codex_true_when_on_path(self):
+        with patch("shutil.which", return_value="/usr/local/bin/codex"):
+            assert api._client_installed("codex") is True
+
+    def test_client_installed_codex_false_when_absent(self):
+        with patch("shutil.which", return_value=None):
+            assert api._client_installed("codex") is False
+
+    def test_client_installed_claude_true_when_on_path(self):
+        with patch("shutil.which", return_value="/usr/local/bin/claude"), \
+             patch("os.path.exists", return_value=False):
+            assert api._client_installed("claude") is True
+
+    def test_client_installed_opencode_false_when_absent(self):
+        with patch("shutil.which", return_value=None), \
+             patch("os.path.exists", return_value=False):
+            assert api._client_installed("opencode") is False
+
+    def test_client_installed_unknown_returns_false(self):
+        assert api._client_installed("vim") is False
+
+    def test_detect_reads_client_from_session_json(self, sandbox_smith_files, tmp_path):
+        # Step 1: client stored in session.json at scan start takes priority
+        import json as _json
+        session_file = tmp_path / "session.json"
+        session_file.write_text(_json.dumps({"client": "opencode"}))
+        with patch.object(api, "_SESSION_FILE", session_file), \
+             patch.object(api, "_client_installed", return_value=True):
+            assert api._detect_active_client() == "opencode"
 
 
 # ---------------------------------------------------------------------------
@@ -293,6 +355,83 @@ class TestRestartSmith:
             r = client.post("/api/restart-smith", json={"client": "claude"})
         assert r.status_code == 400
         assert "not installed" in r.json()["error"]
+
+
+# ---------------------------------------------------------------------------
+# _spawn_smith unit tests
+# ---------------------------------------------------------------------------
+
+class TestSpawnSmith:
+    """Unit tests for _spawn_smith — the core spawn logic.
+
+    Every external side-effect is mocked so no real subprocess fires.
+    The key invariant: the function must succeed (return True, pid) even
+    when the logs/ directory already exists — that was the bug fixed by
+    switching from run_in_executor(None, mkdir, True, True) to a lambda
+    that passes parents=True, exist_ok=True by keyword.
+    """
+
+    @pytest.fixture
+    def spawn_env(self, tmp_path, monkeypatch):
+        """Sandbox all file paths and mock every external call."""
+        logs_dir = tmp_path / "logs"
+        logs_dir.mkdir()  # pre-create so exist_ok=True is actually exercised
+
+        monkeypatch.setattr(api, "_SMITH_PID_FILE", logs_dir / "smith.pid")
+        monkeypatch.setattr(api, "_SMITH_CLIENT_FILE", logs_dir / "smith.client")
+        monkeypatch.setattr(api, "_REPO_ROOT", tmp_path)
+
+        # Steering queue — return no active directives
+        steering_mock = MagicMock()
+        steering_mock.get_active.return_value = []
+        steering_module = MagicMock()
+        steering_module.steering_queue = steering_mock
+
+        # Session — no active scan, so no intervention to resolve
+        session_mock = MagicMock()
+        session_mock.get.return_value = {}
+
+        return {
+            "tmp_path": tmp_path,
+            "logs_dir": logs_dir,
+            "steering_module": steering_module,
+            "session_mock": session_mock,
+        }
+
+    def test_succeeds_when_logs_dir_already_exists(self, spawn_env):
+        """mkdir must not raise FileExistsError when logs/ is present."""
+        env = spawn_env
+        fake_proc = MagicMock()
+        fake_proc.pid = 12321
+
+        with patch.dict("sys.modules", {"core.steering": env["steering_module"]}), \
+             patch("core.session.load_from_disk"), \
+             patch("core.session.get", return_value={}), \
+             patch("os.path.exists", return_value=True), \
+             patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=fake_proc)), \
+             patch("shutil.which", return_value="/usr/bin/claude"):
+            ok, result = asyncio.get_event_loop().run_until_complete(
+                api._spawn_smith("claude", source="test")
+            )
+
+        assert ok is True
+        assert result == 12321
+
+    def test_returns_error_when_binary_missing(self, spawn_env):
+        """Returns (False, 'binary not found') when the client binary is absent."""
+        env = spawn_env
+
+        with patch.dict("sys.modules", {"core.steering": env["steering_module"]}), \
+             patch("core.session.load_from_disk"), \
+             patch("core.session.get", return_value={}), \
+             patch("os.path.exists", return_value=False), \
+             patch("shutil.which", return_value=None):
+            ok, result = asyncio.get_event_loop().run_until_complete(
+                api._spawn_smith("claude", source="test")
+            )
+
+        assert ok is False
+        assert "not found" in result
 
 
 # ---------------------------------------------------------------------------

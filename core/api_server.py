@@ -532,7 +532,7 @@ async def api_complete(request: Request) -> JSONResponse:
         return JSONResponse({"ok": False, "error": _ERR_REQUEST_FAILED}, status_code=500)
 
 
-_SMITH_IDLE_SECONDS = 180  # >3 min with no scan activity → Smith is considered stopped
+_SMITH_IDLE_SECONDS = 60  # >1 min with no scan activity → Smith is considered stopped
 
 
 def _smith_running() -> bool:
@@ -561,10 +561,8 @@ def _smith_running() -> bool:
     except OSError as e:
         _log.debug("smith_running: os.kill failed: %s", e)
 
-    # Activity signal: quick_log.json mtime only. session.json is mutated by
-    # dashboard endpoints (resolve_intervention, complete, etc.) which would
-    # falsely make _smith_running() return True. quick_log is written only
-    # when an MCP client makes a tool call, so it's a true Smith heartbeat.
+    # Primary heartbeat: quick_log.json mtime. Written only by MCP tool calls,
+    # never by dashboard endpoints — so it's a true Smith activity signal.
     import time
     now = time.time()
     try:
@@ -572,6 +570,26 @@ def _smith_running() -> bool:
             return True
     except OSError as e:
         _log.debug("smith_running: quick_log mtime check failed: %s", e)
+
+    # Fallback: only when quick_log is completely missing (deleted by /api/clear
+    # or archived on target change) — NOT when it's merely stale. A stale file
+    # means Smith was active but has since stopped; a missing file means the
+    # slate was wiped and we can't tell either way.
+    if not _QUICK_LOG_FILE.exists():
+        try:
+            import json as _json
+            from datetime import datetime as _dt, timezone as _tz
+            sd = _json.loads(_SESSION_FILE.read_text())
+            if sd.get("status") == "running" and sd.get("finished") is None:
+                started_raw = sd.get("started", "")
+                if started_raw:
+                    started = _dt.fromisoformat(started_raw)
+                    elapsed = (_dt.now(_tz.utc) - started).total_seconds()
+                    if elapsed < 7200:  # session started within 2 hours
+                        return True
+        except Exception as e:
+            _log.debug("smith_running: session.json fallback check failed: %s", e)
+
     return False
 
 
@@ -580,12 +598,17 @@ async def api_smith_status() -> JSONResponse:
     return JSONResponse({"running": _smith_running()})
 
 
+_KNOWN_CLIENTS = ("claude", "opencode", "codex")
+
+
 def _client_installed(name: str) -> bool:
     import shutil
     if name == "claude":
         return bool(shutil.which("claude") or os.path.exists("/opt/homebrew/bin/claude"))
     if name == "opencode":
         return bool(shutil.which("opencode") or os.path.exists("/Users/gibson/.opencode/bin/opencode"))
+    if name == "codex":
+        return bool(shutil.which("codex"))
     return False
 
 
@@ -603,27 +626,33 @@ def _client_process_running(name: str) -> bool:
 
 
 def _detect_active_client() -> str:
-    """Detect which client (claude or opencode) should be used for restart.
+    """Detect which client should be used for restart.
 
     Resolution order:
-      1. Last client persisted in logs/smith.client (from a previous restart)
-      2. The client whose process is currently running on this host
-      3. opencode if installed (preferred when both are available, since claude
-         is the default elsewhere)
-      4. claude as last resort
+      1. Client stored in session.json when the scan was started (most reliable)
+      2. Last client persisted in logs/smith.client (from a previous restart)
+      3. Currently running process: claude > opencode > codex
+      4. claude as default
     """
+    # 1. Client recorded at session start — the definitive source
+    try:
+        sd = json.loads(_SESSION_FILE.read_text())
+        client = sd.get("client", "").strip().lower()
+        if client in _KNOWN_CLIENTS and _client_installed(client):
+            return client
+    except Exception:
+        pass
+    # 2. Saved from last manual restart
     try:
         saved = _SMITH_CLIENT_FILE.read_text().strip().lower()
-        if saved in ("claude", "opencode") and _client_installed(saved):
+        if saved in _KNOWN_CLIENTS and _client_installed(saved):
             return saved
     except Exception:
         pass
-    if _client_process_running("opencode") and _client_installed("opencode"):
-        return "opencode"
-    if _client_process_running("claude") and _client_installed("claude"):
-        return "claude"
-    if _client_installed("opencode"):
-        return "opencode"
+    # 3. Running process
+    for name in _KNOWN_CLIENTS:
+        if _client_process_running(name) and _client_installed(name):
+            return name
     return "claude"
 
 
@@ -633,6 +662,7 @@ async def api_smith_clients() -> JSONResponse:
     return JSONResponse({
         "claude":   _client_installed("claude"),
         "opencode": _client_installed("opencode"),
+        "codex":    _client_installed("codex"),
         "active":   _detect_active_client(),
     })
 
@@ -673,7 +703,7 @@ async def _spawn_smith(client: str, source: str = "api") -> tuple[bool, int | st
 
         log_path = _REPO_ROOT / "logs" / "smith_restart.log"
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, log_path.parent.mkdir, True, True)
+        await loop.run_in_executor(None, lambda: log_path.parent.mkdir(parents=True, exist_ok=True))
         audit_line = f"\n=== [{source}] spawning {client} at {loop.time()} ===\n"
         await loop.run_in_executor(None, lambda: log_path.open("a").write(audit_line))
 
@@ -817,7 +847,7 @@ async def api_restart_smith(request: Request) -> JSONResponse:
     if not force and _smith_running():
         return JSONResponse({"ok": False, "error": "Smith is already running. Pass force=true to override."}, status_code=409)
     client = (body.get("client") or _detect_active_client()).lower()
-    if client not in ("claude", "opencode"):
+    if client not in _KNOWN_CLIENTS:
         return JSONResponse({"ok": False, "error": f"Unknown client: {client}"}, status_code=400)
     if not _client_installed(client):
         return JSONResponse(
@@ -884,15 +914,20 @@ async def api_logs(file: str = "") -> JSONResponse:
 _PID_FILE = _REPO_ROOT / "logs" / "dashboard.pid"
 
 
-def _read_pid() -> int | None:
+def _read_pid() -> tuple[int | None, float | None]:
+    """Return (pid, api_server_mtime_at_launch) from the PID file."""
     try:
-        return int(_PID_FILE.read_text().strip())
+        parts = _PID_FILE.read_text().strip().split(":", 1)
+        pid = int(parts[0])
+        mtime = float(parts[1]) if len(parts) > 1 else None
+        return pid, mtime
     except Exception:
-        return None
+        return None, None
 
 
 def _write_pid(pid: int) -> None:
-    _PID_FILE.write_text(str(pid))
+    mtime = Path(__file__).stat().st_mtime
+    _PID_FILE.write_text(f"{pid}:{mtime:.6f}")
 
 
 def _pid_alive(pid: int) -> bool:
@@ -918,15 +953,19 @@ async def serve(port: int = 7777) -> str:
     Start the dashboard server as an independent background process.
     Survives MCP server restarts — uses a PID file to detect and reuse
     a previously spawned dashboard instead of killing it.
+    Restarts automatically if api_server.py has been modified since launch.
     """
     import signal
 
+    current_mtime = Path(__file__).stat().st_mtime
+
     # Check PID file first — survives MCP server restarts
-    saved_pid = _read_pid()
-    if saved_pid and _pid_alive(saved_pid) and _port_healthy(port):
+    saved_pid, saved_mtime = _read_pid()
+    code_unchanged = saved_mtime is not None and abs(current_mtime - saved_mtime) < 1.0
+    if saved_pid and _pid_alive(saved_pid) and _port_healthy(port) and code_unchanged:
         return f"http://localhost:{port}"
 
-    # Old process died or never existed — clean up stale PID on port
+    # Old process died, code changed, or never existed — kill stale process if running
     if saved_pid and _pid_alive(saved_pid):
         try:
             os.kill(saved_pid, signal.SIGTERM)  # NOSONAR - SIGTERM sent only to our own spawned dashboard child process
