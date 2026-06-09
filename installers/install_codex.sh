@@ -11,6 +11,27 @@ ok()   { echo -e "${GREEN}[ok]${NC} $*"; }
 warn() { echo -e "${YELLOW}[warn]${NC} $*"; }
 die()  { echo -e "${RED}[err]${NC} $*"; exit 1; }
 
+_find_poetry() {
+    if command -v poetry >/dev/null 2>&1; then
+        command -v poetry
+        return 0
+    fi
+
+    local macos_poetry="$HOME/Library/Application Support/pypoetry/venv/bin/poetry"
+    if [[ -x "$macos_poetry" ]]; then
+        printf '%s\n' "$macos_poetry"
+        return 0
+    fi
+
+    local local_poetry="$HOME/.local/bin/poetry"
+    if [[ -x "$local_poetry" ]]; then
+        printf '%s\n' "$local_poetry"
+        return 0
+    fi
+
+    return 1
+}
+
 echo ""
 echo "  pentest-agent installer (Codex)"
 echo "  ==============================="
@@ -18,11 +39,12 @@ echo ""
 
 # Prerequisites
 command -v docker >/dev/null 2>&1 || die "docker not found - install Docker Desktop first."
-command -v poetry >/dev/null 2>&1 || die "poetry not found - install with: curl -sSL https://install.python-poetry.org | python3 -"
+POETRY_BIN="$(_find_poetry)" || die "poetry not found - install with: curl -sSL https://install.python-poetry.org | python3 -"
 command -v codex  >/dev/null 2>&1 || die "codex not found - install Codex first: https://developers.openai.com/codex"
 command -v node   >/dev/null 2>&1 || warn "node not found - Mermaid diagrams will render client-side (install Node.js v18+ for server-side pre-rendering)"
 
 ok "Prerequisites satisfied (docker, poetry, codex)"
+ok "Using Poetry at $POETRY_BIN"
 
 mkdir -p "$CODEX_HOME"
 
@@ -38,15 +60,19 @@ fi
 
 echo ""
 echo "Installing Python dependencies..."
-poetry -C "$REPO_DIR" install --no-interaction
+"$POETRY_BIN" -C "$REPO_DIR" install --no-interaction
 ok "Poetry dependencies installed"
+
+chmod +x "$REPO_DIR/installers/run-mcp-server.sh"
+"$REPO_DIR/installers/run-mcp-server.sh" --self-test >/dev/null
+ok "MCP launcher self-test passed"
 
 # Codex launches this server over stdio. The absolute repo path is intentional:
 # the MCP server needs this checkout's .env, logs, tools, and session files.
 echo ""
 echo "Registering pentest-agent MCP server with Codex (stdio)..."
 codex mcp remove pentest-agent >/dev/null 2>&1 || true
-codex mcp add pentest-agent -- poetry -C "$REPO_DIR" run python -m mcp_server
+codex mcp add pentest-agent -- "$REPO_DIR/installers/run-mcp-server.sh"
 ok "MCP server registered with Codex"
 
 # Project instructions and hooks live in the repo. AGENTS.md is read by Codex
