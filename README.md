@@ -238,25 +238,79 @@ What's different on Windows:
   same intent ("run at logon, restart on failure"), different service manager.
   Elevation is required for the Task Scheduler registration; everything else
   runs without admin.
-- **Docker:** the Kali and Metasploit images are Linux containers. They work
-  via **Docker Desktop's WSL2 backend** with no code changes. Make sure WSL2
-  is enabled in Docker Desktop settings before the first scan.
-- **Process management:** the dashboard now uses `psutil` for cross-platform
+- **Process management:** the dashboard uses `psutil` for cross-platform
   process introspection (PID liveness, client detection). No Unix tools
   (`lsof`, `pgrep`, `ps`) are required at runtime.
 - **CLIs on `$PATH`:** the installer looks up `claude` / `opencode` / `codex`
-  through `Get-Command` (PATHEXT-aware) — no hardcoded `/opt/homebrew/`-style
-  fallbacks.
+  through `Get-Command` (PATHEXT-aware, handles `.cmd` shims from npm) — no
+  hardcoded `/opt/homebrew/`-style fallbacks.
+- **Docker:** the Kali and Metasploit images are Linux containers. They run
+  via **Docker Desktop's WSL2 backend** with no code changes. See the next
+  section for the build commands in each shell.
 
 ### Optional images
 
-```bash
-# Kali container — required for /credential-audit, /web-exploit deep tools, etc.
-docker build -t pentest-agent/kali-mcp ./tools/kali/      # ~10 min, ~3 GB
+The Kali and Metasploit images are optional but required for most deep
+skills. They are full Linux containers that build identically on every
+host — only the path syntax of `docker build` differs per shell.
 
-# Metasploit container — required for /metasploit
-docker build -t pentest-agent/metasploit ./tools/metasploit/   # ~5 min
+**Kali** — required for `/credential-audit`, `/web-exploit` deep tools,
+`/ad-assessment`, `/lateral-movement`, etc. ~10 min build, ~3 GB image.
+
+```bash
+# macOS / Linux / WSL / Git Bash
+docker build -t pentest-agent/kali-mcp ./tools/kali/
 ```
+```powershell
+# Windows PowerShell
+docker build -t pentest-agent/kali-mcp .\tools\kali\
+```
+
+**Metasploit** — required for `/metasploit`. ~5 min build.
+
+```bash
+# macOS / Linux / WSL / Git Bash
+docker build -t pentest-agent/metasploit ./tools/metasploit/
+```
+```powershell
+# Windows PowerShell
+docker build -t pentest-agent/metasploit .\tools\metasploit\
+```
+
+**Prerequisites on Windows:**
+
+1. **Docker Desktop** with the **WSL2 backend enabled**
+   (Settings → General → "Use the WSL 2 based engine"). Linux containers
+   under Hyper-V's classic backend will not work — WSL2 is required for the
+   `ARM64`/`AMD64` multi-arch buildx that the Kali Dockerfile uses, as well
+   as for `--device=/dev/net/tun` mounts used by VPN-aware tools.
+2. **At least 16 GB free disk space** allocated to Docker Desktop's data
+   volume (Settings → Resources → Disk image size). The Kali image alone is
+   ~3 GB, the Metasploit image adds ~2 GB, and build caches roughly double
+   that during the first build.
+3. **Either** `C:\` mounted into WSL (the default) **or** the agent-smith
+   checkout placed under your WSL home (`\\wsl$\Ubuntu\home\<you>\…`) for
+   noticeably faster volume mounts. Either works; the WSL-home path avoids
+   NTFS↔ext4 translation on every scan write.
+
+**One-shot pre-pull** of the lightweight scanner images (nmap, naabu,
+httpx, nuclei, subfinder, semgrep, trufflehog) is identical on every host:
+
+```bash
+# bash
+docker pull instrumentisto/nmap projectdiscovery/naabu projectdiscovery/httpx \
+            projectdiscovery/nuclei projectdiscovery/subfinder \
+            semgrep/semgrep trufflesecurity/trufflehog
+```
+```powershell
+# PowerShell — same images, different line-continuation
+'instrumentisto/nmap', 'projectdiscovery/naabu', 'projectdiscovery/httpx',
+'projectdiscovery/nuclei', 'projectdiscovery/subfinder',
+'semgrep/semgrep', 'trufflesecurity/trufflehog' | ForEach-Object { docker pull $_ }
+```
+
+(The lightweight images also auto-pull on first use; the explicit pull is
+just to avoid the wait during your first scan.)
 
 Lightweight tools (nmap, nuclei, httpx, ffuf, semgrep, trufflehog, …) are auto-pulled on first use.
 
