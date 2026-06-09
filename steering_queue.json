@@ -1,82 +1,17 @@
 {
   "directives": [
     {
-      "id": "steer-d4d01ee8",
-      "ts": "2026-05-13T19:28:31.332282+00:00",
-      "code": "POC_REQUIRED",
-      "priority": "high",
-      "message": "PoC required for 4 high/critical finding(s): SQL Injection in /login \u2014 Authentication Bypass, PostgreSQL Exposed with Default Credentials \u2014 Full DB Access, Plaintext Password Storage +1 more. Call http(action='save_poc', options={title: '...', finding_id: '<id>'}) for each.",
-      "skill": null,
-      "trigger": "POC_GAP",
-      "status": "pending",
-      "injected_at": null,
-      "acknowledged_at": null,
-      "ack_message": null
-    },
-    {
-      "id": "steer-d3cefb80",
-      "ts": "2026-05-13T19:36:31.374778+00:00",
-      "code": "CHAIN_REQUIRED",
-      "priority": "high",
-      "message": "Gate 'credential_audit' open 16min \u2014 invoke /credential-audit to satisfy it. Use Skill tool: skill='credential-audit'.",
-      "skill": "credential-audit",
-      "trigger": "ENDPOINT_TRIGGER_GAP",
-      "status": "pending",
-      "injected_at": null,
-      "acknowledged_at": null,
-      "ack_message": null
-    },
-    {
-      "id": "steer-ef54a9f3",
-      "ts": "2026-05-13T19:44:31.436735+00:00",
-      "code": "CHAIN_REQUIRED",
-      "priority": "high",
-      "message": "Gate 'post_exploit_rce' open 15min \u2014 invoke /post-exploit to satisfy it. Use Skill tool: skill='post-exploit'.",
-      "skill": "post-exploit",
-      "trigger": "ENDPOINT_TRIGGER_GAP",
-      "status": "pending",
-      "injected_at": null,
-      "acknowledged_at": null,
-      "ack_message": null
-    },
-    {
-      "id": "steer-3ba2f720",
-      "ts": "2026-05-13T19:54:31.490817+00:00",
-      "code": "CHAIN_REQUIRED",
-      "priority": "high",
-      "message": "Gate 'api_coverage' open 16min \u2014 invoke /api-security to satisfy it. Use Skill tool: skill='api-security'.",
-      "skill": "api-security",
-      "trigger": "ENDPOINT_TRIGGER_GAP",
-      "status": "pending",
-      "injected_at": null,
-      "acknowledged_at": null,
-      "ack_message": null
-    },
-    {
-      "id": "steer-97f9f326",
-      "ts": "2026-05-13T20:06:31.558024+00:00",
+      "id": "steer-274d6f93",
+      "ts": "2026-06-09T15:48:27.787704+00:00",
       "code": "RESUME_TESTING",
-      "priority": "high",
-      "message": "Coverage stalled 16min \u2014 665 cells pending. EXECUTE: session(action='recovery') then resume systematic testing from EXECUTE_NOW.",
+      "priority": "medium",
+      "message": "Thorough scan requires 3 analysis passes \u2014 you have completed 0. Start pass 1 now. Focus on chained vulnerabilities and second-order sinks. Run scan(tool='semgrep') with a new ruleset angle.",
       "skill": null,
-      "trigger": "COVERAGE_STALL",
-      "status": "pending",
-      "injected_at": null,
-      "acknowledged_at": null,
-      "ack_message": null
-    },
-    {
-      "id": "steer-52e8c1a6",
-      "ts": "2026-05-13T20:42:31.893385+00:00",
-      "code": "CHAIN_REQUIRED",
-      "priority": "high",
-      "message": "Gate 'internal_network' open 15min \u2014 invoke /network-assess to satisfy it. Use Skill tool: skill='network-assess'.",
-      "skill": "network-assess",
-      "trigger": "ENDPOINT_TRIGGER_GAP",
-      "status": "pending",
-      "injected_at": null,
-      "acknowledged_at": null,
-      "ack_message": null
+      "trigger": "WHITEBOX_PASSES",
+      "status": "acknowledged",
+      "injected_at": "2026-06-09T15:48:52.258496+00:00",
+      "acknowledged_at": "2026-06-09T16:06:43.493960+00:00",
+      "ack_message": "I acknowledge the missing credential-audit alert and will invoke credential-audit after the spider gate is cleared. I acknowledge the whitebox pass reminder; this is a black-box localhost target without a configured codebase, so I will focus current thorough passes on live web/API testing unless source becomes available."
     }
   ]
 }

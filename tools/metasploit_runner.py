@@ -15,6 +15,8 @@ from __future__ import annotations
 import asyncio
 import os
 
+from tools.docker_cli import docker_executable
+
 MSF_IMAGE     = "pentest-agent/metasploit"
 MSF_CONTAINER = "pentest-metasploit"
 MSF_PORT      = 5002          # host port → container port 5000
@@ -30,7 +32,7 @@ _start_lock = asyncio.Lock()
 
 async def image_exists() -> bool:
     proc = await asyncio.create_subprocess_exec(
-        "docker", "image", "inspect", MSF_IMAGE,
+        docker_executable(), "image", "inspect", MSF_IMAGE,
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL,
     )
@@ -40,7 +42,7 @@ async def image_exists() -> bool:
 
 async def container_running() -> bool:
     proc = await asyncio.create_subprocess_exec(
-        "docker", "inspect", "--format={{.State.Running}}", MSF_CONTAINER,
+        docker_executable(), "inspect", "--format={{.State.Running}}", MSF_CONTAINER,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
     )
@@ -70,7 +72,7 @@ async def ensure_running() -> tuple[bool, str]:
             )
 
         proc = await asyncio.create_subprocess_exec(
-            "docker", "run", "-d",
+            docker_executable(), "run", "-d",
             "--name", MSF_CONTAINER,
             "-p", f"{MSF_PORT}:5000",
             "-p", "4444:4444",          # meterpreter handler
@@ -107,7 +109,7 @@ async def ensure_running() -> tuple[bool, str]:
 
 async def stop() -> str:
     proc = await asyncio.create_subprocess_exec(
-        "docker", "stop", MSF_CONTAINER,
+        docker_executable(), "stop", MSF_CONTAINER,
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.PIPE,
     )

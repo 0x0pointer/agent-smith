@@ -15,6 +15,8 @@ import asyncio
 import os
 import shlex
 
+from tools.docker_cli import docker_executable
+
 KALI_IMAGE     = "pentest-agent/kali-mcp"
 KALI_CONTAINER = "pentest-kali"
 KALI_PORT      = 5001          # host port → container port 5000
@@ -30,7 +32,7 @@ _start_lock = asyncio.Lock()
 
 async def image_exists() -> bool:
     proc = await asyncio.create_subprocess_exec(
-        "docker", "image", "inspect", KALI_IMAGE,
+        docker_executable(), "image", "inspect", KALI_IMAGE,
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL,
     )
@@ -40,7 +42,7 @@ async def image_exists() -> bool:
 
 async def container_running() -> bool:
     proc = await asyncio.create_subprocess_exec(
-        "docker", "inspect", "--format={{.State.Running}}", KALI_CONTAINER,
+        docker_executable(), "inspect", "--format={{.State.Running}}", KALI_CONTAINER,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
     )
@@ -79,7 +81,7 @@ async def ensure_running() -> tuple[bool, str]:
                 env_flags += ["-e", f"{key}={val}"]
 
         proc = await asyncio.create_subprocess_exec(
-            "docker", "run", "-d",
+            docker_executable(), "run", "-d",
             "--name", KALI_CONTAINER,
             "-p", f"{KALI_PORT}:5000",
             "-p", "1080:1080",          # SOCKS5 proxy (chisel reverse tunnel)
@@ -119,7 +121,7 @@ async def ensure_running() -> tuple[bool, str]:
 
 async def stop() -> str:
     proc = await asyncio.create_subprocess_exec(
-        "docker", "stop", KALI_CONTAINER,
+        docker_executable(), "stop", KALI_CONTAINER,
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.PIPE,
     )

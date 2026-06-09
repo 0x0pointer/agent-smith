@@ -18,17 +18,16 @@ case "${1:-start}" in
         # Kill any stale process on the port
         lsof -ti tcp:"$PORT" | xargs kill -9 2>/dev/null || true
         mkdir -p "$REPO_DIR/logs"
-        # Use the venv Python directly — avoids poetry setting a bad PYTHONPATH
-        # that injects Homebrew site-packages before the venv's own packages.
-        VENV_PYTHON="$(poetry -C "$REPO_DIR" env info --executable 2>/dev/null)"
-        if [[ -z "$VENV_PYTHON" ]]; then
-            echo "✗ Could not determine venv Python path — run 'poetry -C $REPO_DIR install' first"
+        RUNNER="$REPO_DIR/installers/run-mcp-server.sh"
+        if [[ ! -x "$RUNNER" ]]; then
+            echo "✗ MCP runner is not executable — run 'chmod +x $RUNNER'"
             exit 1
         fi
-        # cd into REPO_DIR so the spawned process inherits the correct CWD
-        # (findings.json / session.json / coverage_matrix.json are written relative to cwd).
-        cd "$REPO_DIR"
-        nohup env PYTHONPATH="$REPO_DIR" "$VENV_PYTHON" -m mcp_server --transport sse \
+        if ! "$RUNNER" --print-python >/dev/null; then
+            echo "✗ Could not determine venv Python path — run the Codex installer first"
+            exit 1
+        fi
+        nohup "$RUNNER" --transport sse \
             --host 127.0.0.1 --port "$PORT" >> "$LOG_FILE" 2>&1 &
         echo $! > "$PID_FILE"
         # Wait up to 8s for readiness

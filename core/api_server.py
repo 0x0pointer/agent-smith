@@ -404,10 +404,11 @@ async def _cleanup_tunnels() -> str:
     and exit on their own — no need to reach back into the target.
     """
     import asyncio
+    from tools.docker_cli import docker_executable
 
     try:
         proc = await asyncio.create_subprocess_exec(
-            "docker", "inspect", "--format={{.State.Running}}", "pentest-kali",
+            docker_executable(), "inspect", "--format={{.State.Running}}", "pentest-kali",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
         )
@@ -416,7 +417,7 @@ async def _cleanup_tunnels() -> str:
             return "no kali container running"
 
         proc = await asyncio.create_subprocess_exec(
-            "docker", "exec", "pentest-kali",
+            docker_executable(), "exec", "pentest-kali",
             "sh", "-c", "pkill -f 'chisel server' 2>/dev/null && echo 'chisel stopped' || echo 'no chisel running'",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
