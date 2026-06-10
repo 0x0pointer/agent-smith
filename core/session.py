@@ -331,6 +331,7 @@ def complete(
     so dashboards and exports can distinguish a force-completed scan from a clean one.
     """
     global _current
+    _reconcile_if_external_write()
     if _current and _current["status"] == "running":
         _current["status"]   = "incomplete_with_unresolved_blockers" if quality_gate == "failed" else "complete"
         _current["finished"] = datetime.now(timezone.utc).isoformat()
@@ -385,6 +386,7 @@ def set_skill(
     silently skipped so re-invoking the same skill mid-session is idempotent.
     """
     global _current
+    _reconcile_if_external_write()
     if _current is None or _current["status"] != "running":
         return None
     _current["skill"] = skill_name
@@ -402,6 +404,7 @@ def set_skill(
 
 def add_tool_called(tool_name: str) -> None:
     """Persist a tool name to the tools_called list in session.json."""
+    _reconcile_if_external_write()
     if _current and _current["status"] == "running":
         tools = _current.setdefault("tools_called", [])
         if tool_name not in tools:
@@ -412,6 +415,7 @@ def add_tool_called(tool_name: str) -> None:
 def set_step(step: str) -> dict | None:
     """Update the current workflow step checkpoint (e.g. '5_nuclei_scan')."""
     global _current
+    _reconcile_if_external_write()
     if _current is None or _current["status"] != "running":
         return None
     _current["current_step"] = step
@@ -432,6 +436,7 @@ def trigger_gate(gate_id: str, trigger: str, required_skills: list[str]) -> dict
     they are merged in.
     """
     global _current
+    _reconcile_if_external_write()
     if _current is None or _current["status"] != "running":
         return None
 
@@ -464,6 +469,7 @@ def satisfy_gate(gate_id: str, skill_name: str) -> dict | None:
     When all required_skills are satisfied, the gate status flips to 'satisfied'.
     """
     global _current
+    _reconcile_if_external_write()
     if _current is None:
         return None
     for gate in _current.get("gates", []):
@@ -491,6 +497,7 @@ def pending_gates() -> list[dict]:
 def defer_gates(gate_ids: list[str]) -> None:
     """Suppress the given gate IDs from pending_gates() until restore_gates() is called."""
     global _current
+    _reconcile_if_external_write()
     if _current is None:
         return
     deferred = _current.setdefault("deferred_gates", [])
@@ -503,6 +510,7 @@ def defer_gates(gate_ids: list[str]) -> None:
 def restore_gates() -> None:
     """Clear all deferred gate IDs so they become visible again."""
     global _current
+    _reconcile_if_external_write()
     if _current is None:
         return
     _current["deferred_gates"] = []
@@ -521,6 +529,7 @@ _SPIDER_MAX_RETRIES = 3
 def record_spider_failure(target: str) -> int:
     """Record a spider failure for this target.  Returns the new retry count."""
     global _current
+    _reconcile_if_external_write()
     if _current is None or _current.get("status") != "running":
         return 0
     failures = _current.setdefault("spider_failures", {})
@@ -538,6 +547,7 @@ def record_spider_failure(target: str) -> int:
 def clear_spider_failure(target: str) -> None:
     """Clear spider failure for this target after a successful run."""
     global _current
+    _reconcile_if_external_write()
     if _current is None:
         return
     failures = _current.get("spider_failures")
@@ -725,6 +735,7 @@ def trigger_intervention(
     The human responds via the dashboard or session(action='resume').
     """
     global _current
+    _reconcile_if_external_write()
     if not _current:
         return {}
     _current["status"] = "intervention_required"
@@ -765,6 +776,7 @@ def resolve_intervention(choice: str, message: str = "") -> dict:
     broke the dashboard renderer that iterated history without null checks.
     """
     global _current
+    _reconcile_if_external_write()
     if not _current:
         return {}
     intervention = _current.get("intervention")
@@ -800,6 +812,7 @@ def get_intervention() -> dict | None:
 
 def _stop(status: str, message: str) -> str:
     global _current
+    _reconcile_if_external_write()
     if _current:
         _current["status"]      = status
         _current["stop_reason"] = message
@@ -809,5 +822,59 @@ def _stop(status: str, message: str) -> str:
 
 
 def _flush() -> None:
+    global _last_local_write_mtime
     if _current:
         _SESSION_FILE.write_text(json.dumps(_current, indent=2))
+        try:
+            _last_local_write_mtime = _SESSION_FILE.stat().st_mtime
+        except OSError:
+            # Hold the previous mtime; reconcile will conservatively reload
+            # the next time it's called.
+            pass
+
+
+# ── Cross-process state reconciliation ───────────────────────────────────────
+#
+# The dashboard and the MCP server are separate Python processes that both
+# read/write session.json. Each keeps its own in-memory `_current`. Without
+# reconciliation, a write in process A can be silently undone by a stale
+# `_flush()` in process B — e.g., the operator clicks Complete Scan on the
+# dashboard (status → "complete"), then the MCP's next tool call flushes its
+# stale `_current` (status → "running") on top of the dashboard's write.
+#
+# Strategy: track the mtime of our own last `_flush()` write. Before every
+# mutation, compare against the on-disk mtime. If disk is newer than what we
+# wrote, another process changed the file — reload it into `_current` before
+# touching anything. Read-only callers don't reconcile (cost outweighs the
+# benefit; they tolerate stale data fine).
+#
+# This isn't a real lock — TOCTTOU races between reconcile-read and the next
+# write still exist — but it eliminates the common case of "every mutation
+# silently undoes the operator's Complete click".
+
+# mtime (seconds since epoch) of the last `_flush()` write performed by THIS
+# process. 0.0 means we haven't written yet; any disk mtime > this value is
+# treated as "external write, reconcile before continuing".
+_last_local_write_mtime: float = 0.0
+
+
+def _reconcile_if_external_write() -> None:
+    """Reload `_current` from disk if another process wrote to session.json
+    since our last local flush. No-op when disk is missing, identical to our
+    last write, or unreadable."""
+    global _current
+    try:
+        disk_mtime = _SESSION_FILE.stat().st_mtime
+    except OSError:
+        return
+    # Small fudge: filesystem mtime granularity varies (APFS is sub-µs but
+    # some Linux mounts are 1s). A tolerance of 1ms catches genuine external
+    # writes without false-positiving on same-process re-flushes within the
+    # same syscall window.
+    if disk_mtime <= _last_local_write_mtime + 0.001:
+        return
+    try:
+        fresh = json.loads(_SESSION_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    _current = fresh
