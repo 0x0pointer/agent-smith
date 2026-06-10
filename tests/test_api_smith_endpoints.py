@@ -175,6 +175,67 @@ class TestApiComplete:
         assert on_disk["status"] == "complete"
         assert on_disk.get("notes") == "done"
 
+    def test_wipes_stale_smith_pointers_on_complete(self, sandbox_session, tmp_path, monkeypatch):
+        """Mirror Clear All's cleanup: pressing Complete should remove the
+        scan-tied operational files so the dashboard immediately reflects
+        "smith: stopped" instead of waiting 5 min for the activity signal
+        to age out from a stale quick_log mtime. The user-reported sequence
+        was: kill Smith → click Complete → dashboard kept showing "smith
+        running" because quick_log was 60s old (still within the 300s window)
+        and smith.pid still pointed at the dead PID."""
+        _write_session(sandbox_session, status="running")
+
+        # Sandbox the operational-pointer files
+        smith_pid_file    = tmp_path / "smith.pid"
+        smith_client_file = tmp_path / "smith.client"
+        quick_log_file    = tmp_path / "quick_log.json"
+        smith_pid_file.write_text("99337\n")
+        smith_client_file.write_text("opencode\n")
+        quick_log_file.write_text('{"type":"tool_result"}\n')
+        monkeypatch.setattr(api, "_SMITH_PID_FILE",   smith_pid_file)
+        monkeypatch.setattr(api, "_SMITH_CLIENT_FILE", smith_client_file)
+        monkeypatch.setattr(api, "_QUICK_LOG_FILE",   quick_log_file)
+
+        r = client.post("/api/complete", json={"notes": "ok"})
+        assert r.status_code == 200
+        assert r.json()["ok"] is True
+        assert not smith_pid_file.exists(), \
+            "smith.pid (stale dead PID) should be removed by Complete"
+        assert not smith_client_file.exists(), \
+            "smith.client (stale client identifier) should be removed by Complete"
+        assert not quick_log_file.exists(), \
+            "quick_log.json (heartbeat) should be removed so dashboard immediately shows smith stopped"
+
+    def test_deliverables_preserved_on_complete(self, sandbox_session, tmp_path, monkeypatch):
+        """The Clear All button is for fresh-slate cleanup; Complete is for
+        wrapping up a scan whose findings the operator wants to export.
+        Findings, coverage, artifacts, pocs, and pentest.log must NOT be
+        touched — those are the report you'd export from."""
+        _write_session(sandbox_session, status="running")
+
+        # Drop dummy deliverable files; Complete must leave them alone
+        findings_file = tmp_path / "findings.json"
+        coverage_file = tmp_path / "coverage_matrix.json"
+        artifacts_dir = tmp_path / "artifacts"
+        pocs_dir      = tmp_path / "pocs"
+        pentest_log   = tmp_path / "logs" / "pentest.log"
+        for d in (artifacts_dir, pocs_dir, pentest_log.parent):
+            d.mkdir(parents=True, exist_ok=True)
+        findings_file.write_text(json.dumps({"findings": [{"id": "F1"}]}))
+        coverage_file.write_text(json.dumps({"endpoints": [{"id": "ep1"}]}))
+        (artifacts_dir / "a.txt").write_text("evidence")
+        (pocs_dir / "p.http").write_text("POST /x HTTP/1.1")
+        pentest_log.write_text("[scan log line]\n")
+
+        r = client.post("/api/complete", json={"notes": "done"})
+        assert r.status_code == 200
+        # Deliverables intact
+        assert findings_file.exists() and findings_file.read_text() != ""
+        assert coverage_file.exists()
+        assert (artifacts_dir / "a.txt").exists()
+        assert (pocs_dir / "p.http").exists()
+        assert pentest_log.exists() and "[scan log line]" in pentest_log.read_text()
+
 
 # ---------------------------------------------------------------------------
 # GET /api/smith-status + _smith_running

@@ -535,7 +535,13 @@ async def api_complete(request: Request) -> JSONResponse:
     Only this endpoint (called from the dashboard) can mark a scan complete.
     Smith cannot complete a scan autonomously — session(action='complete') is blocked.
     Body: {"notes": "optional completion notes"}
-    """
+
+    Side-effect cleanup mirrors Clear All but narrower: scan-tied operational
+    pointers (smith.pid, smith.client, quick_log heartbeat) are wiped so the
+    dashboard immediately reflects "smith stopped" instead of waiting 5 min
+    for the activity signal to age out. Deliverables (findings.json,
+    coverage_matrix.json, session.json, artifacts/, pocs/, pentest.log) are
+    intentionally preserved — they're the report you'll export from."""
     try:
         from core import session as scan_session
         # Force-reload so we mutate against the freshest disk state, not a
@@ -545,6 +551,14 @@ async def api_complete(request: Request) -> JSONResponse:
         notes = str(body.get("notes", "")).strip()
         cfg   = scan_session.complete(notes)
         status = cfg.get("status", "complete")
+
+        # Clean up operational pointers now that the scan is terminal.
+        # The watchdog gates on `session.status == "running"`, so flipping
+        # to "complete" first (above) means it won't fire a "smith stopped"
+        # alert from these deletions.
+        for path in (_SMITH_PID_FILE, _SMITH_CLIENT_FILE, _QUICK_LOG_FILE):
+            _safe_unlink(path)
+
         return JSONResponse({"ok": True, "status": status})
     except Exception:
         _log.exception("api_complete failed")
