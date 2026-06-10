@@ -289,11 +289,35 @@ def _auto_trigger_note_gates(message: str) -> list[str]:
     return triggered
 
 
+# Single source of truth for the dashboard port. Match the launchd plist,
+# the install scripts, CLAUDE.md docs, and the api_server.serve() default —
+# every reference in this repo says 7777.
+_DASHBOARD_CANONICAL_PORT = 7777
+
+# Ports we silently rewrite to the canonical one. The skills submodule
+# pentester*.md files hard-code `data={"port": 5000}` which dates back to
+# an earlier convention. Rather than wait for a submodule-bump PR + cascade
+# every operator's `~/.config/opencode/opencode.json` to a new port, we
+# normalize the legacy values here so Smith's call lands on the port the
+# operator's browser is already pointed at. Add new aliases here as
+# upstream skill repos drift.
+_LEGACY_DASHBOARD_PORTS = {5000, 8000, 8080}
+
+
 async def _do_dashboard(data):
     try:
         from core import api_server
-        port = data.get("port", 7777)
-        log.tool_call("dashboard", {"port": port})
+        requested = int(data.get("port", _DASHBOARD_CANONICAL_PORT))
+        if requested in _LEGACY_DASHBOARD_PORTS:
+            log.tool_result(
+                "dashboard",
+                f"port {requested} normalized to {_DASHBOARD_CANONICAL_PORT} "
+                "(canonical agent-smith dashboard port)",
+            )
+            port = _DASHBOARD_CANONICAL_PORT
+        else:
+            port = requested
+        log.tool_call("dashboard", {"port": port, "requested": requested})
         url = await api_server.serve(port)
         log.tool_result("dashboard", url)
         return f"Dashboard running — open {url}"

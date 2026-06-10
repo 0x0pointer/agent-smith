@@ -5,7 +5,10 @@ import json
 import pytest
 from unittest.mock import AsyncMock, patch
 
-from mcp_server.report_tools import _do_update_finding, _do_delete_finding, _do_finding, report
+from mcp_server.report_tools import (
+    _do_update_finding, _do_delete_finding, _do_finding, _do_dashboard, report,
+    _DASHBOARD_CANONICAL_PORT, _LEGACY_DASHBOARD_PORTS,
+)
 
 
 # ── _do_update_finding ───────────────────────────────────────────────────────
@@ -155,3 +158,70 @@ async def test_report_finding_action_with_business_impact(findings_file):
     assert "Finding logged" in result
     data = json.loads(findings_file.read_text())
     assert data["findings"][0]["business_impact"] == "Any user can read all other user profiles without authentication."
+
+
+# ── _do_dashboard port normalization ────────────────────────────────────────
+#
+# The skills submodule (skills/pentester*.md) hard-codes
+# `report(action="dashboard", data={"port": 5000})` from an older convention.
+# Every other reference in this repo — CLAUDE.md, the launchd plist, the
+# install scripts, the api_server.serve() default — uses 7777. Until the
+# skills submodule catches up (separate-repo PR), _do_dashboard normalizes
+# legacy ports to the canonical one so Smith's call lands on the port the
+# operator's browser is already pointed at.
+
+@pytest.mark.asyncio
+async def test_dashboard_normalizes_legacy_5000_to_canonical_port():
+    with patch("core.api_server.serve",
+                new_callable=AsyncMock,
+                return_value="http://localhost:7777") as mock_serve:
+        result = await _do_dashboard({"port": 5000})
+    mock_serve.assert_awaited_once_with(_DASHBOARD_CANONICAL_PORT)
+    assert "http://localhost:7777" in result
+
+
+@pytest.mark.asyncio
+async def test_dashboard_respects_non_legacy_explicit_port():
+    """Custom ports the operator explicitly wants (e.g. 8765 because 7777
+    is taken) are passed through verbatim — we only intercept the documented
+    legacy aliases."""
+    with patch("core.api_server.serve",
+                new_callable=AsyncMock,
+                return_value="http://localhost:8765") as mock_serve:
+        await _do_dashboard({"port": 8765})
+    mock_serve.assert_awaited_once_with(8765)
+
+
+@pytest.mark.asyncio
+async def test_dashboard_default_is_canonical_port():
+    """No port argument → canonical default. Matches api_server.serve()."""
+    with patch("core.api_server.serve",
+                new_callable=AsyncMock,
+                return_value="http://localhost:7777") as mock_serve:
+        await _do_dashboard({})
+    mock_serve.assert_awaited_once_with(_DASHBOARD_CANONICAL_PORT)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("legacy_port", sorted(_LEGACY_DASHBOARD_PORTS))
+async def test_dashboard_every_documented_legacy_port_normalizes(legacy_port):
+    """Lock down the legacy-port set: every value in _LEGACY_DASHBOARD_PORTS
+    must remap to the canonical port. Adding a new alias to the set without
+    a corresponding test is a maintenance trap."""
+    with patch("core.api_server.serve",
+                new_callable=AsyncMock,
+                return_value=f"http://localhost:{_DASHBOARD_CANONICAL_PORT}") as mock_serve:
+        await _do_dashboard({"port": legacy_port})
+    mock_serve.assert_awaited_once_with(_DASHBOARD_CANONICAL_PORT)
+
+
+@pytest.mark.asyncio
+async def test_dashboard_handles_serve_failure_gracefully():
+    """A serve() failure must not propagate — return the error string so
+    Smith can surface it instead of a tool-call exception."""
+    with patch("core.api_server.serve",
+                new_callable=AsyncMock,
+                side_effect=OSError("address already in use")):
+        result = await _do_dashboard({"port": 7777})
+    assert "Dashboard failed" in result
+    assert "address already in use" in result
