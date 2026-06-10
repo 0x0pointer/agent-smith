@@ -55,11 +55,21 @@ def sandbox_session(tmp_path, monkeypatch):
 
 @pytest.fixture
 def sandbox_smith_files(tmp_path, monkeypatch):
-    """Quick-log + smith.pid + smith.client + session paths in tmp_path."""
+    """Quick-log + smith.pid + smith.client + session paths in tmp_path.
+
+    Also stubs ``psutil.process_iter`` to return an empty list by default
+    so the process-scan fallback signal in ``_smith_running()`` can't
+    false-positive on whatever the host is running while tests execute
+    (the user observed transient failures from their own opencode/claude
+    diagnostic processes matching the SMITH_PROC needles during a full
+    suite run). Tests that specifically exercise the process-scan path
+    override this patch with their own ``patch.object(psutil, ...)``."""
     monkeypatch.setattr(api, "_QUICK_LOG_FILE", tmp_path / "quick_log.json")
     monkeypatch.setattr(api, "_SMITH_PID_FILE", tmp_path / "smith.pid")
     monkeypatch.setattr(api, "_SMITH_CLIENT_FILE", tmp_path / "smith.client")
     monkeypatch.setattr(api, "_SESSION_FILE", tmp_path / "session.json")
+    import psutil
+    monkeypatch.setattr(psutil, "process_iter", lambda *_a, **_kw: iter([]))
 
 
 def _write_session(session_file: Path, **overrides):
