@@ -207,9 +207,24 @@ async def logo() -> FileResponse:
 
 @app.get("/favicon.ico")
 async def favicon() -> FileResponse:
-    # Browser default favicon probe. Serve the existing transparent logo so
-    # we stop spamming the access log with 404s on every page load.
-    return FileResponse(_TEMPLATES_DIR / "FullLogo_Transparent.png", media_type="image/png")
+    """Real .ico file served with the correct media type. Browsers that
+    auto-probe /favicon.ico (Safari, every IE-lineage thing) want this
+    exact path and content-type to avoid logging a 404 on every page load."""
+    return FileResponse(
+        _TEMPLATES_DIR / "favicon.ico",
+        media_type="image/vnd.microsoft.icon",
+    )
+
+
+@app.get("/favicon-32x32.png")
+async def favicon_png() -> FileResponse:
+    """Sized PNG favicon for modern browsers — referenced explicitly from
+    the <link rel="icon" sizes="32x32"> tag in dashboard.html. Modern
+    rendering pipelines prefer this over the .ico when both are available."""
+    return FileResponse(
+        _TEMPLATES_DIR / "favicon-32x32.png",
+        media_type="image/png",
+    )
 
 
 @app.get("/api/findings")
@@ -357,8 +372,12 @@ async def api_clear() -> JSONResponse:
     _METRICS_FILE  = _REPO_ROOT / "pentest_metrics.jsonl"
     # _COVERAGE_FILE is intentionally omitted — reset() above already wrote the empty state.
     # Deleting it would cause /api/coverage to return {} instead of an empty-but-valid matrix.
+    # _SMITH_PID_FILE + _SMITH_CLIENT_FILE are scan-tied pointers — a stale
+    # PID from the previous scan biases _detect_active_client() toward the old
+    # client and clutters smith-status diagnostics for the next scan.
     for path in (_SESSION_FILE, _QUICK_LOG_FILE, _QA_STATE_FILE,
-                 _COST_FILE, _STEERING_FILE, _RECOVERY_SNAP, _METRICS_FILE):
+                 _COST_FILE, _STEERING_FILE, _RECOVERY_SNAP, _METRICS_FILE,
+                 _SMITH_PID_FILE, _SMITH_CLIENT_FILE):
         _safe_unlink(path)
 
     # log files in logs/

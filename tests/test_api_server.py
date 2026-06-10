@@ -368,6 +368,42 @@ def test_api_clear_calls_cleanup_tunnels(tmp_path, monkeypatch):
     mock_cleanup.assert_awaited_once()
 
 
+def test_api_clear_removes_stale_smith_pointers(tmp_path, monkeypatch):
+    """Clear All must wipe logs/smith.pid and logs/smith.client.
+
+    Stale pointers from the previous scan bias _detect_active_client() — a
+    PID file pointing at a dead opencode process from the last scan keeps
+    "active" stuck on opencode even after the operator clicks Clear and
+    wants a genuine fresh start. The PID file is also the first thing
+    _smith_running() consults; leaving it stale is a footgun.
+    """
+    from core import findings as findings_mod
+    import core.api_server as api_mod
+
+    findings_file = tmp_path / "findings.json"
+    findings_file.write_text(json.dumps({"meta": {}, "findings": [], "diagrams": []}))
+    monkeypatch.setattr(findings_mod, "FINDINGS_FILE", findings_file)
+
+    # Drop stale pointer files into a sandboxed logs/ — these must be gone
+    # after Clear runs.
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    smith_pid_file    = logs_dir / "smith.pid"
+    smith_client_file = logs_dir / "smith.client"
+    smith_pid_file.write_text("89337\n")
+    smith_client_file.write_text("opencode\n")
+    monkeypatch.setattr(api_mod, "_SMITH_PID_FILE",    smith_pid_file)
+    monkeypatch.setattr(api_mod, "_SMITH_CLIENT_FILE", smith_client_file)
+
+    with patch("core.api_server._cleanup_tunnels", new_callable=AsyncMock, return_value="x"):
+        response = client.delete("/api/clear")
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert not smith_pid_file.exists(), "smith.pid should be wiped by Clear All"
+    assert not smith_client_file.exists(), "smith.client should be wiped by Clear All"
+
+
 # ── DELETE /api/tunnels ──────────────────────────────────────────────────────
 
 def test_api_tunnels_returns_ok():
