@@ -535,6 +535,66 @@ class TestSpawnSmith:
         expected = getattr(_sp, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
         assert spawn_calls[0].get("creationflags") == expected
 
+    def test_opencode_spawn_uses_dangerously_skip_permissions(self, spawn_env):
+        """Background-spawned opencode has no controlling TTY, so any permission
+        prompt either hangs forever or exits the process. The auto-restart
+        loop is non-functional for opencode without this flag — same reason
+        the claude branch already passes its own --dangerously-skip-permissions.
+        Pin the flag here so a refactor doesn't silently lose it."""
+        env = spawn_env
+        fake_proc = MagicMock(); fake_proc.pid = 33333
+        captured_args: list = []
+
+        async def _record_spawn(*args, **kw):
+            captured_args.append(list(args))
+            return fake_proc
+
+        with patch.dict("sys.modules", {"core.steering": env["steering_module"]}), \
+             patch("core.session.load_from_disk"), \
+             patch("core.session.get", return_value={}), \
+             patch("shutil.which", return_value="/usr/local/bin/opencode"), \
+             patch("asyncio.create_subprocess_exec", side_effect=_record_spawn):
+            ok, _ = asyncio.get_event_loop().run_until_complete(
+                api._spawn_smith("opencode", source="test")
+            )
+
+        assert ok is True
+        argv = captured_args[0]
+        assert argv[0] == "/usr/local/bin/opencode"
+        assert "run" in argv
+        assert "--dangerously-skip-permissions" in argv, (
+            "opencode background spawn must include --dangerously-skip-permissions "
+            "or the watchdog loop is non-functional (detached child has no TTY)"
+        )
+        # The prompt comes after the flag; the flag must precede the prompt
+        # so opencode parses it as a flag, not as part of the message.
+        flag_idx   = argv.index("--dangerously-skip-permissions")
+        prompt_idx = len(argv) - 1
+        assert flag_idx < prompt_idx, "flag must come before the message argument"
+
+    def test_claude_spawn_keeps_dangerously_skip_permissions(self, spawn_env):
+        """Sanity: don't accidentally break claude when touching the spawn path."""
+        env = spawn_env
+        fake_proc = MagicMock(); fake_proc.pid = 44444
+        captured_args: list = []
+
+        async def _record_spawn(*args, **kw):
+            captured_args.append(list(args))
+            return fake_proc
+
+        with patch.dict("sys.modules", {"core.steering": env["steering_module"]}), \
+             patch("core.session.load_from_disk"), \
+             patch("core.session.get", return_value={}), \
+             patch("shutil.which", return_value="/opt/homebrew/bin/claude"), \
+             patch("asyncio.create_subprocess_exec", side_effect=_record_spawn):
+            ok, _ = asyncio.get_event_loop().run_until_complete(
+                api._spawn_smith("claude", source="test")
+            )
+
+        assert ok is True
+        argv = captured_args[0]
+        assert "--dangerously-skip-permissions" in argv
+
 
 # ---------------------------------------------------------------------------
 # _pid_alive — cross-platform liveness probe

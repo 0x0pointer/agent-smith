@@ -754,7 +754,15 @@ async def _spawn_smith(client: str, source: str = "api") -> tuple[bool, int | st
         if client == "claude":
             args = [binary, "--dangerously-skip-permissions", "-p", prompt]
         else:
-            args = [binary, "run", prompt]
+            # opencode: detached background spawn has no controlling TTY, so any
+            # permission prompt either hangs forever (waiting on closed stdin)
+            # or exits because no TTY is available. --dangerously-skip-permissions
+            # auto-approves prompts that aren't explicitly denied in opencode.json's
+            # `permission.deny` block. Mirrors how the claude branch above handles
+            # the same constraint. To keep the safety net, users should add
+            # destructive-command denials to ~/.config/opencode/opencode.json —
+            # the installer recommends a starter set.
+            args = [binary, "run", "--dangerously-skip-permissions", prompt]
 
         log_fh = await loop.run_in_executor(None, lambda: log_path.open("a"))
 

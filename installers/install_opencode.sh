@@ -98,14 +98,28 @@ mcp["pentest-agent"] = {
     "timeout": 9_000_000,
 }
 
-# Permissions — disable opencode's built-in "doom_loop" detector.
-# It triggers on repeated similar tool calls and defaults to "ask" — but in
-# `opencode run` (non-interactive) mode there's nobody to answer, so opencode
-# auto-rejects. Pentest fuzzing IS legitimate repeated tool use against the
-# same target (different payloads, headers, methods), so this detector kills
-# scans. "allow" lets Smith keep working.
+# Permissions — broaden auto-approval so both interactive and dashboard-spawned
+# opencode keep working without prompts the operator can't answer.
+#
+#   doom_loop  — opencode's built-in "repeated similar tool calls" detector.
+#                Pentest fuzzing IS legitimate repeated use against the same
+#                target (different payloads, headers, methods). Default "ask"
+#                prompt would kill `opencode run` (no TTY to answer it).
+#   bash       — agent-smith runs many shell commands (kali docker exec,
+#                curl, etc.). Default "ask" would prompt on every call.
+#   edit       — agent-smith writes findings/PoCs to disk on every confirmed bug.
+#   webfetch   — opencode's native webfetch is used during recon.
+#
+# Note: dashboard-spawned opencode ALSO passes --dangerously-skip-permissions
+# (see core/api_server.py:_spawn_smith), which auto-approves any "ask"
+# prompts but RESPECTS "deny". To keep a safety backstop without crippling
+# the agent, operators can add a `bash` deny pattern for truly destructive
+# commands (rm -rf, force-push, etc.) under permission.bash as an object
+# with patterns — see https://opencode.ai/docs/permissions/ .
 perm = data.setdefault("permission", {})
 perm["doom_loop"] = "allow"
+for k in ("bash", "edit", "webfetch"):
+    perm.setdefault(k, "allow")
 
 # Add CLAUDE.md to global instructions (avoid duplicates)
 instructions = data.setdefault("instructions", [])

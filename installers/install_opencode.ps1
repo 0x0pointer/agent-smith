@@ -73,7 +73,17 @@ if (-not $cfg.instructions){ $cfg | Add-Member -NotePropertyName instructions -N
 
 $entry = [pscustomobject]@{ type = 'remote'; url = 'http://127.0.0.1:7778/sse'; enabled = $true; timeout = 9000000 }
 $cfg.mcp | Add-Member -NotePropertyName 'pentest-agent' -NotePropertyValue $entry -Force
+# Permissions — broaden auto-approval so both interactive and dashboard-spawned
+# opencode keep working without prompts the operator can't answer (the dashboard-
+# spawned background opencode is detached from any TTY). The dashboard's
+# _spawn_smith() also passes --dangerously-skip-permissions which auto-approves
+# "ask" rules but RESPECTS "deny" — see core/api_server.py.
 $cfg.permission | Add-Member -NotePropertyName 'doom_loop' -NotePropertyValue 'allow' -Force
+foreach ($tool in @('bash', 'edit', 'webfetch')) {
+    if (-not $cfg.permission.PSObject.Properties[$tool]) {
+        $cfg.permission | Add-Member -NotePropertyName $tool -NotePropertyValue 'allow' -Force
+    }
+}
 
 $claudeMd = Join-Path $RepoDir 'CLAUDE.md'
 if ($cfg.instructions -notcontains $claudeMd) { $cfg.instructions += $claudeMd }
