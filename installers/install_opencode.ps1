@@ -85,6 +85,21 @@ foreach ($tool in @('bash', 'edit', 'webfetch')) {
     }
 }
 
+# Bump the per-agent iteration cap for `opencode run`. Default is 500 steps,
+# which a "thorough" pentest blows past around the 60-70% coverage mark —
+# 135 cells x multiple injection tests per cell + finding-filing + qa_replies
+# easily totals 1000-1500 turns. 10000 leaves 5x headroom while still
+# guaranteeing the run terminates if it ever loops forever.
+if (-not $cfg.agent) {
+    $cfg | Add-Member -NotePropertyName agent -NotePropertyValue ([pscustomobject]@{}) -Force
+}
+if (-not $cfg.agent.build) {
+    $cfg.agent | Add-Member -NotePropertyName build -NotePropertyValue ([pscustomobject]@{}) -Force
+}
+if (-not $cfg.agent.build.PSObject.Properties['steps']) {
+    $cfg.agent.build | Add-Member -NotePropertyName steps -NotePropertyValue 10000 -Force
+}
+
 $claudeMd = Join-Path $RepoDir 'CLAUDE.md'
 if ($cfg.instructions -notcontains $claudeMd) { $cfg.instructions += $claudeMd }
 

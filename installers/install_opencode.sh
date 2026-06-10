@@ -121,6 +121,15 @@ perm["doom_loop"] = "allow"
 for k in ("bash", "edit", "webfetch"):
     perm.setdefault(k, "allow")
 
+# Bump the per-agent iteration cap for `opencode run`. Default is 500 steps,
+# which a "thorough" pentest blows past around the 60-70% coverage mark —
+# 135 cells × multiple injection tests per cell + finding-filing + qa_replies
+# easily totals 1000–1500 turns. 10000 leaves 5× headroom while still
+# guaranteeing the run terminates if it ever loops forever.
+agent_block = data.setdefault("agent", {})
+build_agent = agent_block.setdefault("build", {})
+build_agent.setdefault("steps", 10000)
+
 # Add CLAUDE.md to global instructions (avoid duplicates)
 instructions = data.setdefault("instructions", [])
 instructions_entry = str(repo_dir / "CLAUDE.md")
