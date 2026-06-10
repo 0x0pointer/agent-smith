@@ -30,8 +30,10 @@ from core import session as scan_session
 
 def _fake_conn(pid: int, local_port: int | None, remote_port: int | None,
                status: str = "ESTABLISHED"):
-    """Construct a psutil-shaped sconn for net_connections mocking."""
-    addr = MagicMock()
+    """Construct a psutil-shaped sconn for connection mocking. The mocked
+    object's ``pid`` field is informational only — the new _connected_pids()
+    iterates processes and asks each for its own connection list, so the
+    PID is carried on the parent ``Process`` mock, not on the connection."""
     laddr = MagicMock(); laddr.port = local_port
     raddr = MagicMock(); raddr.port = remote_port
     return MagicMock(
@@ -42,10 +44,24 @@ def _fake_conn(pid: int, local_port: int | None, remote_port: int | None,
     )
 
 
-def _fake_proc(cmdline: str):
+def _fake_proc(cmdline: str, pid: int | None = None, conns: list | None = None):
+    """Build a psutil.Process-shaped mock with a stable ``pid``, an iterable
+    ``net_connections`` method, and a ``cmdline`` that returns the parsed
+    argv. ``conns`` defaults to empty so callers that don't care about the
+    connection signal can omit it."""
     p = MagicMock()
+    p.pid = pid if pid is not None else 0
     p.cmdline.return_value = cmdline.split()
+    p.net_connections.return_value = conns or []
+    p.connections.return_value = conns or []   # legacy alias
     return p
+
+
+def _patch_process_iter(processes):
+    """Return a context manager that patches psutil.process_iter to return
+    the given mocked processes. Used by _connected_pids to walk processes
+    and inspect their connections."""
+    return patch("psutil.process_iter", return_value=processes)
 
 
 # ---------------------------------------------------------------------------
@@ -53,48 +69,72 @@ def _fake_proc(cmdline: str):
 # ---------------------------------------------------------------------------
 
 class TestDetectSmithCaller:
+    """Each test builds a list of fake Process mocks (each with its own
+    ``net_connections`` list + cmdline), patches ``psutil.process_iter`` to
+    yield them, and asserts the caller-detection result. This mirrors the
+    refactored production code: we walk processes, not the system-wide
+    socket table (which on macOS / Windows needs admin)."""
 
     def test_detects_opencode_via_tcp(self, monkeypatch):
-        conns = [_fake_conn(98765, local_port=44444, remote_port=7778)]
-        with patch("psutil.net_connections", return_value=conns), \
-             patch("psutil.Process", return_value=_fake_proc(
-                 "/Users/u/.opencode/bin/opencode run scan x")):
+        proc = _fake_proc(
+            "/Users/u/.opencode/bin/opencode run scan x",
+            pid=98765,
+            conns=[_fake_conn(98765, local_port=44444, remote_port=7778)],
+        )
+        with _patch_process_iter([proc]), \
+             patch("psutil.Process", return_value=proc):
             got = scan_session._detect_smith_caller()
         assert got == {"pid": 98765, "client": "opencode"}
 
     def test_detects_claude_via_tcp(self, monkeypatch):
-        conns = [_fake_conn(12345, local_port=33333, remote_port=7778)]
-        with patch("psutil.net_connections", return_value=conns), \
-             patch("psutil.Process", return_value=_fake_proc(
-                 "/opt/homebrew/bin/claude --dangerously-skip-permissions -p prompt")):
+        proc = _fake_proc(
+            "/opt/homebrew/bin/claude --dangerously-skip-permissions -p prompt",
+            pid=12345,
+            conns=[_fake_conn(12345, local_port=33333, remote_port=7778)],
+        )
+        with _patch_process_iter([proc]), \
+             patch("psutil.Process", return_value=proc):
             got = scan_session._detect_smith_caller()
         assert got == {"pid": 12345, "client": "claude"}
 
     def test_detects_codex_via_tcp(self, monkeypatch):
-        conns = [_fake_conn(55555, local_port=22222, remote_port=7778)]
-        with patch("psutil.net_connections", return_value=conns), \
-             patch("psutil.Process", return_value=_fake_proc(
-                 "/usr/local/bin/codex mcp pentest-agent --run")):
+        proc = _fake_proc(
+            "/usr/local/bin/codex mcp pentest-agent --run",
+            pid=55555,
+            conns=[_fake_conn(55555, local_port=22222, remote_port=7778)],
+        )
+        with _patch_process_iter([proc]), \
+             patch("psutil.Process", return_value=proc):
             got = scan_session._detect_smith_caller()
         assert got == {"pid": 55555, "client": "codex"}
 
     def test_skips_unrelated_processes(self, monkeypatch):
-        """The MCP server's own PID, vLLM workers, etc. must NOT be picked."""
-        conns = [
-            _fake_conn(1000, local_port=7778, remote_port=44440),  # MCP server side
-            _fake_conn(2000, local_port=55550, remote_port=7778),  # generic node
-            _fake_conn(3000, local_port=66660, remote_port=7778),  # other client
-        ]
-        unrelated_procs = {
-            1000: _fake_proc("/usr/bin/python3 -m mcp_server --transport sse"),
-            2000: _fake_proc("/usr/bin/python3 /usr/local/bin/vllm serve --port 7778"),
-            3000: _fake_proc("node /Users/u/something-else.js"),
-        }
+        """The MCP server's own PID, vLLM workers, etc. must NOT be picked.
+        Each connects to the same port but their cmdlines don't match a
+        known Smith client pattern."""
+        # MCP server side (local 7778, remote ephemeral)
+        server = _fake_proc(
+            "/usr/bin/python3 -m mcp_server --transport sse",
+            pid=1000,
+            conns=[_fake_conn(1000, local_port=7778, remote_port=44440)],
+        )
+        vllm = _fake_proc(
+            "/usr/bin/python3 /usr/local/bin/vllm serve --port 7778",
+            pid=2000,
+            conns=[_fake_conn(2000, local_port=55550, remote_port=7778)],
+        )
+        other = _fake_proc(
+            "node /Users/u/something-else.js",
+            pid=3000,
+            conns=[_fake_conn(3000, local_port=66660, remote_port=7778)],
+        )
+        process_lookup = {p.pid: p for p in (server, vllm, other)}
 
         def _proc(pid):
-            return unrelated_procs.get(pid, MagicMock(cmdline=MagicMock(return_value=[])))
+            return process_lookup.get(pid,
+                                       MagicMock(cmdline=MagicMock(return_value=[])))
 
-        with patch("psutil.net_connections", return_value=conns), \
+        with _patch_process_iter([server, vllm, other]), \
              patch("psutil.Process", side_effect=_proc), \
              patch("os.getppid", return_value=99999):
             got = scan_session._detect_smith_caller()
@@ -115,19 +155,33 @@ class TestDetectSmithCaller:
             got = scan_session._detect_smith_caller()
         assert got is None
 
-    def test_handles_access_denied(self, monkeypatch):
-        """net_connections() can require root/admin on some platforms.
-        We must return None silently, not crash."""
-        with patch("psutil.net_connections",
-                   side_effect=psutil.AccessDenied(pid=0)), \
-             patch("os.getppid", return_value=99999):
+    def test_handles_per_process_access_denied(self, monkeypatch):
+        """When a process raises AccessDenied during inspection (e.g. a
+        SYSTEM-owned process on Windows), the iteration must continue and
+        find the real Smith client among the others — not bail out entirely."""
+        # First process raises (privileged), second is the actual opencode
+        privileged = MagicMock()
+        privileged.pid = 100
+        privileged.net_connections.side_effect = psutil.AccessDenied(pid=100)
+        privileged.connections.side_effect = psutil.AccessDenied(pid=100)
+
+        opencode = _fake_proc(
+            "/Users/u/.opencode/bin/opencode run x",
+            pid=200,
+            conns=[_fake_conn(200, local_port=33333, remote_port=7778)],
+        )
+        process_lookup = {200: opencode}
+
+        with _patch_process_iter([privileged, opencode]), \
+             patch("psutil.Process", side_effect=lambda pid: process_lookup.get(pid, MagicMock())):
             got = scan_session._detect_smith_caller()
-        assert got is None
+        assert got == {"pid": 200, "client": "opencode"}
 
     def test_stdio_fallback_picks_parent_when_no_tcp(self, monkeypatch):
         """Codex stdio transport: no TCP connection to inspect — fallback to
         the parent process, which is the client."""
-        with patch("psutil.net_connections", return_value=[]), \
+        # No processes have a 7778 connection
+        with _patch_process_iter([]), \
              patch("psutil.Process",
                    return_value=_fake_proc("/usr/local/bin/codex run --mcp")), \
              patch("os.getppid", return_value=424242):
@@ -136,10 +190,16 @@ class TestDetectSmithCaller:
 
     def test_skips_non_established_connections(self, monkeypatch):
         """LISTEN, CLOSE_WAIT, etc. should be ignored — we only want active
-        client connections (ESTABLISHED)."""
-        listening = _fake_conn(1111, local_port=7778, remote_port=None,
-                                status="LISTEN")
-        with patch("psutil.net_connections", return_value=[listening]), \
+        client connections (ESTABLISHED). A process that's only listening
+        on 7778 (e.g. the MCP server itself) shouldn't get picked as the
+        caller even if no other process is connected."""
+        listening = _fake_proc(
+            "/some/server",
+            pid=1111,
+            conns=[_fake_conn(1111, local_port=7778, remote_port=None,
+                               status="LISTEN")],
+        )
+        with _patch_process_iter([listening]), \
              patch("os.getppid", return_value=99999):
             got = scan_session._detect_smith_caller()
         assert got is None
@@ -147,24 +207,46 @@ class TestDetectSmithCaller:
     def test_detects_node_wrapped_opencode(self, monkeypatch):
         """opencode is commonly invoked via `node /Users/u/.opencode/bin/opencode`.
         The process name is 'node' (or 'node-bin' on some installs) — the
-        cmdline anchor is the .opencode/bin/opencode path. Previously the
-        pattern only matched literal '/opencode' which still hit, but the
-        narrow patterns missed dist-path variants (`/opencode/dist/index.js`)."""
-        conns = [_fake_conn(77777, local_port=55555, remote_port=7778)]
-        with patch("psutil.net_connections", return_value=conns), \
-             patch("psutil.Process", return_value=_fake_proc(
-                 "node /Users/gibson/.opencode/bin/opencode run scan target")):
+        cmdline anchor is the .opencode/bin/opencode path."""
+        proc = _fake_proc(
+            "node /Users/gibson/.opencode/bin/opencode run scan target",
+            pid=77777,
+            conns=[_fake_conn(77777, local_port=55555, remote_port=7778)],
+        )
+        with _patch_process_iter([proc]), \
+             patch("psutil.Process", return_value=proc):
             got = scan_session._detect_smith_caller()
         assert got == {"pid": 77777, "client": "opencode"}
 
     def test_detects_npm_dist_opencode(self, monkeypatch):
         """npm-installed opencode runs from /opencode/dist/index.js."""
-        conns = [_fake_conn(88888, local_port=44444, remote_port=7778)]
-        with patch("psutil.net_connections", return_value=conns), \
-             patch("psutil.Process", return_value=_fake_proc(
-                 "node /usr/local/lib/node_modules/opencode/dist/index.js run x")):
+        proc = _fake_proc(
+            "node /usr/local/lib/node_modules/opencode/dist/index.js run x",
+            pid=88888,
+            conns=[_fake_conn(88888, local_port=44444, remote_port=7778)],
+        )
+        with _patch_process_iter([proc]), \
+             patch("psutil.Process", return_value=proc):
             got = scan_session._detect_smith_caller()
         assert got == {"pid": 88888, "client": "opencode"}
+
+    def test_macos_no_admin_per_process_works(self, monkeypatch):
+        """The bug that motivated the rewrite: on macOS without admin,
+        psutil.net_connections() system-wide silently returns []. The
+        per-process iteration we use now MUST still find the Smith client
+        — that's the whole point. Simulate it by having process_iter return
+        a real-looking opencode process whose own net_connections() works
+        (because Process.net_connections() works without admin for processes
+        owned by the current user)."""
+        proc = _fake_proc(
+            "/Users/u/.opencode/bin/opencode run /pentester scan x",
+            pid=42424,
+            conns=[_fake_conn(42424, local_port=62020, remote_port=7778)],
+        )
+        with _patch_process_iter([proc]), \
+             patch("psutil.Process", return_value=proc):
+            got = scan_session._detect_smith_caller()
+        assert got == {"pid": 42424, "client": "opencode"}
 
 
 # ---------------------------------------------------------------------------

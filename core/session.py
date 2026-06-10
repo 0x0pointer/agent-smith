@@ -117,9 +117,22 @@ def _detect_smith_caller(port: int = _MCP_SSE_PORT) -> dict | None:
 def _connected_pids(port: int) -> list[int]:
     """PIDs with an ESTABLISHED TCP connection involving the given port.
 
-    Uses psutil so it works identically on macOS, Linux, and Windows — the
-    older shell-out (``lsof -tnP -iTCP:<port> -sTCP:ESTABLISHED``) only ran
-    on Unix and silently returned an empty list on Windows.
+    Walks ``psutil.process_iter()`` and asks each process for its own
+    connection list, instead of the system-wide ``psutil.net_connections()``.
+
+    Why: on macOS, ``psutil.net_connections(kind="tcp")`` requires admin to
+    return non-empty results — without elevation it silently returns ``[]``
+    even though the connections clearly exist (lsof sees them fine). The
+    per-process ``proc.net_connections()`` call works without elevation for
+    any process owned by the current user, which is the realistic scope for
+    a Smith client connecting to a Smith-owned MCP server. Slightly slower
+    in big process tables (still well under 10 ms in practice), but
+    correct on every platform we care about.
+
+    Connections are accepted if EITHER the local or remote endpoint matches
+    ``port``. Local match = the MCP server side; remote match = the client
+    side. We collect both and let the cmdline check in
+    ``_resolve_client_for_pid`` filter out the server's own PID.
     """
     try:
         import psutil
@@ -127,22 +140,27 @@ def _connected_pids(port: int) -> list[int]:
         return []
     pids: list[int] = []
     try:
-        for conn in psutil.net_connections(kind="tcp"):
-            if conn.status != psutil.CONN_ESTABLISHED or conn.pid is None:
+        for proc in psutil.process_iter(["pid"]):
+            try:
+                # net_connections() replaces deprecated connections() in
+                # psutil >= 6.0; both accept kind="tcp" and use the same
+                # sconn shape under the hood.
+                conn_iter = (
+                    proc.net_connections(kind="tcp")
+                    if hasattr(proc, "net_connections")
+                    else proc.connections(kind="tcp")
+                )
+            except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
                 continue
-            # The connection is "involving" the port when either the local
-            # or remote endpoint matches. Local match = the server side;
-            # remote match = the client side. We want both: client PIDs
-            # are the interesting ones, server PID is filtered later by
-            # the cmdline check in _resolve_client_for_pid.
-            local_match = conn.laddr and conn.laddr.port == port
-            remote_match = conn.raddr and conn.raddr.port == port
-            if local_match or remote_match:
-                pids.append(conn.pid)
+            for conn in conn_iter:
+                if conn.status != psutil.CONN_ESTABLISHED:
+                    continue
+                local_match = conn.laddr and conn.laddr.port == port
+                remote_match = conn.raddr and conn.raddr.port == port
+                if local_match or remote_match:
+                    pids.append(proc.pid)
+                    break  # don't list a process twice for the same port
     except (psutil.AccessDenied, OSError, RuntimeError):
-        # net_connections can require root on some platforms; rather than
-        # crash, fall back to "no detection" and let the legacy heuristic
-        # handle this. macOS works without root; Linux often needs CAP_NET_ADMIN.
         return []
     return pids
 
