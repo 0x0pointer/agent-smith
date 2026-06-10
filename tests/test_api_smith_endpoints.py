@@ -473,13 +473,90 @@ class TestSmithClients:
         assert api._client_installed("vim") is False
 
     def test_detect_reads_client_from_session_json(self, sandbox_smith_files, tmp_path):
-        # Step 1: client stored in session.json at scan start takes priority
+        # Step 2: top-level client field in session.json (back-compat / legacy
+        # sessions before the smith_proc field was added).
         import json as _json
         session_file = tmp_path / "session.json"
         session_file.write_text(_json.dumps({"client": "opencode"}))
         with patch.object(api, "_SESSION_FILE", session_file), \
              patch.object(api, "_client_installed", return_value=True):
             assert api._detect_active_client() == "opencode"
+
+    def test_detect_prefers_scan_locked_smith_proc_client(self, sandbox_smith_files, tmp_path):
+        """The scan-lock at session.start() writes smith_proc.client. This
+        must take precedence over EVERY other signal so a watchdog restart
+        can never drift to a different CLI than the one the operator started
+        the scan in."""
+        import json as _json
+        session_file = tmp_path / "session.json"
+        # Even with logs/smith.client saying "claude" AND a running claude
+        # process detected, the scan-lock on opencode must win.
+        session_file.write_text(_json.dumps({
+            "smith_proc": {"pid": 1234, "client": "opencode",
+                            "source": "interactive_mcp"},
+        }))
+        (tmp_path / "smith.client").write_text("claude")   # drift signal
+        with patch.object(api, "_SESSION_FILE", session_file), \
+             patch.object(api, "_client_installed", return_value=True), \
+             patch.object(api, "_client_process_running",
+                           side_effect=lambda n: n == "claude"):
+            assert api._detect_active_client() == "opencode"
+
+    def test_detect_falls_through_when_scan_locked_client_not_installed(
+        self, sandbox_smith_files, tmp_path
+    ):
+        """If smith_proc.client says opencode but opencode isn't on PATH,
+        skip the lock and use the next signal. Prevents a "scan locked to
+        client that no longer exists" deadlock."""
+        import json as _json
+        session_file = tmp_path / "session.json"
+        session_file.write_text(_json.dumps({
+            "smith_proc": {"pid": 1234, "client": "opencode",
+                            "source": "interactive_mcp"},
+        }))
+        (tmp_path / "smith.client").write_text("claude")
+        with patch.object(api, "_SESSION_FILE", session_file), \
+             patch.object(api, "_client_installed",
+                           side_effect=lambda n: n == "claude"):
+            assert api._detect_active_client() == "claude"
+
+    def test_detect_ignores_smith_proc_with_unknown_client(
+        self, sandbox_smith_files, tmp_path
+    ):
+        """A malformed smith_proc.client (typo, future client name we don't
+        support) shouldn't deadlock detection — fall through to the legacy
+        signals."""
+        import json as _json
+        session_file = tmp_path / "session.json"
+        session_file.write_text(_json.dumps({
+            "smith_proc": {"pid": 1234, "client": "klaude",  # typo
+                            "source": "interactive_mcp"},
+        }))
+        (tmp_path / "smith.client").write_text("claude")
+        with patch.object(api, "_SESSION_FILE", session_file), \
+             patch.object(api, "_client_installed", return_value=True):
+            assert api._detect_active_client() == "claude"
+
+    def test_restart_endpoint_client_param_overrides_scan_lock(
+        self, sandbox_session, sandbox_smith_files
+    ):
+        """The Restart Smith button accepts {"client": "..."} which must
+        override the scan-lock — operators sometimes need to switch CLI
+        mid-scan (e.g. Anthropic credits exhausted → switch to local opencode).
+        The scan-lock is for AUTO-restarts; explicit operator input wins."""
+        _write_session(sandbox_session, status="running",
+                        smith_proc={"pid": 9999, "client": "claude",
+                                     "source": "interactive_mcp"})
+        with patch.object(api, "_smith_running", return_value=False), \
+             patch.object(api, "_client_installed", return_value=True), \
+             patch.object(api, "_spawn_smith",
+                           new_callable=AsyncMock,
+                           return_value=(True, 12345)) as spawn:
+            r = client.post("/api/restart-smith", json={"client": "opencode"})
+        assert r.status_code == 200
+        # spawn was called with the *override*, not the scan-locked "claude"
+        called_client = spawn.await_args.args[0]
+        assert called_client == "opencode"
 
 
 # ---------------------------------------------------------------------------
@@ -735,6 +812,130 @@ class TestSpawnSmith:
         assert ok is True
         argv = captured_args[0]
         assert "--dangerously-skip-permissions" in argv
+
+    def test_spawn_persists_scan_lock_for_watchdog(self, spawn_env):
+        """Every successful _spawn_smith must call set_smith_proc() so the
+        watchdog's _detect_active_client() sees the scan-locked client on its
+        next tick. Without this lock, the watchdog would have to guess via
+        logs/smith.client (a global file that drifts across scans)."""
+        env = spawn_env
+        fake_proc = MagicMock(); fake_proc.pid = 55555
+        set_calls: list = []
+
+        async def _record_spawn(*args, **kw):
+            return fake_proc
+
+        def _record_set(pid, client, source):
+            set_calls.append({"pid": pid, "client": client, "source": source})
+
+        with patch.dict("sys.modules", {"core.steering": env["steering_module"]}), \
+             patch("core.session.load_from_disk"), \
+             patch("core.session.get", return_value={}), \
+             patch("core.session.set_smith_proc", side_effect=_record_set), \
+             patch("shutil.which", return_value="/usr/local/bin/opencode"), \
+             patch("asyncio.create_subprocess_exec", side_effect=_record_spawn):
+            ok, pid = asyncio.get_event_loop().run_until_complete(
+                api._spawn_smith("opencode", source="watchdog")
+            )
+
+        assert ok is True
+        assert len(set_calls) == 1
+        assert set_calls[0]["pid"] == 55555
+        assert set_calls[0]["client"] == "opencode"
+        # source tag distinguishes watchdog from api in audit
+        assert set_calls[0]["source"] == "watchdog_spawn"
+
+    def test_spawn_lock_failure_does_not_break_spawn(self, spawn_env):
+        """set_smith_proc raising must not turn a successful spawn into a
+        failure — the smith.client file write above it is the operational
+        backup. Diagnostic only."""
+        env = spawn_env
+        fake_proc = MagicMock(); fake_proc.pid = 66666
+
+        async def _spawn(*a, **kw): return fake_proc
+
+        with patch.dict("sys.modules", {"core.steering": env["steering_module"]}), \
+             patch("core.session.load_from_disk"), \
+             patch("core.session.get", return_value={}), \
+             patch("core.session.set_smith_proc",
+                    side_effect=RuntimeError("disk full")), \
+             patch("shutil.which", return_value="/usr/local/bin/opencode"), \
+             patch("asyncio.create_subprocess_exec", side_effect=_spawn):
+            ok, pid = asyncio.get_event_loop().run_until_complete(
+                api._spawn_smith("opencode", source="api")
+            )
+
+        assert ok is True
+        assert pid == 66666
+
+
+# ---------------------------------------------------------------------------
+# session.set_smith_proc / get_scan_client
+# ---------------------------------------------------------------------------
+
+class TestSetSmithProc:
+    """The scan-lock writer in core/session.py. Watchdog reads what this
+    persists, so it's load-bearing for the "don't drift between CLIs"
+    guarantee."""
+
+    @pytest.fixture
+    def fresh_session(self, tmp_path, monkeypatch):
+        from core import session as scan_session
+        monkeypatch.setattr(scan_session, "_REPO_ROOT", tmp_path)
+        monkeypatch.setattr(scan_session, "_SESSION_FILE", tmp_path / "session.json")
+        scan_session._current = None
+        scan_session._last_local_write_mtime = 0.0
+        scan_session._last_pid_refresh_attempt = 0.0
+        yield tmp_path
+        scan_session._current = None
+        scan_session._last_local_write_mtime = 0.0
+        scan_session._last_pid_refresh_attempt = 0.0
+
+    def test_set_smith_proc_writes_all_fields(self, fresh_session):
+        from core import session as scan_session
+        scan_session.start(target="http://x.test", depth="quick")
+        scan_session.set_smith_proc(pid=4321, client="opencode",
+                                     source="dashboard_spawn")
+        on_disk = json.loads((fresh_session / "session.json").read_text())
+        sp = on_disk["smith_proc"]
+        assert sp["pid"] == 4321
+        assert sp["client"] == "opencode"
+        assert sp["source"] == "dashboard_spawn"
+        assert "captured_at" in sp
+
+    def test_set_smith_proc_overwrites_previous_lock(self, fresh_session):
+        """Each spawn re-pins; the latest source-tagged value wins. Allows
+        the operator to override via Restart Smith button + the scan-lock
+        to update on the next spawn."""
+        from core import session as scan_session
+        scan_session.start(target="http://x.test", depth="quick")
+        scan_session.set_smith_proc(pid=1, client="claude",
+                                     source="interactive_mcp")
+        scan_session.set_smith_proc(pid=2, client="opencode",
+                                     source="api_restart")
+        on_disk = json.loads((fresh_session / "session.json").read_text())
+        assert on_disk["smith_proc"]["client"] == "opencode"
+        assert on_disk["smith_proc"]["source"] == "api_restart"
+
+    def test_set_smith_proc_noop_when_no_session(self, fresh_session):
+        """No session in memory → silent no-op. Won't crash mid-spawn if
+        someone called set_smith_proc out of sequence."""
+        from core import session as scan_session
+        scan_session._current = None
+        scan_session.set_smith_proc(pid=1, client="claude", source="x")
+        assert not (fresh_session / "session.json").exists()
+
+    def test_get_scan_client_reads_smith_proc(self, fresh_session):
+        from core import session as scan_session
+        scan_session.start(target="http://x.test", depth="quick")
+        scan_session.set_smith_proc(pid=1, client="opencode",
+                                     source="interactive_mcp")
+        assert scan_session.get_scan_client() == "opencode"
+
+    def test_get_scan_client_returns_none_for_unknown(self, fresh_session):
+        from core import session as scan_session
+        scan_session._current = {"smith_proc": {"client": "klaude"}}
+        assert scan_session.get_scan_client() is None
 
 
 # ---------------------------------------------------------------------------

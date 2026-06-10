@@ -360,6 +360,51 @@ def get() -> dict | None:
     return _current
 
 
+def set_smith_proc(pid: int, client: str, source: str) -> None:
+    """Scan-lock the driving Smith client into session.json's `smith_proc` field.
+
+    This is the authoritative answer to "which CLI is driving THIS scan?". The
+    watchdog reads it before falling back to logs/smith.client (which is a
+    global file shared across scans and prone to drift between sessions).
+
+    Called from:
+      • core.session.start() — via _detect_smith_caller() at scan start.
+      • core.api_server._spawn_smith() — every time the dashboard or the
+        watchdog spawns a Smith, locks the client choice into the scan.
+
+    `client` should be one of "claude" | "opencode" | "codex". `source`
+    documents what wrote it ("interactive_mcp", "dashboard_spawn",
+    "watchdog_spawn", "api_restart") so a later audit can see why the
+    current pin exists. Idempotent and safe to call repeatedly.
+    """
+    global _current
+    _reconcile_if_external_write()
+    if not _current:
+        return
+    _current["smith_proc"] = {
+        "pid":          int(pid),
+        "client":       str(client),
+        "source":       str(source),
+        "captured_at":  datetime.now(timezone.utc).isoformat(),
+    }
+    _flush()
+
+
+def get_scan_client() -> str | None:
+    """Return the scan-locked Smith client, or None if not yet set.
+
+    Read-only inspection helper for the watchdog. Does not reconcile —
+    callers wanting freshest state should reload first."""
+    if not _current:
+        return None
+    sp = _current.get("smith_proc")
+    if isinstance(sp, dict):
+        c = sp.get("client")
+        if isinstance(c, str) and c in ("claude", "opencode", "codex"):
+            return c
+    return None
+
+
 def load_from_disk(force: bool = False) -> dict | None:
     """Populate _current from session.json.
 

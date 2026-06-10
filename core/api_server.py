@@ -726,28 +726,44 @@ def _client_process_running(name: str) -> bool:
 def _detect_active_client() -> str:
     """Detect which client should be used for restart.
 
-    Resolution order:
-      1. Client stored in session.json when the scan was started (most reliable)
-      2. Last client persisted in logs/smith.client (from a previous restart)
-      3. Currently running process: claude > opencode > codex
-      4. claude as default
-    """
-    # 1. Client recorded at session start — the definitive source
+    Resolution order (most authoritative first):
+      1. **Scan-locked client**: session.json's ``smith_proc.client`` —
+         set at session.start() via caller-detection and reinforced by
+         every successful _spawn_smith(). This is THE answer when present:
+         once a scan started in opencode, watchdog respawns must use
+         opencode, not "whatever's nearest on disk".
+      2. Top-level ``client`` field in session.json (legacy / future-proof).
+      3. logs/smith.client (last dashboard-managed spawn — global, drifts
+         across scans; falls back here only when smith_proc is absent).
+      4. Currently running process (claude > opencode > codex).
+      5. claude as final default.
+
+    Operator override: the /api/restart-smith endpoint accepts
+    ``{"client": "<name>"}`` in the request body, which short-circuits this
+    entire chain. Use that path when intentionally switching mid-scan."""
+    # 1. Scan-locked client from smith_proc — authoritative for this scan.
     try:
         sd = json.loads(_SESSION_FILE.read_text())
-        client = sd.get("client", "").strip().lower()
+        smith_proc = sd.get("smith_proc")
+        if isinstance(smith_proc, dict):
+            locked = (smith_proc.get("client") or "").strip().lower()
+            if locked in _KNOWN_CLIENTS and _client_installed(locked):
+                return locked
+        # 2. Back-compat: top-level client field (older sessions or
+        # explicit operator override written elsewhere).
+        client = (sd.get("client") or "").strip().lower()
         if client in _KNOWN_CLIENTS and _client_installed(client):
             return client
     except Exception:
         pass
-    # 2. Saved from last manual restart
+    # 3. logs/smith.client — global, can drift across scans.
     try:
         saved = _SMITH_CLIENT_FILE.read_text().strip().lower()
         if saved in _KNOWN_CLIENTS and _client_installed(saved):
             return saved
     except Exception:
         pass
-    # 3. Running process
+    # 4. Currently-running process.
     for name in _KNOWN_CLIENTS:
         if _client_process_running(name) and _client_installed(name):
             return name
@@ -849,6 +865,30 @@ async def _spawn_smith(client: str, source: str = "api") -> tuple[bool, int | st
         proc = await asyncio.create_subprocess_exec(*args, **spawn_kwargs)
         _SMITH_PID_FILE.write_text(str(proc.pid))
         _SMITH_CLIENT_FILE.write_text(client)
+
+        # Scan-lock the chosen client into session.json so subsequent
+        # watchdog restarts can't drift to a different CLI. This is the
+        # other half of the fix: _detect_active_client() reads
+        # smith_proc.client first, and _spawn_smith() guarantees it's
+        # always populated after a successful spawn. Source distinguishes
+        # dashboard restarts from auto-restarts so a later audit is clear.
+        try:
+            from core import session as scan_session
+            scan_session.set_smith_proc(
+                pid=proc.pid,
+                client=client,
+                source=(
+                    "watchdog_spawn" if source == "watchdog"
+                    else "dashboard_spawn" if source == "api"
+                    else f"spawn_{source}"
+                ),
+            )
+        except Exception as e:
+            # Never break the spawn path on a session-update failure —
+            # the file-based smith.client write above is the operational
+            # backup. Just note it for diagnostics.
+            _log.debug("spawn_smith: scan-lock write failed: %s", e)
+
         return True, proc.pid
     except Exception:
         _log.exception("spawn_smith failed")
