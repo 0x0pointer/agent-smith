@@ -165,9 +165,21 @@ def _resolve_client_for_pid(pid: int) -> str | None:
         return None
     if not cmd:
         return None
+    # claude: dashboard-spawned uses --dangerously-skip-permissions; the older
+    # `-p` shorthand exists for completeness, and the bare `claude` TUI is
+    # disambiguated by a separate substring check below.
     if "claude" in cmd and ("dangerously-skip-permissions" in cmd or " -p " in cmd):
         return "claude"
-    if "/opencode" in cmd or "opencode run" in cmd or cmd.startswith("opencode"):
+    # opencode is commonly invoked as `node /Users/<u>/.opencode/bin/opencode run …`
+    # or `node …/opencode/dist/index.js`. The .opencode/bin/opencode anchor catches
+    # both shapes plus the direct binary form. Also accept the dashboard's literal
+    # `opencode run …` invocation, raw `opencode` TUI, and any cmdline mentioning
+    # /opencode/ as a directory component (the dist path of npm installs).
+    if (".opencode/bin/opencode" in cmd
+            or "/opencode/dist" in cmd
+            or "opencode run" in cmd
+            or "/opencode" in cmd
+            or cmd.startswith("opencode")):
         return "opencode"
     if "codex" in cmd and ("run" in cmd or "mcp" in cmd):
         return "codex"
@@ -857,12 +869,36 @@ def _flush() -> None:
 # treated as "external write, reconcile before continuing".
 _last_local_write_mtime: float = 0.0
 
+# Epoch-second timestamp of the last lazy smith.pid refresh attempt. Rate-
+# limits the psutil scan in _refresh_smith_pid_if_stale() so very high-frequency
+# mutations (e.g., add_tool_called on every MCP tool result) don't pay for an
+# expensive process_iter on every single call when the PID went stale.
+_last_pid_refresh_attempt: float = 0.0
+_PID_REFRESH_MIN_INTERVAL_SECONDS = 30.0
+
 
 def _reconcile_if_external_write() -> None:
     """Reload `_current` from disk if another process wrote to session.json
-    since our last local flush. No-op when disk is missing, identical to our
-    last write, or unreadable."""
+    since our last local flush, and lazily refresh logs/smith.pid when the
+    tracked PID has died.
+
+    Called by every mutation in this module before checking state. Two
+    correctness benefits:
+
+      1. Cross-process state desync — dashboard process and MCP server each
+         keep their own ``_current``; a stale flush in one can silently undo
+         the other's write. Reconciling against disk first eliminates the
+         hot case (operator clicks Complete Scan, next MCP mutation is about
+         to overwrite it).
+      2. Stale smith.pid tracking — the dashboard's _smith_running() check
+         consults logs/smith.pid first; if that file points at a dead PID
+         (e.g., the original Smith died and a new one took over outside the
+         dashboard restart path), the check fails and the watchdog fires a
+         false "Smith stopped" alert. Re-detecting the caller on the fly
+         keeps the pointer fresh without operator intervention.
+    """
     global _current
+    # Disk-state reconcile (cross-process write protection)
     try:
         disk_mtime = _SESSION_FILE.stat().st_mtime
     except OSError:
@@ -871,10 +907,55 @@ def _reconcile_if_external_write() -> None:
     # some Linux mounts are 1s). A tolerance of 1ms catches genuine external
     # writes without false-positiving on same-process re-flushes within the
     # same syscall window.
-    if disk_mtime <= _last_local_write_mtime + 0.001:
-        return
+    if disk_mtime > _last_local_write_mtime + 0.001:
+        try:
+            fresh = json.loads(_SESSION_FILE.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            pass
+        else:
+            _current = fresh
+
+    # Stale-PID refresh (rate-limited)
+    _refresh_smith_pid_if_stale()
+
+
+def _refresh_smith_pid_if_stale() -> None:
+    """If logs/smith.pid points at a dead process, try to detect a live caller
+    and rewrite the file. Rate-limited so high-frequency mutations don't pay
+    for psutil scanning on every call.
+
+    Returns silently on any error — this is a best-effort liveness refresh,
+    not a correctness invariant. Worst case: stale PID stays stale and the
+    watchdog's process-scan fallback signal does the job instead.
+    """
+    global _last_pid_refresh_attempt
     try:
-        fresh = json.loads(_SESSION_FILE.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        now = datetime.now(timezone.utc).timestamp()
+    except OSError:
         return
-    _current = fresh
+    if now - _last_pid_refresh_attempt < _PID_REFRESH_MIN_INTERVAL_SECONDS:
+        return
+    _last_pid_refresh_attempt = now
+
+    pid_file = _REPO_ROOT / "logs" / "smith.pid"
+    try:
+        raw = pid_file.read_text().strip()
+        pid = int(raw)
+    except (FileNotFoundError, ValueError, OSError):
+        # No tracked PID at all → detection probably never fired. Try now.
+        caller = _detect_smith_caller()
+        if caller:
+            _persist_smith_caller(caller)
+        return
+
+    try:
+        import psutil
+        if 0 < pid < (1 << 22) and psutil.pid_exists(pid):
+            return  # tracked PID is still alive; nothing to do
+    except ImportError:
+        return
+
+    # Tracked PID is dead. Find a live caller and replace the file.
+    caller = _detect_smith_caller()
+    if caller and caller["pid"] != pid:
+        _persist_smith_caller(caller)

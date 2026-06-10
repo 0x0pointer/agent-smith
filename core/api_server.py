@@ -551,20 +551,43 @@ async def api_complete(request: Request) -> JSONResponse:
         return JSONResponse({"ok": False, "error": _ERR_REQUEST_FAILED}, status_code=500)
 
 
-_SMITH_IDLE_SECONDS = 60  # >1 min with no scan activity → Smith is considered stopped
+# >5 min with no scan activity → Smith is considered stopped.
+# Was 60s previously, but Qwen3.6-A3B thinking-mode reasoning regularly runs
+# 2–3 min between tool calls. 60s caused steady false positives during
+# normal thinking pauses, sending bogus WATCHDOG_SMITH_STOPPED alerts to
+# Telegram/Slack/Discord. 300s catches real Smith deaths within 5 min while
+# tolerating long internal reasoning blocks.
+_SMITH_IDLE_SECONDS = 300
+
+# Process patterns a psutil-based fallback considers "Smith is alive".
+# Used by _smith_running() as a last-resort signal after the PID-file and
+# activity-mtime checks both fail. Matches against the joined cmdline of
+# each running process. Anchored to project-specific binaries (claude with
+# its dangerous flag, opencode runners, codex MCP launches) so unrelated
+# processes don't false-positive.
+_SMITH_PROC_NEEDLES = (
+    # claude CLI driving an agent-smith scan
+    "claude --dangerously-skip-permissions",
+    # opencode run (direct binary OR wrapped via node)
+    ".opencode/bin/opencode",
+    "opencode run",
+    # codex MCP-server launches
+    "codex run",
+    "codex mcp",
+)
 
 
 def _smith_running() -> bool:
     """Return True if any Smith (claude OR opencode, dashboard- or manually-launched) is active.
 
-    Two signals — either is sufficient:
+    Three signals — any one is sufficient:
       1. The tracked PID (from a dashboard restart) is still alive.
       2. session.json / quick_log.json was modified within _SMITH_IDLE_SECONDS,
          meaning some MCP client is actively making tool calls.
-
-    The activity signal catches Smith processes the dashboard didn't spawn
-    (e.g. user started opencode or claude manually) while still using PID
-    tracking for the immediate-feedback case after the Restart Smith button.
+      3. A process whose cmdline matches a known MCP-client pattern is alive
+         right now (catches the case where smith.pid points at a stale dead
+         process but the operator manually relaunched opencode/claude in a
+         terminal and is actively driving the scan).
     """
     # PID file (dashboard-spawned process). Cap the parsed PID at 2**22 so a
     # malformed value can't blow up the liveness probe with weird arithmetic.
@@ -612,6 +635,27 @@ def _smith_running() -> bool:
                         return True
         except Exception as e:
             _log.debug("smith_running: session.json fallback check failed: %s", e)
+
+    # Process-scan fallback: walk psutil for any process whose cmdline matches
+    # an MCP-client pattern. Catches the situation where smith.pid points at a
+    # dead old dashboard-spawn but the operator manually relaunched opencode
+    # in a terminal and is actively driving the scan. Run last because it's
+    # the most expensive signal — iterating every process on the box vs.
+    # reading a single PID or mtime — but still well under 10 ms in practice.
+    try:
+        import psutil
+        for proc in psutil.process_iter(["cmdline"]):
+            try:
+                cmd = " ".join(proc.info.get("cmdline") or []).lower()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+            if not cmd:
+                continue
+            for needle in _SMITH_PROC_NEEDLES:
+                if needle in cmd:
+                    return True
+    except (ImportError, OSError, psutil.AccessDenied):
+        _log.debug("smith_running: process-scan fallback unavailable")
 
     return False
 

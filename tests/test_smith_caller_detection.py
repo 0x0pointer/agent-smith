@@ -144,6 +144,124 @@ class TestDetectSmithCaller:
             got = scan_session._detect_smith_caller()
         assert got is None
 
+    def test_detects_node_wrapped_opencode(self, monkeypatch):
+        """opencode is commonly invoked via `node /Users/u/.opencode/bin/opencode`.
+        The process name is 'node' (or 'node-bin' on some installs) — the
+        cmdline anchor is the .opencode/bin/opencode path. Previously the
+        pattern only matched literal '/opencode' which still hit, but the
+        narrow patterns missed dist-path variants (`/opencode/dist/index.js`)."""
+        conns = [_fake_conn(77777, local_port=55555, remote_port=7778)]
+        with patch("psutil.net_connections", return_value=conns), \
+             patch("psutil.Process", return_value=_fake_proc(
+                 "node /Users/gibson/.opencode/bin/opencode run scan target")):
+            got = scan_session._detect_smith_caller()
+        assert got == {"pid": 77777, "client": "opencode"}
+
+    def test_detects_npm_dist_opencode(self, monkeypatch):
+        """npm-installed opencode runs from /opencode/dist/index.js."""
+        conns = [_fake_conn(88888, local_port=44444, remote_port=7778)]
+        with patch("psutil.net_connections", return_value=conns), \
+             patch("psutil.Process", return_value=_fake_proc(
+                 "node /usr/local/lib/node_modules/opencode/dist/index.js run x")):
+            got = scan_session._detect_smith_caller()
+        assert got == {"pid": 88888, "client": "opencode"}
+
+
+# ---------------------------------------------------------------------------
+# Lazy PID refresh on mutations
+# ---------------------------------------------------------------------------
+
+class TestLazyPidRefresh:
+    """When logs/smith.pid points at a dead PID (because Smith died and
+    respawned outside the dashboard's restart path), the next mutation
+    should detect a live caller and rewrite the file. Catches the false-
+    positive "Smith stopped" alerts the user was hitting."""
+
+    @pytest.fixture
+    def isolated(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(scan_session, "_REPO_ROOT", tmp_path)
+        monkeypatch.setattr(scan_session, "_SESSION_FILE", tmp_path / "session.json")
+        scan_session._current = None
+        scan_session._last_local_write_mtime = 0.0
+        scan_session._last_pid_refresh_attempt = 0.0
+        yield tmp_path
+        scan_session._current = None
+        scan_session._last_local_write_mtime = 0.0
+        scan_session._last_pid_refresh_attempt = 0.0
+
+    def test_refresh_skips_when_tracked_pid_is_alive(self, isolated, monkeypatch):
+        """No-op when smith.pid points at a live process — common hot path."""
+        (isolated / "logs").mkdir()
+        (isolated / "logs" / "smith.pid").write_text("12345")
+        # Stub _detect_smith_caller so any unexpected invocation raises a
+        # detectable mismatch — proves we short-circuit at the alive check.
+        detect_calls = []
+        monkeypatch.setattr(
+            scan_session, "_detect_smith_caller",
+            lambda: (detect_calls.append(1), None)[1],
+        )
+        import psutil
+        with patch.object(psutil, "pid_exists", return_value=True):
+            scan_session._refresh_smith_pid_if_stale()
+        assert detect_calls == [], "should not invoke detection when PID is alive"
+        assert (isolated / "logs" / "smith.pid").read_text() == "12345"
+
+    def test_refresh_replaces_dead_pid_with_fresh_detection(self, isolated, monkeypatch):
+        """When tracked PID is dead but detection finds a live caller, the
+        file is rewritten and the watchdog can again resolve to True."""
+        (isolated / "logs").mkdir()
+        (isolated / "logs" / "smith.pid").write_text("99999")
+        monkeypatch.setattr(
+            scan_session, "_detect_smith_caller",
+            lambda: {"pid": 11111, "client": "opencode"},
+        )
+        import psutil
+        with patch.object(psutil, "pid_exists", return_value=False):
+            scan_session._refresh_smith_pid_if_stale()
+        assert (isolated / "logs" / "smith.pid").read_text() == "11111"
+        assert (isolated / "logs" / "smith.client").read_text() == "opencode"
+
+    def test_refresh_no_op_when_detection_returns_none(self, isolated, monkeypatch):
+        """Dead PID + nothing detectable → leave the file alone (don't trash
+        diagnostics with a wiped marker just because detection couldn't
+        find anything; the process-scan signal in api_server can still help)."""
+        (isolated / "logs").mkdir()
+        (isolated / "logs" / "smith.pid").write_text("99999")
+        monkeypatch.setattr(scan_session, "_detect_smith_caller", lambda: None)
+        import psutil
+        with patch.object(psutil, "pid_exists", return_value=False):
+            scan_session._refresh_smith_pid_if_stale()
+        # File untouched, even though tracked PID is dead.
+        assert (isolated / "logs" / "smith.pid").read_text() == "99999"
+
+    def test_refresh_rate_limited(self, isolated, monkeypatch):
+        """A single mutation burst (e.g. add_tool_called fires 5 times in a
+        100ms window) must not psutil-scan 5 times. Rate-limit blocks the
+        2nd-Nth attempts until _PID_REFRESH_MIN_INTERVAL_SECONDS elapses."""
+        (isolated / "logs").mkdir()
+        (isolated / "logs" / "smith.pid").write_text("99999")
+        calls = []
+        monkeypatch.setattr(
+            scan_session, "_detect_smith_caller",
+            lambda: (calls.append(1), None)[1],
+        )
+        import psutil
+        with patch.object(psutil, "pid_exists", return_value=False):
+            for _ in range(5):
+                scan_session._refresh_smith_pid_if_stale()
+        # Only ONE detection attempt despite 5 calls.
+        assert len(calls) == 1
+
+    def test_refresh_runs_when_pid_file_missing(self, isolated, monkeypatch):
+        """No PID file at all → run detection so a freshly-started Smith gets
+        captured even if session.start() wasn't called yet (e.g. user started
+        interactive opencode and is reading docs before any tool call)."""
+        # Don't create logs/ — the file is missing entirely
+        captured = {"pid": 22222, "client": "claude"}
+        monkeypatch.setattr(scan_session, "_detect_smith_caller", lambda: captured)
+        scan_session._refresh_smith_pid_if_stale()
+        assert (isolated / "logs" / "smith.pid").read_text() == "22222"
+
 
 # ---------------------------------------------------------------------------
 # _persist_smith_caller — file writes

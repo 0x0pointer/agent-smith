@@ -245,6 +245,86 @@ class TestSmithRunning:
         with patch.object(api, "_SESSION_FILE", session_file):
             assert api._smith_running() is False
 
+    def test_idle_window_tolerates_thinking_mode_pauses(self, sandbox_smith_files, tmp_path):
+        """Qwen3.6-A3B thinking-mode regularly spends 2-3 min between tool calls.
+        The 60s threshold previously fired false positives during those pauses;
+        300s catches real Smith deaths within 5 min while tolerating long
+        internal reasoning blocks."""
+        ql = tmp_path / "quick_log.json"
+        ql.write_text("{}\n")
+        # Push mtime back 4 minutes — well past the old 60s threshold, well
+        # under the new 300s threshold.
+        import os as _os
+        old_mtime = time.time() - 240
+        _os.utime(ql, (old_mtime, old_mtime))
+        # No PID file, no process scan needed — activity signal alone should
+        # decide this case. Patch process_iter to confirm we don't fall to it.
+        import psutil
+        with patch.object(psutil, "process_iter", return_value=[]):
+            assert api._smith_running() is True
+
+    def test_running_true_via_process_scan_when_other_signals_fail(
+        self, sandbox_smith_files, tmp_path
+    ):
+        """Third signal: when smith.pid is stale + quick_log is missing + no
+        recent session.started, scanning psutil for a live opencode/claude
+        process catches the manual-relaunch case (operator killed dashboard
+        spawn, restarted opencode in a terminal, scan continues)."""
+        # smith.pid file points at a clearly-dead PID
+        (tmp_path / "smith.pid").write_text("99999999\n")
+        # quick_log absent → session fallback would normally fire but skip that
+        # by also leaving session.json absent so we ISOLATE the process-scan path
+        import psutil
+        fake = MagicMock()
+        fake.info = {"cmdline": ["node", "/Users/u/.opencode/bin/opencode", "run", "scan"]}
+        with patch.object(psutil, "pid_exists", return_value=False), \
+             patch.object(psutil, "process_iter", return_value=[fake]):
+            assert api._smith_running() is True
+
+    def test_running_false_when_process_scan_finds_no_smith_clients(
+        self, sandbox_smith_files, tmp_path
+    ):
+        """Process-scan must not false-positive on unrelated processes like
+        the MCP server itself, vLLM, or random terminals."""
+        import psutil
+        unrelated = [
+            MagicMock(info={"cmdline": ["python3", "-m", "mcp_server"]}),
+            MagicMock(info={"cmdline": ["vllm", "serve", "--model", "Qwen/x"]}),
+            MagicMock(info={"cmdline": ["zsh"]}),
+            MagicMock(info={"cmdline": ["/usr/bin/firefox"]}),
+        ]
+        with patch.object(psutil, "pid_exists", return_value=False), \
+             patch.object(psutil, "process_iter", return_value=unrelated):
+            assert api._smith_running() is False
+
+    def test_process_scan_matches_dashboard_spawned_claude(
+        self, sandbox_smith_files, tmp_path
+    ):
+        """Dashboard-spawned claude has --dangerously-skip-permissions in cmdline."""
+        import psutil
+        fake = MagicMock()
+        fake.info = {"cmdline": ["/opt/homebrew/bin/claude",
+                                  "--dangerously-skip-permissions",
+                                  "-p", "Recover the scan ..."]}
+        with patch.object(psutil, "pid_exists", return_value=False), \
+             patch.object(psutil, "process_iter", return_value=[fake]):
+            assert api._smith_running() is True
+
+    def test_process_scan_matches_node_wrapped_opencode(
+        self, sandbox_smith_files, tmp_path
+    ):
+        """When opencode is invoked via `node /path/to/.opencode/bin/opencode`,
+        process name is 'node' but cmdline contains the .opencode anchor.
+        This is the case the user actually hit — pgrep showed nothing for
+        'opencode' literally even though Smith was alive under node."""
+        import psutil
+        fake = MagicMock()
+        fake.info = {"cmdline": ["node", "/Users/gibson/.opencode/bin/opencode",
+                                  "run", "--dangerously-skip-permissions", "scan target"]}
+        with patch.object(psutil, "pid_exists", return_value=False), \
+             patch.object(psutil, "process_iter", return_value=[fake]):
+            assert api._smith_running() is True
+
 
 # ---------------------------------------------------------------------------
 # GET /api/smith-clients + _client_installed / _detect_active_client
