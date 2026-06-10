@@ -397,7 +397,19 @@ async def _do_coverage_tested(data: dict, cov: Any) -> str:
         artifact_id=data.get("artifact_id", ""),
     )
     if result is False:
-        return f"Cell not found: {data.get('cell_id')}"
+        # Common after context compaction: Smith carried the cell ID across a
+        # turn boundary, the matrix on disk still has the cell, but the
+        # in-context ID was lost OR Smith reconstructed it incorrectly. Point
+        # at the recovery primitive instead of leaving Smith to guess (or
+        # worse, re-register endpoints, which produces duplicate cells).
+        return (
+            f"Cell not found: {data.get('cell_id')}. "
+            "If your context was recently compacted, fetch the current matrix "
+            "via report(action='coverage', type='list') — optionally filter by "
+            "endpoint_path, method, param_name, or injection_type to narrow "
+            "the response. DO NOT re-register endpoints; the cells are still "
+            "on disk."
+        )
     if isinstance(result, str):
         return result  # passes through REJECTED messages directly
     return f"Cell updated: {data.get('cell_id')}"
@@ -446,11 +458,47 @@ async def _do_coverage(data):
         return await _do_coverage_bulk(data, cov)
     if cov_type == "reset":
         return await _do_coverage_reset(cov)
+    if cov_type == "list":
+        return await _do_coverage_list(data, cov)
     return (
-        f"Unknown coverage type '{cov_type}'. Use: endpoint, tested, bulk_tested, reset. "
+        f"Unknown coverage type '{cov_type}'. Use: endpoint, tested, bulk_tested, list, reset. "
         f"Example: report(action='coverage', data={{type:'endpoint', path:'/login', method:'GET', "
         f"params:[{{name:'user', type:'query', value_hint:'string'}}]}})"
     )
+
+
+async def _do_coverage_list(data, cov):
+    """Read the current matrix with optional filters. Compaction-recovery
+    primitive: Smith uses this after a context reset to rebuild its
+    mental model of which cells exist, what their IDs are, and where
+    each one stands.
+
+    Accepted filter keys (all optional, AND-combined):
+      endpoint_path  — substring match, case-insensitive (e.g. "/login")
+      method         — exact match (e.g. "POST")
+      status         — exact: pending|in_progress|tested_clean|vulnerable|
+                              not_applicable|skipped
+      injection_type — exact: sqli|xss|ssti|cmdi|ssrf|nosqli|xxe|traversal|
+                              crlf|prototype|mass_assignment|redirect|
+                              auth|authz|rate_limit|cors|security_headers|csrf
+      param_name     — substring match, case-insensitive
+      limit          — int, default 200, hard ceiling 1000 to keep
+                       the response payload bounded
+    """
+    LIMIT_MAX = 1000
+    try:
+        limit = min(int(data.get("limit", 200)), LIMIT_MAX)
+    except (TypeError, ValueError):
+        limit = 200
+    result = await cov.list_cells(
+        endpoint_path  = (data.get("endpoint_path") or "").strip() or None,
+        method         = (data.get("method") or "").strip() or None,
+        status         = (data.get("status") or "").strip() or None,
+        injection_type = (data.get("injection_type") or "").strip() or None,
+        param_name     = (data.get("param_name") or "").strip() or None,
+        limit          = limit,
+    )
+    return json.dumps(result, indent=2)
 
 
 async def _emit_coverage_event() -> None:

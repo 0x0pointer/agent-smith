@@ -563,6 +563,80 @@ async def get_pending(endpoint_id: str | None = None) -> list[dict]:
     return cells
 
 
+async def list_cells(
+    endpoint_path: str | None = None,
+    method:        str | None = None,
+    status:        str | None = None,
+    injection_type:str | None = None,
+    param_name:    str | None = None,
+    limit:         int        = 200,
+) -> dict:
+    """Compaction-recovery primitive: return cells with joined endpoint
+    context so Smith can rebuild its mental model after context reset.
+
+    Smith's context window can be compacted mid-scan, dropping the cell IDs
+    it was carrying. Without a read-back API the only options are (a) re-
+    register endpoints (creates duplicates) or (b) guess. This function
+    lets Smith fetch the current matrix state and find the cell ID it
+    needs by matching against (endpoint_path, method, param_name,
+    injection_type).
+
+    Filters are AND-combined. Substring matching on endpoint_path and
+    param_name (case-insensitive); exact match on method, status, and
+    injection_type. ``limit`` caps the response size — set high for a
+    full rebuild, low for a targeted lookup.
+
+    Returns ``{"cells": [...], "total": N, "filtered": M}`` where:
+      - cells is the slice of matching cells (each with endpoint context)
+      - total is the matrix-wide cell count (for sanity)
+      - filtered is the count after filters BEFORE limit truncation
+    """
+    async with _lock:
+        data = _load()
+
+    endpoints_by_id = {ep["id"]: ep for ep in data.get("endpoints", [])}
+    all_cells = data.get("matrix", [])
+
+    def _matches(cell: dict) -> bool:
+        ep = endpoints_by_id.get(cell.get("endpoint_id"), {})
+        if endpoint_path and endpoint_path.lower() not in (ep.get("path") or "").lower():
+            return False
+        if method and method.upper() != (ep.get("method") or "").upper():
+            return False
+        if status and status != cell.get("status"):
+            return False
+        if injection_type and injection_type != cell.get("injection_type"):
+            return False
+        if param_name and param_name.lower() not in (cell.get("param") or "").lower():
+            return False
+        return True
+
+    matched = [c for c in all_cells if _matches(c)]
+
+    # Project each cell with its endpoint context so Smith doesn't have to
+    # cross-reference two lists. Keep response shape stable: same keys for
+    # every cell, null for fields that aren't set.
+    out = []
+    for cell in matched[:max(0, limit)]:
+        ep = endpoints_by_id.get(cell.get("endpoint_id"), {})
+        out.append({
+            "cell_id":         cell.get("id"),
+            "endpoint_path":   ep.get("path"),
+            "method":          ep.get("method"),
+            "param_name":      cell.get("param"),
+            "param_type":      cell.get("param_type"),
+            "injection_type":  cell.get("injection_type"),
+            "status":          cell.get("status"),
+            "finding_id":      cell.get("finding_id"),
+            "tested_by":       cell.get("tested_by"),
+            "tested_at":       cell.get("tested_at"),
+            "auth_context":    ep.get("auth_context"),
+            "notes":           cell.get("notes"),
+        })
+
+    return {"cells": out, "total": len(all_cells), "filtered": len(matched)}
+
+
 async def reset() -> None:
     """Clear the entire coverage matrix."""
     async with _lock:

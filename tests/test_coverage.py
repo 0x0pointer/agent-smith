@@ -464,3 +464,148 @@ async def test_get_pending_includes_in_progress(coverage_file):
     assert cells[0]["id"] in ids
     # Should also include remaining pending cells
     assert len(pending) > 1
+
+
+# ---------------------------------------------------------------------------
+# list_cells — compaction-recovery primitive
+#
+# Smith's context window can be compacted mid-scan, dropping the cell IDs
+# it was carrying. list_cells() lets Smith fetch the current matrix with
+# joined endpoint context so it can look up the ID it needs and continue
+# closing cells without re-registering endpoints (which would create dupes).
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_list_cells_returns_all_with_joined_endpoint_context(coverage_file):
+    await core.coverage.add_endpoint(
+        path="/login", method="POST",
+        params=[{"name": "username", "type": "body", "value_hint": "string"}],
+    )
+    result = await core.coverage.list_cells()
+    assert result["total"] > 0
+    assert result["filtered"] == result["total"]
+    # Every cell projected has endpoint context joined in
+    sample = result["cells"][0]
+    assert sample["endpoint_path"] == "/login"
+    assert sample["method"] == "POST"
+    assert sample["cell_id"].startswith("cell-")
+    # Status fields present (default pending for a fresh registration)
+    assert sample["status"] == "pending"
+    # Compaction-recovery fields: not-yet-tested cells have empty/null values
+    # (finding_id is unset → None; tested_by is initialized to ""). Either
+    # falsy form means "no test result yet" — Smith reads them as "available
+    # for testing" regardless of empty-string vs null.
+    assert not sample.get("finding_id")
+    assert not sample.get("tested_by")
+
+
+@pytest.mark.asyncio
+async def test_list_cells_filters_by_endpoint_path(coverage_file):
+    await core.coverage.add_endpoint(
+        path="/login", method="POST",
+        params=[{"name": "user", "type": "body", "value_hint": "string"}],
+    )
+    await core.coverage.add_endpoint(
+        path="/api/transfer", method="POST",
+        params=[{"name": "amount", "type": "body", "value_hint": "integer"}],
+    )
+    only_login = await core.coverage.list_cells(endpoint_path="/login")
+    assert only_login["filtered"] > 0
+    assert all(c["endpoint_path"] == "/login" for c in only_login["cells"])
+
+
+@pytest.mark.asyncio
+async def test_list_cells_filters_by_status(coverage_file):
+    await core.coverage.add_endpoint(
+        path="/x", method="GET",
+        params=[{"name": "q", "type": "query", "value_hint": "string"}],
+    )
+    data = json.loads(coverage_file.read_text())
+    first_id = data["matrix"][0]["id"]
+    await core.coverage.update_cell(first_id, "in_progress", notes="testing")
+
+    in_prog = await core.coverage.list_cells(status="in_progress")
+    pending = await core.coverage.list_cells(status="pending")
+    assert in_prog["filtered"] == 1
+    assert pending["filtered"] == len(data["matrix"]) - 1
+    assert in_prog["cells"][0]["cell_id"] == first_id
+
+
+@pytest.mark.asyncio
+async def test_list_cells_filters_by_injection_type(coverage_file):
+    await core.coverage.add_endpoint(
+        path="/echo", method="GET",
+        params=[{"name": "msg", "type": "query", "value_hint": "string"}],
+    )
+    sqli = await core.coverage.list_cells(injection_type="sqli")
+    xss  = await core.coverage.list_cells(injection_type="xss")
+    assert all(c["injection_type"] == "sqli" for c in sqli["cells"])
+    assert all(c["injection_type"] == "xss" for c in xss["cells"])
+    # sqli and xss are disjoint sets — no cell shared between them
+    sqli_ids = {c["cell_id"] for c in sqli["cells"]}
+    xss_ids  = {c["cell_id"] for c in xss["cells"]}
+    assert not sqli_ids & xss_ids
+
+
+@pytest.mark.asyncio
+async def test_list_cells_filters_by_param_name(coverage_file):
+    await core.coverage.add_endpoint(
+        path="/login", method="POST",
+        params=[
+            {"name": "username", "type": "body", "value_hint": "string"},
+            {"name": "password", "type": "body", "value_hint": "string"},
+        ],
+    )
+    pwd_cells = await core.coverage.list_cells(param_name="password")
+    user_cells = await core.coverage.list_cells(param_name="user")
+    # password param has cells fanned across injection types
+    assert all(c["param_name"] == "password" for c in pwd_cells["cells"])
+    # 'user' is a substring of 'username' — substring match flags both should miss password
+    assert all(c["param_name"] == "username" for c in user_cells["cells"])
+
+
+@pytest.mark.asyncio
+async def test_list_cells_limit_caps_response_size(coverage_file):
+    await core.coverage.add_endpoint(
+        path="/big", method="POST",
+        params=[
+            {"name": f"p{i}", "type": "body", "value_hint": "string"}
+            for i in range(10)
+        ],
+    )
+    full = await core.coverage.list_cells()
+    capped = await core.coverage.list_cells(limit=5)
+    # Filtered count is unchanged — limit only truncates the returned slice
+    assert capped["filtered"] == full["filtered"]
+    assert len(capped["cells"]) == 5
+
+
+@pytest.mark.asyncio
+async def test_list_cells_combined_filters_and_uses(coverage_file):
+    """The realistic compaction-recovery case: Smith remembers it was
+    testing /login POST password with XSS, lost the cell_id, looks it up."""
+    await core.coverage.add_endpoint(
+        path="/login", method="POST",
+        params=[
+            {"name": "username", "type": "body", "value_hint": "string"},
+            {"name": "password", "type": "body", "value_hint": "string"},
+        ],
+    )
+    found = await core.coverage.list_cells(
+        endpoint_path="/login", method="POST",
+        param_name="password", injection_type="xss",
+    )
+    assert found["filtered"] == 1
+    cell = found["cells"][0]
+    # Smith now has the cell_id back and can close it
+    assert cell["cell_id"].startswith("cell-")
+    assert cell["endpoint_path"] == "/login"
+    assert cell["param_name"] == "password"
+    assert cell["injection_type"] == "xss"
+
+
+@pytest.mark.asyncio
+async def test_list_cells_empty_matrix_returns_empty(coverage_file):
+    """Fresh scan, no endpoints registered yet — must not crash."""
+    result = await core.coverage.list_cells()
+    assert result == {"cells": [], "total": 0, "filtered": 0}
