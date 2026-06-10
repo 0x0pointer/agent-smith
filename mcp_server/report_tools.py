@@ -304,10 +304,32 @@ _DASHBOARD_CANONICAL_PORT = 7777
 _LEGACY_DASHBOARD_PORTS = {5000, 8000, 8080}
 
 
+def _safe_port(value, default: int) -> int:
+    """Coerce a user-supplied port value to a valid int in the IANA range.
+
+    Defense against SonarQube python:S5145 (log injection): the result is a
+    sanitized int that's safe to interpolate into log lines. Invalid input
+    (non-int, non-numeric string, negative, > 65535) falls back to the
+    default — we never log the raw value back to the operator, which would
+    let a malicious tool-call payload write fake log entries by embedding
+    newlines.
+    """
+    try:
+        v = int(value)
+    except (TypeError, ValueError):
+        return default
+    if 0 < v < 65536:
+        return v
+    return default
+
+
 async def _do_dashboard(data):
     try:
         from core import api_server
-        requested = int(data.get("port", _DASHBOARD_CANONICAL_PORT))
+        # Sanitize at the boundary — `requested` is now guaranteed to be an
+        # int in [1, 65535], safe to interpolate into log lines and audit
+        # trails without S5145 (log injection) exposure.
+        requested = _safe_port(data.get("port"), _DASHBOARD_CANONICAL_PORT)
         if requested in _LEGACY_DASHBOARD_PORTS:
             log.tool_result(
                 "dashboard",
@@ -322,8 +344,15 @@ async def _do_dashboard(data):
         log.tool_result("dashboard", url)
         return f"Dashboard running — open {url}"
     except BaseException as exc:
-        err = f"Dashboard failed: {type(exc).__name__}: {exc}"
-        log.tool_result("dashboard", err)
+        # Defense against S5145: don't echo the raw exception message into
+        # the audit log or the return string — its content could come from
+        # user-controlled input (e.g. a malformed port value). The exception
+        # type alone is enough for Smith to diagnose. Full traceback still
+        # goes via Python's standard logger which uses parameter binding,
+        # not string interpolation, so log-injection is prevented there too.
+        safe_err = f"Dashboard failed: {type(exc).__name__}"
+        log.tool_result("dashboard", safe_err)
+        return safe_err
         return err
 
 

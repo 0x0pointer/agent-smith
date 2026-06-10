@@ -224,4 +224,52 @@ async def test_dashboard_handles_serve_failure_gracefully():
                 side_effect=OSError("address already in use")):
         result = await _do_dashboard({"port": 7777})
     assert "Dashboard failed" in result
-    assert "address already in use" in result
+    # Only the exception type name is exposed — the raw message ("address
+    # already in use") is intentionally NOT echoed back per S5145 (log
+    # injection defense — see test_dashboard_does_not_log_user_controlled_data).
+    assert "OSError" in result
+
+
+@pytest.mark.asyncio
+async def test_dashboard_does_not_log_user_controlled_data():
+    """S5145 (sonar pythonsecurity): log lines that interpolate values
+    derived from a tool call MUST NOT echo the raw value into the audit
+    trail. Otherwise a malicious payload like
+
+        report(action='dashboard', data={'port': '5000\\nFAKE LOG: pwned'})
+
+    would let Smith forge dashboard.log entries by embedding control chars.
+    Defense: _safe_port() coerces every input to a validated int (or the
+    canonical default), so anything that reaches the log is type int and
+    formats deterministically."""
+    from mcp_server.report_tools import _safe_port
+
+    # Newline-injection attempt → falls back to default, no echo of payload
+    assert _safe_port("5000\nFAKE", 7777) == 7777
+    # Non-numeric string → fallback
+    assert _safe_port("not-a-port", 7777) == 7777
+    # Negative / out-of-range → fallback
+    assert _safe_port(-1, 7777) == 7777
+    assert _safe_port(99999, 7777) == 7777
+    # Valid integers pass through
+    assert _safe_port(8000, 7777) == 8000
+    assert _safe_port("8000", 7777) == 8000
+    # None / missing → fallback
+    assert _safe_port(None, 7777) == 7777
+
+
+@pytest.mark.asyncio
+async def test_dashboard_serves_canonical_on_malformed_port_input():
+    """End-to-end S5145 defense: a malformed port reaches _do_dashboard via
+    the data dict; _safe_port catches it and the dashboard serves on the
+    canonical port without echoing the malformed value anywhere."""
+    captured_args: list = []
+    async def _capture_serve(p):
+        captured_args.append(p)
+        return "http://localhost:7777"
+    with patch("core.api_server.serve", side_effect=_capture_serve):
+        result = await _do_dashboard({"port": "5000\nINJECTED"})
+    assert captured_args == [_DASHBOARD_CANONICAL_PORT]
+    # The injected payload must NOT appear anywhere in what we return
+    assert "INJECTED" not in result
+    assert "\n" not in result
