@@ -711,8 +711,6 @@ def _smith_running() -> bool:
         or _signal_process_scan_finds_client()
     )
 
-    return False
-
 
 @app.get("/api/smith-status")
 async def api_smith_status() -> JSONResponse:
