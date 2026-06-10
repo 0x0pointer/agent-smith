@@ -207,9 +207,24 @@ async def logo() -> FileResponse:
 
 @app.get("/favicon.ico")
 async def favicon() -> FileResponse:
-    # Browser default favicon probe. Serve the existing transparent logo so
-    # we stop spamming the access log with 404s on every page load.
-    return FileResponse(_TEMPLATES_DIR / "FullLogo_Transparent.png", media_type="image/png")
+    """Real .ico file served with the correct media type. Browsers that
+    auto-probe /favicon.ico (Safari, every IE-lineage thing) want this
+    exact path and content-type to avoid logging a 404 on every page load."""
+    return FileResponse(
+        _TEMPLATES_DIR / "favicon.ico",
+        media_type="image/vnd.microsoft.icon",
+    )
+
+
+@app.get("/favicon-32x32.png")
+async def favicon_png() -> FileResponse:
+    """Sized PNG favicon for modern browsers — referenced explicitly from
+    the <link rel="icon" sizes="32x32"> tag in dashboard.html. Modern
+    rendering pipelines prefer this over the .ico when both are available."""
+    return FileResponse(
+        _TEMPLATES_DIR / "favicon-32x32.png",
+        media_type="image/png",
+    )
 
 
 @app.get("/api/findings")
@@ -357,8 +372,12 @@ async def api_clear() -> JSONResponse:
     _METRICS_FILE  = _REPO_ROOT / "pentest_metrics.jsonl"
     # _COVERAGE_FILE is intentionally omitted — reset() above already wrote the empty state.
     # Deleting it would cause /api/coverage to return {} instead of an empty-but-valid matrix.
+    # _SMITH_PID_FILE + _SMITH_CLIENT_FILE are scan-tied pointers — a stale
+    # PID from the previous scan biases _detect_active_client() toward the old
+    # client and clutters smith-status diagnostics for the next scan.
     for path in (_SESSION_FILE, _QUICK_LOG_FILE, _QA_STATE_FILE,
-                 _COST_FILE, _STEERING_FILE, _RECOVERY_SNAP, _METRICS_FILE):
+                 _COST_FILE, _STEERING_FILE, _RECOVERY_SNAP, _METRICS_FILE,
+                 _SMITH_PID_FILE, _SMITH_CLIENT_FILE):
         _safe_unlink(path)
 
     # log files in logs/
@@ -517,7 +536,13 @@ async def api_complete(request: Request) -> JSONResponse:
     Only this endpoint (called from the dashboard) can mark a scan complete.
     Smith cannot complete a scan autonomously — session(action='complete') is blocked.
     Body: {"notes": "optional completion notes"}
-    """
+
+    Side-effect cleanup mirrors Clear All but narrower: scan-tied operational
+    pointers (smith.pid, smith.client, quick_log heartbeat) are wiped so the
+    dashboard immediately reflects "smith stopped" instead of waiting 5 min
+    for the activity signal to age out. Deliverables (findings.json,
+    coverage_matrix.json, session.json, artifacts/, pocs/, pentest.log) are
+    intentionally preserved — they're the report you'll export from."""
     try:
         from core import session as scan_session
         # Force-reload so we mutate against the freshest disk state, not a
@@ -527,71 +552,165 @@ async def api_complete(request: Request) -> JSONResponse:
         notes = str(body.get("notes", "")).strip()
         cfg   = scan_session.complete(notes)
         status = cfg.get("status", "complete")
+
+        # Clean up operational pointers now that the scan is terminal.
+        # The watchdog gates on `session.status == "running"`, so flipping
+        # to "complete" first (above) means it won't fire a "smith stopped"
+        # alert from these deletions.
+        for path in (_SMITH_PID_FILE, _SMITH_CLIENT_FILE, _QUICK_LOG_FILE):
+            _safe_unlink(path)
+
         return JSONResponse({"ok": True, "status": status})
     except Exception:
         _log.exception("api_complete failed")
         return JSONResponse({"ok": False, "error": _ERR_REQUEST_FAILED}, status_code=500)
 
 
-_SMITH_IDLE_SECONDS = 60  # >1 min with no scan activity → Smith is considered stopped
+# >5 min with no scan activity → Smith is considered stopped.
+# Was 60s previously, but Qwen3.6-A3B thinking-mode reasoning regularly runs
+# 2–3 min between tool calls. 60s caused steady false positives during
+# normal thinking pauses, sending bogus WATCHDOG_SMITH_STOPPED alerts to
+# Telegram/Slack/Discord. 300s catches real Smith deaths within 5 min while
+# tolerating long internal reasoning blocks.
+_SMITH_IDLE_SECONDS = 300
+
+# Process patterns a psutil-based fallback considers "Smith is alive".
+# Used by _smith_running() as a last-resort signal after the PID-file and
+# activity-mtime checks both fail. Matches against the joined cmdline of
+# each running process. Anchored to project-specific binaries (claude with
+# its dangerous flag, opencode runners, codex MCP launches) so unrelated
+# processes don't false-positive.
+_SMITH_PROC_NEEDLES = (
+    # claude CLI driving an agent-smith scan
+    "claude --dangerously-skip-permissions",
+    # opencode run (direct binary OR wrapped via node)
+    ".opencode/bin/opencode",
+    "opencode run",
+    # codex MCP-server launches
+    "codex run",
+    "codex mcp",
+)
+
+
+def _signal_pid_file_alive() -> bool:
+    """Signal #1: tracked PID from a dashboard-managed spawn is still alive.
+
+    Caps the parsed PID at 2**22 so a malformed value can't blow up the
+    liveness probe. psutil.pid_exists works identically on macOS/Linux/
+    Windows — the older os.kill(pid, 0) probe was POSIX-only.
+    """
+    try:
+        import psutil
+        pid = int(_SMITH_PID_FILE.read_text().strip())
+    except (FileNotFoundError, ValueError, PermissionError) as e:
+        _log.debug("smith_running: pid file check skipped: %s", e)
+        return False
+    except ImportError:
+        _log.debug("smith_running: psutil missing; skipping pid-file check")
+        return False
+    if not (0 < pid < (1 << 22)):
+        return False
+    try:
+        return bool(psutil.pid_exists(pid))
+    except OSError as e:
+        _log.debug("smith_running: pid_exists failed: %s", e)
+        return False
+
+
+def _signal_quick_log_fresh() -> bool:
+    """Signal #2: quick_log.json mtime is within the idle window.
+
+    Written only by MCP tool calls, never by dashboard endpoints, so it's
+    a true Smith activity heartbeat.
+    """
+    import time
+    try:
+        if not _QUICK_LOG_FILE.exists():
+            return False
+        age = time.time() - _QUICK_LOG_FILE.stat().st_mtime
+        return age < _SMITH_IDLE_SECONDS
+    except OSError as e:
+        _log.debug("smith_running: quick_log mtime check failed: %s", e)
+        return False
+
+
+def _signal_session_recently_started() -> bool:
+    """Signal #2b: quick_log is missing AND session.json says we started
+    within the last 2 hours. Only fires when quick_log is completely
+    absent (cleared by /api/clear or archived on target change) — a
+    stale-but-present quick_log means Smith was active and stopped.
+    """
+    if _QUICK_LOG_FILE.exists():
+        return False
+    try:
+        import json as _json
+        from datetime import datetime as _dt, timezone as _tz
+        sd = _json.loads(_SESSION_FILE.read_text())
+        if sd.get("status") != "running" or sd.get("finished") is not None:
+            return False
+        started_raw = sd.get("started", "")
+        if not started_raw:
+            return False
+        elapsed = (_dt.now(_tz.utc) - _dt.fromisoformat(started_raw)).total_seconds()
+        return elapsed < 7200
+    except (OSError, ValueError, KeyError) as e:
+        _log.debug("smith_running: session.json fallback check failed: %s", e)
+        return False
+
+
+def _signal_process_scan_finds_client() -> bool:
+    """Signal #3: a live process matches an MCP-client cmdline pattern.
+
+    Catches the situation where smith.pid points at a stale dead dashboard-
+    spawn but the operator manually relaunched opencode/claude in a
+    terminal and is actively driving the scan. Run last — iterating every
+    process is the most expensive signal, but still well under 10 ms.
+    """
+    try:
+        import psutil
+    except ImportError:
+        _log.debug("smith_running: process-scan fallback unavailable (psutil missing)")
+        return False
+    try:
+        for proc in psutil.process_iter(["cmdline"]):
+            if _process_matches_smith(proc):
+                return True
+    except (OSError, psutil.AccessDenied):
+        _log.debug("smith_running: process-scan fallback unavailable")
+    return False
+
+
+def _process_matches_smith(proc) -> bool:
+    """True iff the process's cmdline contains a known Smith-client needle."""
+    try:
+        import psutil
+        cmd = " ".join(proc.info.get("cmdline") or []).lower()
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return False
+    if not cmd:
+        return False
+    return any(needle in cmd for needle in _SMITH_PROC_NEEDLES)
 
 
 def _smith_running() -> bool:
     """Return True if any Smith (claude OR opencode, dashboard- or manually-launched) is active.
 
-    Two signals — either is sufficient:
-      1. The tracked PID (from a dashboard restart) is still alive.
-      2. session.json / quick_log.json was modified within _SMITH_IDLE_SECONDS,
-         meaning some MCP client is actively making tool calls.
+    Any one signal is sufficient — checked in cheapest-first order:
+      1. ``_signal_pid_file_alive``           — tracked PID from a dashboard spawn
+      2. ``_signal_quick_log_fresh``          — recent MCP tool-call heartbeat
+      3. ``_signal_session_recently_started`` — scan started < 2 h ago with
+                                                quick_log wiped (post-clear case)
+      4. ``_signal_process_scan_finds_client``— live opencode/claude/codex process
 
-    The activity signal catches Smith processes the dashboard didn't spawn
-    (e.g. user started opencode or claude manually) while still using PID
-    tracking for the immediate-feedback case after the Restart Smith button.
+    Each helper handles its own exceptions and returns False on any
+    fault, so the top-level function stays low-complexity.
     """
-    # PID file (dashboard-spawned process). Cap the parsed PID at 2**22 (the
-    # POSIX kernel.pid_max upper bound on common Linux/macOS) so a maliciously
-    # large value in the file can't blow up os.kill with an OverflowError.
-    try:
-        raw_pid = _SMITH_PID_FILE.read_text().strip()
-        pid = int(raw_pid)
-        if 0 < pid < (1 << 22):
-            os.kill(pid, 0)
-            return True
-    except (FileNotFoundError, ValueError, ProcessLookupError, PermissionError) as e:
-        _log.debug("smith_running: pid file check skipped: %s", e)
-    except OSError as e:
-        _log.debug("smith_running: os.kill failed: %s", e)
-
-    # Primary heartbeat: quick_log.json mtime. Written only by MCP tool calls,
-    # never by dashboard endpoints — so it's a true Smith activity signal.
-    import time
-    now = time.time()
-    try:
-        if _QUICK_LOG_FILE.exists() and now - _QUICK_LOG_FILE.stat().st_mtime < _SMITH_IDLE_SECONDS:
-            return True
-    except OSError as e:
-        _log.debug("smith_running: quick_log mtime check failed: %s", e)
-
-    # Fallback: only when quick_log is completely missing (deleted by /api/clear
-    # or archived on target change) — NOT when it's merely stale. A stale file
-    # means Smith was active but has since stopped; a missing file means the
-    # slate was wiped and we can't tell either way.
-    if not _QUICK_LOG_FILE.exists():
-        try:
-            import json as _json
-            from datetime import datetime as _dt, timezone as _tz
-            sd = _json.loads(_SESSION_FILE.read_text())
-            if sd.get("status") == "running" and sd.get("finished") is None:
-                started_raw = sd.get("started", "")
-                if started_raw:
-                    started = _dt.fromisoformat(started_raw)
-                    elapsed = (_dt.now(_tz.utc) - started).total_seconds()
-                    if elapsed < 7200:  # session started within 2 hours
-                        return True
-        except Exception as e:
-            _log.debug("smith_running: session.json fallback check failed: %s", e)
-
-    return False
+    return (
+        _signal_pid_file_alive()
+        or _signal_quick_log_fresh()
+        or _signal_session_recently_started()
+        or _signal_process_scan_finds_client()
+    )
 
 
 @app.get("/api/smith-status")
@@ -603,57 +722,118 @@ _KNOWN_CLIENTS = ("claude", "opencode", "codex")
 
 
 def _client_installed(name: str) -> bool:
+    """Check whether the named client CLI is on $PATH (cross-platform).
+
+    The older form fell back to hardcoded macOS paths (/opt/homebrew/bin and a
+    literal user home), which broke on Windows and made the function lie on
+    fresh systems where the user installed the CLI via npm/cargo to a
+    different prefix. shutil.which() handles ``$PATHEXT`` on Windows so an
+    ``opencode.cmd`` shim is detected correctly."""
     import shutil
-    if name == "claude":
-        return bool(shutil.which("claude") or os.path.exists("/opt/homebrew/bin/claude"))
-    if name == "opencode":
-        return bool(shutil.which("opencode") or os.path.exists("/Users/gibson/.opencode/bin/opencode"))
-    if name == "codex":
-        return bool(shutil.which("codex"))
+    if name in ("claude", "opencode", "codex"):
+        return bool(shutil.which(name))
     return False
 
 
 def _client_process_running(name: str) -> bool:
-    """Check whether any process for the given client is currently running."""
-    import subprocess
+    """Check whether any process for the given client is currently running.
+
+    Cross-platform via psutil — replaces the older ``pgrep -f <name>`` shell
+    call which only ran on Unix. Matches against the full command line so an
+    opencode wrapper running as ``node /path/to/.opencode/...`` still hits."""
     try:
-        r = subprocess.run(
-            ["pgrep", "-f", name],
-            capture_output=True, text=True, timeout=2,
-        )
-        return bool(r.stdout.strip())
-    except Exception:
+        import psutil
+    except ImportError:
         return False
+    needle = name.lower()
+    try:
+        for proc in psutil.process_iter(["name", "cmdline"]):
+            try:
+                pname = (proc.info.get("name") or "").lower()
+                if needle in pname:
+                    return True
+                cmd = " ".join(proc.info.get("cmdline") or []).lower()
+                if needle in cmd:
+                    return True
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+    except (psutil.AccessDenied, OSError):
+        return False
+    return False
+
+
+def _resolve_client_from_session() -> str | None:
+    """Resolver step 1+2: read session.json and return whichever client
+    field is populated and points at an installed CLI.
+
+    Step 1 (authoritative): ``smith_proc.client`` set at session.start() by
+    caller-detection. This is THE answer when present — once a scan
+    started in opencode, watchdog respawns must use opencode.
+
+    Step 2 (legacy / back-compat): top-level ``client`` field, for older
+    sessions or out-of-band operator overrides.
+    """
+    try:
+        sd = json.loads(_SESSION_FILE.read_text())
+    except (OSError, ValueError):
+        return None
+    smith_proc = sd.get("smith_proc") if isinstance(sd, dict) else None
+    if isinstance(smith_proc, dict):
+        locked = (smith_proc.get("client") or "").strip().lower()
+        if locked in _KNOWN_CLIENTS and _client_installed(locked):
+            return locked
+    client = (sd.get("client") or "").strip().lower() if isinstance(sd, dict) else ""
+    if client in _KNOWN_CLIENTS and _client_installed(client):
+        return client
+    return None
+
+
+def _resolve_client_from_smith_client_file() -> str | None:
+    """Resolver step 3: read logs/smith.client (last dashboard-managed
+    spawn). Global file, can drift across scans — only useful when no
+    scan-locked client is present."""
+    try:
+        saved = _SMITH_CLIENT_FILE.read_text().strip().lower()
+    except (OSError, ValueError):
+        return None
+    return saved if (saved in _KNOWN_CLIENTS and _client_installed(saved)) else None
+
+
+def _resolve_client_from_running_process() -> str | None:
+    """Resolver step 4: scan for a live process matching a known client.
+
+    Iterates _KNOWN_CLIENTS in priority order (claude > opencode > codex)
+    so the answer is deterministic when multiple clients are open.
+    """
+    for name in _KNOWN_CLIENTS:
+        if _client_process_running(name) and _client_installed(name):
+            return name
+    return None
 
 
 def _detect_active_client() -> str:
     """Detect which client should be used for restart.
 
-    Resolution order:
-      1. Client stored in session.json when the scan was started (most reliable)
-      2. Last client persisted in logs/smith.client (from a previous restart)
-      3. Currently running process: claude > opencode > codex
-      4. claude as default
+    Resolution chain (most authoritative first); first match wins:
+      1. ``_resolve_client_from_session`` — scan-locked client or legacy
+         top-level field in session.json
+      2. ``_resolve_client_from_smith_client_file`` — logs/smith.client
+         (global, drift-prone, used only when session.json is silent)
+      3. ``_resolve_client_from_running_process`` — live process scan
+      4. ``"claude"`` as final default
+
+    Operator override: the /api/restart-smith endpoint accepts
+    ``{"client": "<name>"}`` in the request body, which short-circuits
+    this entire chain. Use that path when intentionally switching mid-scan.
     """
-    # 1. Client recorded at session start — the definitive source
-    try:
-        sd = json.loads(_SESSION_FILE.read_text())
-        client = sd.get("client", "").strip().lower()
-        if client in _KNOWN_CLIENTS and _client_installed(client):
+    for resolver in (
+        _resolve_client_from_session,
+        _resolve_client_from_smith_client_file,
+        _resolve_client_from_running_process,
+    ):
+        client = resolver()
+        if client:
             return client
-    except Exception:
-        pass
-    # 2. Saved from last manual restart
-    try:
-        saved = _SMITH_CLIENT_FILE.read_text().strip().lower()
-        if saved in _KNOWN_CLIENTS and _client_installed(saved):
-            return saved
-    except Exception:
-        pass
-    # 3. Running process
-    for name in _KNOWN_CLIENTS:
-        if _client_process_running(name) and _client_installed(name):
-            return name
     return "claude"
 
 
@@ -666,6 +846,21 @@ async def api_smith_clients() -> JSONResponse:
         "codex":    _client_installed("codex"),
         "active":   _detect_active_client(),
     })
+
+
+# Small lookup table for the audit-log tag that goes into session.json's
+# smith_proc.source field. Replaces the chained ternary that SonarQube
+# flagged as a confusing nested conditional (python:S3358). Adding a new
+# spawn source = one entry here.
+_SPAWN_SOURCE_TAGS = {
+    "watchdog": "watchdog_spawn",
+    "api":      "dashboard_spawn",
+}
+
+
+def _spawn_source_tag(source: str) -> str:
+    """Map a _spawn_smith() source argument to its audit-log tag."""
+    return _SPAWN_SOURCE_TAGS.get(source, f"spawn_{source}")
 
 
 async def _spawn_smith(client: str, source: str = "api") -> tuple[bool, int | str]:
@@ -709,26 +904,69 @@ async def _spawn_smith(client: str, source: str = "api") -> tuple[bool, int | st
         await loop.run_in_executor(None, lambda: log_path.open("a").write(audit_line))
 
         import shutil
+        binary = shutil.which(client)
+        if not binary:
+            return False, f"{client} binary not found on PATH"
         if client == "claude":
-            binary = shutil.which("claude") or "/opt/homebrew/bin/claude"
             args = [binary, "--dangerously-skip-permissions", "-p", prompt]
         else:
-            binary = shutil.which("opencode") or "/Users/gibson/.opencode/bin/opencode"
-            args = [binary, "run", prompt]
-
-        if not os.path.exists(binary):
-            return False, f"{client} binary not found at {binary}"
+            # opencode: detached background spawn has no controlling TTY, so any
+            # permission prompt either hangs forever (waiting on closed stdin)
+            # or exits because no TTY is available. --dangerously-skip-permissions
+            # auto-approves prompts that aren't explicitly denied in opencode.json's
+            # `permission.deny` block. Mirrors how the claude branch above handles
+            # the same constraint. To keep the safety net, users should add
+            # destructive-command denials to ~/.config/opencode/opencode.json —
+            # the installer recommends a starter set.
+            args = [binary, "run", "--dangerously-skip-permissions", prompt]
 
         log_fh = await loop.run_in_executor(None, lambda: log_path.open("a"))
-        proc = await asyncio.create_subprocess_exec(
-            *args,
-            stdout=log_fh,
-            stderr=log_fh,
-            cwd=str(_REPO_ROOT),
-            start_new_session=True,
-        )
+
+        # Detach the child so signals to the dashboard process don't reach it.
+        # POSIX uses os.setsid() via start_new_session; Windows uses the
+        # CREATE_NEW_PROCESS_GROUP creationflag. Same intent, different API.
+        spawn_kwargs: dict = {
+            "stdout": log_fh,
+            "stderr": log_fh,
+            "cwd": str(_REPO_ROOT),
+        }
+        import sys as _sys
+        if _sys.platform == "win32":
+            # subprocess.CREATE_NEW_PROCESS_GROUP is only defined on Windows
+            # builds of CPython. The literal value is the documented Win32
+            # CREATE_NEW_PROCESS_GROUP creation flag (0x00000200), used as a
+            # fallback so cross-platform tests that force sys.platform="win32"
+            # still resolve to the expected integer.
+            import subprocess as _subprocess
+            spawn_kwargs["creationflags"] = getattr(
+                _subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200
+            )
+        else:
+            spawn_kwargs["start_new_session"] = True
+
+        proc = await asyncio.create_subprocess_exec(*args, **spawn_kwargs)
         _SMITH_PID_FILE.write_text(str(proc.pid))
         _SMITH_CLIENT_FILE.write_text(client)
+
+        # Scan-lock the chosen client into session.json so subsequent
+        # watchdog restarts can't drift to a different CLI. This is the
+        # other half of the fix: _detect_active_client() reads
+        # smith_proc.client first, and _spawn_smith() guarantees it's
+        # always populated after a successful spawn. Source distinguishes
+        # dashboard restarts from auto-restarts so a later audit is clear.
+        try:
+            from core import session as scan_session
+            scan_session.set_smith_proc(
+                pid=proc.pid,
+                client=client,
+                source=_spawn_source_tag(source),
+            )
+        except Exception as e:
+            # Never break the spawn path on a session-update failure —
+            # the file-based smith.client write above is the operational
+            # backup. Just note it for diagnostics.
+            _log.debug("spawn_smith: scan-lock write failed: %s", e)
+
         return True, proc.pid
     except Exception:
         _log.exception("spawn_smith failed")
@@ -757,7 +995,14 @@ def _mcp_sse_alive() -> bool:
 
 
 async def _watchdog_tick(now: float) -> None:
-    """Single watchdog tick: restart Smith if all guard conditions pass."""
+    """Single watchdog tick: restart Smith if all guard conditions pass.
+
+    Fires out-of-band notifications (Telegram/Slack/Discord) at three
+    decision points so the operator sees stuck-scan states even when
+    they're not watching the dashboard. Each notification has its own
+    dedup code so the 30-min BaseNotifier cooldown prevents spam — one
+    alert per condition per window, not one per watchdog tick.
+    """
     global _watchdog_last_restart_ts
     session_data = _read_json(_SESSION_FILE)
     if session_data.get("status") != "running":
@@ -766,8 +1011,41 @@ async def _watchdog_tick(now: float) -> None:
         return
     if _smith_running():
         return
+    # Smith is stopped while the scan is still running — that's the
+    # condition the operator wants to know about. Fire BEFORE the MCP /
+    # cap / gap guards so we don't go silent on the most actionable case.
+    try:
+        from core import notifiers as _nfr
+        _nfr.notify(
+            title="Smith stopped while scan running",
+            body=(
+                "Watchdog detected Smith exited with the scan still "
+                "marked running. Auto-restart will fire if MCP is alive "
+                "and the per-hour cap allows. Check the dashboard if "
+                "the scan stays stuck."
+            ),
+            urgency="high",
+            code="WATCHDOG_SMITH_STOPPED",
+        )
+    except Exception:
+        # Notifier failures must never break the watchdog loop.
+        pass
     if not _mcp_sse_alive():
         _log.warning("watchdog suppressed: MCP SSE server unreachable on 127.0.0.1:7778")
+        try:
+            from core import notifiers as _nfr
+            _nfr.notify(
+                title="MCP SSE server unreachable",
+                body=(
+                    "Watchdog can't restart Smith because the MCP server "
+                    "on 127.0.0.1:7778 isn't responding. Restart it with "
+                    "`./installers/start-mcp-server.sh start`."
+                ),
+                urgency="high",
+                code="WATCHDOG_MCP_DOWN",
+            )
+        except Exception:
+            pass
         return
     if now - _watchdog_last_restart_ts < _WATCHDOG_MIN_GAP_SECONDS:
         return
@@ -779,6 +1057,20 @@ async def _watchdog_tick(now: float) -> None:
             "watchdog suppressed: %d restarts in last hour exceeds cap %d",
             len(_watchdog_restart_count_window), _WATCHDOG_MAX_PER_HOUR,
         )
+        try:
+            from core import notifiers as _nfr
+            _nfr.notify(
+                title="Smith respawn cap reached",
+                body=(
+                    f"Watchdog gave up after {len(_watchdog_restart_count_window)} "
+                    f"restarts in the last hour (cap {_WATCHDOG_MAX_PER_HOUR}). "
+                    "Scan is stuck — please intervene from the dashboard."
+                ),
+                urgency="high",
+                code="WATCHDOG_RESPAWN_CAP",
+            )
+        except Exception:
+            pass
         return
     client = _detect_active_client()
     _log.info("watchdog: smith stopped while scan running — auto-restart")
@@ -786,7 +1078,11 @@ async def _watchdog_tick(now: float) -> None:
     if ok:
         _watchdog_last_restart_ts = now
         _watchdog_restart_count_window.append(now)
-        _log.info("watchdog: spawned pid=%s", result)
+        # S5145 defense: result on success is a kernel-assigned PID (int).
+        # Force %d formatting so a malformed string return path can't reach
+        # the log line — int() would raise, and the resulting LogRecord
+        # carries only a sanitized integer, never user-controlled bytes.
+        _log.info("watchdog: spawned pid=%d", int(result) if isinstance(result, int) else 0)
 
 
 async def _smith_watchdog_loop() -> None:
@@ -932,10 +1228,15 @@ def _write_pid(pid: int) -> None:
 
 
 def _pid_alive(pid: int) -> bool:
+    """Cross-platform PID liveness check via psutil.pid_exists.
+
+    The older ``os.kill(pid, 0)`` form was POSIX-only — on Windows it raises
+    ``OSError: WinError 87`` (invalid parameter) for valid PIDs because the
+    NT kernel doesn't model signal 0 the way POSIX does."""
     try:
-        os.kill(pid, 0)  # NOSONAR - signal 0 is a POSIX liveness probe, not a real signal
-        return True
-    except OSError:
+        import psutil
+        return bool(psutil.pid_exists(pid))
+    except (ImportError, OSError):
         return False
 
 
@@ -968,10 +1269,14 @@ async def serve(port: int = 7777) -> str:
 
     # Old process died, code changed, or never existed — kill stale process if running
     if saved_pid and _pid_alive(saved_pid):
+        # psutil.Process.terminate() abstracts SIGTERM (POSIX) vs
+        # TerminateProcess (Windows). Older form was os.kill(SIGTERM)
+        # which Windows doesn't support for foreign processes.
         try:
-            os.kill(saved_pid, signal.SIGTERM)  # NOSONAR - SIGTERM sent only to our own spawned dashboard child process
+            import psutil
+            psutil.Process(saved_pid).terminate()
             await asyncio.sleep(0.3)
-        except OSError:
+        except (psutil.NoSuchProcess, psutil.AccessDenied, ImportError, OSError):
             pass
 
     # Fire-and-forget: process runs independently in a new session.

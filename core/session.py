@@ -33,6 +33,7 @@ Output file
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -68,9 +69,154 @@ PRESETS: dict[str, dict] = {
 _REPO_ROOT = Path(__file__).parent.parent
 _SESSION_FILE = _REPO_ROOT / "session.json"
 
+# MCP SSE listen port — must match start-mcp-server.sh. The caller-detection
+# helper below uses this to identify the Smith client across the TCP socket.
+_MCP_SSE_PORT = 7778
+
+
 # ── In-memory state ───────────────────────────────────────────────────────────
 
 _current: dict | None = None
+
+
+# ── Caller detection ──────────────────────────────────────────────────────────
+#
+# When session.start() is called via MCP, we want a precise way to ask later
+# "is the Smith process driving this scan still alive?". The old heuristic
+# (quick_log mtime + smith.pid file written only by dashboard-spawned restarts)
+# gives false positives for interactive runs where Smith is alive but the LLM
+# is doing long thinking-mode reasoning between tool calls.
+#
+# Strategy: at start(), inspect the TCP connections to the MCP SSE port (7778)
+# to find a process with an ESTABLISHED connection whose command line matches
+# a known client (claude / opencode / codex). Stdio MCP falls back to the
+# parent process (the MCP server is launched as a subprocess of the client).
+
+def _detect_smith_caller(port: int = _MCP_SSE_PORT) -> dict | None:
+    """Identify the calling Smith client.
+
+    Returns ``{"pid": int, "client": "claude" | "opencode" | "codex"}`` for
+    the most likely caller, or ``None`` when nothing recognizable is connected.
+    Never raises — failure to detect is a routine outcome, not an error.
+    """
+    for pid in _connected_pids(port):
+        client = _resolve_client_for_pid(pid)
+        if client:
+            return {"pid": pid, "client": client}
+    # Stdio MCP fallback: the MCP server runs as a child of the client process.
+    try:
+        parent_pid = os.getppid()
+        client = _resolve_client_for_pid(parent_pid)
+        if client:
+            return {"pid": parent_pid, "client": client}
+    except OSError:
+        pass
+    return None
+
+
+def _connected_pids(port: int) -> list[int]:
+    """PIDs with an ESTABLISHED TCP connection involving the given port.
+
+    Walks ``psutil.process_iter()`` and asks each process for its own
+    connection list, instead of the system-wide ``psutil.net_connections()``.
+
+    Why: on macOS, ``psutil.net_connections(kind="tcp")`` requires admin to
+    return non-empty results — without elevation it silently returns ``[]``
+    even though the connections clearly exist (lsof sees them fine). The
+    per-process ``proc.net_connections()`` call works without elevation for
+    any process owned by the current user, which is the realistic scope for
+    a Smith client connecting to a Smith-owned MCP server. Slightly slower
+    in big process tables (still well under 10 ms in practice), but
+    correct on every platform we care about.
+
+    Connections are accepted if EITHER the local or remote endpoint matches
+    ``port``. Local match = the MCP server side; remote match = the client
+    side. We collect both and let the cmdline check in
+    ``_resolve_client_for_pid`` filter out the server's own PID.
+    """
+    try:
+        import psutil
+    except ImportError:
+        return []
+    pids: list[int] = []
+    try:
+        for proc in psutil.process_iter(["pid"]):
+            try:
+                # net_connections() replaces deprecated connections() in
+                # psutil >= 6.0; both accept kind="tcp" and use the same
+                # sconn shape under the hood.
+                conn_iter = (
+                    proc.net_connections(kind="tcp")
+                    if hasattr(proc, "net_connections")
+                    else proc.connections(kind="tcp")
+                )
+            except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+                continue
+            for conn in conn_iter:
+                if conn.status != psutil.CONN_ESTABLISHED:
+                    continue
+                local_match = conn.laddr and conn.laddr.port == port
+                remote_match = conn.raddr and conn.raddr.port == port
+                if local_match or remote_match:
+                    pids.append(proc.pid)
+                    break  # don't list a process twice for the same port
+    except (psutil.AccessDenied, OSError, RuntimeError):
+        return []
+    return pids
+
+
+def _resolve_client_for_pid(pid: int) -> str | None:
+    """Map a PID to a known Smith client by command-line inspection.
+
+    Returns the client name or ``None`` when the process doesn't look like a
+    Smith client (e.g., the MCP server itself, vLLM, or unrelated processes).
+    Cross-platform via ``psutil`` — replaces the Unix-only ``ps -o command=``.
+    """
+    try:
+        import psutil
+    except ImportError:
+        return None
+    try:
+        proc = psutil.Process(pid)
+        cmd = " ".join(proc.cmdline()).lower()
+    except (psutil.NoSuchProcess, psutil.AccessDenied, ValueError, OSError):
+        return None
+    if not cmd:
+        return None
+    # claude: dashboard-spawned uses --dangerously-skip-permissions; the older
+    # `-p` shorthand exists for completeness, and the bare `claude` TUI is
+    # disambiguated by a separate substring check below.
+    if "claude" in cmd and ("dangerously-skip-permissions" in cmd or " -p " in cmd):
+        return "claude"
+    # opencode is commonly invoked as `node /Users/<u>/.opencode/bin/opencode run …`
+    # or `node …/opencode/dist/index.js`. The .opencode/bin/opencode anchor catches
+    # both shapes plus the direct binary form. Also accept the dashboard's literal
+    # `opencode run …` invocation, raw `opencode` TUI, and any cmdline mentioning
+    # /opencode/ as a directory component (the dist path of npm installs).
+    if (".opencode/bin/opencode" in cmd
+            or "/opencode/dist" in cmd
+            or "opencode run" in cmd
+            or "/opencode" in cmd
+            or cmd.startswith("opencode")):
+        return "opencode"
+    if "codex" in cmd and ("run" in cmd or "mcp" in cmd):
+        return "codex"
+    return None
+
+
+def _persist_smith_caller(info: dict) -> None:
+    """Mirror the captured caller into logs/smith.pid + logs/smith.client so
+    the dashboard's existing PID-file check picks it up unchanged. Failure
+    is non-fatal — the in-memory smith_proc field is still authoritative."""
+    if not info:
+        return
+    try:
+        log_dir = _REPO_ROOT / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        (log_dir / "smith.pid").write_text(str(info["pid"]))
+        (log_dir / "smith.client").write_text(info["client"])
+    except OSError:
+        pass
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -145,6 +291,18 @@ def start(
         "context_chars_sent": 0,
         "complete_attempts":  0,        # incremented each time session(complete) is called
     }
+    # Capture which Smith process drove this start() call so the dashboard
+    # watchdog can ask "is THIS PID still alive?" instead of falling back to
+    # the quick_log mtime heuristic (which gives false positives during long
+    # thinking-mode reasoning).
+    caller = _detect_smith_caller()
+    if caller:
+        _current["smith_proc"] = {
+            **caller,
+            "captured_at": datetime.now(timezone.utc).isoformat(),
+            "source":      "interactive_mcp",
+        }
+        _persist_smith_caller(caller)
     _flush()
     return _current
 
@@ -203,6 +361,7 @@ def complete(
     so dashboards and exports can distinguish a force-completed scan from a clean one.
     """
     global _current
+    _reconcile_if_external_write()
     if _current and _current["status"] == "running":
         _current["status"]   = "incomplete_with_unresolved_blockers" if quality_gate == "failed" else "complete"
         _current["finished"] = datetime.now(timezone.utc).isoformat()
@@ -217,6 +376,51 @@ def complete(
 
 def get() -> dict | None:
     return _current
+
+
+def set_smith_proc(pid: int, client: str, source: str) -> None:
+    """Scan-lock the driving Smith client into session.json's `smith_proc` field.
+
+    This is the authoritative answer to "which CLI is driving THIS scan?". The
+    watchdog reads it before falling back to logs/smith.client (which is a
+    global file shared across scans and prone to drift between sessions).
+
+    Called from:
+      • core.session.start() — via _detect_smith_caller() at scan start.
+      • core.api_server._spawn_smith() — every time the dashboard or the
+        watchdog spawns a Smith, locks the client choice into the scan.
+
+    `client` should be one of "claude" | "opencode" | "codex". `source`
+    documents what wrote it ("interactive_mcp", "dashboard_spawn",
+    "watchdog_spawn", "api_restart") so a later audit can see why the
+    current pin exists. Idempotent and safe to call repeatedly.
+    """
+    global _current
+    _reconcile_if_external_write()
+    if not _current:
+        return
+    _current["smith_proc"] = {
+        "pid":          int(pid),
+        "client":       str(client),
+        "source":       str(source),
+        "captured_at":  datetime.now(timezone.utc).isoformat(),
+    }
+    _flush()
+
+
+def get_scan_client() -> str | None:
+    """Return the scan-locked Smith client, or None if not yet set.
+
+    Read-only inspection helper for the watchdog. Does not reconcile —
+    callers wanting freshest state should reload first."""
+    if not _current:
+        return None
+    sp = _current.get("smith_proc")
+    if isinstance(sp, dict):
+        c = sp.get("client")
+        if isinstance(c, str) and c in ("claude", "opencode", "codex"):
+            return c
+    return None
 
 
 def load_from_disk(force: bool = False) -> dict | None:
@@ -257,6 +461,7 @@ def set_skill(
     silently skipped so re-invoking the same skill mid-session is idempotent.
     """
     global _current
+    _reconcile_if_external_write()
     if _current is None or _current["status"] != "running":
         return None
     _current["skill"] = skill_name
@@ -274,6 +479,7 @@ def set_skill(
 
 def add_tool_called(tool_name: str) -> None:
     """Persist a tool name to the tools_called list in session.json."""
+    _reconcile_if_external_write()
     if _current and _current["status"] == "running":
         tools = _current.setdefault("tools_called", [])
         if tool_name not in tools:
@@ -284,6 +490,7 @@ def add_tool_called(tool_name: str) -> None:
 def set_step(step: str) -> dict | None:
     """Update the current workflow step checkpoint (e.g. '5_nuclei_scan')."""
     global _current
+    _reconcile_if_external_write()
     if _current is None or _current["status"] != "running":
         return None
     _current["current_step"] = step
@@ -304,6 +511,7 @@ def trigger_gate(gate_id: str, trigger: str, required_skills: list[str]) -> dict
     they are merged in.
     """
     global _current
+    _reconcile_if_external_write()
     if _current is None or _current["status"] != "running":
         return None
 
@@ -336,6 +544,7 @@ def satisfy_gate(gate_id: str, skill_name: str) -> dict | None:
     When all required_skills are satisfied, the gate status flips to 'satisfied'.
     """
     global _current
+    _reconcile_if_external_write()
     if _current is None:
         return None
     for gate in _current.get("gates", []):
@@ -363,6 +572,7 @@ def pending_gates() -> list[dict]:
 def defer_gates(gate_ids: list[str]) -> None:
     """Suppress the given gate IDs from pending_gates() until restore_gates() is called."""
     global _current
+    _reconcile_if_external_write()
     if _current is None:
         return
     deferred = _current.setdefault("deferred_gates", [])
@@ -375,6 +585,7 @@ def defer_gates(gate_ids: list[str]) -> None:
 def restore_gates() -> None:
     """Clear all deferred gate IDs so they become visible again."""
     global _current
+    _reconcile_if_external_write()
     if _current is None:
         return
     _current["deferred_gates"] = []
@@ -393,6 +604,7 @@ _SPIDER_MAX_RETRIES = 3
 def record_spider_failure(target: str) -> int:
     """Record a spider failure for this target.  Returns the new retry count."""
     global _current
+    _reconcile_if_external_write()
     if _current is None or _current.get("status") != "running":
         return 0
     failures = _current.setdefault("spider_failures", {})
@@ -410,6 +622,7 @@ def record_spider_failure(target: str) -> int:
 def clear_spider_failure(target: str) -> None:
     """Clear spider failure for this target after a successful run."""
     global _current
+    _reconcile_if_external_write()
     if _current is None:
         return
     failures = _current.get("spider_failures")
@@ -597,6 +810,7 @@ def trigger_intervention(
     The human responds via the dashboard or session(action='resume').
     """
     global _current
+    _reconcile_if_external_write()
     if not _current:
         return {}
     _current["status"] = "intervention_required"
@@ -637,6 +851,7 @@ def resolve_intervention(choice: str, message: str = "") -> dict:
     broke the dashboard renderer that iterated history without null checks.
     """
     global _current
+    _reconcile_if_external_write()
     if not _current:
         return {}
     intervention = _current.get("intervention")
@@ -672,6 +887,7 @@ def get_intervention() -> dict | None:
 
 def _stop(status: str, message: str) -> str:
     global _current
+    _reconcile_if_external_write()
     if _current:
         _current["status"]      = status
         _current["stop_reason"] = message
@@ -681,5 +897,128 @@ def _stop(status: str, message: str) -> str:
 
 
 def _flush() -> None:
+    global _last_local_write_mtime
     if _current:
         _SESSION_FILE.write_text(json.dumps(_current, indent=2))
+        try:
+            _last_local_write_mtime = _SESSION_FILE.stat().st_mtime
+        except OSError:
+            # Hold the previous mtime; reconcile will conservatively reload
+            # the next time it's called.
+            pass
+
+
+# ── Cross-process state reconciliation ───────────────────────────────────────
+#
+# The dashboard and the MCP server are separate Python processes that both
+# read/write session.json. Each keeps its own in-memory `_current`. Without
+# reconciliation, a write in process A can be silently undone by a stale
+# `_flush()` in process B — e.g., the operator clicks Complete Scan on the
+# dashboard (status → "complete"), then the MCP's next tool call flushes its
+# stale `_current` (status → "running") on top of the dashboard's write.
+#
+# Strategy: track the mtime of our own last `_flush()` write. Before every
+# mutation, compare against the on-disk mtime. If disk is newer than what we
+# wrote, another process changed the file — reload it into `_current` before
+# touching anything. Read-only callers don't reconcile (cost outweighs the
+# benefit; they tolerate stale data fine).
+#
+# This isn't a real lock — TOCTTOU races between reconcile-read and the next
+# write still exist — but it eliminates the common case of "every mutation
+# silently undoes the operator's Complete click".
+
+# mtime (seconds since epoch) of the last `_flush()` write performed by THIS
+# process. 0.0 means we haven't written yet; any disk mtime > this value is
+# treated as "external write, reconcile before continuing".
+_last_local_write_mtime: float = 0.0
+
+# Epoch-second timestamp of the last lazy smith.pid refresh attempt. Rate-
+# limits the psutil scan in _refresh_smith_pid_if_stale() so very high-frequency
+# mutations (e.g., add_tool_called on every MCP tool result) don't pay for an
+# expensive process_iter on every single call when the PID went stale.
+_last_pid_refresh_attempt: float = 0.0
+_PID_REFRESH_MIN_INTERVAL_SECONDS = 30.0
+
+
+def _reconcile_if_external_write() -> None:
+    """Reload `_current` from disk if another process wrote to session.json
+    since our last local flush, and lazily refresh logs/smith.pid when the
+    tracked PID has died.
+
+    Called by every mutation in this module before checking state. Two
+    correctness benefits:
+
+      1. Cross-process state desync — dashboard process and MCP server each
+         keep their own ``_current``; a stale flush in one can silently undo
+         the other's write. Reconciling against disk first eliminates the
+         hot case (operator clicks Complete Scan, next MCP mutation is about
+         to overwrite it).
+      2. Stale smith.pid tracking — the dashboard's _smith_running() check
+         consults logs/smith.pid first; if that file points at a dead PID
+         (e.g., the original Smith died and a new one took over outside the
+         dashboard restart path), the check fails and the watchdog fires a
+         false "Smith stopped" alert. Re-detecting the caller on the fly
+         keeps the pointer fresh without operator intervention.
+    """
+    global _current
+    # Disk-state reconcile (cross-process write protection)
+    try:
+        disk_mtime = _SESSION_FILE.stat().st_mtime
+    except OSError:
+        return
+    # Small fudge: filesystem mtime granularity varies (APFS is sub-µs but
+    # some Linux mounts are 1s). A tolerance of 1ms catches genuine external
+    # writes without false-positiving on same-process re-flushes within the
+    # same syscall window.
+    if disk_mtime > _last_local_write_mtime + 0.001:
+        try:
+            fresh = json.loads(_SESSION_FILE.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            pass
+        else:
+            _current = fresh
+
+    # Stale-PID refresh (rate-limited)
+    _refresh_smith_pid_if_stale()
+
+
+def _refresh_smith_pid_if_stale() -> None:
+    """If logs/smith.pid points at a dead process, try to detect a live caller
+    and rewrite the file. Rate-limited so high-frequency mutations don't pay
+    for psutil scanning on every call.
+
+    Returns silently on any error — this is a best-effort liveness refresh,
+    not a correctness invariant. Worst case: stale PID stays stale and the
+    watchdog's process-scan fallback signal does the job instead.
+    """
+    global _last_pid_refresh_attempt
+    try:
+        now = datetime.now(timezone.utc).timestamp()
+    except OSError:
+        return
+    if now - _last_pid_refresh_attempt < _PID_REFRESH_MIN_INTERVAL_SECONDS:
+        return
+    _last_pid_refresh_attempt = now
+
+    pid_file = _REPO_ROOT / "logs" / "smith.pid"
+    try:
+        raw = pid_file.read_text().strip()
+        pid = int(raw)
+    except (FileNotFoundError, ValueError, OSError):
+        # No tracked PID at all → detection probably never fired. Try now.
+        caller = _detect_smith_caller()
+        if caller:
+            _persist_smith_caller(caller)
+        return
+
+    try:
+        import psutil
+        if 0 < pid < (1 << 22) and psutil.pid_exists(pid):
+            return  # tracked PID is still alive; nothing to do
+    except ImportError:
+        return
+
+    # Tracked PID is dead. Find a live caller and replace the file.
+    caller = _detect_smith_caller()
+    if caller and caller["pid"] != pid:
+        _persist_smith_caller(caller)
