@@ -17,6 +17,11 @@ $OpencodeConfigDir   = Join-Path $env:USERPROFILE '.config\opencode'
 $OpencodeConfig      = Join-Path $OpencodeConfigDir 'opencode.json'
 $OpencodeCommandsDir = Join-Path $OpencodeConfigDir 'commands'
 $OpencodePluginsDir  = Join-Path $OpencodeConfigDir 'plugins'
+# Agent-callable skills (opencode 1.16.0+ `skill({name: "..."})` tool).
+# Different layout from commands\: folder-per-skill with a SKILL.md inside,
+# discoverable by Smith via the native skill tool instead of bash + cat-ing
+# the file like older agent-smith versions had to do.
+$OpencodeSkillsDir   = Join-Path $OpencodeConfigDir 'skills'
 
 function Write-Ok    { param([string]$m) Write-Host "OK   $m" -ForegroundColor Green }
 function Write-Warn  { param([string]$m) Write-Host "WARN $m" -ForegroundColor Yellow }
@@ -147,6 +152,53 @@ Get-ChildItem -Path (Join-Path $RepoDir 'skills') -Directory | ForEach-Object {
     $installed++
 }
 Write-Ok "$installed slash commands installed"
+
+# ── Install agent-callable skills (opencode 1.16.0+ skill() tool) ────────────
+# The slash commands above are for HUMAN-typed `/web-exploit` input. Smith
+# (the AI agent) needs the same skill content discoverable via opencode's
+# native `skill({name: "..."})` tool, which only finds folder-shaped skills
+# under one of these documented paths:
+#   $env:USERPROFILE\.config\opencode\skills\<name>\SKILL.md   <- canonical
+#   $env:USERPROFILE\.claude\skills\<name>\SKILL.md             <- Claude fallback
+#   $env:USERPROFILE\.agents\skills\<name>\SKILL.md             <- agent fallback
+# Populate the canonical opencode location so Smith can call
+# `skill({name: "web-exploit"})` directly instead of round-tripping through
+# bash + cat (the workaround pattern in older agent-smith versions).
+Write-Host ''
+Write-Host 'Installing skills for opencode''s agent-side skill() tool...'
+New-Item -ItemType Directory -Path $OpencodeSkillsDir -Force | Out-Null
+$agentSkillCount = 0
+
+function Install-AgentSkill {
+    param([string]$Name, [string]$Src)
+    if (-not (Test-Path $Src)) { return }
+    $dstDir = Join-Path $script:OpencodeSkillsDir $Name
+    New-Item -ItemType Directory -Path $dstDir -Force | Out-Null
+    Copy-Item -Path $Src -Destination (Join-Path $dstDir 'SKILL.md') -Force
+    # Carry the refs/ directory alongside so the agent doesn't have to
+    # chase relative paths back into the agent-smith repo.
+    $refsSrc = Join-Path (Split-Path -Parent $Src) 'refs'
+    if (Test-Path $refsSrc) {
+        $refsDst = Join-Path $dstDir 'refs'
+        if (Test-Path $refsDst) { Remove-Item $refsDst -Recurse -Force }
+        Copy-Item -Path $refsSrc -Destination $refsDst -Recurse -Force
+    }
+    $script:agentSkillCount++
+}
+
+# /pentester gets the opencode variant when available
+$pentesterSrc = Join-Path $RepoDir 'skills\pentester-opencode\SKILL.md'
+if (-not (Test-Path $pentesterSrc)) {
+    $pentesterSrc = Join-Path $RepoDir 'skills\pentester.md'
+}
+Install-AgentSkill -Name 'pentester' -Src $pentesterSrc
+
+Get-ChildItem -Path (Join-Path $RepoDir 'skills') -Directory | ForEach-Object {
+    $name = $_.Name
+    if ($name -eq 'pentester-opencode') { return }
+    Install-AgentSkill -Name $name -Src (Join-Path $_.FullName 'SKILL.md')
+}
+Write-Ok "$agentSkillCount agent-callable skills installed in $OpencodeSkillsDir"
 
 # ── Docker images ────────────────────────────────────────────────────────────
 #

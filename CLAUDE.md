@@ -14,6 +14,20 @@ For readability, every example below writes tool calls in **shorthand**: `sessio
 
 If your client surfaced the tool list with names like `pentest-agent_session` (you'll see them in any "tool not available" error), you are on opencode/Codex — translate every shorthand call in this doc to the `pentest-agent_<tool>` form **before** invoking. Calling the bare shorthand wastes a turn and forces the client to retry.
 
+## How to invoke skills (per client)
+
+The chained-skills sections below refer to `/pentester`, `/web-exploit`, `/api-security`, etc. as **skill workflows**. Each client invokes them differently:
+
+| Client | How to invoke a skill |
+|---|---|
+| **Claude Code** | Call the built-in `Skill` tool: `Skill(name="web-exploit", arguments="…")` — single tool call, skill workflow loads into context, you continue from there. |
+| **opencode** (1.16.0+) | Call the built-in `skill` tool: `skill({name: "web-exploit"})` — same pattern. Available skills appear in your tool description; use the exact name. |
+| **Codex** | Skills are loaded into the system prompt at startup via `~/.codex/skills/<name>/SKILL.md`. You don't "invoke" them — you reference them by name and follow their workflow inline. |
+
+**Do NOT** `bash`-and-`cat` a skill file (e.g. `ls ~/.config/opencode/commands/web-exploit.md` then `read` it). That's a workaround pattern from older agent-smith versions when no skill API existed; it costs 2 extra tool calls per chain and the result is identical to calling the native skill tool above. Always prefer the per-client native invocation.
+
+If the skill tool returns "skill not found" or your client doesn't list it among available tools, fall back to reading the file at `~/.config/opencode/skills/<skill>/SKILL.md` (opencode) or `~/.claude/skills/<skill>/SKILL.md` (Claude-compat) — this only matters when the installer hasn't been re-run after a skills-submodule update.
+
 ## MCP Tools
 
 Five consolidated tools. Each dispatches to multiple underlying scanners/actions via the first parameter.

@@ -7,6 +7,12 @@ OPENCODE_CONFIG_DIR="$HOME/.config/opencode"
 OPENCODE_CONFIG="$OPENCODE_CONFIG_DIR/opencode.json"
 OPENCODE_COMMANDS_DIR="$OPENCODE_CONFIG_DIR/commands"
 OPENCODE_PLUGINS_DIR="$OPENCODE_CONFIG_DIR/plugins"
+# Agent-callable skills (opencode 1.16.0+). Smith invokes them as
+# `skill({name: "web-exploit"})` rather than the human typing the slash
+# command. Different layout: folder-per-skill with a SKILL.md inside, not
+# a flat .md file. Both locations get populated so human-typed slash
+# commands AND agent skill() calls keep working.
+OPENCODE_SKILLS_DIR="$OPENCODE_CONFIG_DIR/skills"
 
 # ── Colours ──────────────────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
@@ -234,6 +240,51 @@ ok "$_SKILL_OK skill commands installed"
 if [ ${#_SKILL_MISSING[@]} -gt 0 ]; then
     warn "Missing skills (re-run the installer to fetch the latest skills submodule): ${_SKILL_MISSING[*]}"
 fi
+
+# ── Install agent-callable skills (opencode 1.16.0+ skill() tool) ────────────
+# The slash commands above are for HUMAN-typed `/web-exploit` input. Smith
+# (the AI agent) needs the same skill content discoverable via opencode's
+# native `skill({name: "..."})` tool, which only finds folder-shaped skills
+# under one of these documented paths:
+#   ~/.config/opencode/skills/<name>/SKILL.md     ← canonical opencode
+#   ~/.claude/skills/<name>/SKILL.md              ← Claude-compat fallback
+#   ~/.agents/skills/<name>/SKILL.md              ← agent-compat fallback
+# We populate the canonical opencode location below. Smith can then call
+# `skill({name: "web-exploit"})` directly instead of bash + cat-ing the
+# file (the workaround pattern in older agent-smith versions).
+echo ""
+echo "Installing skills for opencode's agent-side skill() tool..."
+mkdir -p "$OPENCODE_SKILLS_DIR"
+_AGENT_SKILL_OK=0
+_install_agent_skill() {
+    local name="$1"
+    local src="$2"
+    [ -f "$src" ] || return
+    local dst_dir="$OPENCODE_SKILLS_DIR/$name"
+    mkdir -p "$dst_dir"
+    _cp "$src" "$dst_dir/SKILL.md"
+    # Copy refs/ alongside so the agent doesn't have to chase relative paths
+    local refs_src
+    refs_src="$(dirname "$src")/refs"
+    if [ -d "$refs_src" ]; then
+        rm -rf "$dst_dir/refs"
+        cp -R "$refs_src" "$dst_dir/refs"
+    fi
+    _AGENT_SKILL_OK=$((_AGENT_SKILL_OK + 1))
+}
+# /pentester gets the opencode variant when available
+if [ -f "$REPO_DIR/skills/pentester-opencode/SKILL.md" ]; then
+    _install_agent_skill "pentester" "$REPO_DIR/skills/pentester-opencode/SKILL.md"
+elif [ -f "$REPO_DIR/skills/pentester.md" ]; then
+    _install_agent_skill "pentester" "$REPO_DIR/skills/pentester.md"
+fi
+for _skill_file in "$REPO_DIR"/skills/*/SKILL.md; do
+    [ -e "$_skill_file" ] || continue
+    _skill_name="$(basename "$(dirname "$_skill_file")")"
+    [ "$_skill_name" = "pentester-opencode" ] && continue
+    _install_agent_skill "$_skill_name" "$_skill_file"
+done
+ok "$_AGENT_SKILL_OK agent-callable skills installed in $OPENCODE_SKILLS_DIR"
 
 # ── Install skill reference files (lazy-loaded support material) ─────────────
 echo ""
