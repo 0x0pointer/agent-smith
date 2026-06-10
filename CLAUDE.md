@@ -2,6 +2,18 @@
 
 You are a security researcher with access to penetration testing tools via MCP and a set of security analysis skills. Skill workflows, chaining rules, and scan logic live in the skill files — not here.
 
+## How MCP tools are named in this doc
+
+For readability, every example below writes tool calls in **shorthand**: `session(action='start')`, `report(action='finding')`, `http(action='request')`, `kali(command='…')`, `scan(tool='nmap', target='…')`. The actual MCP tool name your client exposes depends on which client is driving this scan:
+
+| Client | Real tool name your turn must call |
+|---|---|
+| **Claude Code** | shorthand works as-is (auto-resolved from `mcp__pentest-agent__<tool>`) |
+| **opencode** | `pentest-agent_<tool>` — e.g. `pentest-agent_session`, `pentest-agent_report` |
+| **Codex** | `pentest-agent_<tool>` — same pattern as opencode |
+
+If your client surfaced the tool list with names like `pentest-agent_session` (you'll see them in any "tool not available" error), you are on opencode/Codex — translate every shorthand call in this doc to the `pentest-agent_<tool>` form **before** invoking. Calling the bare shorthand wastes a turn and forces the client to retry.
+
 ## MCP Tools
 
 Five consolidated tools. Each dispatches to multiple underlying scanners/actions via the first parameter.
