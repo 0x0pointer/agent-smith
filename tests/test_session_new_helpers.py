@@ -54,6 +54,50 @@ class TestLoadFromDisk:
         assert scan_session._current["marker"] == "in-memory"
         scan_session._current = None
 
+    def test_force_drops_cache_when_disk_deleted_after_local_write(
+        self, tmp_path, monkeypatch,
+    ):
+        """User's reported bug: dashboard's Clear All deletes session.json,
+        but the MCP server's _current cache (and prior _last_local_write_mtime
+        from when *this* process flushed during the prior scan) stays
+        populated. Without deletion detection, the MCP server's next
+        session(action='start') reads the cached intervention_required and
+        blocks the fresh scan with 'SCAN PAUSED'.
+
+        force=True must mirror disk reality: if file is gone AND we know
+        we previously wrote to it (_last_local_write_mtime > 0), drop the
+        cache to None to match.
+        """
+        monkeypatch.setattr(scan_session, "_SESSION_FILE", tmp_path / "session.json")
+        # Simulate a prior flush: _current populated, _last_local_write_mtime
+        # bumped to "we wrote at time T".
+        scan_session._current = {
+            "status": "intervention_required",
+            "intervention": {"code": "HIR_FORCE_COMPLETE"},
+        }
+        monkeypatch.setattr(scan_session, "_last_local_write_mtime", 1000.0)
+        # Dashboard wipes the file (Clear All). MCP cache is stale.
+        # → force-load should now reflect "no session".
+        result = scan_session.load_from_disk(force=True)
+        assert result is None
+        assert scan_session._current is None
+
+    def test_force_preserves_stub_when_disk_never_existed(
+        self, tmp_path, monkeypatch,
+    ):
+        """Test-stub guard: a test that monkeypatches _current without
+        ever flushing has _last_local_write_mtime == 0. In that case the
+        file's absence is "fresh process, no session yet", not "external
+        deletion". Cache must NOT be cleared, or 12 prior unit tests
+        (status_reporter, TestResolveInterventionTerminalGuard, ...) break.
+        """
+        monkeypatch.setattr(scan_session, "_SESSION_FILE", tmp_path / "missing.json")
+        scan_session._current = {"status": "running", "marker": "test-stub"}
+        # _last_local_write_mtime stays at the fixture's 0.0
+        result = scan_session.load_from_disk(force=True)
+        assert result == {"status": "running", "marker": "test-stub"}
+        assert scan_session._current["marker"] == "test-stub"
+
 
 # ---------------------------------------------------------------------------
 # core.session.resolve_intervention — terminal status guard

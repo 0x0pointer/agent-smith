@@ -55,9 +55,20 @@ def isolate_cost(tmp_path, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def isolate_session(tmp_path, monkeypatch):
-    """Reset session module state and redirect output file for each test."""
+    """Reset session module state and redirect output file for each test.
+
+    _last_local_write_mtime tracks "when did this process last flush
+    session.json?" — used by load_from_disk(force=True) and
+    _reconcile_if_external_write to detect external deletions. Earlier
+    tests that exercise _flush() leave this global non-zero, which then
+    causes later tests that monkeypatch _current without writing disk
+    to have their stub clobbered (the reconcile reads
+    "_last_local_write_mtime > 0 AND file gone → external deletion →
+    clear cache"). Resetting it per-test restores isolation.
+    """
     monkeypatch.setattr(core.session, "_current", None)
     monkeypatch.setattr(core.session, "_SESSION_FILE", tmp_path / "session.json")
+    monkeypatch.setattr(core.session, "_last_local_write_mtime", 0.0)
 
 
 @pytest.fixture(autouse=True)

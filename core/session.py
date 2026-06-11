@@ -435,11 +435,21 @@ def load_from_disk(force: bool = False) -> dict | None:
     writing to session.json from another process.
     """
     global _current
-    if force and _SESSION_FILE.exists():
-        try:
-            _current = json.loads(_SESSION_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            pass
+    if force:
+        # force=True means "make _current match disk reality, whatever
+        # that is". If the file was deleted (dashboard Clear All), drop
+        # the cache so callers don't keep operating on stale state.
+        # Gated on _last_local_write_mtime > 0 so test fixtures that
+        # monkeypatch _current without ever flushing don't get
+        # clobbered: in those tests we never saw disk, so its absence
+        # isn't a deletion to mirror.
+        if _SESSION_FILE.exists():
+            try:
+                _current = json.loads(_SESSION_FILE.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        elif _last_local_write_mtime > 0:
+            _current = None
         return _current
     if _current is None and _SESSION_FILE.exists():
         try:
@@ -961,10 +971,38 @@ def _reconcile_if_external_write() -> None:
          keeps the pointer fresh without operator intervention.
     """
     global _current
-    # Disk-state reconcile (cross-process write protection)
+    # Disk-state reconcile (cross-process write protection).
+    #
+    # Three on-disk cases we need to handle distinctly:
+    #   (a) file exists and mtime is newer → another process wrote it,
+    #       reload _current.
+    #   (b) file exists and mtime matches our last flush → no-op.
+    #   (c) file does NOT exist → another process *deleted* it
+    #       (dashboard's Clear All path). The previous version's bare
+    #       `except OSError: return` left _current stale, so an MCP
+    #       process's next session.get() returned the pre-Clear state
+    #       and blocked the new scan with a phantom "intervention_required"
+    #       from the prior HIR. Treat deletion as "session reset" and
+    #       drop the in-memory cache to None to match disk reality.
     try:
         disk_mtime = _SESSION_FILE.stat().st_mtime
+    except FileNotFoundError:
+        # Case (c) — disk was wiped. Only treat this as a deletion (and
+        # drop the in-memory cache) when we have evidence the file
+        # actually existed at some point: a non-zero
+        # _last_local_write_mtime means THIS process flushed something
+        # at least once, so an absent file = external deletion (Clear
+        # All from the dashboard). When _last_local_write_mtime is 0,
+        # the file may simply have never existed (fresh process startup,
+        # or tests that stub _current via monkeypatch without flushing)
+        # — leaving _current alone is the safer default.
+        if _last_local_write_mtime > 0 and _current is not None:
+            _current = None
+        _refresh_smith_pid_if_stale()
+        return
     except OSError:
+        # Permission / IO error — leave cache alone (better stale than
+        # a noisy False positive from a transient stat failure).
         return
     # Small fudge: filesystem mtime granularity varies (APFS is sub-µs but
     # some Linux mounts are 1s). A tolerance of 1ms catches genuine external
@@ -1004,7 +1042,10 @@ def _refresh_smith_pid_if_stale() -> None:
     try:
         raw = pid_file.read_text().strip()
         pid = int(raw)
-    except (FileNotFoundError, ValueError, OSError):
+    except (ValueError, OSError):
+        # FileNotFoundError is a subclass of OSError — listing both is
+        # redundant (sonar S5713). OSError alone covers the missing-file,
+        # permission-denied, and other read-failure cases.
         # No tracked PID at all → detection probably never fired. Try now.
         caller = _detect_smith_caller()
         if caller:

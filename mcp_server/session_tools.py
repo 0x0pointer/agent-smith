@@ -106,12 +106,26 @@ async def session(action: str, options: dict | None = None) -> str:
     start_kali, stop_kali, start_metasploit, stop_metasploit, pull_images: no options needed
     """
     opts = _ensure_dict(options) or {}
-    # After MCP restarts the in-memory _current dict is None until something
-    # calls start(). Load from disk first so every session action — recovery,
-    # status, complete, etc. — works against the persisted state instead of
-    # erroneously reporting "no session".
-    if action != "start":
-        scan_session.load_from_disk()
+    # Force-reload from disk on EVERY action.
+    #
+    # The MCP server runs in its own process with its own _current cache.
+    # Three cross-process events can rewrite session.json behind us:
+    #   • Dashboard's "Clear All"     → deletes session.json
+    #   • Dashboard's "Complete Scan" → flips status to "complete"
+    #   • Dashboard HIR resolution    → flips status back to "running"
+    #
+    # Without force=True, our cache stays at whatever it last wrote (often
+    # intervention_required from a prior HIR), and `_do_start` then blocks
+    # a fresh scan with "SCAN PAUSED" even though disk is clean. The
+    # earlier `if action != "start"` carve-out made start the worst case
+    # — it had to be force=True precisely to catch the post-Clear state,
+    # but was getting nothing at all.
+    #
+    # Cost is one stat()+read() per session() call. session() fires ~5-10
+    # times per scan (start, status, recovery, complete, qa_reply, …), so
+    # the overhead is negligible compared to the cross-process desync it
+    # closes.
+    scan_session.load_from_disk(force=True)
     result = await _dispatch_async_action(action, opts)
     if result is not None:
         return result
