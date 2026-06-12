@@ -511,6 +511,43 @@ class TestSmithHungDetection:
         with patch.object(psutil, "pid_exists", return_value=False):
             assert api._smith_hung_pid() is None
 
+    def test_live_pid_from_pid_file_returns_none_when_pid_out_of_range(
+        self, sandbox_smith_files, tmp_path,
+    ):
+        """The bounds check (0 < pid < 2**22) guards against a
+        malformed smith.pid file blowing up downstream psutil calls
+        with a giant integer. Cover the post-bounds-check return path
+        — covers core/api_server.py:723."""
+        (tmp_path / "smith.pid").write_text("0\n")  # invalid, fails bounds
+        assert api._live_pid_from_pid_file() is None
+
+    def test_live_pid_from_pid_file_returns_none_on_oserror(
+        self, sandbox_smith_files, tmp_path,
+    ):
+        """psutil.pid_exists can raise OSError on some platforms when
+        the kernel rejects the probe (e.g., aggressive macOS sandbox).
+        Must return None instead of propagating — covers
+        core/api_server.py:726-727 (the except OSError branch)."""
+        (tmp_path / "smith.pid").write_text("12345\n")
+        import psutil
+        with patch.object(psutil, "pid_exists", side_effect=OSError("denied")):
+            assert api._live_pid_from_pid_file() is None
+
+    def test_live_pid_from_process_scan_returns_none_on_iter_failure(
+        self, sandbox_smith_files,
+    ):
+        """psutil.process_iter raises AccessDenied on macOS when
+        sandboxed, OSError on cgroup probes failing on Linux. Either
+        bubbling up would break hang detection silently. Must return
+        None — covers core/api_server.py:742-745 (both except clauses)."""
+        import psutil
+        with patch.object(psutil, "process_iter", side_effect=OSError("denied")):
+            assert api._live_pid_from_process_scan() is None
+        # The generic Exception path (psutil.AccessDenied at iter-time)
+        with patch.object(psutil, "process_iter",
+                          side_effect=psutil.AccessDenied("perm")):
+            assert api._live_pid_from_process_scan() is None
+
 
 class TestKillHungSmith:
 

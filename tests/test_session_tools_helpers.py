@@ -1138,6 +1138,66 @@ class TestPendingSteerInjection:
         )
         assert st._pending_steer_block() == ""
 
+    def test_pending_steer_block_handles_non_human_directives(
+        self, tmp_path, monkeypatch,
+    ):
+        """QA-emitted directives (RESUME_TESTING, CHAIN_REQUIRED, etc.)
+        with trigger != 'HUMAN_STEER' must also surface — they're how
+        the QA agent steers Smith. Branch otherwise dead-codes the
+        non-human formatting + the non-human nag text."""
+        from core import steering as steering_mod
+        import mcp_server.session_tools as st
+        monkeypatch.setattr(
+            steering_mod, "_STEERING_FILE", tmp_path / "qa_only.json"
+        )
+        steering_mod.steering_queue.add_directive(
+            code=steering_mod.RESUME_TESTING,
+            trigger="QA_AGENT",
+            message="Test the IDOR cells next",
+            priority="high",
+        )
+        block = st._pending_steer_block()
+        assert "STEERING" in block
+        assert "Test the IDOR cells next" in block
+        # Non-human nag wording, not the human "REPLY TO THE HUMAN NOW"
+        assert "Acknowledge" in block
+
+    def test_pending_steer_block_returns_empty_on_steering_failure(
+        self, monkeypatch,
+    ):
+        """Steering subsystem failure (corrupt queue file, import error,
+        etc.) must never break tool dispatch. Helper swallows the
+        exception and returns ''. Covers the bare-except branch."""
+        import mcp_server.session_tools as st
+        # Force get_active to raise; helper must swallow and return ''
+        from core import steering as steering_mod
+        with patch.object(steering_mod.steering_queue, "get_active",
+                          side_effect=RuntimeError("boom")):
+            assert st._pending_steer_block() == ""
+
+    def test_do_status_no_directives_returns_payload_unchanged(
+        self, tmp_path, monkeypatch,
+    ):
+        """No pending directives → _do_status returns the base payload
+        with no steer-block appended. Covers the `return payload` line
+        at session_tools.py:1295 (the negative branch of the
+        `if steer_block` gate)."""
+        import core.session as scan_session
+        import core.coverage as cov_mod
+        import core.findings as findings_store_mod
+        from core import steering as steering_mod
+        import mcp_server.session_tools as st
+        monkeypatch.setattr(scan_session, "_SESSION_FILE", tmp_path / "session.json")
+        monkeypatch.setattr(cov_mod, "COVERAGE_FILE", tmp_path / "coverage_matrix.json")
+        monkeypatch.setattr(findings_store_mod, "FINDINGS_FILE", tmp_path / "findings.json")
+        monkeypatch.setattr(
+            steering_mod, "_STEERING_FILE", tmp_path / "empty_queue.json"
+        )
+        scan_session.start("https://example.com")
+        result = st._do_status()
+        assert "PENDING DIRECTIVES" not in result
+        assert "HUMAN MESSAGE" not in result
+
 
 # ---------------------------------------------------------------------------
 # HIR_FORCE_COMPLETE resolution resets _complete_attempts
