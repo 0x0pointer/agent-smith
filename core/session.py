@@ -869,7 +869,9 @@ def resolve_intervention(choice: str, message: str = "") -> dict:
     # Sanitize legacy entries: drop any None left from earlier bug.
     if any(h is None for h in history):
         history[:] = [h for h in history if h is not None]
+    resolved_code = ""
     if intervention:
+        resolved_code = intervention.get("code", "")
         intervention["resolved_at"] = datetime.now(timezone.utc).isoformat()
         intervention["resolution"]  = {"choice": choice, "message": message}
         history.append(intervention)
@@ -883,6 +885,23 @@ def resolve_intervention(choice: str, message: str = "") -> dict:
     ):
         _current["status"] = "running"
     _flush()
+    # Reset Smith's complete()-attempts counter when an HIR_FORCE_COMPLETE
+    # was just resolved. The counter lives in mcp_server.session_tools as a
+    # module global; it only zeroed on session.start or a no-blocker
+    # success, which meant once it crossed _MAX_COMPLETE_ATTEMPTS (8) the
+    # very next complete() call would re-fire the HIR — turning a single
+    # blocked scan into the 11→15→17→19→21→24→29 cascade the user saw.
+    # Each human resolution should grant Smith a fresh 8-attempt budget to
+    # try again with the new instructions. Imported lazily to avoid an
+    # import cycle (mcp_server imports core.session).
+    if resolved_code == "HIR_FORCE_COMPLETE":
+        try:
+            from mcp_server import session_tools as _st
+            _st._complete_attempts = 0
+        except Exception:
+            # Test contexts may not have mcp_server importable; resetting
+            # is a quality-of-life win, not a correctness invariant.
+            pass
     return _current
 
 
