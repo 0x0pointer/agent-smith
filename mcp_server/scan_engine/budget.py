@@ -99,15 +99,58 @@ def get_tool_budget(tool: str) -> ToolBudget:
     )
 
 
+def _retrieve_artifact_hint(artifact_id: str, *, dropped_facts: int = 0,
+                            dropped_evidence_keys: int = 0,
+                            envelope_oversize: bool = False) -> str:
+    """Build a self-evidencing 'how to get the full output' instruction.
+
+    Smaller models (e.g. Qwen3.6-35B-A3B) treat short "see artifact X"
+    warnings as background noise and retry the same command instead of
+    retrieving the artifact. The user observed Smith looping 8+ times
+    trying variations of the same `python3 -c '...'` because each call
+    hit the 5000-char budget and Smith never recognised the artifact
+    mechanism. Embedding the exact next MCP tool call inline — with
+    concrete option values — gives the model an explicit pattern to
+    match on rather than relying on tool-system knowledge that isn't
+    reinforced in-context.
+
+    The mode= hint follows progressive disclosure: try grep with a
+    relevant pattern first (cheapest), fall back to head/tail, last
+    resort full. This matches how a human triages a truncated log.
+    """
+    reasons = []
+    if dropped_facts:
+        reasons.append(f"{dropped_facts} fact(s) dropped")
+    if dropped_evidence_keys:
+        reasons.append(f"{dropped_evidence_keys} evidence key(s) dropped")
+    if envelope_oversize:
+        reasons.append("envelope exceeded char budget")
+    reason_str = ", ".join(reasons) if reasons else "output truncated"
+    return (
+        f"OUTPUT TRUNCATED ({reason_str}). "
+        f"EXECUTE NOW to get the full output: "
+        f"session(action='artifact', options={{id: '{artifact_id}', mode: 'full'}}). "
+        f"Or grep just what you need: "
+        f"session(action='artifact', options={{id: '{artifact_id}', mode: 'grep', pattern: '<regex>'}}). "
+        f"DO NOT re-run the same command — the artifact already has the complete output."
+    )
+
+
 def enforce_budget(env: "Envelope", budget: ToolBudget, artifact_id: str) -> "Envelope":
     """Enforce character budget on an envelope. Mutates and returns env."""
     import json
 
+    # Track what got dropped so the final warning can summarise all of
+    # it at once, instead of Smith having to correlate three separate
+    # warning lines to understand "there's an artifact, here's how to read it".
+    dropped_facts = 0
+    dropped_evidence_keys = 0
+    envelope_oversize = False
+
     # Truncate facts list
     if len(env.facts) > budget.max_facts:
-        dropped = len(env.facts) - budget.max_facts
+        dropped_facts = len(env.facts) - budget.max_facts
         env.facts = env.facts[:budget.max_facts]
-        env.warnings.append(f"Truncated {dropped} fact(s) — retrieve full output: artifact={artifact_id}")
 
     # Truncate evidence
     ev_str = json.dumps(env.evidence)
@@ -121,17 +164,13 @@ def enforce_budget(env: "Envelope", budget: ToolBudget, artifact_id: str) -> "En
                 break
             trimmed[k] = v
             current += len(entry)
-        dropped_keys = set(env.evidence.keys()) - set(trimmed.keys())
+        dropped_evidence_keys = len(set(env.evidence.keys()) - set(trimmed.keys()))
         env.evidence = trimmed
-        if dropped_keys:
-            env.warnings.append(
-                f"Evidence truncated ({len(dropped_keys)} key(s) dropped) — "
-                f"artifact={artifact_id}"
-            )
 
     # Final envelope size check
     serialized = env.to_json()
     if len(serialized) > budget.max_chars:
+        envelope_oversize = True
         # Emergency truncation: cut facts from the end until we fit
         while len(env.to_json()) > budget.max_chars and env.facts:
             env.facts.pop()
@@ -139,6 +178,16 @@ def enforce_budget(env: "Envelope", budget: ToolBudget, artifact_id: str) -> "En
             # Last resort: truncate summary
             overage = len(env.to_json()) - budget.max_chars
             env.summary = env.summary[:max(50, len(env.summary) - overage)] + "..."
-        env.warnings.append(f"Envelope exceeded {budget.max_chars} char budget — content truncated")
+
+    # One consolidated, fully-actionable warning instead of 3 cryptic
+    # ones. Smaller models match on the explicit "EXECUTE NOW: session(...)"
+    # pattern far more reliably than on "artifact=<id>" hints alone.
+    if dropped_facts or dropped_evidence_keys or envelope_oversize:
+        env.warnings.append(_retrieve_artifact_hint(
+            artifact_id,
+            dropped_facts=dropped_facts,
+            dropped_evidence_keys=dropped_evidence_keys,
+            envelope_oversize=envelope_oversize,
+        ))
 
     return env
