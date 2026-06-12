@@ -106,12 +106,26 @@ async def session(action: str, options: dict | None = None) -> str:
     start_kali, stop_kali, start_metasploit, stop_metasploit, pull_images: no options needed
     """
     opts = _ensure_dict(options) or {}
-    # After MCP restarts the in-memory _current dict is None until something
-    # calls start(). Load from disk first so every session action — recovery,
-    # status, complete, etc. — works against the persisted state instead of
-    # erroneously reporting "no session".
-    if action != "start":
-        scan_session.load_from_disk()
+    # Force-reload from disk on EVERY action.
+    #
+    # The MCP server runs in its own process with its own _current cache.
+    # Three cross-process events can rewrite session.json behind us:
+    #   • Dashboard's "Clear All"     → deletes session.json
+    #   • Dashboard's "Complete Scan" → flips status to "complete"
+    #   • Dashboard HIR resolution    → flips status back to "running"
+    #
+    # Without force=True, our cache stays at whatever it last wrote (often
+    # intervention_required from a prior HIR), and `_do_start` then blocks
+    # a fresh scan with "SCAN PAUSED" even though disk is clean. The
+    # earlier `if action != "start"` carve-out made start the worst case
+    # — it had to be force=True precisely to catch the post-Clear state,
+    # but was getting nothing at all.
+    #
+    # Cost is one stat()+read() per session() call. session() fires ~5-10
+    # times per scan (start, status, recovery, complete, qa_reply, …), so
+    # the overhead is negligible compared to the cross-process desync it
+    # closes.
+    scan_session.load_from_disk(force=True)
     result = await _dispatch_async_action(action, opts)
     if result is not None:
         return result
@@ -972,39 +986,100 @@ def _apply_thorough_depth_gate(blockers: list, current: dict) -> list:
     return blockers
 
 
+def _pending_steer_block() -> str:
+    """Return a formatted block of pending steering directives, or ''.
+
+    session() responses bypass the envelope wrapper, which is where
+    steering directives are normally injected. When Smith is stuck in a
+    complete()→HIR→resume loop, it never makes an envelope-wrapped tool
+    call, so HUMAN_STEER messages from the dashboard pile up in
+    steering_queue.json with status='pending' and are never seen.
+    This helper surfaces them inline so the blocked path delivers them
+    too. mark_injected is called so the envelope's nag mode picks up
+    from here on the next non-session tool call.
+    """
+    try:
+        from core.steering import steering_queue
+        active = steering_queue.get_active()
+        if not active:
+            return ""
+        # Prioritise HUMAN_STEER messages — those are the human waiting
+        # for a reply. Other directives (QA-emitted) come below.
+        human = [d for d in active if d.trigger == "HUMAN_STEER"]
+        other = [d for d in active if d.trigger != "HUMAN_STEER"]
+        lines = []
+        for d in human:
+            lines.append(f"  ⚠ HUMAN MESSAGE [{d.priority.upper()}]: {d.message}")
+            steering_queue.mark_injected(d.id)
+        for d in other:
+            lines.append(f"  ⚠ STEERING [{d.priority.upper()}]: {d.message}")
+            steering_queue.mark_injected(d.id)
+        nag = (
+            "REPLY TO THE HUMAN NOW so they see your response on the dashboard: "
+            "call session(action='qa_reply', options={message: '<your reply>'}). "
+            "Without this call your reply never reaches the human."
+        ) if human else (
+            "Acknowledge with session(action='qa_reply', options={message: '<your reply>'}) "
+            "after acting on these directives."
+        )
+        return "\n\nPENDING DIRECTIVES (act on these BEFORE retrying complete()):\n" + \
+               "\n".join(lines) + "\n" + nag
+    except Exception:
+        # Steering failures must never break tool dispatch.
+        return ""
+
+
 def _build_blocker_response(blockers: list) -> str:
     """Build the blocked-completion response string or HIR JSON."""
+    steer_block = _pending_steer_block()
     if _complete_attempts >= _MAX_COMPLETE_ATTEMPTS:
         attempts = _complete_attempts
         log.note(f"HIR triggered after {attempts} blocked complete() attempts. Blockers: {'; '.join(b[:80] for b in blockers)}")
+        # Reframed situation text: blockers-first, options-are-for-human.
+        # Earlier copy emphasised SKIP_CELLS / ACCEPT_PARTIAL which Smith
+        # interpreted as "easy out" options for itself rather than human
+        # override switches, leading to the 29-attempt cascade where
+        # Smith picked the cheap "retry complete" path instead of doing
+        # the actual blocker-fix work.
         scan_session.trigger_intervention(
             code="HIR_FORCE_COMPLETE",
             situation=(
-                f"{len(blockers)} completion blocker(s) could not be resolved after "
-                f"{attempts} attempts. The scan cannot complete automatically."
+                f"{len(blockers)} real quality-gate blocker(s) require actual work, "
+                f"not retries. Smith called complete() {attempts} times instead of "
+                "addressing them. The options below are HUMAN OVERRIDES — Smith "
+                "should keep doing blocker work (re-test cells, chain required "
+                "skills, file missing artifacts) until you tell it otherwise."
             ),
             tried=[f"complete() attempt {i+1}/{attempts}" for i in range(min(attempts, 5))],
             options=[
-                "SKIP_CELLS: Tell me which specific cells or endpoint types to mark as skipped — I will document them and complete",
-                "REDUCE_SCOPE: Specify which checks to drop (e.g. 'skip all rate_limit cells', 'accept missing PoC for finding X')",
-                "ACCEPT_PARTIAL: I will complete with current coverage and flag all unresolved items in the report",
-                "CONTINUE: Provide specific instructions to resolve the remaining blockers and I will retry",
+                "CONTINUE: Give Smith specific instructions to resolve the remaining blockers and it will retry (recommended)",
+                "SKIP_CELLS: Tell Smith which specific cells or endpoint types to mark as skipped",
+                "REDUCE_SCOPE: Specify which checks to drop (e.g. 'skip all rate_limit cells')",
+                "ACCEPT_PARTIAL: Force-complete with current coverage; unresolved items flagged in the report",
             ],
         )
-        return json.dumps({
+        payload = {
             "status": "HUMAN_INTERVENTION_REQUIRED",
             "code": "HIR_FORCE_COMPLETE",
-            "situation": f"{len(blockers)} blocker(s) unresolved after {attempts} complete() attempts.",
+            "situation": (
+                f"complete() BLOCKED by {len(blockers)} real quality gates after "
+                f"{attempts} attempts. DO NOT retry — address the blockers first. "
+                "If a pending HUMAN MESSAGE is present, REPLY first via qa_reply."
+            ),
             "blockers": blockers[:5],
             "options": [
+                "CONTINUE — human gives specific blocker-fix instructions (recommended)",
                 "SKIP_CELLS — specify cells/endpoint types to skip",
                 "REDUCE_SCOPE — drop specific checks",
-                "ACCEPT_PARTIAL — complete with documented gaps",
-                "CONTINUE — give me instructions to fix the blockers",
+                "ACCEPT_PARTIAL — force-complete with documented gaps",
             ],
             "how_to_respond": "Use the dashboard 'Send to Smith' panel, or call session(action='resume', options={choice: '...', message: '...'})",
             "scan_paused": True,
-        }, indent=2)
+        }
+        result = json.dumps(payload, indent=2)
+        if steer_block:
+            result = result + steer_block
+        return result
     depth = (scan_session.get() or {}).get("depth", "")
     if depth == "thorough" and _analysis_passes < _THOROUGH_MIN_ITERATIONS:
         header = (
@@ -1014,6 +1089,8 @@ def _build_blocker_response(blockers: list) -> str:
     else:
         header = f"complete BLOCKED (attempt {_complete_attempts}/{_MAX_COMPLETE_ATTEMPTS}) — fix the following first:\n\n"
     msg = header + "\n\n".join(f"  [{i+1}] {b}" for i, b in enumerate(blockers))
+    if steer_block:
+        msg = msg + steer_block
     log.note(
         f"complete blocked (attempt {_complete_attempts}, analysis_passes={_analysis_passes}): "
         f"{'; '.join(b[:80] for b in blockers)}"
@@ -1206,7 +1283,16 @@ def _do_status():
     result = _build_status_base(current, summary, remaining, cov, data)
     _add_status_work_queue(result, cov)
     _add_status_qa_alerts(result)
-    return json.dumps(result, indent=2)
+    payload = json.dumps(result, indent=2)
+    # Same envelope-bypass story as _build_blocker_response: session()
+    # responses don't pass through the steering injector, so status calls
+    # made while Smith is in a complete()/resume() loop never see pending
+    # HUMAN_STEER. Status is the natural "what's going on" call Smith
+    # makes when confused — surface the human's messages here too.
+    steer_block = _pending_steer_block()
+    if steer_block:
+        return payload + steer_block
+    return payload
 
 
 def _build_status_base(

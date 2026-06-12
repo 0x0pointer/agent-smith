@@ -1014,3 +1014,243 @@ class TestDoPreChain:
         assert "findings" in sp
         assert "coverage_cells" in sp
         assert "coverage_tested" in sp
+
+
+# ---------------------------------------------------------------------------
+# Steering injection into BLOCKED complete()  +  _do_status()
+#
+# The bug the user hit: HUMAN_STEER messages from the dashboard were never
+# delivered to Smith while it was stuck in a complete()→HIR→resume loop.
+# Root cause: session() responses bypass the envelope wrapper, which is
+# where steering directives are normally injected. _do_complete had inline
+# injection but only on the SUCCESS path — the BLOCKED path returned the
+# blocker text directly. _do_status had no injection at all. So Smith's
+# only feedback during the HIR loop was the blocker list, never the
+# human's pending questions, and the operator's "What are you currently
+# doing?" message sat in steering_queue.json for 2+ hours unobserved.
+#
+# These tests pin both the BLOCKED-complete and status injection paths so
+# the bug can't silently regress when someone refactors _do_complete.
+# ---------------------------------------------------------------------------
+
+class TestPendingSteerInjection:
+
+    def _queue_human_steer(self, monkeypatch, tmp_path, msg="What is happening?"):
+        """Set up a fresh steering queue at tmp_path and add a HUMAN_STEER."""
+        from core import steering as steering_mod
+        # Sandbox the queue file so test data doesn't bleed into the real
+        # steering_queue.json on the developer's box.
+        monkeypatch.setattr(
+            steering_mod, "_STEERING_FILE", tmp_path / "steering_queue.json"
+        )
+        # The singleton steering_queue object reads _STEERING_FILE on
+        # every call — rebinding the module-level path is enough.
+        steering_mod.steering_queue.add_directive(
+            code=steering_mod.RESUME_REQUIRED,
+            trigger="HUMAN_STEER",
+            message=msg,
+            priority="high",
+        )
+
+    def test_blocked_complete_injects_pending_human_steer(self, tmp_path, monkeypatch):
+        """A HUMAN_STEER queued by the dashboard before Smith hits
+        complete() must appear in the blocked-completion response so
+        Smith sees it even when session() bypasses the envelope."""
+        import core.session as scan_session
+        import mcp_server.session_tools as st
+        monkeypatch.setattr(scan_session, "_SESSION_FILE", tmp_path / "session.json")
+        monkeypatch.setattr(st, "_complete_attempts", 1)  # below HIR threshold
+        # Build a minimal "running" session
+        scan_session.start("https://example.com")
+        self._queue_human_steer(monkeypatch, tmp_path, "What cells are next?")
+        # _build_blocker_response with one blocker
+        result = st._build_blocker_response(["Coverage incomplete on /admin"])
+        assert "HUMAN MESSAGE" in result
+        assert "What cells are next?" in result
+        assert "qa_reply" in result
+
+    def test_blocked_complete_hir_path_injects_pending_human_steer(
+        self, tmp_path, monkeypatch,
+    ):
+        """Same delivery in the HIR_FORCE_COMPLETE branch — the JSON
+        payload still gets the steer block appended after it."""
+        import core.session as scan_session
+        import mcp_server.session_tools as st
+        monkeypatch.setattr(scan_session, "_SESSION_FILE", tmp_path / "session.json")
+        # Push attempts above threshold to force the HIR branch
+        monkeypatch.setattr(st, "_complete_attempts", st._MAX_COMPLETE_ATTEMPTS)
+        scan_session.start("https://example.com")
+        self._queue_human_steer(monkeypatch, tmp_path, "Stop calling complete!")
+        result = st._build_blocker_response(["Real blocker A"])
+        # The HIR payload is JSON but the steer block is appended raw
+        # after it — Smith reads both halves naturally.
+        assert "HUMAN_INTERVENTION_REQUIRED" in result
+        assert "HUMAN MESSAGE" in result
+        assert "Stop calling complete!" in result
+
+    def test_blocked_complete_marks_directive_injected(self, tmp_path, monkeypatch):
+        """After a directive is surfaced once, mark_injected runs so the
+        envelope's nag mode (not its first-delivery path) picks it up on
+        the next non-session tool call."""
+        import core.session as scan_session
+        import mcp_server.session_tools as st
+        from core import steering as steering_mod
+        monkeypatch.setattr(scan_session, "_SESSION_FILE", tmp_path / "session.json")
+        monkeypatch.setattr(st, "_complete_attempts", 1)
+        scan_session.start("https://example.com")
+        self._queue_human_steer(monkeypatch, tmp_path, "Reply please")
+        # Before: pending
+        pending_before = steering_mod.steering_queue.get_pending()
+        assert any(d.message == "Reply please" for d in pending_before)
+        # Surface it once
+        st._build_blocker_response(["A blocker"])
+        # After: status flipped to injected (no longer in get_pending)
+        pending_after = steering_mod.steering_queue.get_pending()
+        assert not any(d.message == "Reply please" for d in pending_after)
+        # But still visible via get_active so nag mode finds it
+        active = steering_mod.steering_queue.get_active()
+        assert any(d.message == "Reply please" for d in active)
+
+    def test_do_status_injects_pending_human_steer(self, tmp_path, monkeypatch):
+        """status() is the natural Smith fallback when confused —
+        steering must surface here too. Without this, Smith stuck in a
+        complete()/status() probe loop never sees the human's reply."""
+        import core.session as scan_session
+        import core.coverage as cov_mod
+        import core.findings as findings_store_mod
+        import mcp_server.session_tools as st
+        monkeypatch.setattr(scan_session, "_SESSION_FILE", tmp_path / "session.json")
+        monkeypatch.setattr(cov_mod, "COVERAGE_FILE", tmp_path / "coverage_matrix.json")
+        monkeypatch.setattr(findings_store_mod, "FINDINGS_FILE", tmp_path / "findings.json")
+        scan_session.start("https://example.com")
+        self._queue_human_steer(monkeypatch, tmp_path, "Are you alive?")
+        result = st._do_status()
+        assert "HUMAN MESSAGE" in result
+        assert "Are you alive?" in result
+
+    def test_pending_steer_block_empty_when_no_directives(self, tmp_path, monkeypatch):
+        """Negative case: no directives → empty string → blocker
+        response unchanged (matches original behaviour exactly)."""
+        from core import steering as steering_mod
+        import mcp_server.session_tools as st
+        monkeypatch.setattr(
+            steering_mod, "_STEERING_FILE", tmp_path / "empty.json"
+        )
+        assert st._pending_steer_block() == ""
+
+    def test_pending_steer_block_handles_non_human_directives(
+        self, tmp_path, monkeypatch,
+    ):
+        """QA-emitted directives (RESUME_TESTING, CHAIN_REQUIRED, etc.)
+        with trigger != 'HUMAN_STEER' must also surface — they're how
+        the QA agent steers Smith. Branch otherwise dead-codes the
+        non-human formatting + the non-human nag text."""
+        from core import steering as steering_mod
+        import mcp_server.session_tools as st
+        monkeypatch.setattr(
+            steering_mod, "_STEERING_FILE", tmp_path / "qa_only.json"
+        )
+        steering_mod.steering_queue.add_directive(
+            code=steering_mod.RESUME_TESTING,
+            trigger="QA_AGENT",
+            message="Test the IDOR cells next",
+            priority="high",
+        )
+        block = st._pending_steer_block()
+        assert "STEERING" in block
+        assert "Test the IDOR cells next" in block
+        # Non-human nag wording, not the human "REPLY TO THE HUMAN NOW"
+        assert "Acknowledge" in block
+
+    def test_pending_steer_block_returns_empty_on_steering_failure(
+        self, monkeypatch,
+    ):
+        """Steering subsystem failure (corrupt queue file, import error,
+        etc.) must never break tool dispatch. Helper swallows the
+        exception and returns ''. Covers the bare-except branch."""
+        import mcp_server.session_tools as st
+        # Force get_active to raise; helper must swallow and return ''
+        from core import steering as steering_mod
+        with patch.object(steering_mod.steering_queue, "get_active",
+                          side_effect=RuntimeError("boom")):
+            assert st._pending_steer_block() == ""
+
+    def test_do_status_no_directives_returns_payload_unchanged(
+        self, tmp_path, monkeypatch,
+    ):
+        """No pending directives → _do_status returns the base payload
+        with no steer-block appended. Covers the `return payload` line
+        at session_tools.py:1295 (the negative branch of the
+        `if steer_block` gate)."""
+        import core.session as scan_session
+        import core.coverage as cov_mod
+        import core.findings as findings_store_mod
+        from core import steering as steering_mod
+        import mcp_server.session_tools as st
+        monkeypatch.setattr(scan_session, "_SESSION_FILE", tmp_path / "session.json")
+        monkeypatch.setattr(cov_mod, "COVERAGE_FILE", tmp_path / "coverage_matrix.json")
+        monkeypatch.setattr(findings_store_mod, "FINDINGS_FILE", tmp_path / "findings.json")
+        monkeypatch.setattr(
+            steering_mod, "_STEERING_FILE", tmp_path / "empty_queue.json"
+        )
+        scan_session.start("https://example.com")
+        result = st._do_status()
+        assert "PENDING DIRECTIVES" not in result
+        assert "HUMAN MESSAGE" not in result
+
+
+# ---------------------------------------------------------------------------
+# HIR_FORCE_COMPLETE resolution resets _complete_attempts
+# ---------------------------------------------------------------------------
+
+class TestResolveResetsCompleteAttempts:
+
+    def test_resolve_force_complete_resets_attempts_counter(
+        self, tmp_path, monkeypatch,
+    ):
+        """Each HIR_FORCE_COMPLETE resolution must zero
+        _complete_attempts so the next complete() call gets a fresh
+        8-attempt budget. Without this, the very next retry instantly
+        re-fires the HIR (counter still ≥ 8) and the cascade restarts —
+        11 → 15 → 17 → 19 → 21 → 24 → 29 in the user's logs."""
+        import core.session as scan_session
+        import mcp_server.session_tools as st
+        monkeypatch.setattr(scan_session, "_SESSION_FILE", tmp_path / "session.json")
+        scan_session.start("https://example.com")
+        scan_session.trigger_intervention(
+            code="HIR_FORCE_COMPLETE", situation="x", tried=[], options=[],
+        )
+        st._complete_attempts = 12
+        scan_session.resolve_intervention("CONTINUE", "fix the cells")
+        assert st._complete_attempts == 0
+
+    def test_resolve_other_hir_does_not_reset_counter(self, tmp_path, monkeypatch):
+        """Resolving a DIFFERENT HIR code must NOT touch the counter.
+        Only HIR_FORCE_COMPLETE specifically wants the fresh-budget
+        semantics — other HIRs (auth failure, target stuck, etc.) have
+        no relationship to complete() attempts."""
+        import core.session as scan_session
+        import mcp_server.session_tools as st
+        monkeypatch.setattr(scan_session, "_SESSION_FILE", tmp_path / "session.json")
+        scan_session.start("https://example.com")
+        scan_session.trigger_intervention(
+            code="HIR_AUTH_FAILURE", situation="x", tried=[], options=[],
+        )
+        st._complete_attempts = 5
+        scan_session.resolve_intervention("REAUTH", "use admin:admin")
+        assert st._complete_attempts == 5  # unchanged
+
+    def test_resolve_with_no_active_intervention_does_not_reset(
+        self, tmp_path, monkeypatch,
+    ):
+        """Idempotent resolve (no active HIR — the dashboard double-
+        clicked, or watchdog called us after the human already
+        resolved): no counter reset because we don't know what HIR
+        code was just resolved."""
+        import core.session as scan_session
+        import mcp_server.session_tools as st
+        monkeypatch.setattr(scan_session, "_SESSION_FILE", tmp_path / "session.json")
+        scan_session.start("https://example.com")
+        st._complete_attempts = 5
+        scan_session.resolve_intervention("X", "")  # no active intervention
+        assert st._complete_attempts == 5

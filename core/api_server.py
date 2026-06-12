@@ -713,6 +713,115 @@ def _smith_running() -> bool:
     )
 
 
+def _live_pid_from_pid_file() -> int | None:
+    """Read smith.pid, return the PID iff it's still alive. None otherwise."""
+    try:
+        import psutil
+        pid = int(_SMITH_PID_FILE.read_text().strip())
+    except (FileNotFoundError, ValueError, PermissionError, ImportError):
+        return None
+    if not (0 < pid < (1 << 22)):
+        return None
+    try:
+        return pid if psutil.pid_exists(pid) else None
+    except OSError:
+        return None
+
+
+def _live_pid_from_process_scan() -> int | None:
+    """Return the PID of the first live process whose cmdline matches a
+    Smith-client needle. None if psutil is missing or no match.
+    """
+    try:
+        import psutil
+        for proc in psutil.process_iter(["cmdline", "pid"]):
+            if _process_matches_smith(proc):
+                try:
+                    return int(proc.info.get("pid") or proc.pid)
+                except (ValueError, TypeError, AttributeError):
+                    continue
+    except (ImportError, OSError):
+        return None
+    except Exception as e:  # psutil.AccessDenied at iter-time
+        _log.debug("process scan for hung pid failed: %s", e)
+    return None
+
+
+def _smith_hung_pid() -> int | None:
+    """Return the PID of a hung Smith process, or None.
+
+    A process is *hung* when it satisfies BOTH:
+
+      • a Smith-like process exists (pid file points at a live PID OR a
+        live process matches a Smith cmdline needle), AND
+      • no MCP heartbeat in the last ``_SMITH_IDLE_SECONDS`` seconds AND
+        the session is past its startup grace window.
+
+    The fresh-quick-log / startup-grace short-circuits prevent us from
+    declaring a healthy long-thinking pause or a just-spawned scan as
+    hung. Without them, normal slow tool calls would trigger respawn.
+
+    The hang-vs-stopped distinction matters because they need different
+    remediation: a stopped Smith just needs respawn; a hung Smith needs
+    its process killed BEFORE respawn or else the OS sees two competing
+    MCP clients and dual writes start corrupting state.
+
+    Existence-only signals (pid file, process scan) are exactly what
+    mask hangs in ``_smith_running()`` — here we *want* that blindness
+    because we're explicitly looking for "alive but stuck".
+    """
+    if _signal_quick_log_fresh() or _signal_session_recently_started():
+        return None
+    return _live_pid_from_pid_file() or _live_pid_from_process_scan()
+
+
+def _kill_hung_smith(pid: int) -> bool:
+    """SIGTERM then SIGKILL a hung Smith pid, wipe its pid-file pointers.
+
+    Returns True iff the process is no longer alive after the kill
+    attempt. Failure modes (already-gone, permission-denied) are logged
+    and treated as "no longer our problem" — the next watchdog tick
+    re-evaluates from scratch.
+
+    Pid file + client file are unlinked on success so the next call to
+    ``_smith_running()`` doesn't immediately re-resurrect the false
+    "alive" signal off a stale pointer to the freshly-killed PID.
+    """
+    try:
+        import psutil
+        proc = psutil.Process(pid)
+    except ImportError:
+        _log.error("kill_hung_smith: psutil missing — cannot terminate pid=%d", pid)
+        return False
+    except psutil.NoSuchProcess:
+        _safe_unlink(_SMITH_PID_FILE)
+        _safe_unlink(_SMITH_CLIENT_FILE)
+        return True
+    try:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except psutil.TimeoutExpired:
+            _log.warning("kill_hung_smith: pid=%d ignored SIGTERM, escalating to SIGKILL", pid)
+            proc.kill()
+            try:
+                proc.wait(timeout=2)
+            except psutil.TimeoutExpired:
+                _log.error("kill_hung_smith: pid=%d survived SIGKILL", pid)
+                return False
+    except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
+        _log.warning("kill_hung_smith: pid=%d not killable: %s", pid, e)
+        # Best-effort cleanup of pointers even on AccessDenied — if the
+        # process is alive but we can't touch it, the pid file is still
+        # misleading and worth clearing so detection stops false-positiving.
+        _safe_unlink(_SMITH_PID_FILE)
+        _safe_unlink(_SMITH_CLIENT_FILE)
+        return False
+    _safe_unlink(_SMITH_PID_FILE)
+    _safe_unlink(_SMITH_CLIENT_FILE)
+    return True
+
+
 @app.get("/api/smith-status")
 async def api_smith_status() -> JSONResponse:
     return JSONResponse({"running": _smith_running()})
@@ -1009,11 +1118,48 @@ async def _watchdog_tick(now: float) -> None:
         return
     if (session_data.get("intervention") or {}).get("code"):
         return
-    if _smith_running():
+
+    # Hung-process detection runs BEFORE the _smith_running() early-return.
+    # A hung opencode/claude keeps _signal_pid_file_alive() and
+    # _signal_process_scan_finds_client() returning True (process exists)
+    # while quick_log goes stale (no MCP activity). _smith_running() OR's
+    # all four signals, so it stays True for a hung process and the old
+    # `if _smith_running(): return` masked the hang indefinitely. By
+    # checking hang FIRST, we kill the zombie + let the rest of the tick
+    # respawn via the normal _spawn_smith() path.
+    hung_pid = _smith_hung_pid()
+    if hung_pid is not None:
+        _log.warning(
+            "watchdog: detected hung Smith pid=%d (no MCP heartbeat in %ds) — killing",
+            hung_pid, _SMITH_IDLE_SECONDS,
+        )
+        try:
+            from core import notifiers as _nfr
+            _nfr.notify(
+                title="Smith hung — process alive but no progress",
+                body=(
+                    f"Watchdog detected pid {hung_pid} is still alive but "
+                    f"hasn't made an MCP tool call in "
+                    f"{_SMITH_IDLE_SECONDS // 60} min. Killing it and "
+                    "attempting respawn. Check the dashboard if the scan "
+                    "stays stuck after respawn."
+                ),
+                urgency="high",
+                code="WATCHDOG_SMITH_HUNG",
+            )
+        except Exception:
+            pass
+        _kill_hung_smith(hung_pid)
+        # Fall through into the spawn flow — do NOT return early.
+    elif _smith_running():
         return
-    # Smith is stopped while the scan is still running — that's the
-    # condition the operator wants to know about. Fire BEFORE the MCP /
+    # Smith is stopped (or just killed) while the scan is still running — that's
+    # the condition the operator wants to know about. Fire BEFORE the MCP /
     # cap / gap guards so we don't go silent on the most actionable case.
+    # Note: for hung→killed, the dedup key WATCHDOG_SMITH_STOPPED is
+    # distinct from WATCHDOG_SMITH_HUNG (fired above), so both alerts land
+    # for a hang event — operator sees "hung, killing" then "stopped,
+    # restarting" within the same tick.
     try:
         from core import notifiers as _nfr
         _nfr.notify(

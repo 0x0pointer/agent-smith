@@ -398,6 +398,304 @@ class TestSmithRunning:
 
 
 # ---------------------------------------------------------------------------
+# _smith_hung_pid / _kill_hung_smith — hang detection + cleanup
+#
+# The bug these tests pin down: before the hang-detection layer, a Smith
+# process that locked up (process alive, no MCP heartbeat) kept
+# _signal_pid_file_alive() and _signal_process_scan_finds_client()
+# returning True, which OR'd through _smith_running() and made the
+# watchdog believe Smith was healthy. The dashboard showed "smith
+# running" for 9+ hours on a frozen opencode while no Telegram alert
+# fired and no restart happened. _smith_hung_pid() is the explicit
+# probe that says "process exists but quick_log is stale" — exactly the
+# alive-but-stuck condition the OR'd _smith_running() can't see.
+# ---------------------------------------------------------------------------
+
+class TestSmithHungDetection:
+
+    def test_hung_pid_is_none_when_quick_log_fresh(
+        self, sandbox_smith_files, tmp_path,
+    ):
+        """Fresh quick_log → Smith is progressing; hung-PID probe MUST
+        short-circuit to None even if a pid file points at a live PID.
+        Otherwise we'd kill a perfectly healthy process mid-tool-call."""
+        (tmp_path / "quick_log.json").write_text("{}\n")
+        (tmp_path / "smith.pid").write_text("12345\n")
+        import psutil
+        with patch.object(psutil, "pid_exists", return_value=True):
+            assert api._smith_hung_pid() is None
+
+    def test_hung_pid_is_none_in_startup_grace(
+        self, sandbox_smith_files, tmp_path,
+    ):
+        """Session started < 2 h ago + quick_log absent → startup grace.
+        We must not declare hang during the spawn → first-tool-call gap."""
+        from datetime import datetime, timezone, timedelta
+        (tmp_path / "session.json").write_text(json.dumps({
+            "status": "running",
+            "finished": None,
+            "started": (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat(),
+        }))
+        (tmp_path / "smith.pid").write_text("12345\n")
+        import psutil
+        with patch.object(psutil, "pid_exists", return_value=True):
+            assert api._smith_hung_pid() is None
+
+    def test_hung_pid_returns_live_pid_when_quick_log_stale(
+        self, sandbox_smith_files, tmp_path,
+    ):
+        """The actual bug — pid alive + quick_log stale + session old →
+        hang. This is the 9-hour opencode-hung case from the user's report."""
+        from datetime import datetime, timezone, timedelta
+        ql = tmp_path / "quick_log.json"
+        ql.write_text("{}\n")
+        import os as _os
+        old_mtime = time.time() - 9 * 3600
+        _os.utime(ql, (old_mtime, old_mtime))
+        (tmp_path / "smith.pid").write_text("32746\n")
+        (tmp_path / "session.json").write_text(json.dumps({
+            "status": "running",
+            "finished": None,
+            "started": (datetime.now(timezone.utc) - timedelta(hours=10)).isoformat(),
+        }))
+        import psutil
+        with patch.object(psutil, "pid_exists", return_value=True):
+            assert api._smith_hung_pid() == 32746
+
+    def test_hung_pid_falls_through_to_process_scan(
+        self, sandbox_smith_files, tmp_path,
+    ):
+        """Pid file missing, quick_log stale, but a live opencode process
+        exists → probe must walk process_iter to find the PID to kill.
+        Without this fallback, manually-launched terminal smiths that hang
+        can never be auto-recovered."""
+        from datetime import datetime, timezone, timedelta
+        ql = tmp_path / "quick_log.json"
+        ql.write_text("{}\n")
+        import os as _os
+        old_mtime = time.time() - 9 * 3600
+        _os.utime(ql, (old_mtime, old_mtime))
+        (tmp_path / "session.json").write_text(json.dumps({
+            "status": "running",
+            "finished": None,
+            "started": (datetime.now(timezone.utc) - timedelta(hours=10)).isoformat(),
+        }))
+        import psutil
+        fake = MagicMock()
+        fake.info = {"cmdline": ["node", "/Users/u/.opencode/bin/opencode", "run", "x"],
+                     "pid": 99001}
+        fake.pid = 99001
+        with patch.object(psutil, "pid_exists", return_value=False), \
+             patch.object(psutil, "process_iter", return_value=[fake]):
+            assert api._smith_hung_pid() == 99001
+
+    def test_hung_pid_returns_none_when_no_process_anywhere(
+        self, sandbox_smith_files, tmp_path,
+    ):
+        """Quick_log stale + session old + NO live process anywhere →
+        Smith is genuinely stopped (not hung). Probe returns None so the
+        watchdog falls through to the plain "stopped → respawn" path
+        rather than try to terminate a phantom PID."""
+        from datetime import datetime, timezone, timedelta
+        ql = tmp_path / "quick_log.json"
+        ql.write_text("{}\n")
+        import os as _os
+        old_mtime = time.time() - 9 * 3600
+        _os.utime(ql, (old_mtime, old_mtime))
+        (tmp_path / "session.json").write_text(json.dumps({
+            "status": "running",
+            "finished": None,
+            "started": (datetime.now(timezone.utc) - timedelta(hours=10)).isoformat(),
+        }))
+        import psutil
+        with patch.object(psutil, "pid_exists", return_value=False):
+            assert api._smith_hung_pid() is None
+
+    def test_live_pid_from_pid_file_returns_none_when_pid_out_of_range(
+        self, sandbox_smith_files, tmp_path,
+    ):
+        """The bounds check (0 < pid < 2**22) guards against a
+        malformed smith.pid file blowing up downstream psutil calls
+        with a giant integer. Cover the post-bounds-check return path
+        — covers core/api_server.py:723."""
+        (tmp_path / "smith.pid").write_text("0\n")  # invalid, fails bounds
+        assert api._live_pid_from_pid_file() is None
+
+    def test_live_pid_from_pid_file_returns_none_on_oserror(
+        self, sandbox_smith_files, tmp_path,
+    ):
+        """psutil.pid_exists can raise OSError on some platforms when
+        the kernel rejects the probe (e.g., aggressive macOS sandbox).
+        Must return None instead of propagating — covers
+        core/api_server.py:726-727 (the except OSError branch)."""
+        (tmp_path / "smith.pid").write_text("12345\n")
+        import psutil
+        with patch.object(psutil, "pid_exists", side_effect=OSError("denied")):
+            assert api._live_pid_from_pid_file() is None
+
+    def test_live_pid_from_process_scan_returns_none_on_iter_failure(
+        self, sandbox_smith_files,
+    ):
+        """psutil.process_iter raises AccessDenied on macOS when
+        sandboxed, OSError on cgroup probes failing on Linux. Either
+        bubbling up would break hang detection silently. Must return
+        None — covers core/api_server.py:742-745 (both except clauses)."""
+        import psutil
+        with patch.object(psutil, "process_iter", side_effect=OSError("denied")):
+            assert api._live_pid_from_process_scan() is None
+        # The generic Exception path (psutil.AccessDenied at iter-time)
+        with patch.object(psutil, "process_iter",
+                          side_effect=psutil.AccessDenied("perm")):
+            assert api._live_pid_from_process_scan() is None
+
+
+class TestKillHungSmith:
+
+    def test_kill_terminates_then_cleans_pointers(
+        self, sandbox_smith_files, tmp_path,
+    ):
+        """SIGTERM path: process responds to terminate within timeout →
+        success, and we wipe smith.pid / smith.client so the next
+        _smith_running() call doesn't keep reading the freshly-dead PID
+        as alive (signal #1's psutil.pid_exists has a brief race window
+        before the kernel reclaims)."""
+        (tmp_path / "smith.pid").write_text("32746\n")
+        (tmp_path / "smith.client").write_text("opencode\n")
+        import psutil
+        proc = MagicMock()
+        proc.wait.return_value = None  # responds to SIGTERM
+        with patch.object(psutil, "Process", return_value=proc):
+            assert api._kill_hung_smith(32746) is True
+        proc.terminate.assert_called_once()
+        proc.kill.assert_not_called()
+        assert not (tmp_path / "smith.pid").exists()
+        assert not (tmp_path / "smith.client").exists()
+
+    def test_kill_escalates_to_sigkill_on_sigterm_timeout(
+        self, sandbox_smith_files, tmp_path,
+    ):
+        """SIGTERM ignored → escalate to SIGKILL. Critical because an
+        opencode stuck in a tight Node.js loop won't observe SIGTERM in
+        time, and we MUST guarantee the process is gone before the
+        watchdog respawns or two MCP clients race on quick_log."""
+        (tmp_path / "smith.pid").write_text("32746\n")
+        import psutil
+        proc = MagicMock()
+        # First .wait() (after terminate) times out → escalate
+        # Second .wait() (after kill) returns cleanly
+        proc.wait.side_effect = [psutil.TimeoutExpired(5), None]
+        with patch.object(psutil, "Process", return_value=proc):
+            assert api._kill_hung_smith(32746) is True
+        proc.terminate.assert_called_once()
+        proc.kill.assert_called_once()
+
+    def test_kill_returns_true_when_process_already_gone(
+        self, sandbox_smith_files, tmp_path,
+    ):
+        """Race: process exits between hung-detection and kill attempt.
+        psutil.Process raises NoSuchProcess → that's success from our
+        POV (the goal was "process not alive"). Pointers still cleaned."""
+        (tmp_path / "smith.pid").write_text("32746\n")
+        (tmp_path / "smith.client").write_text("opencode\n")
+        import psutil
+        with patch.object(psutil, "Process", side_effect=psutil.NoSuchProcess(32746)):
+            assert api._kill_hung_smith(32746) is True
+        assert not (tmp_path / "smith.pid").exists()
+        assert not (tmp_path / "smith.client").exists()
+
+    def test_kill_handles_permission_denied_without_crashing(
+        self, sandbox_smith_files, tmp_path,
+    ):
+        """psutil.AccessDenied during terminate → we can't kill the
+        process. Returns False (so watchdog knows it didn't recover),
+        BUT pointers still get wiped because the pid file is misleading
+        either way — leaving it pointing at an un-killable PID would
+        keep _signal_pid_file_alive() returning True forever and re-
+        trigger hung detection on every tick."""
+        (tmp_path / "smith.pid").write_text("32746\n")
+        import psutil
+        proc = MagicMock()
+        proc.terminate.side_effect = psutil.AccessDenied(32746)
+        with patch.object(psutil, "Process", return_value=proc):
+            assert api._kill_hung_smith(32746) is False
+        assert not (tmp_path / "smith.pid").exists()
+
+
+class TestWatchdogHungIntegration:
+
+    @pytest.fixture(autouse=True)
+    def _reset_watchdog_globals(self, monkeypatch):
+        """The watchdog tracks last-restart-ts + recent-restart-count in
+        module globals so the min-gap and per-hour caps survive across
+        watchdog ticks. Tests that successfully drive _spawn_smith mutate
+        those globals and bleed into the next test in test_spawns_when_*
+        (the min-gap suppression then kicks in and asserts fail). Snapshot
+        + restore both globals per-test so each starts from a clean slate."""
+        monkeypatch.setattr(api, "_watchdog_last_restart_ts", 0.0)
+        monkeypatch.setattr(api, "_watchdog_restart_count_window", [])
+
+    def _stale_log(self, tmp_path, age_seconds: int) -> None:
+        import os as _os
+        ql = tmp_path / "quick_log.json"
+        ql.write_text("{}\n")
+        t = time.time() - age_seconds
+        _os.utime(ql, (t, t))
+
+    @pytest.mark.asyncio
+    async def test_watchdog_kills_hung_smith_then_respawns(
+        self, sandbox_smith_files, tmp_path,
+    ):
+        """End-to-end: scan running + hung process → watchdog (a) fires
+        WATCHDOG_SMITH_HUNG, (b) calls _kill_hung_smith, (c) falls
+        through to _spawn_smith (not early-return)."""
+        from datetime import datetime, timezone, timedelta
+        _write_session(tmp_path / "session.json", status="running")
+        # Make session "old" so we're past startup grace
+        sd = json.loads((tmp_path / "session.json").read_text())
+        sd["started"] = (datetime.now(timezone.utc) - timedelta(hours=10)).isoformat()
+        sd["finished"] = None
+        (tmp_path / "session.json").write_text(json.dumps(sd))
+        (tmp_path / "smith.pid").write_text("32746\n")
+        self._stale_log(tmp_path, 9 * 3600)
+
+        import psutil
+        proc = MagicMock(); proc.wait.return_value = None
+        with patch.object(psutil, "pid_exists", return_value=True), \
+             patch.object(psutil, "Process", return_value=proc), \
+             patch.object(api, "_mcp_sse_alive", return_value=True), \
+             patch.object(api, "_spawn_smith",
+                          new_callable=AsyncMock,
+                          return_value=(True, 99999)) as mock_spawn, \
+             patch("core.notifiers.notify") as mock_notify:
+            await api._watchdog_tick(time.time())
+
+        proc.terminate.assert_called_once()
+        mock_spawn.assert_awaited_once()
+        codes_fired = [c.kwargs.get("code") for c in mock_notify.call_args_list]
+        assert "WATCHDOG_SMITH_HUNG" in codes_fired
+
+    @pytest.mark.asyncio
+    async def test_watchdog_returns_early_when_smith_fresh_and_not_hung(
+        self, sandbox_smith_files, tmp_path,
+    ):
+        """Negative case: quick_log fresh → hung probe returns None →
+        _smith_running True → watchdog returns early as before, no
+        spawn, no kill, no notification."""
+        _write_session(tmp_path / "session.json", status="running")
+        (tmp_path / "quick_log.json").write_text("{}\n")  # fresh
+
+        import psutil
+        with patch.object(psutil, "pid_exists", return_value=False), \
+             patch.object(api, "_spawn_smith",
+                          new_callable=AsyncMock) as mock_spawn, \
+             patch("core.notifiers.notify") as mock_notify:
+            await api._watchdog_tick(time.time())
+
+        mock_spawn.assert_not_called()
+        mock_notify.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # GET /api/smith-clients + _client_installed / _detect_active_client
 # ---------------------------------------------------------------------------
 
