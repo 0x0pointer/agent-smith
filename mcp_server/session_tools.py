@@ -536,7 +536,7 @@ def _escalation_lead_blockers(data: dict) -> list[str]:
     pending_leads: list[str] = []
     for f in data.get("findings", []):
         for lead in f.get("escalation_leads", []):
-            if lead.get("status") == "pending":
+            if isinstance(lead, dict) and lead.get("status") == "pending":
                 pending_leads.append(f"{f['title']}: {lead['lead']}")
     if not pending_leads:
         return []
