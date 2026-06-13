@@ -1012,8 +1012,13 @@ def test_stuck_on_target_second_detection_triggers_hir(tmp_path, monkeypatch):
         assert alert is not None
         assert alert["code"] == "STUCK_ON_TARGET"
         mock_trigger.assert_called_once()
-        call_kwargs = mock_trigger.call_args
-        assert call_kwargs[1]["code"] == "HIR_STUCK_ON_TARGET" or call_kwargs[0][0] == "HIR_STUCK_ON_TARGET"
+        # Accept either calling convention — the dedup refactor moved the call
+        # site to _hir() which forwards positional args; the previous direct
+        # trigger_intervention call used kwargs. Using .get() instead of [] so
+        # the short-circuit OR works (the kwargs path no longer has 'code').
+        call_args = mock_trigger.call_args
+        code = call_args.kwargs.get("code") or (call_args.args[0] if call_args.args else None)
+        assert code == "HIR_STUCK_ON_TARGET"
 
 
 def test_stuck_on_target_no_double_hir(tmp_path, monkeypatch):
@@ -1303,6 +1308,53 @@ def test_hir_swallows_exceptions():
     with patch("core.session.get_intervention", side_effect=RuntimeError("boom")):
         # Should not raise
         _hir("TEST_CODE", "situation", ["tried"], ["option1"])
+
+
+# ---------------------------------------------------------------------------
+# _hir min-gap backstop — prevents the burst the user observed (5 HIR_STUCK_ON_TARGET
+# events fired within 137ms because get_intervention() read a stale cache).
+# Even if dedup were defeated, this floor caps to 1 HIR per code per minute.
+# ---------------------------------------------------------------------------
+
+def test_hir_min_gap_blocks_second_trigger_within_window(monkeypatch):
+    """Two _hir() calls for the same code inside the gap window must
+    result in exactly ONE trigger_intervention. Simulates the QA-cycle
+    race where get_intervention() returns None twice in a row before
+    the first trigger's flush is observed by the second's read."""
+    import core.qa_agent as qa_mod
+    # Force a clean ledger so prior tests don't poison this one
+    monkeypatch.setattr(qa_mod, "_last_hir_trigger_ts", {})
+    with patch("core.session.get_intervention", return_value=None), \
+         patch("core.session.trigger_intervention") as mock_trigger:
+        qa_mod._hir("BURST_CODE", "s", [], [])
+        qa_mod._hir("BURST_CODE", "s", [], [])  # within gap — must be blocked
+        assert mock_trigger.call_count == 1
+
+
+def test_hir_min_gap_allows_different_codes(monkeypatch):
+    """The gap is PER CODE — an unrelated HIR (e.g. HIR_AUTH_FAILURE)
+    must still fire even if HIR_STUCK_ON_TARGET just fired. Otherwise
+    one burst-blocked code would suppress all other QA checks for 60s."""
+    import core.qa_agent as qa_mod
+    monkeypatch.setattr(qa_mod, "_last_hir_trigger_ts", {})
+    with patch("core.session.get_intervention", return_value=None), \
+         patch("core.session.trigger_intervention") as mock_trigger:
+        qa_mod._hir("CODE_A", "s", [], [])
+        qa_mod._hir("CODE_B", "s", [], [])  # different code, allowed
+        assert mock_trigger.call_count == 2
+
+
+def test_hir_min_gap_allows_retrigger_after_window(monkeypatch):
+    """After _HIR_MIN_GAP_SECONDS has elapsed, the same code is allowed
+    to re-fire. Tested by overriding the ledger entry to simulate a
+    past trigger past the gap."""
+    import core.qa_agent as qa_mod
+    monkeypatch.setattr(qa_mod, "_last_hir_trigger_ts",
+                        {"OLD_CODE": 0.0})  # epoch-1970 → way past the gap
+    with patch("core.session.get_intervention", return_value=None), \
+         patch("core.session.trigger_intervention") as mock_trigger:
+        qa_mod._hir("OLD_CODE", "s", [], [])
+        assert mock_trigger.call_count == 1
 
 
 # ---------------------------------------------------------------------------

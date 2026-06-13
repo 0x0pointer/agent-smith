@@ -288,6 +288,107 @@ class TestInjectMissingAuthWarning:
         assert "AUTH_MISSING" not in env.summary
         scan_session._current = None
 
+    # ── Self-evidencing hint shape ─────────────────────────────────────────
+    #
+    # The user observed Smith (Qwen3.6-35B-A3B) burn 7+ tool calls retrying
+    # naked requests against an auth-gated endpoint despite this warning
+    # firing. The previous message ended with "try header 'Authorization:
+    # Bearer eyJ0eXAi...'" — a TRUNCATED token, no concrete retry call,
+    # no fallback path. Smaller models pattern-match on `EXECUTE NOW:
+    # http(...)` shape but ignore discursive "you should try" paragraphs.
+    # These tests pin the new shape so it can't regress quietly.
+
+    def test_warning_includes_execute_now_retry_call(self, tmp_path, monkeypatch):
+        """Warning must include an inline http(action='request', ...) call
+        with the exact method + url + the Authorization header line — that's
+        the literal next tool call Smith should make."""
+        monkeypatch.setattr(scan_session, "_SESSION_FILE", tmp_path / "session.json")
+        scan_session._current = None
+        scan_session.start("http://x")
+        scan_session.update_known_assets("auth_tokens", [
+            {"value": "eyJ_realtoken_abc", "type": "jwt",
+             "source_url": "http://x/login"},
+        ])
+        env = self._make_env(401)
+        _inject_missing_auth_warning(env, {
+            "url": "http://x/api/widget",
+            "method": "POST",
+            "headers": {},
+        })
+        # The actionable retry call must be spelled out
+        assert "EXECUTE NOW" in env.summary
+        assert "http(action='request'" in env.summary
+        assert "method='POST'" in env.summary
+        assert "url='http://x/api/widget'" in env.summary
+        assert "Authorization" in env.summary
+        # The token reference is via known_assets.auth_tokens[-1].value
+        # (NOT the truncated 30-char prefix the old hint used), so the
+        # model resolves the full value from session state rather than
+        # sending a truncated literal.
+        assert "known_assets.auth_tokens[-1].value" in env.summary
+        scan_session._current = None
+
+    def test_warning_includes_mint_fresh_token_fallback(self, tmp_path, monkeypatch):
+        """When credentials AND an auth endpoint are known, the warning
+        must include a concrete 'mint a new token' call too — for the
+        case where the stored token has expired and even auth retry
+        gets 401. Otherwise Smith doesn't know how to recover."""
+        monkeypatch.setattr(scan_session, "_SESSION_FILE", tmp_path / "session.json")
+        scan_session._current = None
+        scan_session.start("http://x")
+        scan_session.update_known_assets("auth_tokens",
+                                          [{"value": "old", "type": "jwt"}])
+        scan_session.update_known_assets("credentials",
+                                          [{"username": "alice", "password": "p@ss"}])
+        scan_session.update_known_assets("auth_endpoints",
+                                          [{"path": "http://x/login",
+                                            "method": "POST"}])
+        env = self._make_env(401)
+        _inject_missing_auth_warning(env, {
+            "url": "http://x/api/widget", "method": "GET", "headers": {},
+        })
+        assert "mint a fresh one" in env.summary
+        assert "alice" in env.summary
+        assert "http://x/login" in env.summary
+        scan_session._current = None
+
+    def test_warning_omits_mint_call_when_no_credentials_known(
+        self, tmp_path, monkeypatch,
+    ):
+        """Inverse: no credentials → no mint-fresh-token suggestion (we
+        can't tell Smith how to re-auth). Token-retry call still appears
+        because that's always possible with existing tokens."""
+        monkeypatch.setattr(scan_session, "_SESSION_FILE", tmp_path / "session.json")
+        scan_session._current = None
+        scan_session.start("http://x")
+        scan_session.update_known_assets("auth_tokens",
+                                          [{"value": "t", "type": "jwt"}])
+        env = self._make_env(401)
+        _inject_missing_auth_warning(env, {
+            "url": "http://x/api/widget", "method": "GET", "headers": {},
+        })
+        assert "mint a fresh one" not in env.summary
+        # But the primary retry call must still appear
+        assert "EXECUTE NOW" in env.summary
+        scan_session._current = None
+
+    def test_warning_warns_against_naked_retry(self, tmp_path, monkeypatch):
+        """The previous message left "should I retry" ambiguous —
+        smaller models retried naked anyway. New message must explicitly
+        say DO NOT retry without auth, so even a model that ignores the
+        EXECUTE NOW pattern picks up the negative directive."""
+        monkeypatch.setattr(scan_session, "_SESSION_FILE", tmp_path / "session.json")
+        scan_session._current = None
+        scan_session.start("http://x")
+        scan_session.update_known_assets("auth_tokens",
+                                          [{"value": "t", "type": "jwt"}])
+        env = self._make_env(401)
+        _inject_missing_auth_warning(env, {
+            "url": "http://x/api/widget", "method": "GET", "headers": {},
+        })
+        assert "DO NOT retry the naked request" in env.summary
+        scan_session._current = None
+
 
 # ---------------------------------------------------------------------------
 # wrap() — terminal status + intervention guards
