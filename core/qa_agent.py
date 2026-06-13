@@ -324,30 +324,33 @@ def _check_stuck_on_target(entries: list[dict], findings_data: dict, previous_al
     )
 
     if was_flagged_before:
-        # Second consecutive cycle with the same target stuck — escalate to HIR
-        try:
-            from core import session as scan_session
-            iv = scan_session.get_intervention()
-            if not iv:  # Don't double-trigger if HIR is already active
-                scan_session.trigger_intervention(
-                    code="HIR_STUCK_ON_TARGET",
-                    situation=(
-                        f"Smith has made {hit_count} tool calls against '{stuck_target}' "
-                        f"in the last 30 min with no finding logged and no coverage progress. "
-                        "It appears to be stuck investigating something it cannot confirm or rule out."
-                    ),
-                    tried=[
-                        f"Ran {hit_count} tool calls against {stuck_target} without result"
-                    ],
-                    options=[
-                        "HINT: Share what you know about this target — give Smith a specific payload, endpoint, or technique to try next",
-                        "SKIP: Tell Smith to document what it observed, mark as informational, and move on",
-                        "DEEPER: Approve going further — e.g. manual SQLi, out-of-band callbacks, or Metasploit exploitation",
-                        "ABORT_TARGET: Drop this target entirely and continue with remaining coverage",
-                    ],
-                )
-        except Exception:
-            pass
+        # Second consecutive cycle with the same target stuck — escalate to HIR.
+        # Uses the _hir() helper instead of trigger_intervention() directly so:
+        #   (a) dedup goes through the same code path every HIR check uses,
+        #       which now force-reloads session.json mtime before reading
+        #       (avoids the stale-cache race the user hit where 5 HIRs fired
+        #       within 137ms because each call's get_intervention() read a
+        #       cached _current that hadn't seen the previous flush yet);
+        #   (b) the min-gap floor (_HIR_MIN_GAP_SECONDS) caps burst frequency
+        #       to one HIR-of-this-code per minute even if dedup were ever
+        #       defeated, so dashboard "Stuck Events" stops getting flooded.
+        _hir(
+            code="HIR_STUCK_ON_TARGET",
+            situation=(
+                f"Smith has made {hit_count} tool calls against '{stuck_target}' "
+                f"in the last 30 min with no finding logged and no coverage progress. "
+                "It appears to be stuck investigating something it cannot confirm or rule out."
+            ),
+            tried=[
+                f"Ran {hit_count} tool calls against {stuck_target} without result"
+            ],
+            options=[
+                "HINT: Share what you know about this target — give Smith a specific payload, endpoint, or technique to try next",
+                "SKIP: Tell Smith to document what it observed, mark as informational, and move on",
+                "DEEPER: Approve going further — e.g. manual SQLi, out-of-band callbacks, or Metasploit exploitation",
+                "ABORT_TARGET: Drop this target entirely and continue with remaining coverage",
+            ],
+        )
         return {
             "code": "STUCK_ON_TARGET", "urgency": "high", "blocking": False,
             "message": (
@@ -566,12 +569,40 @@ def _check_missing_skill(coverage_data: dict, session_data: dict) -> list[dict]:
 
 # ── HIR checks — conditions Smith cannot self-resolve ────────────────────────
 
+# Minimum seconds between two HIR triggers of the same code. Even if the
+# get_intervention() dedup fails (cross-process state desync, racy flush,
+# etc.), this caps the burst at one HIR per minute per code. The user
+# observed 5 HIR_STUCK_ON_TARGET events fire within 137ms — that's the
+# blast radius this floor closes.
+_HIR_MIN_GAP_SECONDS = 60
+_last_hir_trigger_ts: dict[str, float] = {}
+
+
 def _hir(code: str, situation: str, tried: list[str], options: list[str]) -> None:
-    """Trigger HIR if one is not already active. Always fires regardless of scan mode."""
+    """Trigger HIR if one is not already active. Always fires regardless of scan mode.
+
+    Two-layer dedup:
+
+      1. ``get_intervention()`` — primary check. Pre-fix this read a
+         cached ``_current`` and could miss a freshly-triggered HIR in
+         the same QA cycle when multiple checks fire back-to-back.
+         Post-fix it force-reloads session.json mtime first.
+
+      2. ``_HIR_MIN_GAP_SECONDS`` floor — backstop. Even if layer 1
+         were ever defeated again, this prevents the same HIR code from
+         re-triggering within 60s, which kills the "Stuck Events" dash
+         flood the user reported (5 HIRs in 137ms).
+    """
+    import time as _time
+    now = _time.time()
+    last = _last_hir_trigger_ts.get(code, 0.0)
+    if now - last < _HIR_MIN_GAP_SECONDS:
+        return
     try:
         from core import session as scan_session
         if not scan_session.get_intervention():
             scan_session.trigger_intervention(code, situation, tried, options)
+            _last_hir_trigger_ts[code] = now
     except Exception:
         pass
 

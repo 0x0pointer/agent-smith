@@ -737,3 +737,59 @@ def test_remaining_returns_none_for_unlimited_cost_time(coverage_file):
     assert r["cost_pct"] == 0
     assert r["time_pct"] == 0
     assert r["calls_remaining"] == -1  # 0 = unlimited → -1
+
+
+# ---------------------------------------------------------------------------
+# get_intervention — force-reload from disk before reading cache
+#
+# The user observed 5 HIR_STUCK_ON_TARGET events fire within 137ms because
+# get_intervention() (used as the dedup check by every HIR-triggering path)
+# read from a cached _current that hadn't observed the previous trigger's
+# flush yet. _reconcile_if_external_write() runs first now so the dedup
+# sees fresh state — same family of cross-process desync we fixed for the
+# Clear All path in PR #111.
+# ---------------------------------------------------------------------------
+
+def test_get_intervention_reloads_external_trigger_from_disk(tmp_path, monkeypatch):
+    """A peer process (the QA daemon in the dashboard) wrote an active
+    intervention to session.json. Our in-memory _current still says
+    status='running'. get_intervention() must see the disk reality
+    and return the intervention dict, not None — otherwise the dedup
+    check passes and a duplicate HIR fires."""
+    import json
+    import core.session as scan_session
+    session_file = tmp_path / "session.json"
+    monkeypatch.setattr(scan_session, "_SESSION_FILE", session_file)
+    # Set up in-memory state as 'running' (no intervention)
+    scan_session.start("https://example.com")
+    assert scan_session.get_intervention() is None
+    # Peer process writes an intervention directly to disk
+    current_disk = json.loads(session_file.read_text())
+    current_disk["status"] = "intervention_required"
+    current_disk["intervention"] = {
+        "code": "HIR_STUCK_ON_TARGET",
+        "situation": "stuck",
+        "tried": [],
+        "options": [],
+        "triggered_at": "2026-06-12T20:00:00+00:00",
+    }
+    session_file.write_text(json.dumps(current_disk))
+    # Bump mtime so the reconcile check fires (otherwise mtime equality
+    # short-circuits the reload — that's the desired steady-state perf)
+    new_mtime = session_file.stat().st_mtime + 10
+    import os
+    os.utime(session_file, (new_mtime, new_mtime))
+    # The next get_intervention() must reflect disk reality
+    iv = scan_session.get_intervention()
+    assert iv is not None
+    assert iv["code"] == "HIR_STUCK_ON_TARGET"
+
+
+def test_get_intervention_returns_none_when_no_intervention(tmp_path, monkeypatch):
+    """Negative case: status is 'running' on disk → no intervention.
+    The force-reload must NOT spuriously surface anything."""
+    import core.session as scan_session
+    session_file = tmp_path / "session.json"
+    monkeypatch.setattr(scan_session, "_SESSION_FILE", session_file)
+    scan_session.start("https://example.com")
+    assert scan_session.get_intervention() is None

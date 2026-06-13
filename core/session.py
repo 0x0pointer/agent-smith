@@ -906,7 +906,18 @@ def resolve_intervention(choice: str, message: str = "") -> dict:
 
 
 def get_intervention() -> dict | None:
-    """Return current intervention dict if scan is paused, else None."""
+    """Return current intervention dict if scan is paused, else None.
+
+    Reconciles against disk first because this is the dedup-check used by
+    every HIR-triggering path. If a previous HIR fired and flushed to disk
+    but our cached _current hasn't observed that flush yet (the dashboard
+    process and MCP server keep separate _current caches; same family of
+    cross-process desync we fixed for Clear All in PR #111), the dedup
+    check returns None and a duplicate HIR fires. _reconcile_if_external_write
+    only pays for a disk read when session.json's mtime is newer than our
+    last local write, so the steady-state cost is near zero.
+    """
+    _reconcile_if_external_write()
     if not _current or _current.get("status") != "intervention_required":
         return None
     return _current.get("intervention")

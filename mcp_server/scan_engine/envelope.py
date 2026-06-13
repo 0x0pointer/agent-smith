@@ -568,23 +568,63 @@ def _inject_missing_auth_warning(env: Envelope, ctx: dict) -> None:
         return  # legitimate login attempt — 401 is the test signal
     try:
         from core import session as _sess
-        tokens = (_sess.get() or {}).get("known_assets", {}).get("auth_tokens", [])
+        sess_data    = _sess.get() or {}
+        known_assets = sess_data.get("known_assets", {})
+        tokens       = known_assets.get("auth_tokens", [])
         valid_tokens = [t for t in tokens if isinstance(t, dict) and t.get("value")]
         if not valid_tokens:
             return
-        latest_token = valid_tokens[-1].get("value", "")
-        url = ctx.get("url", "")
+        url    = ctx.get("url", "")
+        method = (ctx.get("method", "GET") or "GET").upper()
+
+        # Smaller models (the user hit this with Qwen3.6-35B-A3B) treat
+        # short "try header X" warnings as background noise and burn 7+
+        # tool calls retrying naked requests against the same endpoint.
+        # The fix is the same shape we used for the envelope budget
+        # truncation: embed the EXACT next tool call inline with the
+        # full token-reference path. The model can pattern-match on
+        # `EXECUTE NOW: http(...)` far more reliably than on a discursive
+        # "you should try X, or maybe Y" paragraph.
+        #
+        # The token reference is `known_assets.auth_tokens[-1].value`
+        # (not a truncated literal) because:
+        #   1. Models that DO read warnings can resolve the path from
+        #      session state directly without us inlining a 700-char JWT
+        #      that would blow the envelope budget.
+        #   2. The truncated form `eyJ0eXAiOiJK...` previously shown
+        #      reads like a complete token to less-careful models, which
+        #      then sent the truncated value verbatim and got 401 again.
+        creds = known_assets.get("credentials", [])
+        auth_endpoints = known_assets.get("auth_endpoints", [])
+        cred_hint = ""
+        if creds and auth_endpoints:
+            ep = auth_endpoints[0]
+            cred_hint = (
+                f" If the stored token has expired (still 401 after the "
+                f"retry above), mint a fresh one: "
+                f"http(action='request', method='{ep.get('method','POST')}', "
+                f"url='{ep.get('path','')}', "
+                f"body={{'username':'{creds[0].get('username','')}', "
+                f"'password':'{creds[0].get('password','')}'}}). "
+                f"Extract the new JWT from the response and retry."
+            )
         message = (
-            f"AUTH_MISSING: {url} returned HTTP {status} but the request carried "
-            f"NO authentication (no Authorization / Cookie / X-Api-Key / X-Auth-* "
-            f"header, no ?token= query). known_assets.auth_tokens has "
-            f"{len(valid_tokens)} valid token(s). "
-            f"RETRY with whatever auth form this app uses — try header "
-            f"'Authorization: Bearer {latest_token[:30]}...' first; if 401 persists "
-            f"the app may use a Cookie (re-login at the discovered auth_endpoint "
-            f"and reuse Set-Cookie) or a custom header (X-Api-Key / X-Auth-Token). "
-            f"401/403 with NO auth sent is NOT a test result — the server never "
-            f"evaluated your payload."
+            f"AUTH_MISSING: {method} {url} returned HTTP {status} with NO auth "
+            f"attached (no Authorization / Cookie / X-Api-Key / X-Auth-* / "
+            f"?token= query). 401/403 with no auth is NOT a test result — "
+            f"the server never evaluated your payload. "
+            f"EXECUTE NOW: retry the same request with the JWT attached: "
+            f"http(action='request', method='{method}', url='{url}', "
+            f"headers={{'Authorization': 'Bearer ' + "
+            f"known_assets.auth_tokens[-1].value}}). "
+            f"({len(valid_tokens)} valid token(s) available; "
+            f"newest source: {valid_tokens[-1].get('source_url','unknown')}). "
+            f"If 401 persists, the app may use Cookie auth (re-login + reuse "
+            f"Set-Cookie) or a custom header like X-Api-Key/X-Auth-Token — try "
+            f"those header names with the same JWT value."
+            f"{cred_hint}"
+            f" DO NOT retry the naked request — every naked retry will return "
+            f"401 and burns budget without producing a test result."
         )
         env.warnings.append(message)
         env.summary = f"⚠ {message}\n\n" + env.summary
