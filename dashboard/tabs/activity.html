@@ -1,0 +1,71 @@
+<!-- ── Tab: Activity (QA alerts + Steering + Tool log + Conversation) ── -->
+<div id="tab-activity" class="tab-content">
+  <!-- Stuck Events log -->
+  <div class="activity-section">
+    <div class="activity-section-header">
+      <span class="activity-dot" style="background:#f97316;box-shadow:0 0 5px #f97316"></span>
+      <span class="activity-section-title">Stuck Events</span>
+      <span class="activity-section-meta" style="color:var(--text-dim);font-size:0.7rem">HIR pauses · coverage stalls · gate blocks</span>
+    </div>
+    <div id="stuck-log-wrap">
+      <div class="empty-placeholder">No stuck events yet — Smith is running smoothly.</div>
+    </div>
+  </div>
+
+  <!-- Live QA Alerts -->
+  <div class="activity-section">
+    <div class="activity-section-header">
+      <span class="activity-dot" style="background:var(--green);box-shadow:0 0 5px var(--green)"></span>
+      <span class="activity-section-title">QA Alerts</span>
+      <span id="qa-last-check" class="activity-section-meta"></span>
+    </div>
+    <div id="qa-alerts-wrap">
+      <div class="empty-placeholder">Waiting for first QA cycle — runs every 2 min during an active scan.</div>
+    </div>
+  </div>
+
+  <!-- Steering Directives -->
+  <div class="activity-section">
+    <div class="activity-section-header">
+      <span class="activity-dot" style="background:#f97316;box-shadow:0 0 5px #f97316"></span>
+      <span class="activity-section-title">Steering Directives</span>
+      <span id="steering-last-update" class="activity-section-meta"></span>
+    </div>
+    <div style="font-size:0.74rem;color:var(--text-dim);margin-bottom:0.65rem;line-height:1.5;">
+      Directives are injected automatically into Smith's tool responses.
+      <span style="color:#f97316">●</span> pending &nbsp;
+      <span style="color:#facc15">●</span> injected &nbsp;
+      <span style="color:#4ade80">●</span> acknowledged &nbsp;
+      <span style="color:#60a5fa">●</span> auto-satisfied
+    </div>
+    <div id="steering-active-wrap">
+      <div class="empty-placeholder">No active steering directives.</div>
+    </div>
+    <div class="qa-divider">Directive history</div>
+    <div id="steering-history-wrap">
+      <div class="empty-placeholder">No steering history yet.</div>
+    </div>
+  </div>
+
+  <!-- Tool Activity -->
+  <div class="activity-section">
+    <div class="activity-section-header">
+      <span class="activity-dot" style="background:var(--purple);box-shadow:0 0 5px var(--purple)"></span>
+      <span class="activity-section-title">Tool Activity</span>
+    </div>
+    <div id="quicklog-wrap">
+      <div class="empty-placeholder">No tool activity yet.</div>
+    </div>
+  </div>
+
+  <!-- QA Conversation History -->
+  <div class="activity-section">
+    <div class="activity-section-header">
+      <span class="activity-dot" style="background:var(--text-dim)"></span>
+      <span class="activity-section-title">QA ↔ Smith Conversation</span>
+    </div>
+    <div id="cycle-history-wrap">
+      <div class="empty-placeholder">No cycles yet — QA starts 2 min after scan begins.</div>
+    </div>
+  </div>
+</div>

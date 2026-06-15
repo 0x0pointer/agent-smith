@@ -1,0 +1,12 @@
+<!-- ── Tab: Threat Model ─────────────────────────────────────────────────── -->
+<div id="tab-threat-model" class="tab-content">
+  <div id="tm-toolbar" style="display:flex;align-items:center;gap:1rem;margin-bottom:0.75rem;font-size:0.8rem;">
+    <select id="tm-file-select" onchange="onTmFileChange()"
+      style="background:var(--bg-card);border:1px solid var(--border);color:var(--text);border-radius:4px;
+             padding:0.2rem 0.5rem;font-size:0.76rem;font-family:'IBM Plex Mono',monospace;max-width:320px">
+      <option value="">latest</option>
+    </select>
+    <span id="tm-file-ts" style="color:var(--text-dim);font-family:'IBM Plex Mono',monospace;font-size:0.73rem"></span>
+  </div>
+  <div id="threat-model-wrap" class="empty">No threat model yet — run the threat-modeling in <code>/pentester</code></div>
+</div>

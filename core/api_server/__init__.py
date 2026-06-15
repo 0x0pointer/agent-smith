@@ -46,6 +46,8 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 
 _log = logging.getLogger(__name__)
 _ERR_REQUEST_FAILED = "Request failed"
@@ -61,6 +63,7 @@ _STEERING_FILE     = _REPO_ROOT / "steering_queue.json"
 _QUICK_LOG_FILE    = _REPO_ROOT / "quick_log.json"
 _METRICS_FILE      = _REPO_ROOT / "pentest_metrics.jsonl"
 _TEMPLATES_DIR     = _REPO_ROOT / "templates"
+_DASHBOARD_DIR     = _REPO_ROOT / "dashboard"
 _THREAT_MODEL_DIR  = _REPO_ROOT / "threat-model"
 _SMITH_PID_FILE    = _REPO_ROOT / "logs" / "smith.pid"
 _SMITH_CLIENT_FILE = _REPO_ROOT / "logs" / "smith.client"
@@ -68,6 +71,12 @@ _SMITH_CLIENT_FILE = _REPO_ROOT / "logs" / "smith.client"
 # ── FastAPI app ───────────────────────────────────────────────────────────────
 
 app = FastAPI(title="pentest-agent")
+
+# Dashboard UI: a Jinja2-rendered index.html that {% include %}s one HTML
+# partial per tab, plus raw static CSS/JS — all under dashboard/. Mounted at
+# import so both TestClient(app) and the live uvicorn server serve it.
+templates = Jinja2Templates(directory=str(_DASHBOARD_DIR))
+app.mount("/static", StaticFiles(directory=str(_DASHBOARD_DIR)), name="static")
 
 _qa_task:        asyncio.Task | None = None  # kept alive to prevent GC
 _watchdog_task:  asyncio.Task | None = None

@@ -24,8 +24,10 @@ router = APIRouter()
 # ── Dashboard UI + static assets ────────────────────────────────────────────
 
 @router.get("/")
-async def dashboard_ui() -> FileResponse:
-    return FileResponse(_api._TEMPLATES_DIR / "dashboard.html")
+async def dashboard_ui(request: Request):
+    """Render the dashboard shell — index.html {% include %}s the per-tab
+    partials; CSS/JS load from the /static mount."""
+    return _api.templates.TemplateResponse("index.html", {"request": request})
 
 
 @router.get("/logo.png")
@@ -47,7 +49,7 @@ async def favicon() -> FileResponse:
 @router.get("/favicon-32x32.png")
 async def favicon_png() -> FileResponse:
     """Sized PNG favicon for modern browsers — referenced explicitly from
-    the <link rel="icon" sizes="32x32"> tag in dashboard.html. Modern
+    the <link rel="icon" sizes="32x32"> tag in index.html. Modern
     rendering pipelines prefer this over the .ico when both are available."""
     return FileResponse(
         _api._TEMPLATES_DIR / "favicon-32x32.png",
