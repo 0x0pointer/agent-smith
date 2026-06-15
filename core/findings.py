@@ -34,9 +34,9 @@ import asyncio
 import json
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
+from core import paths as _paths
 
-FINDINGS_FILE = Path(__file__).parent.parent / "findings.json"
+FINDINGS_FILE = _paths.FINDINGS_FILE
 
 _lock = asyncio.Lock()
 

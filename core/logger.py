@@ -18,14 +18,13 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timezone
-from pathlib import Path
+from core import paths as _paths
 
 # ---------------------------------------------------------------------------
 # Setup — single persistent log file, appended across sessions
 # ---------------------------------------------------------------------------
 
-_REPO_ROOT = Path(__file__).parent.parent
-_LOG_DIR = _REPO_ROOT / "logs"
+_LOG_DIR = _paths.LOGS_DIR
 _LOG_DIR.mkdir(exist_ok=True)
 
 log_path = _LOG_DIR / "pentest.log"

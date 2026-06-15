@@ -55,7 +55,7 @@ import json
 import os
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
+from core import paths as _paths
 
 from core import cost as cost_tracker
 
@@ -85,9 +85,8 @@ PRESETS: dict[str, dict] = {
     },
 }
 
-# __file__ is core/session/__init__.py → three parents up is the repo root.
-_REPO_ROOT = Path(__file__).parent.parent.parent
-_SESSION_FILE = _REPO_ROOT / "session.json"
+_REPO_ROOT = _paths.REPO_ROOT
+_SESSION_FILE = _paths.SESSION_FILE
 
 
 # ── In-memory state ───────────────────────────────────────────────────────────

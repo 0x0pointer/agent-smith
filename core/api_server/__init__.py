@@ -49,24 +49,25 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from core import paths as _paths
+
 _log = logging.getLogger(__name__)
 _ERR_REQUEST_FAILED = "Request failed"
 
-# __file__ is core/api_server/__init__.py → three parents up is the repo root.
-_REPO_ROOT         = Path(__file__).parent.parent.parent
-_FINDINGS_FILE     = _REPO_ROOT / "findings.json"
-_SESSION_FILE      = _REPO_ROOT / "session.json"
-_COST_FILE         = _REPO_ROOT / "session_cost.json"
-_COVERAGE_FILE     = _REPO_ROOT / "coverage_matrix.json"
-_QA_STATE_FILE     = _REPO_ROOT / "qa_state.json"
-_STEERING_FILE     = _REPO_ROOT / "steering_queue.json"
-_QUICK_LOG_FILE    = _REPO_ROOT / "quick_log.json"
-_METRICS_FILE      = _REPO_ROOT / "pentest_metrics.jsonl"
-_TEMPLATES_DIR     = _REPO_ROOT / "templates"
-_DASHBOARD_DIR     = _REPO_ROOT / "dashboard"
-_THREAT_MODEL_DIR  = _REPO_ROOT / "threat-model"
-_SMITH_PID_FILE    = _REPO_ROOT / "logs" / "smith.pid"
-_SMITH_CLIENT_FILE = _REPO_ROOT / "logs" / "smith.client"
+_REPO_ROOT         = _paths.REPO_ROOT
+_FINDINGS_FILE     = _paths.FINDINGS_FILE
+_SESSION_FILE      = _paths.SESSION_FILE
+_COST_FILE         = _paths.COST_FILE
+_COVERAGE_FILE     = _paths.COVERAGE_FILE
+_QA_STATE_FILE     = _paths.QA_STATE_FILE
+_STEERING_FILE     = _paths.STEERING_FILE
+_QUICK_LOG_FILE    = _paths.QUICK_LOG_FILE
+_METRICS_FILE      = _paths.METRICS_FILE
+_TEMPLATES_DIR     = _paths.TEMPLATES_DIR
+_DASHBOARD_DIR     = _paths.DASHBOARD_DIR
+_THREAT_MODEL_DIR  = _paths.THREAT_MODEL_DIR
+_SMITH_PID_FILE    = _paths.SMITH_PID_FILE
+_SMITH_CLIENT_FILE = _paths.SMITH_CLIENT_FILE
 
 # ── FastAPI app ───────────────────────────────────────────────────────────────
 

@@ -51,9 +51,10 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-# __file__ is core/coverage/__init__.py → three parents up is the repo root.
-COVERAGE_FILE  = (Path(__file__).parent.parent.parent / "coverage_matrix.json").resolve()
-_ARTIFACTS_DIR = (Path(__file__).parent.parent.parent / "artifacts").resolve()
+from core import paths as _paths
+
+COVERAGE_FILE  = _paths.COVERAGE_FILE
+_ARTIFACTS_DIR = _paths.ARTIFACTS_DIR
 
 _lock = asyncio.Lock()
 

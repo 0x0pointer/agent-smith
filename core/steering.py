@@ -21,10 +21,9 @@ import json
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
+from core import paths as _paths
 
-_REPO_ROOT = Path(__file__).parent.parent
-_STEERING_FILE = _REPO_ROOT / "steering_queue.json"
+_STEERING_FILE = _paths.STEERING_FILE
 
 # Codes that can appear in a directive
 RESUME_REQUIRED  = "RESUME_REQUIRED"
