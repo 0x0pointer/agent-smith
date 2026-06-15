@@ -11,6 +11,7 @@ from core import cost as cost_tracker
 from core import findings as findings_store
 from core import logger as log
 from core import session as scan_session
+from core.taxonomy import BYPASS_REQUIRED_TYPES as _BYPASS_REQUIRED_TYPES
 from mcp_server._app import mcp, _ensure_dict, _session_tools_called
 
 _background_tasks: set[asyncio.Task] = set()  # keeps fire-and-forget tasks alive
@@ -370,7 +371,6 @@ def _coverage_blockers(cov: dict, ctf_mode: bool = False) -> list[str]:
     and so re-spidering picks up new endpoints later. CTF mode bypasses this because
     benchmarks have a single flag goal where matrix bookkeeping is overhead.
     """
-    from core.coverage import _BYPASS_REQUIRED_TYPES  # local import to avoid circularity
     blockers: list[str] = []
     meta = cov.get("meta", {})
     total = meta.get("total_cells", 0)

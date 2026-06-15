@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 
 import core.coverage as _cov
+from core import taxonomy as _tax
 
 
 # ---------------------------------------------------------------------------
@@ -18,12 +19,7 @@ import core.coverage as _cov
 # requires the notes to explain WHY the bypass doesn't apply.
 # ---------------------------------------------------------------------------
 
-_BYPASS_REQUIRED_TYPES: dict[str, str] = {
-    "xxe":  "Content-Type switching to application/xml",
-    "sqli": "blind boolean/time-based, second-order, or encoding bypass",
-    "xss":  "encoding bypass, DOM sinks, or stored via other endpoint",
-    "ssti": "alternative template syntax (${}, <%%>, #{}, *{})",
-}
+_BYPASS_REQUIRED_TYPES = _tax.BYPASS_REQUIRED_TYPES
 
 
 def _integrity_warning_for_status(
@@ -86,10 +82,7 @@ def _validate_artifact(artifact_id: str, status: str) -> str:
 # Injection cell types where 401/403 is meaningless evidence of cleanliness —
 # the test payload was never evaluated because auth blocked the request first.
 # Excluded: auth/access-control cell types where 401/403 IS the finding signal.
-_AUTH_GATED_TYPES = {
-    "sqli", "nosqli", "xss", "ssti", "cmdi", "ssrf", "xxe",
-    "traversal", "crlf", "prototype", "mass_assignment", "redirect",
-}
+_AUTH_GATED_TYPES = _tax.AUTH_GATED_TYPES
 
 
 # Default severity inferred from injection_type when Smith doesn't file a

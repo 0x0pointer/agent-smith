@@ -4,31 +4,18 @@ Coverage matrix — path normalization and endpoint classification.
 Pure functions with no shared state: collapse dynamic path segments for
 dedup, map a (param_type, value_hint) pair to the injection types that
 apply to it, and tag an endpoint path with a high-value type for
-trigger-gate routing.
+trigger-gate routing. The taxonomy tables themselves live in core.taxonomy
+(a leaf module); they're aliased here so these functions keep their names.
 """
 from __future__ import annotations
 
 import re
 
+from core import taxonomy as _tax
 
-# ---------------------------------------------------------------------------
-# Applicability rules — which injection types apply to each param type
-# ---------------------------------------------------------------------------
-
-_APPLICABILITY: dict[str, list[str]] = {
-    # param_type/value_hint
-    "path/integer":      ["sqli", "idor", "traversal"],
-    "path/string":       ["sqli", "xss", "ssti", "traversal", "cmdi", "idor"],
-    "query/default":     ["sqli", "xss", "ssti", "ssrf", "cmdi", "traversal", "redirect", "nosqli", "crlf"],
-    "body_form/default": ["sqli", "xss", "ssti", "ssrf", "cmdi", "xxe", "nosqli"],
-    "body_json/default": ["sqli", "nosqli", "xss", "ssti", "ssrf", "cmdi", "prototype", "mass_assignment"],
-    "header/default":    ["crlf", "xss", "ssrf", "smuggling"],
-    "cookie/default":    ["sqli", "xss", "deserial"],
-    "endpoint/default":  ["cors", "csrf", "security_headers", "rate_limit", "method_tampering", "cache", "jwt", "race", "bfla"],
-}
-
-# Fallback: if no specific hint matches, use param_type/default
-_FALLBACK_KEY = "{type}/default"
+_APPLICABILITY = _tax.APPLICABILITY
+_FALLBACK_KEY = _tax.FALLBACK_KEY
+_TYPE_PATTERNS = _tax.TYPE_PATTERNS
 
 
 def _normalize_path(path: str) -> str:
@@ -55,18 +42,6 @@ def _applicable_types(param_type: str, value_hint: str) -> list[str]:
         return list(_APPLICABILITY[key])
     fallback = f"{param_type}/default"
     return list(_APPLICABILITY.get(fallback, _APPLICABILITY["query/default"]))
-
-
-_TYPE_PATTERNS: list[tuple[re.Pattern, str]] = [
-    (re.compile(r'/graphql\b',                   re.IGNORECASE), "graphql"),
-    (re.compile(r'/graph\b',                     re.IGNORECASE), "graphql"),
-    (re.compile(r'/(?:login|logout|signin|signup|register|auth|oauth|token|sso)\b', re.IGNORECASE), "auth"),
-    (re.compile(r'/admin\b',                     re.IGNORECASE), "admin"),
-    (re.compile(r'/(?:upload|file|attachment|media|import)\b', re.IGNORECASE), "upload"),
-    (re.compile(r'/(?:payment|invoice|checkout|billing|transaction|transfer|balance|wallet)\b', re.IGNORECASE), "financial"),
-    (re.compile(r'/(?:ws|websocket|socket)\b', re.IGNORECASE), "websocket"),
-    (re.compile(r'(?:/api\b|/v\d+\b)',                  re.IGNORECASE), "api"),
-]
 
 
 def classify_endpoint(path: str) -> str | None:
