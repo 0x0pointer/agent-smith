@@ -28,7 +28,26 @@ causes it to stop invoking further tools and write the final report.
 
 Output file
 -----------
-  session.json  (served by core/api_server.py at GET /api/session)
+  session.json  (served by core/api_server at GET /api/session)
+
+Layout
+------
+The implementation is split across focused submodules; import from
+``core.session`` exactly as before — every name is re-exported here.
+
+  __init__        this file — state (_current), presets, lifecycle, hard-limit
+                  enforcement, intervention (HIR), context pressure, persistence
+                  + cross-process reconciliation, and the facade
+  process_detect  Smith caller detection (_detect_smith_caller + helpers)
+  gates           gate tracking + skill/step/tools-called bookkeeping
+  assets          known-assets vault, tool-invocation log, spider-failure gate
+
+The mutable ``_current`` cache, paths, and _TRIGGER_MAP live here in the package
+namespace so they stay patchable as ``core.session.NAME`` (the suite patches
+_SESSION_FILE, _current, _REPO_ROOT, _last_local_write_mtime, _detect_smith_caller).
+The submodules read them back via ``import core.session as _sess`` — they only
+read + mutate ``_current`` in place; rebinding it (start/complete/load/reconcile)
+happens here, so those keep the native ``global _current``.
 """
 from __future__ import annotations
 
@@ -66,12 +85,9 @@ PRESETS: dict[str, dict] = {
     },
 }
 
-_REPO_ROOT = Path(__file__).parent.parent
+# __file__ is core/session/__init__.py → three parents up is the repo root.
+_REPO_ROOT = Path(__file__).parent.parent.parent
 _SESSION_FILE = _REPO_ROOT / "session.json"
-
-# MCP SSE listen port — must match start-mcp-server.sh. The caller-detection
-# helper below uses this to identify the Smith client across the TCP socket.
-_MCP_SSE_PORT = 7778
 
 
 # ── In-memory state ───────────────────────────────────────────────────────────
@@ -79,144 +95,20 @@ _MCP_SSE_PORT = 7778
 _current: dict | None = None
 
 
-# ── Caller detection ──────────────────────────────────────────────────────────
-#
-# When session.start() is called via MCP, we want a precise way to ask later
-# "is the Smith process driving this scan still alive?". The old heuristic
-# (quick_log mtime + smith.pid file written only by dashboard-spawned restarts)
-# gives false positives for interactive runs where Smith is alive but the LLM
-# is doing long thinking-mode reasoning between tool calls.
-#
-# Strategy: at start(), inspect the TCP connections to the MCP SSE port (7778)
-# to find a process with an ESTABLISHED connection whose command line matches
-# a known client (claude / opencode / codex). Stdio MCP falls back to the
-# parent process (the MCP server is launched as a subprocess of the client).
+# ── Endpoint-type trigger gates ───────────────────────────────────────────────
+# When an endpoint is registered with a recognised type tag, a mandatory gate
+# is opened so the model must invoke the appropriate skill before completing.
+# (Consumed by gates.open_trigger_gate and qa_agent's missing-skill check.)
 
-def _detect_smith_caller(port: int = _MCP_SSE_PORT) -> dict | None:
-    """Identify the calling Smith client.
-
-    Returns ``{"pid": int, "client": "claude" | "opencode" | "codex"}`` for
-    the most likely caller, or ``None`` when nothing recognizable is connected.
-    Never raises — failure to detect is a routine outcome, not an error.
-    """
-    for pid in _connected_pids(port):
-        client = _resolve_client_for_pid(pid)
-        if client:
-            return {"pid": pid, "client": client}
-    # Stdio MCP fallback: the MCP server runs as a child of the client process.
-    try:
-        parent_pid = os.getppid()
-        client = _resolve_client_for_pid(parent_pid)
-        if client:
-            return {"pid": parent_pid, "client": client}
-    except OSError:
-        pass
-    return None
-
-
-def _connected_pids(port: int) -> list[int]:
-    """PIDs with an ESTABLISHED TCP connection involving the given port.
-
-    Walks ``psutil.process_iter()`` and asks each process for its own
-    connection list, instead of the system-wide ``psutil.net_connections()``.
-
-    Why: on macOS, ``psutil.net_connections(kind="tcp")`` requires admin to
-    return non-empty results — without elevation it silently returns ``[]``
-    even though the connections clearly exist (lsof sees them fine). The
-    per-process ``proc.net_connections()`` call works without elevation for
-    any process owned by the current user, which is the realistic scope for
-    a Smith client connecting to a Smith-owned MCP server. Slightly slower
-    in big process tables (still well under 10 ms in practice), but
-    correct on every platform we care about.
-
-    Connections are accepted if EITHER the local or remote endpoint matches
-    ``port``. Local match = the MCP server side; remote match = the client
-    side. We collect both and let the cmdline check in
-    ``_resolve_client_for_pid`` filter out the server's own PID.
-    """
-    try:
-        import psutil
-    except ImportError:
-        return []
-    pids: list[int] = []
-    try:
-        for proc in psutil.process_iter(["pid"]):
-            try:
-                # net_connections() replaces deprecated connections() in
-                # psutil >= 6.0; both accept kind="tcp" and use the same
-                # sconn shape under the hood.
-                conn_iter = (
-                    proc.net_connections(kind="tcp")
-                    if hasattr(proc, "net_connections")
-                    else proc.connections(kind="tcp")
-                )
-            except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
-                continue
-            for conn in conn_iter:
-                if conn.status != psutil.CONN_ESTABLISHED:
-                    continue
-                local_match = conn.laddr and conn.laddr.port == port
-                remote_match = conn.raddr and conn.raddr.port == port
-                if local_match or remote_match:
-                    pids.append(proc.pid)
-                    break  # don't list a process twice for the same port
-    except (psutil.AccessDenied, OSError, RuntimeError):
-        return []
-    return pids
-
-
-def _resolve_client_for_pid(pid: int) -> str | None:
-    """Map a PID to a known Smith client by command-line inspection.
-
-    Returns the client name or ``None`` when the process doesn't look like a
-    Smith client (e.g., the MCP server itself, vLLM, or unrelated processes).
-    Cross-platform via ``psutil`` — replaces the Unix-only ``ps -o command=``.
-    """
-    try:
-        import psutil
-    except ImportError:
-        return None
-    try:
-        proc = psutil.Process(pid)
-        cmd = " ".join(proc.cmdline()).lower()
-    except (psutil.NoSuchProcess, psutil.AccessDenied, ValueError, OSError):
-        return None
-    if not cmd:
-        return None
-    # claude: dashboard-spawned uses --dangerously-skip-permissions; the older
-    # `-p` shorthand exists for completeness, and the bare `claude` TUI is
-    # disambiguated by a separate substring check below.
-    if "claude" in cmd and ("dangerously-skip-permissions" in cmd or " -p " in cmd):
-        return "claude"
-    # opencode is commonly invoked as `node /Users/<u>/.opencode/bin/opencode run …`
-    # or `node …/opencode/dist/index.js`. The .opencode/bin/opencode anchor catches
-    # both shapes plus the direct binary form. Also accept the dashboard's literal
-    # `opencode run …` invocation, raw `opencode` TUI, and any cmdline mentioning
-    # /opencode/ as a directory component (the dist path of npm installs).
-    if (".opencode/bin/opencode" in cmd
-            or "/opencode/dist" in cmd
-            or "opencode run" in cmd
-            or "/opencode" in cmd
-            or cmd.startswith("opencode")):
-        return "opencode"
-    if "codex" in cmd and ("run" in cmd or "mcp" in cmd):
-        return "codex"
-    return None
-
-
-def _persist_smith_caller(info: dict) -> None:
-    """Mirror the captured caller into logs/smith.pid + logs/smith.client so
-    the dashboard's existing PID-file check picks it up unchanged. Failure
-    is non-fatal — the in-memory smith_proc field is still authoritative."""
-    if not info:
-        return
-    try:
-        log_dir = _REPO_ROOT / "logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        (log_dir / "smith.pid").write_text(str(info["pid"]))
-        (log_dir / "smith.client").write_text(info["client"])
-    except OSError:
-        pass
+_TRIGGER_MAP: dict[str, dict] = {
+    "graphql":    {"gate_id": "graphql_coverage",   "required_skills": ["api-security"]},
+    "auth":       {"gate_id": "auth_coverage",       "required_skills": ["credential-audit"]},
+    "admin":      {"gate_id": "admin_coverage",      "required_skills": ["web-exploit"]},
+    "upload":     {"gate_id": "upload_coverage",     "required_skills": ["web-exploit"]},
+    "api":        {"gate_id": "api_coverage",        "required_skills": ["api-security"]},
+    "financial":  {"gate_id": "financial_coverage",  "required_skills": ["business-logic"]},
+    "websocket":  {"gate_id": "websocket_coverage",  "required_skills": ["web-exploit"]},
+}
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -459,311 +351,7 @@ def load_from_disk(force: bool = False) -> dict | None:
     return _current
 
 
-def set_skill(
-    skill_name: str,
-    reason: str = "",
-    chained_from: str = "",
-) -> dict | None:
-    """Update the active skill (e.g. when chaining skills during a session).
-
-    Each call appends a rich entry to skill_history with the reason for the
-    choice and the parent skill when chaining.  Duplicate skill names are
-    silently skipped so re-invoking the same skill mid-session is idempotent.
-    """
-    global _current
-    _reconcile_if_external_write()
-    if _current is None or _current["status"] != "running":
-        return None
-    _current["skill"] = skill_name
-    existing_skills = [e["skill"] for e in _current["skill_history"]]
-    if skill_name not in existing_skills:
-        _current["skill_history"].append({
-            "skill":        skill_name,
-            "reason":       reason,
-            "chained_from": chained_from or None,
-            "timestamp":    datetime.now(timezone.utc).isoformat(),
-        })
-    _flush()
-    return _current
-
-
-def add_tool_called(tool_name: str) -> None:
-    """Persist a tool name to the tools_called list in session.json."""
-    _reconcile_if_external_write()
-    if _current and _current["status"] == "running":
-        tools = _current.setdefault("tools_called", [])
-        if tool_name not in tools:
-            tools.append(tool_name)
-            _flush()
-
-
-def set_step(step: str) -> dict | None:
-    """Update the current workflow step checkpoint (e.g. '5_nuclei_scan')."""
-    global _current
-    _reconcile_if_external_write()
-    if _current is None or _current["status"] != "running":
-        return None
-    _current["current_step"] = step
-    _flush()
-    return _current
-
-
-# ── Gate tracking ────────────────────────────────────────────────────────────
-# Gates are conditions triggered by events (e.g. RCE confirmed, auth service
-# detected) that make certain skills mandatory before scan completion.
-# Each gate lists required_skills; _do_complete() blocks until all are satisfied.
-
-def trigger_gate(gate_id: str, trigger: str, required_skills: list[str]) -> dict | None:
-    """Register a mandatory gate — required skills must run before completion.
-
-    Idempotent: re-triggering the same gate_id is a no-op. If the gate already
-    exists but new required_skills are provided that weren't in the original,
-    they are merged in.
-    """
-    global _current
-    _reconcile_if_external_write()
-    if _current is None or _current["status"] != "running":
-        return None
-
-    gates = _current.setdefault("gates", [])
-    for gate in gates:
-        if gate["id"] == gate_id:
-            # Merge any new required skills into existing gate
-            for skill in required_skills:
-                if skill not in gate["required_skills"]:
-                    gate["required_skills"].append(skill)
-                    gate["status"] = "pending"  # re-open if new skills added
-            _flush()
-            return _current
-
-    gates.append({
-        "id":               gate_id,
-        "trigger":          trigger,
-        "required_skills":  required_skills,
-        "satisfied_skills": [],
-        "status":           "pending",   # pending | satisfied
-        "triggered_at":     datetime.now(timezone.utc).isoformat(),
-    })
-    _flush()
-    return _current
-
-
-def satisfy_gate(gate_id: str, skill_name: str) -> dict | None:
-    """Mark a skill as satisfied within a gate.
-
-    When all required_skills are satisfied, the gate status flips to 'satisfied'.
-    """
-    global _current
-    _reconcile_if_external_write()
-    if _current is None:
-        return None
-    for gate in _current.get("gates", []):
-        if gate["id"] == gate_id:
-            if skill_name not in gate["satisfied_skills"]:
-                gate["satisfied_skills"].append(skill_name)
-            if set(gate["required_skills"]).issubset(set(gate["satisfied_skills"])):
-                gate["status"] = "satisfied"
-            _flush()
-            return _current
-    return _current
-
-
-def pending_gates() -> list[dict]:
-    """Return unsatisfied, non-deferred gates."""
-    if _current is None:
-        return []
-    deferred = set(_current.get("deferred_gates", []))
-    return [
-        g for g in _current.get("gates", [])
-        if g.get("status") == "pending" and g.get("id", "") not in deferred
-    ]
-
-
-def defer_gates(gate_ids: list[str]) -> None:
-    """Suppress the given gate IDs from pending_gates() until restore_gates() is called."""
-    global _current
-    _reconcile_if_external_write()
-    if _current is None:
-        return
-    deferred = _current.setdefault("deferred_gates", [])
-    for gid in gate_ids:
-        if gid and gid not in deferred:
-            deferred.append(gid)
-    _flush()
-
-
-def restore_gates() -> None:
-    """Clear all deferred gate IDs so they become visible again."""
-    global _current
-    _reconcile_if_external_write()
-    if _current is None:
-        return
-    _current["deferred_gates"] = []
-    _flush()
-
-
-# ── Spider failure gate ───────────────────────────────────────────────────────
-# Tracks targets where spider failed to execute.  Any failure blocks all other
-# scan tools until spider is retried successfully.  Auto-releases after
-# _SPIDER_MAX_RETRIES attempts so a genuinely non-crawlable target doesn't
-# loop forever.
-
-_SPIDER_MAX_RETRIES = 3
-
-
-def record_spider_failure(target: str) -> int:
-    """Record a spider failure for this target.  Returns the new retry count."""
-    global _current
-    _reconcile_if_external_write()
-    if _current is None or _current.get("status") != "running":
-        return 0
-    failures = _current.setdefault("spider_failures", {})
-    entry = failures.get(target, {})
-    new_count = entry.get("retry_count", 0) + 1
-    failures[target] = {
-        "target": target,
-        "failed_at": datetime.now(timezone.utc).isoformat(),
-        "retry_count": new_count,
-    }
-    _flush()
-    return new_count
-
-
-def clear_spider_failure(target: str) -> None:
-    """Clear spider failure for this target after a successful run."""
-    global _current
-    _reconcile_if_external_write()
-    if _current is None:
-        return
-    failures = _current.get("spider_failures")
-    if failures and target in failures:
-        del failures[target]
-        _flush()
-
-
-def has_spider_failure() -> bool:
-    """Return True if any spider has failed and not yet recovered."""
-    if _current is None:
-        return False
-    return bool(_current.get("spider_failures"))
-
-
-def get_spider_failures() -> dict:
-    """Return all current spider failure entries keyed by target URL."""
-    if _current is None:
-        return {}
-    return dict(_current.get("spider_failures", {}))
-
-
-def spider_max_retries() -> int:
-    return _SPIDER_MAX_RETRIES
-
-
-# ── Endpoint-type trigger gates ───────────────────────────────────────────────
-# When an endpoint is registered with a recognised type tag, a mandatory gate
-# is opened so the model must invoke the appropriate skill before completing.
-
-_TRIGGER_MAP: dict[str, dict] = {
-    "graphql":    {"gate_id": "graphql_coverage",   "required_skills": ["api-security"]},
-    "auth":       {"gate_id": "auth_coverage",       "required_skills": ["credential-audit"]},
-    "admin":      {"gate_id": "admin_coverage",      "required_skills": ["web-exploit"]},
-    "upload":     {"gate_id": "upload_coverage",     "required_skills": ["web-exploit"]},
-    "api":        {"gate_id": "api_coverage",        "required_skills": ["api-security"]},
-    "financial":  {"gate_id": "financial_coverage",  "required_skills": ["business-logic"]},
-    "websocket":  {"gate_id": "websocket_coverage",  "required_skills": ["web-exploit"]},
-}
-
-
-def open_trigger_gate(endpoint_type: str, path: str) -> dict | None:
-    """Open a mandatory gate based on endpoint type.
-
-    Called by coverage.add_endpoint() after classifying the endpoint.
-    Idempotent — re-triggering the same gate_id with the same skills is a no-op.
-    Returns the session state or None if no gate is mapped to this type.
-    """
-    entry = _TRIGGER_MAP.get(endpoint_type)
-    if not entry:
-        return None
-    trigger_msg = f"{endpoint_type} endpoint discovered at {path}"
-    return trigger_gate(entry["gate_id"], trigger_msg, entry["required_skills"])
-
-
-def add_tool_invocation(tool: str, target: str, summary: str, options_hash: str = "") -> None:
-    """Record a tool invocation with summary for dedup and recovery."""
-    if not _current or _current.get("status") != "running":
-        return
-    invocations = _current.setdefault("tool_invocations", [])
-    if options_hash and any(i.get("options_hash") == options_hash for i in invocations):
-        return  # Duplicate — already recorded
-    invocations.append({
-        "seq": len(invocations) + 1,
-        "tool": tool,
-        "target": target,
-        "options_hash": options_hash,
-        "summary": summary[:200],
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    })
-    if len(invocations) > 100:
-        _current["tool_invocations"] = invocations[-100:]
-    _flush()
-
-
-def _update_ports_assets(assets: dict, items: list) -> None:
-    """Deduplicate and append port entries to known_assets['ports']."""
-    existing = {(p.get("host", ""), p.get("port", 0)) for p in assets.get("ports", [])}
-    for item in items:
-        if isinstance(item, dict):
-            key = (item.get("host", ""), item.get("port", 0))
-            if key not in existing:
-                assets.setdefault("ports", []).append(item)
-                existing.add(key)
-
-
-def _update_scalar_assets(assets: dict, asset_type: str, items: list) -> None:
-    """Deduplicate and append string/scalar entries to a known_assets list."""
-    target_list = assets.setdefault(asset_type, [])
-    existing = set(target_list)
-    for item in items:
-        val = item if isinstance(item, str) else str(item)
-        if val and val not in existing:
-            target_list.append(val)
-            existing.add(val)
-
-
-def _update_dict_assets(assets: dict, asset_type: str, items: list, dedup_keys: tuple[str, ...]) -> None:
-    """Deduplicate and append dict entries (credentials, tokens, endpoints) by composite key."""
-    target_list = assets.setdefault(asset_type, [])
-    existing = {tuple(e.get(k, "") for k in dedup_keys) for e in target_list if isinstance(e, dict)}
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        key = tuple(item.get(k, "") for k in dedup_keys)
-        if any(key) and key not in existing:
-            target_list.append(item)
-            existing.add(key)
-
-
-def update_known_assets(asset_type: str, items: list) -> None:
-    """Accumulate discovered assets into session.json['known_assets']."""
-    if not _current or _current.get("status") != "running" or not items:
-        return
-    assets = _current.setdefault("known_assets", {
-        "domains": [], "ips": [], "ports": [],
-        "technologies": [], "endpoints": [],
-        "credentials": [], "auth_tokens": [], "auth_endpoints": [],
-    })
-    if asset_type == "ports":
-        _update_ports_assets(assets, items)
-    elif asset_type == "credentials":
-        _update_dict_assets(assets, asset_type, items, ("username",))
-    elif asset_type == "auth_tokens":
-        _update_dict_assets(assets, asset_type, items, ("value",))
-    elif asset_type == "auth_endpoints":
-        _update_dict_assets(assets, asset_type, items, ("path", "method"))
-    else:
-        _update_scalar_assets(assets, asset_type, items)
-    _flush()
-
+# ── Context pressure ─────────────────────────────────────────────────────────
 
 def charge_context(chars: int) -> None:
     """Track cumulative response chars sent to the model."""
@@ -1093,3 +681,45 @@ def _refresh_smith_pid_if_stale() -> None:
     caller = _detect_smith_caller()
     if caller and caller["pid"] != pid:
         _persist_smith_caller(caller)
+
+
+# ── Facade re-exports ────────────────────────────────────────────────────────
+# Imported after the state + lifecycle above so each submodule's module-level
+# ``import core.session as _sess`` binds a package that already exposes
+# _current, paths, _TRIGGER_MAP, _flush, and _reconcile_if_external_write.
+# (Those modules read package attributes at call time, so this is also
+# belt-and-suspenders.) start()/_refresh_smith_pid_if_stale() above call
+# _detect_smith_caller/_persist_smith_caller by bare name, which resolves to
+# these re-exported globals — and stays patchable as core.session.NAME.
+
+from .process_detect import (  # noqa: E402
+    _MCP_SSE_PORT,
+    _connected_pids,
+    _detect_smith_caller,
+    _persist_smith_caller,
+    _resolve_client_for_pid,
+)
+from .gates import (  # noqa: E402
+    add_tool_called,
+    defer_gates,
+    open_trigger_gate,
+    pending_gates,
+    restore_gates,
+    satisfy_gate,
+    set_skill,
+    set_step,
+    trigger_gate,
+)
+from .assets import (  # noqa: E402
+    _SPIDER_MAX_RETRIES,
+    _update_dict_assets,
+    _update_ports_assets,
+    _update_scalar_assets,
+    add_tool_invocation,
+    clear_spider_failure,
+    get_spider_failures,
+    has_spider_failure,
+    record_spider_failure,
+    spider_max_retries,
+    update_known_assets,
+)
