@@ -6,8 +6,8 @@
 
 [![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=0x0pointer_agent-smith&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=0x0pointer_agent-smith) [![Bugs](https://sonarcloud.io/api/project_badges/measure?project=0x0pointer_agent-smith&metric=bugs)](https://sonarcloud.io/summary/new_code?id=0x0pointer_agent-smith) [![Coverage](https://sonarcloud.io/api/project_badges/measure?project=0x0pointer_agent-smith&metric=coverage)](https://sonarcloud.io/summary/new_code?id=0x0pointer_agent-smith)
 
-**An AI-driven offensive-security agent that thinks for itself.**
-You bring the LLM. agent-smith brings the tools, the skills, and the methodology and the LLM does the rest.
+**The pentest framework built for the tester who wants to think, not babysit.**
+You bring the expertise. agent-smith brings 50+ tools, the methodology, and the execution — and the two of you close findings that neither could reach alone.
 
 > ⚠️ **Authorized testing only.** Use against systems you own or have explicit written permission to test. Unauthorized access is illegal.
 
@@ -43,10 +43,10 @@ Every scanner runs inside an ephemeral Docker container. Hard cost / time / call
 
 
 A background QA daemon runs every 2 minutes and pushes the agent to go deeper rather than surface-scanning. It detects stalls, premature completion, shortcut behaviour (bulk N/A marking, suspiciously fast cell closures), missing skill chains, and un-followed-up critical findings. When something is wrong it injects a steering directive that overrides whatever Smith was doing next. When the agent is genuinely stuck it escalates to a human-intervention pause (HIR) so you can unblock it.
-- 📊 **Live dashboard.** 
+- 📊 **A dashboard built for collaboration, not observation.** 
 
 
-Watch findings, topology, coverage, and the threat model populate in real time at `localhost:7777`.
+Watch findings, topology, coverage, and the threat model populate in real time at `localhost:7777`. But it's not just a display — you can steer Smith mid-scan, respond to intervention pauses, inject strategic directives, and watch Smith acknowledge them. The dashboard is the interface between your judgment and Smith's execution.
 
 ---
 
@@ -158,6 +158,33 @@ After a pentest the agent generates the MITRE CVE form, a GitHub Security Adviso
 PASTA + STRIDE + 4-question framework. Outputs component map, data flow diagram, attack tree, prioritized risk register, and a mitigation plan.
 
 > 💡 **Pick a skill or let `/pentester` orchestrate.** Single-purpose skills give you laser focus; `/pentester` chains everything based on what it finds.
+
+---
+
+## Two ways to work with Smith
+
+The industry is racing toward full automation. We think that's the wrong finish line.
+
+The best pentests have always been about the *interplay* between a skilled tester and their tooling — the tester brings context, intuition, and judgment; the tools provide speed, coverage, and consistency. agent-smith is built around that conviction. Autonomous mode exists and it's genuinely powerful, but **Augmented mode is where the framework does its best work**: Smith handles 50+ parallel tool runs, tracks coverage, and writes the deliverables, while you stay in the loop to redirect scope, respond to intervention pauses, and make the calls that no AI should make alone.
+
+The dashboard isn't a progress bar — it's the collaboration interface.
+
+<table>
+  <tr>
+    <td width="50%" style="border-left: 3px solid #7b6fff; padding: 1em;">
+      <h3>⭐ Augmented Mode — recommended</h3>
+      <p>A human expert drives the strategy. Smith handles the heavy lifting — running 50+ tools in parallel, tracking coverage, writing the report. You steer via the dashboard: respond to intervention pauses, inject directives, shift scope mid-scan.</p>
+      <p><strong>Best for:</strong> High-value engagements · Complex targets · When expert judgment shapes the approach</p>
+      <pre><code>claude          # interactive — you steer, Smith executes</code></pre>
+    </td>
+    <td width="50%" style="border-left: 3px solid #00ff88; padding: 1em;">
+      <h3>Autonomous Mode</h3>
+      <p>Give Smith a target — it runs the full engagement end-to-end with no human input. Returns a report with every finding verified and a working proof-of-concept.</p>
+      <p><strong>Best for:</strong> Continuous testing · CI/CD pipelines · Recurring red-team drills · Self-serve by dev teams</p>
+      <pre><code>claude -p "/pentester scan https://staging.example.com depth=thorough"</code></pre>
+    </td>
+  </tr>
+</table>
 
 ---
 
