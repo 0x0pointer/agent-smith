@@ -95,13 +95,13 @@ async def api_coverage() -> JSONResponse:
 
 @router.get("/api/threat-model")
 async def api_get_threat_model(file: str = "") -> JSONResponse:
-    files: list[str] = []
+    md_paths: list = []
     if _api._THREAT_MODEL_DIR.exists():
         # Sort by modification time (most recent first) so the active scan's
         # threat model appears as the default selection.
         md_paths = list(_api._THREAT_MODEL_DIR.glob("*.md"))
         md_paths.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-        files = [p.name for p in md_paths]
+    files = [p.name for p in md_paths]
 
     if not file and files:
         file = files[0]
@@ -110,11 +110,11 @@ async def api_get_threat_model(file: str = "") -> JSONResponse:
     if file:
         if "/" in file or "\\" in file or ".." in file:
             return JSONResponse({"error": "invalid file"}, status_code=400)
-        candidate = (_api._THREAT_MODEL_DIR / file).resolve()
-        if not str(candidate).startswith(str(_api._THREAT_MODEL_DIR.resolve())):
-            return JSONResponse({"error": "invalid file"}, status_code=400)
-        if candidate.exists():
-            content = candidate.read_text(encoding="utf-8")
+        # Look up the Path from the trusted glob results — user-controlled `file`
+        # is used only as a filter key, never directly in a path expression.
+        safe_path = next((p for p in md_paths if p.name == file), None)
+        if safe_path is not None:
+            content = safe_path.read_text(encoding="utf-8")
 
     svgs = {}
     if content:
@@ -443,14 +443,18 @@ async def api_quicklog() -> JSONResponse:
 async def api_logs(file: str = "") -> JSONResponse:
     from core.logger import log_path, _LOG_DIR
     try:
-        all_files = sorted(
-            [p.name for p in _LOG_DIR.glob("*.log")],
-            reverse=True,
-        )
-        target = _LOG_DIR / file if file else log_path
-        if not target.resolve().is_relative_to(_LOG_DIR.resolve()):
-            return JSONResponse({"lines": [], "files": all_files, "error": "invalid path"})
+        log_paths = sorted(_LOG_DIR.glob("*.log"), key=lambda p: p.name, reverse=True)
+        all_files = [p.name for p in log_paths]
+        # Resolve target from trusted glob results — never construct a path
+        # from the user-supplied `file` string directly.
+        if file:
+            target = next((p for p in log_paths if p.name == file), None)
+            if target is None:
+                return JSONResponse({"lines": [], "files": all_files, "error": "invalid path"})
+        else:
+            target = log_path
         lines = target.read_text(encoding="utf-8").splitlines() if target.exists() else []
         return JSONResponse({"lines": lines, "file": target.name, "files": all_files})
-    except Exception as exc:
-        return JSONResponse({"lines": [], "files": [], "error": str(exc)})
+    except Exception:
+        _log.exception("api_logs failed")
+        return JSONResponse({"lines": [], "files": [], "error": "failed to read log"})
