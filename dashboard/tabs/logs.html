@@ -1,0 +1,15 @@
+<!-- ── Tab: Logs ─────────────────────────────────────────────────────────── -->
+<div id="tab-logs" class="tab-content">
+  <div id="log-toolbar">
+    <select id="log-file-select" onchange="onLogFileChange()"
+      style="background:var(--bg-card);border:1px solid var(--border);color:var(--text);border-radius:4px;
+             padding:0.2rem 0.5rem;font-size:0.76rem;font-family:'IBM Plex Mono',monospace;max-width:280px">
+      <option value="">current session</option>
+    </select>
+    <input id="log-filter" type="text" placeholder="Filter lines…" oninput="renderLogs()">
+    <label id="log-autoscroll-label">
+      <input type="checkbox" id="log-autoscroll" checked> auto-scroll
+    </label>
+  </div>
+  <div id="log-output"></div>
+</div>

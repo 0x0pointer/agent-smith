@@ -20,8 +20,10 @@ import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-_REPO_ROOT = Path(__file__).parent.parent
-_QUICK_LOG_FILE = _REPO_ROOT / "quick_log.json"
+from core import paths as _paths
+
+_REPO_ROOT = _paths.REPO_ROOT
+_QUICK_LOG_FILE = _paths.QUICK_LOG_FILE
 
 _SEV_ORDER = ["critical", "high", "medium", "low", "info"]
 _DOCKER_ALIASES = {"host.docker.internal", "172.17.0.1", "172.18.0.1"}  # NOSONAR - Docker default bridge gateway IPs, not sensitive endpoints

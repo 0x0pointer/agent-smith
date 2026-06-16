@@ -26,7 +26,7 @@ from pathlib import Path
 # ── CLI arguments ─────────────────────────────────────────────────────────────
 import argparse as _argparse
 _ap = _argparse.ArgumentParser(add_help=False)
-_ap.add_argument("--transport", choices=["stdio", "sse"], default="stdio")
+_ap.add_argument("--transport", choices=["stdio", "sse"], default="sse")
 _ap.add_argument("--host", default="127.0.0.1")
 _ap.add_argument("--port", type=int, default=7778)
 _args, _ = _ap.parse_known_args()

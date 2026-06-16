@@ -24,7 +24,10 @@ def _build_args(path: str = _TARGET_MOUNT, flags: str = "") -> list[str]:
     # User-supplied host paths are remapped to _TARGET_MOUNT since only the mount is visible inside the container.
     if path != _TARGET_MOUNT and not path.startswith(_TARGET_MOUNT):
         path = _TARGET_MOUNT
-    args = ["semgrep", "--config=auto", "--json", "--metrics=off", path]
+    # --config=auto is invalid when --metrics=off (semgrep requires metrics for auto-detection).
+    # p/python is a stable registry config that works with metrics disabled.
+    # User-supplied flags can add further --config values or override behavior.
+    args = ["semgrep", "--config=p/python", "--json", "--metrics=off", path]
     if flags:
         args += flags.split()
     return args

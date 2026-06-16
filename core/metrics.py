@@ -62,10 +62,9 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-from pathlib import Path
+from core import paths as _paths
 
-_REPO_ROOT = Path(__file__).parent.parent
-_METRICS_FILE = _REPO_ROOT / "pentest_metrics.jsonl"
+_METRICS_FILE = _paths.METRICS_FILE
 
 
 def record(
