@@ -21,6 +21,13 @@ _log = logging.getLogger(__name__)
 router = APIRouter()
 
 
+# ── Sentry smoke-test route (remove after verifying Sentry receives events) ──
+
+@router.get("/sentry-debug")
+async def sentry_debug():
+    division_by_zero = 1 / 0
+
+
 # ── Dashboard UI + static assets ────────────────────────────────────────────
 
 @router.get("/")

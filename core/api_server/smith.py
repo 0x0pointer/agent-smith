@@ -426,11 +426,30 @@ async def _spawn_smith(client: str, source: str = "api") -> tuple[bool, int | st
         from core import session as scan_session
         scan_session.load_from_disk(force=True)
         current = scan_session.get() or {}
+        _terminal = {"complete", "incomplete_with_unresolved_blockers", "limit_reached"}
+        if current.get("status") in _terminal:
+            return (
+                False,
+                f"Cannot restart: scan is already in terminal state '{current.get('status')}'. Start a new scan instead.",
+            )
         if current.get("status") == "intervention_required":
             scan_session.resolve_intervention(
                 "CONTINUE",
                 f"Smith restarted (source={source})",
             )
+        # Clear QA alerts so Smith's first tool call doesn't immediately re-trigger
+        # the same HIR that caused the intervention. The QA daemon re-evaluates every
+        # 120 s and will re-fire any persistent issues on the next cycle.
+        try:
+            from core import paths as _paths, store as _store
+            import json as _json
+            _qa_file = _paths.QA_STATE_FILE
+            if _qa_file.exists():
+                _qa = _json.loads(_qa_file.read_text())
+                _qa["alerts"] = []
+                _store.save(_qa_file, _qa, indent=None)
+        except Exception as _e:
+            _log.debug("spawn_smith: qa_state clear failed: %s", _e)
 
         prompt = (
             "Recover the active pentest scan. "

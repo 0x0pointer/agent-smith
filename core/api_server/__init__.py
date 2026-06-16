@@ -69,6 +69,17 @@ _THREAT_MODEL_DIR  = _paths.THREAT_MODEL_DIR
 _SMITH_PID_FILE    = _paths.SMITH_PID_FILE
 _SMITH_CLIENT_FILE = _paths.SMITH_CLIENT_FILE
 
+# ── Optional Sentry error tracking ───────────────────────────────────────────
+# Set SENTRY_DSN env var to enable. No-op when unset so other installs are
+# unaffected. Remove this block (and unset the env var) when done testing.
+_sentry_dsn = os.environ.get("SENTRY_DSN")
+if _sentry_dsn:
+    try:
+        import sentry_sdk
+        sentry_sdk.init(dsn=_sentry_dsn, send_default_pii=True)
+    except ImportError:
+        _log.warning("SENTRY_DSN set but sentry-sdk not installed; skipping")
+
 # ── FastAPI app ───────────────────────────────────────────────────────────────
 
 app = FastAPI(title="pentest-agent")
