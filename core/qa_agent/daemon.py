@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import core.qa_agent as _qa
+from core import store as _store
 from .checks_depth import (
     _check_depth_after_finding,
     _check_premature_complete,
@@ -235,11 +236,11 @@ class QADaemon:
             "smith_actions": smith_actions,
         })
 
-        _qa._QA_STATE_FILE.write_text(json.dumps({  # NOSONAR
+        _store.save(_qa._QA_STATE_FILE, {
             "ts":      datetime.now(timezone.utc).isoformat(),
             "alerts":  final_alerts,
             "history": history[-20:],
-        }))
+        }, indent=None)
 
         _log.info("QA Daemon: %d alert(s) written", len(final_alerts))
 

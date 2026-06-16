@@ -30,6 +30,7 @@ import json
 import uuid
 from datetime import datetime, timezone
 from core import paths as _paths
+from core import store as _store
 
 # ── Pricing (claude-sonnet-4-6) ──────────────────────────────────────────────
 MODEL             = "claude-sonnet-4-6"
@@ -125,7 +126,7 @@ def flush() -> None:
 
 
 def _flush() -> None:
-    _COST_FILE.write_text(json.dumps(get_summary(), indent=2))
+    _store.save(_COST_FILE, get_summary())
 
 
 def _load_from_file() -> None:

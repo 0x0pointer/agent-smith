@@ -35,6 +35,7 @@ import json
 import uuid
 from datetime import datetime, timezone
 from core import paths as _paths
+from core import store as _store
 
 FINDINGS_FILE = _paths.FINDINGS_FILE
 
@@ -59,7 +60,7 @@ def _load() -> dict:
 
 
 def _save(data: dict) -> None:
-    FINDINGS_FILE.write_text(json.dumps(data, indent=2))
+    _store.save(FINDINGS_FILE, data)
 
 
 # ---------------------------------------------------------------------------

@@ -22,6 +22,7 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from core import paths as _paths
+from core import store as _store
 
 _STEERING_FILE = _paths.STEERING_FILE
 
@@ -60,10 +61,7 @@ class SteeringQueue:
 
     def _save(self, directives: list[dict]) -> None:
         try:
-            _STEERING_FILE.write_text(
-                json.dumps({"directives": directives}, indent=2),
-                encoding="utf-8",
-            )
+            _store.save(_STEERING_FILE, {"directives": directives})
         except Exception:
             pass
 

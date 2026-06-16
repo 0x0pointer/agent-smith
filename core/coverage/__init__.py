@@ -52,6 +52,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from core import paths as _paths
+from core import store as _store
 
 COVERAGE_FILE  = _paths.COVERAGE_FILE
 _ARTIFACTS_DIR = _paths.ARTIFACTS_DIR
@@ -95,9 +96,7 @@ def _load() -> dict:
 
 
 def _save(data: dict) -> None:
-    # COVERAGE_FILE is derived from __file__ at module load — it is not user-controlled.
-    # Suppression below silences the false-positive S2083 path-construction rule.
-    Path(COVERAGE_FILE).write_text(json.dumps(data, indent=2))  # NOSONAR
+    _store.save(COVERAGE_FILE, data)
 
 
 def _recount(data: dict) -> None:

@@ -58,6 +58,7 @@ from datetime import datetime, timezone
 from core import paths as _paths
 
 from core import cost as cost_tracker
+from core import store as _store
 
 # ── Depth presets ─────────────────────────────────────────────────────────────
 
@@ -526,7 +527,7 @@ def _stop(status: str, message: str) -> str:
 def _flush() -> None:
     global _last_local_write_mtime
     if _current:
-        _SESSION_FILE.write_text(json.dumps(_current, indent=2))
+        _store.save(_SESSION_FILE, _current)
         try:
             _last_local_write_mtime = _SESSION_FILE.stat().st_mtime
         except OSError:
