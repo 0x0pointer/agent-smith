@@ -49,6 +49,44 @@ _log = logging.getLogger(__name__)
 
 # ── Orchestrator ──────────────────────────────────────────────────────────────
 
+# Declarative check registry, in priority order: blocking → HIR conditions →
+# benchmark → active-shortcut → depth → stall → mandatory chain. Each row is
+# (check_fn, context-keys it consumes); the orchestrator passes those context
+# values positionally and flattens dict|list results. Adding or reordering a
+# check is a one-line edit here — the orchestrator loop never changes.
+#
+# Kept as one ordered table (rather than per-module self-registration) because
+# the priority order interleaves modules and decides which alerts survive the
+# 4-alert cap in QADaemon._cycle — so order is load-bearing, not cosmetic.
+_CHECKS: list[tuple] = [
+    # Blocking anti-shortcuts (complete gate)
+    (_check_bulk_marking,          ("entries",)),
+    (_check_coverage_integrity,    ("entries",)),
+    (_check_premature_complete,    ("entries", "session_data")),
+    # HIR conditions — Smith cannot self-resolve these (suppressed in benchmark mode)
+    (_check_auth_failure,          ("entries",)),
+    (_check_budget_limit,          ("session_data", "coverage_data")),
+    (_check_zero_endpoints,        ("entries", "coverage_data")),
+    (_check_target_unreachable,    ("entries",)),
+    (_check_repeated_tool_failure, ("entries",)),
+    (_check_stuck_on_target,       ("entries", "findings_data", "previous_alerts")),
+    # Benchmark-only: push exploitation instead of pausing
+    (_check_exploit_escalation,    ("entries", "findings_data", "session_data")),
+    # Active shortcut detection
+    (_check_suspicious_speed,      ("entries",)),
+    (_check_na_abuse,              ("coverage_data",)),
+    # Depth enforcement
+    (_check_depth_after_finding,   ("entries", "findings_data")),
+    (_check_whitebox_passes,       ("entries", "session_data")),
+    # Stall detection
+    (_check_tool_inactivity,       ("entries",)),
+    # Mandatory tool / skill chain (core_skill_chain + missing_skill return lists)
+    (_check_no_spider_after_httpx, ("entries",)),
+    (_check_core_skill_chain,      ("entries", "session_data")),
+    (_check_missing_skill,         ("coverage_data", "session_data")),
+]
+
+
 def _deterministic_qa_checks(
     entries: list[dict],
     findings_data: dict,
@@ -56,37 +94,28 @@ def _deterministic_qa_checks(
     session_data: dict,
     previous_alerts: list[dict] | None = None,
 ) -> list[dict]:
-    """Run all checks. Priority order: blocking → HIR conditions → depth → stall → chain."""
-    checks = [
-        # Blocking anti-shortcuts (complete gate)
-        _check_bulk_marking(entries),
-        _check_coverage_integrity(entries),
-        _check_premature_complete(entries, session_data),
-        # HIR conditions — Smith cannot self-resolve these (suppressed in benchmark mode)
-        _check_auth_failure(entries),
-        _check_budget_limit(session_data, coverage_data),
-        _check_zero_endpoints(entries, coverage_data),
-        _check_target_unreachable(entries),
-        _check_repeated_tool_failure(entries),
-        _check_stuck_on_target(entries, findings_data, previous_alerts or []),
-        # Benchmark-only: push exploitation instead of pausing
-        _check_exploit_escalation(entries, findings_data, session_data),
-        # Active shortcut detection
-        _check_suspicious_speed(entries),
-        _check_na_abuse(coverage_data),
-        # Depth enforcement
-        _check_depth_after_finding(entries, findings_data),
-        _check_whitebox_passes(entries, session_data),
-        # Stall detection
-        _check_tool_inactivity(entries),
-        # Mandatory tool / skill chain
-        _check_no_spider_after_httpx(entries),
-    ]
-    alerts = [c for c in checks if c is not None]
-    # Core skill sequence (spider → web-exploit → param-fuzz → business-logic)
-    alerts.extend(_check_core_skill_chain(entries, session_data))
-    # Endpoint-type triggered skills (graphql, auth, admin, upload, api, financial)
-    alerts.extend(_check_missing_skill(coverage_data, session_data))
+    """Run every registered check in priority order; flatten dict|list results.
+
+    Behaviour matches the previous hardcoded list exactly: the same checks run
+    in the same order, single-alert (dict) results are appended and list
+    results (core_skill_chain, missing_skill) are extended.
+    """
+    ctx = {
+        "entries":         entries,
+        "findings_data":   findings_data,
+        "coverage_data":   coverage_data,
+        "session_data":    session_data,
+        "previous_alerts": previous_alerts or [],
+    }
+    alerts: list[dict] = []
+    for check, keys in _CHECKS:
+        result = check(*(ctx[k] for k in keys))
+        if result is None:
+            continue
+        if isinstance(result, list):
+            alerts.extend(result)
+        else:
+            alerts.append(result)
     return alerts
 
 
