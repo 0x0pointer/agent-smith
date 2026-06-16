@@ -947,6 +947,14 @@ def _collect_completion_blockers(data: dict, effective: set) -> list[str]:
     if quality_blocker:
         blockers.append(quality_blocker)
 
+    # ── Final-QA adjudication ─────────────────────────────────────────────────
+    # Always-on senior-review pass: every high/critical finding must carry a
+    # reproducibility + recalibrated-severity verdict before completion. Runs
+    # here (at completion) on purpose — never mid-scan, so discovery is not
+    # interrupted and findings are judged with full chained context.
+    from core.adjunction import adjudication_blockers
+    blockers.extend(adjudication_blockers(data))
+
     from core.coverage import get_matrix
     blockers.extend(_coverage_blockers(get_matrix(), ctf_mode=_has_ctf_flag(data)))
 

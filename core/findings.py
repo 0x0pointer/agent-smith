@@ -20,6 +20,8 @@ Optional fields set via update_finding():
   description:      updated description string
   evidence:         updated evidence string
   status:           "confirmed" | "false_positive" | "draft"
+  adjudication:     { reproducible, original_severity, revised_severity, rationale }
+                    — audit trail from the final senior-review pass (see adjunction/)
   reproduction:     { type, command, expected, verified }
   gh_issue:         "<markdown block>"
   remediation:      { summary, fix_type, diff, before, after, file, line,
@@ -107,7 +109,7 @@ async def add_finding(
 _UPDATABLE_FIELDS = {
     "severity", "title", "description", "evidence", "status",
     "gh_issue", "remediation", "reproduction", "escalation_leads", "business_impact",
-    "poc_files",
+    "poc_files", "adjudication",
 }
 
 
