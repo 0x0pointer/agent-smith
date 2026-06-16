@@ -10,6 +10,7 @@ gh-issues.md
 threat-model/
 quick_log.json
 qa_state.json
+adjudication_log.jsonl
 
 # ── Test coverage ────────────────────────────────────────────────────────────
 coverage.xml

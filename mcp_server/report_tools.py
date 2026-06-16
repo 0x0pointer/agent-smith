@@ -233,6 +233,21 @@ async def _do_update_finding(data):
                 "Re-send with adjudication={reproducible, original_severity, revised_severity, "
                 "rationale} for it to count toward completion."
             )
+        else:
+            adj = fields.get("adjudication")
+            if adj:
+                try:
+                    from core.adjunction.log import log_verdict
+                    log_verdict(
+                        finding_id=finding_id,
+                        title=updated.get("title", finding_id),
+                        original_severity=str(adj.get("original_severity", "")),
+                        revised_severity=str(adj.get("revised_severity", "")),
+                        reproducible=adj.get("reproducible", ""),
+                        rationale=str(adj.get("rationale", "")),
+                    )
+                except Exception:
+                    pass
         return msg
     return f"Finding not found: {finding_id}"
 

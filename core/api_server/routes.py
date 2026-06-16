@@ -311,6 +311,15 @@ async def api_complete(request: Request) -> JSONResponse:
     Smith cannot complete a scan autonomously — session(action='complete') is blocked.
     Body: {"notes": "optional completion notes"}
 
+    Two-phase when adjudication is pending:
+      1. Sets force_complete_requested on the session and injects an adjudication
+         steering directive so Smith runs the final-QA pass first.
+      2. Returns status="adjudicating" — the dashboard shows a progress banner.
+         _do_complete() auto-completes once adjudication clears (skipping the
+         thorough-depth gate since the human has already signalled intent to stop).
+
+    If there are no pending adjudication findings, completes immediately as before.
+
     Side-effect cleanup mirrors Clear All but narrower: scan-tied operational
     pointers (smith.pid, smith.client, quick_log heartbeat) are wiped so the
     dashboard immediately reflects "smith stopped" instead of waiting 5 min
@@ -324,7 +333,91 @@ async def api_complete(request: Request) -> JSONResponse:
         scan_session.load_from_disk(force=True)
         body  = await request.json()
         notes = str(body.get("notes", "")).strip()
-        cfg   = scan_session.complete(notes)
+
+        # Check whether adjudication is still pending before completing.
+        try:
+            from core.findings import _load as _load_findings
+            from core.adjunction import pending_findings
+            pending = pending_findings(_load_findings())
+        except Exception:
+            pending = []
+
+        if pending and (scan_session.get() or {}).get("status") == "running":
+            # Arm the force-complete flag so _do_complete() auto-completes after
+            # adjudication and skips the thorough-depth gate.
+            scan_session.set_force_complete(notes or "Completed by human operator via dashboard")
+
+            # Inject an adjudication steering directive so Smith acts on it
+            # on its very next tool call (the directive rides the envelope).
+            from core.adjunction.directive import build_adjudication_directive
+            from core.steering import steering_queue, RESUME_REQUIRED
+            directive_body = (
+                build_adjudication_directive(pending)
+                + "\n\nIMPORTANT: The human operator has requested scan completion. "
+                "After you have adjudicated ALL findings above, call "
+                "session(action='complete') to finish the scan automatically."
+            )
+            steering_queue.add_directive(
+                code=RESUME_REQUIRED,
+                message=directive_body,
+                priority="high",
+                skill=None,
+                trigger="FORCE_COMPLETE_ADJUDICATION",
+                force=True,
+            )
+            try:
+                from core.adjunction.log import log_directive
+                log_directive(pending)
+            except Exception:
+                pass
+
+            # Actively deliver the directive instead of only queueing it.
+            # A queued directive is inert: it reaches Smith solely by riding
+            # the envelope on Smith's *next* tool call (or inline when Smith
+            # calls session(action='complete'/'status')). When the operator
+            # clicks "Complete Scan" Smith has usually already gone quiet —
+            # its non-interactive `claude -p` / `opencode run` turn has exited
+            # — so no tool call ever consumes the directive and adjudication
+            # never starts. The watchdog won't help promptly either: it keeps
+            # Smith "alive" for the full _SMITH_IDLE_SECONDS (300s) quick_log
+            # grace before respawning.
+            #
+            # So: if no live Smith *process* exists, spawn a fresh run now
+            # carrying this directive (its recovery prompt appends
+            # steering_queue.get_active(), so the adjudication directive is
+            # delivered verbatim — client-agnostic across claude/opencode/codex
+            # via _detect_active_client). We gate on process liveness, NOT on
+            # quick_log freshness: a just-exited `-p` turn leaves a <300s
+            # quick_log yet has no process to consume the directive. When a
+            # live process IS present we abstain — a looping Smith picks the
+            # directive up on its next call, and spawning a second `-p` Smith
+            # alongside a live (e.g. interactive) one would dual-write state,
+            # which is exactly what the watchdog avoids by the same rule.
+            smith_spawned = False
+            try:
+                smith_alive = (
+                    _api._signal_pid_file_alive()
+                    or _api._signal_process_scan_finds_client()
+                )
+                if not smith_alive:
+                    client = _api._detect_active_client()
+                    if _api._client_installed(client):
+                        ok, _result = await _api._spawn_smith(client, source="api")
+                        smith_spawned = bool(ok)
+            except Exception:
+                # Never fail the request on a spawn error — the directive is
+                # still queued and the watchdog remains a fallback.
+                _log.exception("api_complete: adjudication wake-spawn failed")
+
+            return JSONResponse({
+                "ok": True,
+                "status": "adjudicating",
+                "pending_adjudication": len(pending),
+                "smith_spawned": smith_spawned,
+            })
+
+        # No pending adjudication (or scan already non-running) — complete now.
+        cfg    = scan_session.complete(notes)
         status = cfg.get("status", "complete")
 
         # Clean up operational pointers now that the scan is terminal.
@@ -416,6 +509,15 @@ async def api_qa() -> JSONResponse:
 @router.get("/api/steering")
 async def api_steering() -> JSONResponse:
     return JSONResponse(_api._read_json(_api._STEERING_FILE))
+
+
+@router.get("/api/adjudication-log")
+async def api_adjudication_log() -> JSONResponse:
+    try:
+        from core.adjunction.log import read_all
+        return JSONResponse(read_all())
+    except Exception:
+        return JSONResponse([])
 
 
 @router.get("/api/metrics")

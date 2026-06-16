@@ -261,6 +261,21 @@
       font-size: 0.68rem; color: var(--muted); line-height: 1.35;
     }
 
+    .adjudication-banner {
+      margin-top: 0.6rem;
+      padding: 0.45rem 0.75rem;
+      border-radius: 6px;
+      background: color-mix(in srgb, var(--accent-yellow, #e3a000) 12%, transparent);
+      border: 1px solid color-mix(in srgb, var(--accent-yellow, #e3a000) 35%, transparent);
+      color: var(--fg);
+      font-size: 0.75rem;
+      animation: pulse-banner 2s ease-in-out infinite;
+    }
+    @keyframes pulse-banner {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.65; }
+    }
+
     /* ── Activity tab ── */
     .activity-section { margin-bottom: 1.5rem; }
     .activity-section-header {
@@ -409,6 +424,40 @@
       animation: fadeout 4s forwards; font-family: 'IBM Plex Mono', monospace;
     }
     @keyframes fadeout { 0%,70%{opacity:1} 100%{opacity:0} }
+
+    .triaged-badge {
+      display: inline-flex; align-items: center; gap: 0.2rem;
+      padding: .12rem .45rem; border-radius: 3px; font-size: .65rem; font-weight: 700;
+      font-family: 'IBM Plex Mono', monospace; letter-spacing: .04em;
+      background: rgba(227,160,0,.15); color: #e3a000;
+      border: 1px solid rgba(227,160,0,.3); margin-left: .4rem;
+    }
+
+    .finding-adjudication {
+      margin: 0.5rem 0 0.1rem;
+      padding: 0.55rem 0.75rem;
+      border-radius: 6px;
+      background: rgba(227,160,0,.06);
+      border: 1px solid rgba(227,160,0,.2);
+      font-size: 0.79rem;
+    }
+    .finding-adjudication-header {
+      display: flex; align-items: center; gap: 0.4rem;
+      font-size: 0.71rem; font-weight: 700; font-family: 'IBM Plex Mono', monospace;
+      color: #e3a000; letter-spacing: .05em; text-transform: uppercase;
+      margin-bottom: 0.45rem;
+    }
+    .finding-adjudication-grid {
+      display: grid; grid-template-columns: max-content 1fr;
+      gap: 0.2rem 0.75rem; line-height: 1.6;
+    }
+    .fadj-label { color: var(--text-dim); font-size: 0.76rem; white-space: nowrap; }
+    .fadj-value { color: var(--text); font-size: 0.76rem; }
+    .fadj-sev-arrow { color: var(--text-dim); margin: 0 0.2rem; }
+    .fadj-sev-old   { color: var(--text-dim); text-decoration: line-through; }
+    .fadj-sev-new-up   { color: #ff4d4f; font-weight: 700; }
+    .fadj-sev-new-down { color: var(--green); font-weight: 700; }
+    .fadj-sev-same  { color: var(--text-dim); }
 
     .target { font-family: 'IBM Plex Mono', monospace; font-size: 0.78rem; color: var(--purple); }
     .tool   { font-size: 0.73rem; color: var(--text-dim); font-family: 'IBM Plex Mono', monospace; }

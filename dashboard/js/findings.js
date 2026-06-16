@@ -94,6 +94,37 @@
     });
   }
 
+  const SEV_RANK = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
+
+  function _adjudicationBlock(adj) {
+    if (!adj?.rationale) return '';
+    const repro     = adj.reproducible === true || adj.reproducible === 'true';
+    const reproHTML = repro
+      ? '<span style="color:var(--green)">✓ Reproducible</span>'
+      : '<span style="color:#f87171">✗ Not reproducible</span>';
+    const orig = (adj.original_severity || '').toLowerCase();
+    const rev  = (adj.revised_severity  || '').toLowerCase();
+    let sevHTML = '';
+    if (orig && rev && orig !== rev) {
+      const up = (SEV_RANK[rev] ?? 9) < (SEV_RANK[orig] ?? 9);
+      sevHTML =
+        `<span class="fadj-sev-old">${esc(orig)}</span>` +
+        `<span class="fadj-sev-arrow">→</span>` +
+        `<span class="${up ? 'fadj-sev-new-up' : 'fadj-sev-new-down'}">${esc(rev)}</span>`;
+    } else {
+      sevHTML = `<span class="fadj-sev-same">${esc(orig || rev || '—')} (unchanged)</span>`;
+    }
+    return `
+      <div class="finding-adjudication">
+        <div class="finding-adjudication-header">⚖ Senior review</div>
+        <div class="finding-adjudication-grid">
+          <span class="fadj-label">Reproducible</span><span class="fadj-value">${reproHTML}</span>
+          <span class="fadj-label">Severity</span><span class="fadj-value">${sevHTML}</span>
+          <span class="fadj-label">Rationale</span><span class="fadj-value">${esc(adj.rationale)}</span>
+        </div>
+      </div>`;
+  }
+
   function cardHTML(f, openIds) {
     const isNew    = freshIds.has(f.id);
     const isOpen   = openIds.has(f.id);
@@ -102,6 +133,9 @@
     const cve      = f.cve ? `<span class="cve">CVE: ${esc(f.cve)}</span>` : '';
     const statusBadge = f.status === 'false_positive'
       ? `<span class="badge" style="background:rgba(107,104,144,.2);color:var(--text-dim);margin-left:.4rem">false positive</span>`
+      : '';
+    const triagedBadge = f.adjudication?.rationale
+      ? `<span class="triaged-badge" title="Senior-reviewed: ${esc(f.adjudication.rationale)}">⚖ Triaged</span>`
       : '';
     const vs = f.verification_status || 'unverified';
     const vsBadge = `<span class="vbadge vbadge-${vs}" title="Verification status: ${vs.replace(/_/g,' ')}">${VS_LABELS[vs] || vs}</span>`;
@@ -120,6 +154,7 @@
       ? `<button class="fix-btn" data-id="${esc(f.id)}" onclick="toggleFix(this.dataset.id)" title="Show remediation">&#128295; Fix</button>`
       : '';
     const fixDetail  = f.remediation ? buildFixDetail(f) : '';
+    const adjBlock   = _adjudicationBlock(f.adjudication);
     const impactHtml = f.business_impact
       ? `<div class="finding-impact">
            <span class="finding-impact-icon">&#9888;</span>
@@ -129,7 +164,7 @@
       : '';
     return `<div class="finding-card sev-${f.severity}">
       <div class="finding-header">
-        <span class="badge badge-${f.severity}">${f.severity}</span>${statusBadge}${vsBadge}
+        <span class="badge badge-${f.severity}">${f.severity}</span>${statusBadge}${triagedBadge}${vsBadge}
         <div class="finding-title-group">
           <div class="finding-title">${esc(f.title)}${newBadge}</div>
           <div class="finding-meta-row">
@@ -141,6 +176,7 @@
         </div>
       </div>
       ${impactHtml}
+      ${adjBlock}
       ${f.description ? `<div class="finding-desc">${esc(f.description)}</div>` : ''}
       ${fixDetail}
       <div class="finding-footer">
@@ -306,10 +342,15 @@
         _steeringData = null;
         _sessionData = null;
         _cycleRenderedCount = 0;
+        _adjudicationRenderedCount = 0;
         const stuckWrap = document.getElementById('stuck-log-wrap');
         if (stuckWrap) stuckWrap.innerHTML = '<div class="empty-placeholder">No stuck events yet — Smith is running smoothly.</div>';
         document.getElementById('cycle-history-wrap').innerHTML =
           '<div class="empty-placeholder">No cycles yet — QA starts 2 min after scan begins.</div>';
+        const adjWrap = document.getElementById('adjudication-log-wrap');
+        if (adjWrap) adjWrap.innerHTML = '<div class="empty-placeholder">No adjudication pass recorded yet.</div>';
+        const adjSection = document.getElementById('adjudication-section');
+        if (adjSection) adjSection.style.display = 'none';
 
         // ── Logs tab ──────────────────────────────────────────────────────
         document.getElementById('log-output').innerHTML = '';

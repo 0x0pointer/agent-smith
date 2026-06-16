@@ -113,11 +113,12 @@
     if (name === 'activity') {
       // Immediately paint whatever data we already have so the tab is not
       // empty while pollQA's fetch is in flight, then refresh from the wire.
-      _safeRender('stuckLog',     renderStuckLog);
-      _safeRender('QA',           renderQA);
-      _safeRender('steering',     renderSteering);
-      _safeRender('quickLog',     renderQuickLog);
-      _safeRender('cycleHistory', renderCycleHistory);
+      _safeRender('stuckLog',        renderStuckLog);
+      _safeRender('QA',              renderQA);
+      _safeRender('steering',        renderSteering);
+      _safeRender('quickLog',        renderQuickLog);
+      _safeRender('cycleHistory',    renderCycleHistory);
+      renderAdjudicationLog();
       pollQA();
     }
     if (name === 'metrics')       pollMetrics();
@@ -407,8 +408,19 @@
       });
       const res = await r.json();
       if (res.ok) {
-        if (fb)  fb.textContent = '✓ Scan marked complete';
-        if (btn) btn.textContent = '✓ Completed';
+        if (res.status === 'adjudicating') {
+          // Smith will adjudicate findings and auto-complete — show banner.
+          // res.smith_spawned tells us the dashboard actively relaunched Smith
+          // to run the pass (Smith had gone idle); surface that so the operator
+          // sees motion instead of a banner that looks stuck.
+          const spawnedNote = res.smith_spawned ? ' — Smith relaunched to review' : '';
+          if (fb)  fb.textContent = '⏳ Adjudicating ' + (res.pending_adjudication || '') + ' finding(s) before closing…' + spawnedNote;
+          if (btn) btn.textContent = '⏳ Adjudicating…';
+          _showAdjudicationBanner(true);
+        } else {
+          if (fb)  fb.textContent = '✓ Scan marked complete';
+          if (btn) btn.textContent = '✓ Completed';
+        }
         // Immediately refresh all dashboard state
         pollSession();
         pollFindings();
@@ -422,6 +434,11 @@
       if (fb) fb.textContent = '✗ Request failed';
       if (btn) { btn.disabled = false; btn.textContent = '✓ Complete Scan'; }
     }
+  }
+
+  function _showAdjudicationBanner(show) {
+    const banner = document.getElementById('adjudication-banner');
+    if (banner) banner.style.display = show ? '' : 'none';
   }
 
   // ── Command center rendering ──────────────────────────────────────────────
@@ -500,6 +517,10 @@
       renderCmdCenter(s, cov);
       if (_activeTab === 'activity') renderStuckLog();
 
+      // Show/hide adjudication banner based on session flag.
+      const adjudicating = s.force_complete_requested && s.status === 'running';
+      _showAdjudicationBanner(adjudicating);
+
       // Cost
       try {
         const cr2 = await fetch('/api/cost?_=' + Date.now());
@@ -515,11 +536,18 @@
 
       if (s.status === 'complete' && !scanDone) {
         scanDone = true;
+        _showAdjudicationBanner(false);
         document.getElementById('status').innerHTML =
           '<span class="dot" style="background:#6e7681;animation:none"></span>Scan complete';
         const statusEl = document.getElementById('cmd-scan-status');
         if (statusEl) { statusEl.textContent = 'complete'; statusEl.className = 'cmd-scan-status complete'; }
-        _notify('Scan complete', 'Smith has finished — check the Findings tab.', 'normal');
+        // Refresh findings to pick up adjudication verdicts written before close.
+        pollFindings();
+        const wasAdjudicating = !!s.force_complete_requested;
+        const msg = wasAdjudicating
+          ? 'Adjudication complete — findings updated. Check the Findings tab.'
+          : 'Smith has finished — check the Findings tab.';
+        _notify('Scan complete', msg, 'normal');
         setTimeout(_clearNotif, 8000);  // restore plain title after 8s
       }
     } catch { /* session may not exist yet */ }

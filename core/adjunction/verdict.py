@@ -22,9 +22,17 @@ from core.adjunction.rubric import SEVERITIES
 
 
 def is_adjudicated(finding: dict) -> bool:
-    """True once a finding carries a non-empty adjudication audit trail."""
+    """True once a finding carries a non-empty adjudication audit trail.
+
+    The rationale is stripped before the emptiness check so a whitespace-only
+    string (e.g. "   ") does NOT satisfy the gate — this keeps is_adjudicated
+    consistent with coerce_adjudication (which also strips and refuses a hollow
+    rationale). Otherwise a blank verdict would slip a finding past
+    pending_findings(), and the dashboard "Complete Scan" path would silently
+    complete the scan with an un-reviewed finding.
+    """
     adj = finding.get("adjudication")
-    return isinstance(adj, dict) and bool(adj.get("rationale"))
+    return isinstance(adj, dict) and bool(str(adj.get("rationale") or "").strip())
 
 
 def _norm_sev(value, fallback: str | None = None) -> str | None:

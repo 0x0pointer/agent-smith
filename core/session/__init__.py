@@ -266,6 +266,21 @@ def complete(
     return _current or {}
 
 
+def set_force_complete(notes: str = "") -> None:
+    """Signal that the human wants the scan to complete after adjudication.
+
+    Sets force_complete_requested on session.json so _do_complete() can skip
+    the thorough-depth gate and auto-complete once adjudication clears.
+    """
+    global _current
+    _reconcile_if_external_write()
+    if _current and _current.get("status") == "running":
+        _current["force_complete_requested"] = True
+        if notes:
+            _current["force_complete_notes"] = notes
+        _flush()
+
+
 def get() -> dict | None:
     return _current
 
