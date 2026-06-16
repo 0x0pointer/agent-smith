@@ -34,7 +34,7 @@ async def sentry_debug():
 async def dashboard_ui(request: Request):
     """Render the dashboard shell — index.html {% include %}s the per-tab
     partials; CSS/JS load from the /static mount."""
-    return _api.templates.TemplateResponse("index.html", {"request": request})
+    return _api.templates.TemplateResponse(request, "index.html")
 
 
 @router.get("/logo.png")
