@@ -1546,22 +1546,22 @@ def _check_coverage_integrity(matrix: list[dict], tools_run: set[str]) -> list[s
     return warnings
 
 
-def _do_recovery():
-    """Compact recovery brief — one call gives the agent everything to resume."""
-    current = scan_session.get() or {}
-    # Terminal status: the previous scan is finished. Surface that explicitly
-    # instead of falling through to the "no_session → start a new one" path,
-    # because Smith would otherwise try to start a new scan over the top of
-    # a completed one.
-    scan_status = current.get("status", "") if current else ""
-    # Operator-triggered triage on a stopped scan: the scan stays terminal, but
-    # an adjudication pass is in flight. Hand Smith a triage brief instead of the
-    # "stop, the scan is over" SCAN_COMPLETED brief, so the freshly-spawned run
-    # knows to record a verdict on every pending finding and then stop — without
-    # resuming testing or starting a new scan.
-    if scan_status in (
-        "complete", "incomplete_with_unresolved_blockers", "limit_reached",
-    ) and current.get("triage_requested"):
+_TERMINAL_SCAN_STATUSES = (
+    "complete", "incomplete_with_unresolved_blockers", "limit_reached",
+)
+
+
+def _terminal_recovery_brief(scan_status: str, current: dict) -> str | None:
+    """Recovery brief for a STOPPED scan, or None when the scan isn't terminal.
+
+    Two shapes, kept out of _do_recovery to hold its cognitive complexity down:
+      - TRIAGE_ADJUDICATION when an operator triage pass is in flight on the
+        stopped scan (adjudicate every pending finding, then stop), and
+      - the plain SCAN_COMPLETED brief otherwise (stop, the scan is over).
+    """
+    if scan_status not in _TERMINAL_SCAN_STATUSES:
+        return None
+    if current.get("triage_requested"):
         try:
             from core.findings import _load as _load_findings
             from core.adjunction import pending_findings
@@ -1589,22 +1589,32 @@ def _do_recovery():
                 "session(action='start'). The scan remains complete."
             ),
         }, indent=2)
-    if scan_status in (
-        "complete", "incomplete_with_unresolved_blockers", "limit_reached",
-    ):
-        return json.dumps({
-            "status": "SCAN_COMPLETED",
-            "scan_status":  scan_status,
-            "target":       current.get("target", ""),
-            "finished":     current.get("finished", ""),
-            "notes":        current.get("notes", ""),
-            "message": (
-                f"This scan is already marked '{scan_status}' on disk. Stop calling "
-                "tools. Write one final brief summary and end your turn. Do NOT call "
-                "session(action='start') to begin a new scan — the human will trigger "
-                "that themselves when they want fresh work."
-            ),
-        }, indent=2)
+    return json.dumps({
+        "status": "SCAN_COMPLETED",
+        "scan_status":  scan_status,
+        "target":       current.get("target", ""),
+        "finished":     current.get("finished", ""),
+        "notes":        current.get("notes", ""),
+        "message": (
+            f"This scan is already marked '{scan_status}' on disk. Stop calling "
+            "tools. Write one final brief summary and end your turn. Do NOT call "
+            "session(action='start') to begin a new scan — the human will trigger "
+            "that themselves when they want fresh work."
+        ),
+    }, indent=2)
+
+
+def _do_recovery():
+    """Compact recovery brief — one call gives the agent everything to resume."""
+    current = scan_session.get() or {}
+    # Terminal status: the previous scan is finished (possibly mid-triage).
+    # Surface that explicitly instead of falling through to the "no_session →
+    # start a new one" path, because Smith would otherwise try to start a new
+    # scan over the top of a completed one.
+    scan_status = current.get("status", "") if current else ""
+    terminal_brief = _terminal_recovery_brief(scan_status, current)
+    if terminal_brief is not None:
+        return terminal_brief
 
     if not current or current.get("status") != "running":
         # No session exists — tell the model to start one

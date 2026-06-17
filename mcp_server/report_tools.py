@@ -198,6 +198,30 @@ def _auto_trigger_finding_gates(title: str, severity: str, description: str) -> 
     return triggered
 
 
+def _log_adjudication_verdict(finding_id, updated, fields):
+    """Best-effort: append the senior-review verdict to the adjudication log.
+
+    Extracted from _do_update_finding to keep that function's cognitive
+    complexity in check. A no-op when there's no adjudication payload; never
+    raises (logging must not fail the update).
+    """
+    adj = fields.get("adjudication")
+    if not adj:
+        return
+    try:
+        from core.adjunction.log import log_verdict
+        log_verdict(
+            finding_id=finding_id,
+            title=updated.get("title", finding_id),
+            original_severity=str(adj.get("original_severity", "")),
+            revised_severity=str(adj.get("revised_severity", "")),
+            reproducible=adj.get("reproducible", ""),
+            rationale=str(adj.get("rationale", "")),
+        )
+    except Exception:
+        pass
+
+
 async def _do_update_finding(data):
     finding_id = data.get("id", "")
     if not finding_id:
@@ -234,20 +258,7 @@ async def _do_update_finding(data):
                 "rationale} for it to count toward completion."
             )
         else:
-            adj = fields.get("adjudication")
-            if adj:
-                try:
-                    from core.adjunction.log import log_verdict
-                    log_verdict(
-                        finding_id=finding_id,
-                        title=updated.get("title", finding_id),
-                        original_severity=str(adj.get("original_severity", "")),
-                        revised_severity=str(adj.get("revised_severity", "")),
-                        reproducible=adj.get("reproducible", ""),
-                        rationale=str(adj.get("rationale", "")),
-                    )
-                except Exception:
-                    pass
+            _log_adjudication_verdict(finding_id, updated, fields)
         return msg
     return f"Finding not found: {finding_id}"
 
