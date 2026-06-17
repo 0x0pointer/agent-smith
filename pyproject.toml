@@ -7,25 +7,22 @@ package-mode = false
 
 [tool.poetry.dependencies]
 python = "^3.11"
-aiohttp = ">=3.14.0"
+aiohttp = ">=3.14.1"
 mcp = "==1.26.0"
 fastapi = {extras = ["standard"], version = "==0.135.1"}
-starlette = ">=1.0.0"
-pyjwt = {version = ">=2.12.0", extras = ["crypto"]}
-idna = ">=3.12"
+starlette = ">=1.3.1"
+pyjwt = {version = ">=2.13.0", extras = ["crypto"]}
+idna = ">=3.18"
+# Security floors for transitive deps (Dependabot remediation):
+# cryptography >=49 closes the bundled-OpenSSL advisory; python-multipart
+# >=0.0.32 closes the querystring/parameter-smuggling advisories.
+cryptography = ">=49.0.0"
+python-multipart = ">=0.0.32"
 sentry-sdk = {version = "==2.54.0", optional = true}
-langgraph = ">=0.2"
-langchain-core = ">=0.2"
-langchain-openai = ">=0.1"
-langchain-anthropic = {version = ">=0.1", optional = true}
-langchain-ollama = {version = ">=0.1", optional = true}
 psutil = ">=5.9"
 
 [tool.poetry.extras]
 monitoring = ["sentry-sdk"]
-qa-openai    = ["langchain-openai"]
-qa-anthropic = ["langchain-anthropic"]
-qa-ollama    = ["langchain-ollama"]
 
 [tool.poetry.group.dev.dependencies]
 pytest = "==9.0.3"
