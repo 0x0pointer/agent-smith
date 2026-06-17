@@ -256,6 +256,7 @@ from .smith import (  # noqa: E402
     _client_process_running,
     _detect_active_client,
     _kill_hung_smith,
+    _ensure_mcp_sse_alive,
     _live_pid_from_pid_file,
     _live_pid_from_process_scan,
     _mcp_sse_alive,

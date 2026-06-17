@@ -152,6 +152,25 @@ class SteeringQueue:
             self._save(directives)
         return satisfied
 
+    def cancel_by_trigger(self, trigger: str, message: str | None = None) -> int:
+        """Acknowledge all active directives with the given trigger. Returns count.
+
+        Used by the dashboard to cancel an in-flight pass (e.g. triage) — marks
+        the matching pending/injected directives acknowledged so they drop out of
+        get_active()/get_pending() without losing the audit trail.
+        """
+        directives = self._load()
+        n = 0
+        for d in directives:
+            if d.get("trigger") == trigger and d.get("status") in ("pending", "injected"):
+                d["status"] = "acknowledged"
+                d["acknowledged_at"] = self._now()
+                d["ack_message"] = message or "cancelled by operator"
+                n += 1
+        if n:
+            self._save(directives)
+        return n
+
     def acknowledge_latest_injected(self, message: str | None = None) -> str | None:
         """Acknowledge the most recently injected directive. Returns its id or None."""
         directives = self._load()

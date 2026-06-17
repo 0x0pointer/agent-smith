@@ -560,6 +560,75 @@ def _mcp_sse_alive() -> bool:
         return False
 
 
+# Throttle so a daemon that refuses to come up doesn't get hammered every tick.
+_mcp_sse_last_restart_ts: float = 0.0
+_MCP_SSE_RESTART_MIN_GAP_SECONDS = 30
+
+
+async def _ensure_mcp_sse_alive(now: float) -> None:
+    """Cross-platform self-heal for the MCP SSE daemon (port 7778).
+
+    The MCP server is a bare uvicorn process with no reliable OS supervisor on
+    most setups: a launchd KeepAlive agent silently fails when the repo lives in
+    a TCC-protected folder (~/Desktop, ~/Documents, ...), and there's nothing at
+    all on a fresh Linux/Windows box. When that process dies, every
+    session()/scan()/report() call fails with "Unable to connect" until someone
+    restarts it by hand — the recurring breakage.
+
+    The always-on dashboard process is the natural supervisor: it inherits the
+    operator's permissions (so it can actually restart the daemon) and is the
+    same process the operator is already watching. This runs on every watchdog
+    tick, independent of scan status, so MCP is back before the next scan starts.
+    OS-agnostic: bash launcher on POSIX, PowerShell launcher on Windows.
+    """
+    global _mcp_sse_last_restart_ts
+    if _mcp_sse_alive():
+        return
+    if now - _mcp_sse_last_restart_ts < _MCP_SSE_RESTART_MIN_GAP_SECONDS:
+        return
+    _mcp_sse_last_restart_ts = now
+
+    import os
+    if os.name == "nt":
+        launcher = _api._REPO_ROOT / "installers" / "start-mcp-server.ps1"
+        cmd = ["powershell", "-ExecutionPolicy", "Bypass", "-File", str(launcher), "start"]
+    else:
+        launcher = _api._REPO_ROOT / "installers" / "start-mcp-server.sh"
+        cmd = ["/bin/bash", str(launcher), "start"]
+    if not launcher.exists():
+        _log.warning("MCP SSE down but launcher missing: %s", launcher)
+        return
+
+    _log.warning("MCP SSE server down on 127.0.0.1:7778 — auto-restarting via %s", launcher.name)
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await asyncio.wait_for(proc.wait(), timeout=30)
+    except asyncio.TimeoutError:
+        _log.warning("MCP SSE auto-restart still coming up after 30s")
+    except Exception:
+        _log.exception("MCP SSE auto-restart failed")
+        return
+    if _mcp_sse_alive():
+        _log.info("MCP SSE server auto-restarted OK")
+        try:
+            from core import notifiers as _nfr
+            _nfr.notify(
+                title="MCP SSE server auto-restarted",
+                body=(
+                    "The MCP server on 127.0.0.1:7778 had died and the dashboard "
+                    "watchdog brought it back automatically — no manual restart needed."
+                ),
+                urgency="normal",
+                code="WATCHDOG_MCP_REVIVED",
+            )
+        except Exception:
+            pass
+
+
 async def _watchdog_tick(now: float) -> None:
     """Single watchdog tick: restart Smith if all guard conditions pass.
 
@@ -705,6 +774,10 @@ async def _smith_watchdog_loop() -> None:
     while True:
         try:
             await asyncio.sleep(_api._WATCHDOG_POLL_SECONDS)
+            # Keep the MCP SSE daemon alive FIRST, every tick, regardless of
+            # scan status — _watchdog_tick early-returns when no scan is running,
+            # but the operator still needs MCP up to start the next one.
+            await _api._ensure_mcp_sse_alive(_time.time())
             await _api._watchdog_tick(_time.time())
         except asyncio.CancelledError:
             raise

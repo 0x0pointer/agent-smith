@@ -113,11 +113,12 @@
     if (name === 'activity') {
       // Immediately paint whatever data we already have so the tab is not
       // empty while pollQA's fetch is in flight, then refresh from the wire.
-      _safeRender('stuckLog',     renderStuckLog);
-      _safeRender('QA',           renderQA);
-      _safeRender('steering',     renderSteering);
-      _safeRender('quickLog',     renderQuickLog);
-      _safeRender('cycleHistory', renderCycleHistory);
+      _safeRender('stuckLog',        renderStuckLog);
+      _safeRender('QA',              renderQA);
+      _safeRender('steering',        renderSteering);
+      _safeRender('quickLog',        renderQuickLog);
+      _safeRender('cycleHistory',    renderCycleHistory);
+      renderAdjudicationLog();
       pollQA();
     }
     if (name === 'metrics')       pollMetrics();
@@ -325,12 +326,16 @@
   _refreshActiveClient();
   setInterval(_refreshActiveClient, 30000);
 
+  let _smithStatus = {};   // latest /api/smith-status (running, idle, heartbeat_age_s)
   async function _pollSmithStatus() {
     try {
       const [sessionRes, smithRes] = await Promise.all([
         fetch(`/api/session?_=${Date.now()}`).then(r => r.json()).catch(() => ({})),
         fetch(`/api/smith-status?_=${Date.now()}`).then(r => r.ok ? r.json() : {running: null}).catch(() => ({running: null})),
       ]);
+      _smithStatus = smithRes || {};
+      // Re-render the triage banner with the freshest idle signal.
+      if (_sessionData) _renderTriageBanner(_sessionData);
 
       // Update Smith process status badge
       // smithRes.running: true=running, false=confirmed stopped, null=unknown (old server / no endpoint)
@@ -365,7 +370,10 @@
         if (hint) hint.textContent = 'Smith has stopped — restart it to continue the scan.';
       } else {
         restartBtn.style.display = 'none';
-        if (hint) hint.textContent = 'Only you can end the scan — Smith will keep testing until you do.';
+        // Only assert the "keep testing" hint while the scan is actually running.
+        // On a stopped scan, renderCmdCenter owns the hint (post-scan triage
+        // guidance) — don't clobber it here on the 10s poll.
+        if (hint && scanActive) hint.textContent = 'Only you can end the scan — Smith will keep testing until you do.';
       }
     } catch(e) {}
   }
@@ -424,6 +432,106 @@
     }
   }
 
+  // Operator-triggered triage (adjudication) pass — wakes Smith to record a
+  // verdict on every un-adjudicated high/critical finding WITHOUT completing
+  // the scan. Independent of completeScan() by design.
+  async function triageFindings() {
+    const btn = document.getElementById('cmd-triage-btn');
+    const fb  = document.getElementById('cmd-smith-feedback');
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ Triaging…'; }
+    if (fb)  fb.textContent = 'Requesting triage pass…';
+    try {
+      const r = await fetch('/api/triage', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({}),
+      });
+      const res = await r.json();
+      if (res.ok && res.status === 'triaging') {
+        const spawnedNote = res.smith_spawned ? ' — Smith relaunched to review' : '';
+        if (fb) fb.textContent = '⏳ Triaging ' + (res.pending_adjudication || '') + ' finding(s)…' + spawnedNote;
+        _showAdjudicationBanner(true);
+      } else if (res.ok && res.status === 'nothing_to_triage') {
+        if (fb) fb.textContent = 'Nothing to triage — no findings awaiting a verdict.';
+      } else {
+        if (fb) fb.textContent = '✗ Failed: ' + (res.error || 'unknown');
+      }
+      pollSession();
+      pollFindings();
+      _pollSmithStatus();
+    } catch(e) {
+      if (fb) fb.textContent = '✗ Request failed';
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = '⚖ Triage findings'; }
+    }
+  }
+
+  function _showAdjudicationBanner(show) {
+    const banner = document.getElementById('adjudication-banner');
+    if (banner) banner.style.display = show ? '' : 'none';
+  }
+
+  // How long the triage pass may go without a new verdict before the banner
+  // flips to the "stalled" warning. Progress-based (triage_idle_s) so a slow-
+  // but-advancing pass never trips it; the MCP heartbeat (_smithStatus.idle) is
+  // a secondary trigger for when Smith dies outright.
+  const _TRIAGE_STALL_S = 90;
+
+  // Stateful triage banner: hidden when no pass is in flight; "in progress"
+  // while Smith is actively recording verdicts; and a steady red "stalled"
+  // warning when the pass stops advancing with verdicts still pending (Smith
+  // likely stopped to ask what's next, or wandered off to other testing).
+  // Always carries Re-nudge / Dismiss actions so the operator is never stuck
+  // staring at a banner that won't clear.
+  function _renderTriageBanner(s) {
+    const banner = document.getElementById('adjudication-banner');
+    const msg    = document.getElementById('adjudication-banner-msg');
+    if (!banner) return;
+    // A triage pass is in flight whenever the flag is set — on a running scan
+    // (legacy mid-scan triage) OR on a stopped scan (post-scan triage). The flag
+    // is cleared by the /api/session self-heal once every finding has a verdict.
+    const active = !!(s && s.triage_requested);
+    if (!active) { banner.style.display = 'none'; banner.classList.remove('adjudication-banner-stalled'); return; }
+    banner.style.display = '';
+    const pend    = (typeof s.pending_adjudication === 'number') ? s.pending_adjudication : null;
+    const pendTxt = pend === null ? '' : (pend + ' finding' + (pend === 1 ? '' : 's'));
+    // Stalled if no verdict has landed for a while (server-tracked progress
+    // clock) OR Smith's process heartbeat has gone cold. The progress clock is
+    // the reliable one — it isn't reset by Smith staying busy on other work.
+    const noProgress = (typeof s.triage_idle_s === 'number') && s.triage_idle_s >= _TRIAGE_STALL_S;
+    const heartCold  = !!(_smithStatus && _smithStatus.idle);
+    if (noProgress || heartCold) {
+      banner.classList.add('adjudication-banner-stalled');
+      if (msg) msg.innerHTML = '⚠ Triage stalled — Smith stopped recording verdicts' +
+        (pendTxt ? ' with ' + pendTxt + ' still awaiting one' : '') +
+        '. It may be waiting on you — re-nudge it, or dismiss to clear.';
+    } else {
+      banner.classList.remove('adjudication-banner-stalled');
+      if (msg) msg.innerHTML = '⏳ Triage in progress — Smith is recording verdicts' +
+        (pendTxt ? ' (' + pendTxt + ' left)' : '') + '…';
+    }
+  }
+
+  async function reNudgeTriage() {
+    const fb = document.getElementById('cmd-smith-feedback');
+    if (fb) fb.textContent = 'Re-nudging Smith to resume triage…';
+    try {
+      await fetch('/api/triage', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' });
+    } catch (e) { if (fb) fb.textContent = '✗ Re-nudge failed'; }
+    pollSession();
+    _pollSmithStatus();
+  }
+
+  async function cancelTriage() {
+    const fb = document.getElementById('cmd-smith-feedback');
+    try {
+      await fetch('/api/triage-cancel', { method: 'POST' });
+      if (fb) fb.textContent = 'Triage dismissed.';
+    } catch (e) { if (fb) fb.textContent = '✗ Dismiss failed'; }
+    _showAdjudicationBanner(false);
+    pollSession();
+  }
+
   // ── Command center rendering ──────────────────────────────────────────────
   function renderCmdCenter(session, coverage) {
     if (!session || !session.target) return;
@@ -479,6 +587,28 @@
       statusEl.textContent = session.status || '—';
       statusEl.className   = 'cmd-scan-status ' + (session.status || 'running').replace(/_/g, '-');
     }
+
+    // Complete vs Triage button visibility.
+    // While the scan runs, the operator can only Complete it. Triage is a
+    // POST-scan action: once the scan is stopped the Complete button is retired
+    // and the Triage button appears — clicking it (re)spawns Smith to adjudicate
+    // the findings (see triageFindings / POST /api/triage). Mutually exclusive so
+    // the operator is never offered both at once.
+    const terminal      = _isTerminalStatus(session.status);
+    const completeBtn   = document.getElementById('cmd-complete-btn');
+    const triageBtn     = document.getElementById('cmd-triage-btn');
+    const triageHint    = document.getElementById('cmd-smith-status-hint');
+    if (completeBtn) completeBtn.style.display = terminal ? 'none' : '';
+    if (triageBtn)   triageBtn.style.display   = terminal ? '' : 'none';
+    if (triageHint && terminal && !session.triage_requested) {
+      triageHint.textContent = 'Scan stopped. Run triage to relaunch Smith and have it adjudicate the findings.';
+    }
+  }
+
+  // Terminal (stopped) scan states — anything that is not actively running and
+  // not paused for human intervention.
+  function _isTerminalStatus(st) {
+    return ['complete', 'incomplete_with_unresolved_blockers', 'limit_reached'].includes(st);
   }
 
   let _lastCoverage = null;
@@ -500,6 +630,9 @@
       renderCmdCenter(s, cov);
       if (_activeTab === 'activity') renderStuckLog();
 
+      // Stateful triage banner (progress / stalled) with operator actions.
+      _renderTriageBanner(s);
+
       // Cost
       try {
         const cr2 = await fetch('/api/cost?_=' + Date.now());
@@ -515,10 +648,13 @@
 
       if (s.status === 'complete' && !scanDone) {
         scanDone = true;
+        _showAdjudicationBanner(false);
         document.getElementById('status').innerHTML =
           '<span class="dot" style="background:#6e7681;animation:none"></span>Scan complete';
         const statusEl = document.getElementById('cmd-scan-status');
         if (statusEl) { statusEl.textContent = 'complete'; statusEl.className = 'cmd-scan-status complete'; }
+        // Refresh findings to pick up adjudication verdicts written before close.
+        pollFindings();
         _notify('Scan complete', 'Smith has finished — check the Findings tab.', 'normal');
         setTimeout(_clearNotif, 8000);  // restore plain title after 8s
       }

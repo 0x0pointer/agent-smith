@@ -81,7 +81,15 @@ def _check_scan_gate(tool: str) -> str | None:
         scan_status = current.get("status", "")
         if scan_status in (
             "complete", "incomplete_with_unresolved_blockers", "limit_reached",
-        ):
+        ) and not current.get("triage_requested"):
+            # A terminal scan normally blocks every tool but session(). The one
+            # exception is an operator-triggered TRIAGE pass on a stopped scan:
+            # while triage_requested is set, Smith must be able to call report()
+            # (to record verdicts) and re-verify findings (http/kali) before the
+            # gate slams shut again. The injected steering directive keeps the
+            # pass scoped to adjudication; once every finding has a verdict the
+            # flag clears (see /api/session self-heal) and this gate resumes
+            # blocking all tools.
             return json.dumps({
                 "status": "SCAN_COMPLETED",
                 "scan_status": scan_status,

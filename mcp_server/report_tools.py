@@ -72,7 +72,9 @@ async def report(action: str, data: Any) -> str:
     update_finding data:
       id (required), plus any fields to update:
       severity, title, description, evidence, status (confirmed|false_positive|draft),
-      gh_issue, remediation, reproduction, escalation_leads
+      gh_issue, remediation, reproduction, escalation_leads,
+      adjudication ({reproducible, original_severity, revised_severity, rationale} —
+      the final senior-review verdict; rationale is required for it to count)
 
     delete_finding data:
       id — moves the finding to the archived[] array (not permanently deleted)
@@ -196,6 +198,30 @@ def _auto_trigger_finding_gates(title: str, severity: str, description: str) -> 
     return triggered
 
 
+def _log_adjudication_verdict(finding_id, updated, fields):
+    """Best-effort: append the senior-review verdict to the adjudication log.
+
+    Extracted from _do_update_finding to keep that function's cognitive
+    complexity in check. A no-op when there's no adjudication payload; never
+    raises (logging must not fail the update).
+    """
+    adj = fields.get("adjudication")
+    if not adj:
+        return
+    try:
+        from core.adjunction.log import log_verdict
+        log_verdict(
+            finding_id=finding_id,
+            title=updated.get("title", finding_id),
+            original_severity=str(adj.get("original_severity", "")),
+            revised_severity=str(adj.get("revised_severity", "")),
+            reproducible=adj.get("reproducible", ""),
+            rationale=str(adj.get("rationale", "")),
+        )
+    except Exception:
+        pass
+
+
 async def _do_update_finding(data):
     finding_id = data.get("id", "")
     if not finding_id:
@@ -203,9 +229,37 @@ async def _do_update_finding(data):
     fields = {k: v for k, v in data.items() if k != "id"}
     if not fields:
         return "No fields to update. Provide severity, title, description, evidence, status, etc."
+
+    # Normalise the adjudication audit trail so every senior-review verdict
+    # (especially a downgrade) is stored in a consistent, explainable shape.
+    # A verdict with no rationale is dropped — it must not falsely satisfy the
+    # completion-time adjudication gate (see adjunction/).
+    adjudication_dropped = False
+    if "adjudication" in fields:
+        from core.adjunction import coerce_adjudication
+        current = next(
+            (f for f in findings_store._load().get("findings", []) if f.get("id") == finding_id),
+            None,
+        )
+        coerced = coerce_adjudication(fields.get("adjudication"), current)
+        if coerced is None:
+            fields.pop("adjudication", None)
+            adjudication_dropped = True
+        else:
+            fields["adjudication"] = coerced
+
     updated = await findings_store.update_finding(finding_id, **fields)
     if updated:
-        return f"Finding updated: {finding_id} — fields: {', '.join(fields.keys())}"
+        msg = f"Finding updated: {finding_id} — fields: {', '.join(fields.keys())}"
+        if adjudication_dropped:
+            msg += (
+                "\n\nNOTE: adjudication was ignored — it needs a non-empty 'rationale'. "
+                "Re-send with adjudication={reproducible, original_severity, revised_severity, "
+                "rationale} for it to count toward completion."
+            )
+        else:
+            _log_adjudication_verdict(finding_id, updated, fields)
+        return msg
     return f"Finding not found: {finding_id}"
 
 

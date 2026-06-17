@@ -58,6 +58,7 @@
   }
 
   let _cycleRenderedCount = 0;
+  let _adjudicationRenderedCount = 0;
 
   // Synthesise a readable narrative from Smith's raw action log
   function _smithNarrative(actions) {
@@ -195,10 +196,11 @@
       if (rQA.ok) {
         _qaData = await rQA.json();
         if (_activeTab === 'activity') {
-          _safeRender('stuckLog',     renderStuckLog);
-          _safeRender('QA',           renderQA);
-          _safeRender('quickLog',     renderQuickLog);
-          _safeRender('cycleHistory', renderCycleHistory);
+          _safeRender('stuckLog',        renderStuckLog);
+          _safeRender('QA',              renderQA);
+          _safeRender('quickLog',        renderQuickLog);
+          _safeRender('cycleHistory',    renderCycleHistory);
+          _safeRender('adjudicationLog', renderAdjudicationLog);
         }
         alerts = (_qaData.alerts || []);
 
@@ -280,7 +282,7 @@
         <span style="color:${color};font-weight:600;font-family:'IBM Plex Mono',monospace;font-size:0.76rem;">● ${esc(d.status.replace('_',' ').toUpperCase())}</span>
         <span style="color:var(--text-dim);font-size:0.72rem;">${priorityLabel} &nbsp; ${esc(ts)}</span>
       </div>
-      <div style="color:var(--text);font-size:0.8rem;line-height:1.5;margin-bottom:0.2rem;">${esc(d.message || '')}</div>
+      <div style="color:var(--text);font-size:0.8rem;line-height:1.5;margin-bottom:0.2rem;white-space:pre-wrap;overflow-wrap:anywhere;max-height:16rem;overflow-y:auto;">${esc(d.message || '')}</div>
       <div style="color:var(--text-dim);font-size:0.72rem;font-family:'IBM Plex Mono',monospace;">${esc(d.code || '')}${d.skill ? ' → ' + esc(d.skill) : ''} &nbsp;|&nbsp; trigger: ${esc(d.trigger || '—')}</div>
       ${d.ack_message ? `<div style="margin-top:0.3rem;padding:0.3rem 0.5rem;background:rgba(74,222,128,0.08);border-radius:4px;color:#86efac;font-size:0.75rem;">Smith: ${esc(d.ack_message)}</div>` : ''}
     `;
@@ -313,6 +315,72 @@
       if (hint && !_hirActive) hint.textContent = '';
     }
     _updateTitleBadge(_notifState.alertCount, !!stall, _hirActive);
+  }
+
+  // ── Adjudication log ─────────────────────────────────────────────────────
+
+  async function renderAdjudicationLog() {
+    try {
+      const r = await fetch(`/api/adjudication-log?_=${Date.now()}`);
+      if (!r.ok) return;
+      const entries = await r.json();
+      const wrap = document.getElementById('adjudication-log-wrap');
+      if (!wrap) return;
+
+      if (!entries.length) return;
+
+      const newEntries = entries.slice(_adjudicationRenderedCount);
+      if (!newEntries.length) return;
+
+      const placeholder = wrap.querySelector('.empty-placeholder');
+      if (placeholder) placeholder.remove();
+
+      const frag = document.createDocumentFragment();
+
+      newEntries.forEach(entry => {
+        if (entry.type === 'directive') {
+          const el = document.createElement('div');
+          el.className = 'chat-bubble qa';
+          el.style.borderLeftColor = '#e3a000';
+          const titles = (entry.titles || []).map(t => `<li>${esc(t)}</li>`).join('');
+          el.innerHTML =
+            `<div class="chat-sender" style="color:#e3a000">Adjudicator — ${_qlTime(entry.ts)}</div>` +
+            `<div style="margin-bottom:0.35rem">Senior review requested for <strong>${entry.n_pending}</strong> finding(s):</div>` +
+            `<ul style="margin:0 0 0 1rem;padding:0;list-style:disc;line-height:1.7">${titles}</ul>`;
+          frag.appendChild(el);
+
+        } else if (entry.type === 'verdict') {
+          const repro    = entry.reproducible === true || entry.reproducible === 'true' || entry.reproducible === 'yes';
+          const reproTxt = repro ? '✓ Reproducible' : '✗ Not reproducible';
+          const sevChanged = entry.original_severity && entry.revised_severity &&
+                             entry.original_severity.toLowerCase() !== entry.revised_severity.toLowerCase();
+          const sevLine = sevChanged
+            ? `<span style="color:#f87171">${esc(entry.original_severity)}</span> → <span style="color:#4ade80">${esc(entry.revised_severity)}</span>`
+            : `<span style="color:#94a3b8">${esc(entry.original_severity || entry.revised_severity || '—')}</span> (unchanged)`;
+          const el = document.createElement('div');
+          el.className = 'chat-bubble smith';
+          el.innerHTML =
+            `<div class="chat-sender">Smith — verdict · ${_qlTime(entry.ts)}</div>` +
+            `<div style="font-weight:600;margin-bottom:0.3rem">${esc(entry.title || entry.finding_id)}</div>` +
+            `<div style="display:grid;grid-template-columns:max-content 1fr;gap:0.15rem 0.75rem;font-size:0.79rem;line-height:1.6">` +
+              `<span style="color:var(--text-dim)">Reproducible</span><span>${reproTxt}</span>` +
+              `<span style="color:var(--text-dim)">Severity</span><span>${sevLine}</span>` +
+              `<span style="color:var(--text-dim)">Rationale</span><span style="color:var(--text)">${esc(entry.rationale || '—')}</span>` +
+            `</div>`;
+          frag.appendChild(el);
+
+        } else if (entry.type === 'complete') {
+          const el = document.createElement('div');
+          el.className = 'chat-ts-chip';
+          el.style.cssText = 'color:#4ade80;border-color:#4ade80;font-weight:600;margin:0.75rem auto;';
+          el.textContent = `✓ Adjudication complete — ${entry.n_adjudicated} finding(s) reviewed · ${_qlTime(entry.ts)}`;
+          frag.appendChild(el);
+        }
+      });
+
+      wrap.appendChild(frag);
+      _adjudicationRenderedCount = entries.length;
+    } catch { /* ignore */ }
   }
 
   // ── Metrics ───────────────────────────────────────────────────────────────

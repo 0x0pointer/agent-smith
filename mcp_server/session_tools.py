@@ -262,6 +262,25 @@ def _do_start(opts):
         model_profile=opts.get("model_profile", "full"),
         scan_mode=scan_mode,
     )
+    try:
+        from core.adjunction.log import clear as _adj_log_clear
+        _adj_log_clear()
+    except Exception:
+        pass
+    # Purge stale adjudication/triage steering directives on every scan start.
+    # These ride get_active() into the spawn prompt (core/api_server/smith.py)
+    # and the session status/recovery responses, so an un-acknowledged review
+    # directive left over from a prior run (operator triage that never finished,
+    # or a legacy FORCE_COMPLETE_ADJUDICATION) would otherwise replay into this
+    # fresh run and drive Smith straight into adjudication with no operator
+    # action. Starting a scan is a deliberate reset; the operator re-triggers
+    # triage via the dashboard button if they want it.
+    try:
+        from core.steering import steering_queue
+        steering_queue.cancel_by_trigger("TRIAGE_ADJUDICATION", "cleared on new scan start")
+        steering_queue.cancel_by_trigger("FORCE_COMPLETE_ADJUDICATION", "cleared on new scan start")
+    except Exception:
+        pass
     lim = cfg["limits"]
     cost_str  = f"${lim['max_cost_usd']:.2f}" if lim['max_cost_usd'] is not None else "unlimited"
     time_str  = f"{lim['max_time_minutes']}min" if lim['max_time_minutes'] is not None else "unlimited"
@@ -947,6 +966,14 @@ def _collect_completion_blockers(data: dict, effective: set) -> list[str]:
     if quality_blocker:
         blockers.append(quality_blocker)
 
+    # ── Final-QA adjudication ─────────────────────────────────────────────────
+    # Always-on senior-review pass: every high/critical finding must carry a
+    # reproducibility + recalibrated-severity verdict before completion. Runs
+    # here (at completion) on purpose — never mid-scan, so discovery is not
+    # interrupted and findings are judged with full chained context.
+    from core.adjunction import adjudication_blockers
+    blockers.extend(adjudication_blockers(data))
+
     from core.coverage import get_matrix
     blockers.extend(_coverage_blockers(get_matrix(), ctf_mode=_has_ctf_flag(data)))
 
@@ -1110,7 +1137,20 @@ def _do_complete():
     blockers = _apply_thorough_depth_gate(blockers, current)
 
     if blockers:
+        # Log the adjudication directive whenever the gate fires so the Activity
+        # tab reflects that a review pass is owed.
+        try:
+            from core.adjunction import pending_findings
+            from core.adjunction.log import log_directive
+            pending = pending_findings(data)
+            if pending:
+                log_directive(pending)
+        except Exception:
+            pass
         return _build_blocker_response(blockers)
+
+    _complete_attempts = 0
+    _analysis_passes = 0
 
     # Only the human operator can mark a scan complete.
     # Smith passes all quality gates here — the scan is ready — but completion
@@ -1120,8 +1160,6 @@ def _do_complete():
         f"complete() called by Smith (attempt {_complete_attempts}) — "
         "all quality gates passed; awaiting human completion via dashboard."
     )
-    _complete_attempts = 0
-    _analysis_passes = 0
 
     # Inject any active steering directives directly into this response so
     # Smith sees them immediately without needing another tool call.
@@ -1508,30 +1546,75 @@ def _check_coverage_integrity(matrix: list[dict], tools_run: set[str]) -> list[s
     return warnings
 
 
+_TERMINAL_SCAN_STATUSES = (
+    "complete", "incomplete_with_unresolved_blockers", "limit_reached",
+)
+
+
+def _terminal_recovery_brief(scan_status: str, current: dict) -> str | None:
+    """Recovery brief for a STOPPED scan, or None when the scan isn't terminal.
+
+    Two shapes, kept out of _do_recovery to hold its cognitive complexity down:
+      - TRIAGE_ADJUDICATION when an operator triage pass is in flight on the
+        stopped scan (adjudicate every pending finding, then stop), and
+      - the plain SCAN_COMPLETED brief otherwise (stop, the scan is over).
+    """
+    if scan_status not in _TERMINAL_SCAN_STATUSES:
+        return None
+    if current.get("triage_requested"):
+        try:
+            from core.findings import _load as _load_findings
+            from core.adjunction import pending_findings
+            from core.adjunction.directive import build_adjudication_directive
+            pending = pending_findings(_load_findings())
+        except Exception:
+            pending = []
+        return json.dumps({
+            "status": "TRIAGE_ADJUDICATION",
+            "scan_status": scan_status,
+            "mode": "triage",
+            "target": current.get("target", ""),
+            "pending_adjudication": len(pending),
+            "EXECUTE_NOW": (
+                build_adjudication_directive(pending) if pending
+                else "All findings already adjudicated — write a one-line summary and stop."
+            ),
+            "message": (
+                "TRIAGE pass requested by the human operator on a STOPPED scan. "
+                "Record a verdict for every finding listed above via "
+                "report(action='update_finding', data={id, adjudication:{reproducible, "
+                "original_severity, revised_severity, rationale}}). You may re-verify a "
+                "finding with http()/kali() to confirm reproducibility. When every "
+                "finding has a verdict, STOP — do NOT resume testing and do NOT call "
+                "session(action='start'). The scan remains complete."
+            ),
+        }, indent=2)
+    return json.dumps({
+        "status": "SCAN_COMPLETED",
+        "scan_status":  scan_status,
+        "target":       current.get("target", ""),
+        "finished":     current.get("finished", ""),
+        "notes":        current.get("notes", ""),
+        "message": (
+            f"This scan is already marked '{scan_status}' on disk. Stop calling "
+            "tools. Write one final brief summary and end your turn. Do NOT call "
+            "session(action='start') to begin a new scan — the human will trigger "
+            "that themselves when they want fresh work."
+        ),
+    }, indent=2)
+
+
 def _do_recovery():
     """Compact recovery brief — one call gives the agent everything to resume."""
     current = scan_session.get() or {}
-    # Terminal status: the previous scan is finished. Surface that explicitly
-    # instead of falling through to the "no_session → start a new one" path,
-    # because Smith would otherwise try to start a new scan over the top of
-    # a completed one.
+    # Terminal status: the previous scan is finished (possibly mid-triage).
+    # Surface that explicitly instead of falling through to the "no_session →
+    # start a new one" path, because Smith would otherwise try to start a new
+    # scan over the top of a completed one.
     scan_status = current.get("status", "") if current else ""
-    if scan_status in (
-        "complete", "incomplete_with_unresolved_blockers", "limit_reached",
-    ):
-        return json.dumps({
-            "status": "SCAN_COMPLETED",
-            "scan_status":  scan_status,
-            "target":       current.get("target", ""),
-            "finished":     current.get("finished", ""),
-            "notes":        current.get("notes", ""),
-            "message": (
-                f"This scan is already marked '{scan_status}' on disk. Stop calling "
-                "tools. Write one final brief summary and end your turn. Do NOT call "
-                "session(action='start') to begin a new scan — the human will trigger "
-                "that themselves when they want fresh work."
-            ),
-        }, indent=2)
+    terminal_brief = _terminal_recovery_brief(scan_status, current)
+    if terminal_brief is not None:
+        return terminal_brief
 
     if not current or current.get("status") != "running":
         # No session exists — tell the model to start one
