@@ -126,9 +126,14 @@ mcp["pentest-agent"] = {
 # the agent, operators can add a `bash` deny pattern for truly destructive
 # commands (rm -rf, force-push, etc.) under permission.bash as an object
 # with patterns — see https://opencode.ai/docs/permissions/ .
+#   external_directory — agent-smith reviews codebases OUTSIDE opencode's cwd
+#                (the /codebase skill, `set_codebase`, etc.). opencode prompts
+#                "ask" before touching paths outside the project root; in a TUI
+#                that stalls the run, and under `opencode run` there's no TTY to
+#                answer it, so the session aborts. Allow it.
 perm = data.setdefault("permission", {})
 perm["doom_loop"] = "allow"
-for k in ("bash", "edit", "webfetch"):
+for k in ("bash", "edit", "webfetch", "external_directory"):
     perm.setdefault(k, "allow")
 
 # Bump the per-agent iteration cap for `opencode run`. Default is 500 steps,
@@ -140,6 +145,86 @@ agent_block = data.setdefault("agent", {})
 build_agent = agent_block.setdefault("build", {})
 build_agent.setdefault("steps", 10000)
 
+# ── Context-window safety (model-INDEPENDENT) ────────────────────────────────
+# opencode auto-compacts when:        input > context - compaction.reserved
+# the model server hard-rejects when: input + output > context
+# So opencode only compacts in time if  reserved > output. When it doesn't, the
+# provider raises "maximum context length is N tokens ..." and the whole TUI
+# session crashes BEFORE compaction ever runs (the default reserved=10000 is
+# smaller than a typical output reservation of 16384, so the crash wins the
+# race). The condition has NO `context` term — it cancels out — so this is not a
+# per-model hardcode: keep `reserved` a fixed buffer above `output`, and pin the
+# context window to whatever the model server actually reports (queried live).
+import urllib.request as _urlreq
+
+def _detect_context(base_url, model_id):
+    if not base_url:
+        return None
+    u = base_url.rstrip("/")
+    if not u.endswith("/v1"):
+        u += "/v1"
+    try:
+        with _urlreq.urlopen(u + "/models", timeout=4) as resp:
+            models = json.load(resp).get("data", [])
+    except Exception:
+        return None
+    # Prefer the exact model id; fall back to the first model advertised.
+    for want in (model_id, None):
+        for m in models:
+            if want is None or m.get("id") == want:
+                for k in ("max_model_len", "context_length", "max_context_length"):
+                    if isinstance(m.get(k), int):
+                        return m[k]
+    return None
+
+prov_id, _, model_id = data.get("model", "").partition("/")
+prov      = data.get("provider", {}).get(prov_id, {})
+base_url  = (prov.get("options") or {}).get("baseURL")
+model_cfg = (prov.get("models") or {}).get(model_id)
+
+comp = data.setdefault("compaction", {})
+comp["auto"] = True
+comp.setdefault("prune", True)   # evict already-read tool outputs (source files) from context
+
+reserved = None
+if model_cfg is not None:
+    limit = model_cfg.setdefault("limit", {})
+    detected = _detect_context(base_url, model_id)
+    true_ctx = detected or limit.get("context")
+    # Pin opencode's budget ~5% BELOW the model's real window. opencode fills the
+    # prompt up to limit.context - output; when limit.context equals the TRUE
+    # window it overshoots the server's hard wall by ~1 token and the request is
+    # rejected -- the deterministic "maximum context length is N tokens" crash,
+    # where the prompt is always exactly (true_ctx - output + 1). The margin keeps
+    # every request under the real ceiling while still using ~95% of the window.
+    if true_ctx:
+        limit["context"] = int(true_ctx * 0.95)
+    context = limit.get("context")
+    if context:
+        # Respect an operator-chosen output budget; else a sane fraction capped at 16k.
+        output = limit.get("output") or min(16384, max(2048, context // 8))
+        limit["output"] = output
+        # compaction.reserved: headroom for the reactive compaction summary, kept
+        # above output so the invariant reserved > output always holds. The real
+        # overflow guard is the limit.context margin above; prune (reclaims ~70k
+        # when it fires) is the safety net for read-heavy turns.
+        buffer   = max(8000, context // 16)
+        reserved = min(output + buffer, context // 2)
+        if reserved <= output:                 # only reachable for absurdly small windows
+            reserved = min(context - 1, output + 1000)
+
+# Fallback when there's no local model config to derive from (e.g. a cloud model
+# whose window opencode already knows): still beat opencode's 10k default so the
+# buffer clears typical ~8k output reservations.
+comp["reserved"] = reserved if reserved is not None else max(comp.get("reserved", 0), 16000)
+
+if model_cfg is not None and model_cfg.get("limit", {}).get("context"):
+    _l = model_cfg["limit"]
+    print(f"  context safety: window={_l['context']} output={_l['output']} "
+          f"compaction.reserved={comp['reserved']} (reserved>output: {comp['reserved'] > _l['output']})")
+else:
+    print(f"  context safety: no local model config detected — compaction.reserved={comp['reserved']} (fallback)")
+
 # Add CLAUDE.md to global instructions (avoid duplicates)
 instructions = data.setdefault("instructions", [])
 instructions_entry = str(repo_dir / "CLAUDE.md")
@@ -150,6 +235,7 @@ config_path.write_text(json.dumps(data, indent=2) + "\n")
 PYEOF
 ok "MCP server registered in $OPENCODE_CONFIG (transport: remote/SSE)"
 ok "CLAUDE.md added to global instructions"
+ok "Context-window safety set (compaction.reserved > model output; external dirs allowed)"
 
 # ── Install launchd plist for auto-start on login ────────────────────────────
 # PLIST_DST was set earlier (pre-disarm step); the unload is a no-op now but
