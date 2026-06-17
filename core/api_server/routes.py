@@ -453,20 +453,38 @@ async def api_triage(request: Request) -> JSONResponse:
 
         if not pending:
             return JSONResponse({"ok": True, "status": "nothing_to_triage", "pending_adjudication": 0})
-        if (scan_session.get() or {}).get("status") != "running":
-            return JSONResponse({"ok": False, "error": "scan is not running"}, status_code=409)
+        sess = scan_session.get() or {}
+        if not sess.get("target"):
+            return JSONResponse({"ok": False, "error": "no scan to triage"}, status_code=409)
+
+        # Triage is now a POST-scan step: it runs against a STOPPED scan and
+        # (re)spawns Smith to adjudicate. A running scan is also tolerated (the
+        # legacy mid-scan path), but the dashboard only surfaces the button once
+        # the scan has stopped. The directive wording branches on that so a
+        # terminal-scan triage tells Smith to stop afterwards, not resume.
+        terminal = sess.get("status") in (
+            "complete", "incomplete_with_unresolved_blockers", "limit_reached",
+        )
 
         scan_session.set_triage_requested(True)
 
         from core.adjunction.directive import build_adjudication_directive
         from core.steering import steering_queue, RESUME_REQUIRED
-        directive_body = (
-            build_adjudication_directive(pending)
-            + "\n\nNOTE: This is a standalone TRIAGE pass requested by the human "
-            "operator. After you have adjudicated ALL findings above, DO NOT "
-            "complete the scan — resume normal testing where you left off. The "
-            "scan stays open."
-        )
+        if terminal:
+            closing_note = (
+                "\n\nNOTE: This is a post-scan TRIAGE pass requested by the human "
+                "operator on a STOPPED scan. After you have adjudicated ALL findings "
+                "above, STOP — do NOT resume testing and do NOT call "
+                "session(action='start'). The scan stays complete."
+            )
+        else:
+            closing_note = (
+                "\n\nNOTE: This is a standalone TRIAGE pass requested by the human "
+                "operator. After you have adjudicated ALL findings above, DO NOT "
+                "complete the scan — resume normal testing where you left off. The "
+                "scan stays open."
+            )
+        directive_body = build_adjudication_directive(pending) + closing_note
         steering_queue.add_directive(
             code=RESUME_REQUIRED,
             message=directive_body,

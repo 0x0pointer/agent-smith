@@ -370,7 +370,10 @@
         if (hint) hint.textContent = 'Smith has stopped — restart it to continue the scan.';
       } else {
         restartBtn.style.display = 'none';
-        if (hint) hint.textContent = 'Only you can end the scan — Smith will keep testing until you do.';
+        // Only assert the "keep testing" hint while the scan is actually running.
+        // On a stopped scan, renderCmdCenter owns the hint (post-scan triage
+        // guidance) — don't clobber it here on the 10s poll.
+        if (hint && scanActive) hint.textContent = 'Only you can end the scan — Smith will keep testing until you do.';
       }
     } catch(e) {}
   }
@@ -484,7 +487,10 @@
     const banner = document.getElementById('adjudication-banner');
     const msg    = document.getElementById('adjudication-banner-msg');
     if (!banner) return;
-    const active = s && s.triage_requested && s.status === 'running';
+    // A triage pass is in flight whenever the flag is set — on a running scan
+    // (legacy mid-scan triage) OR on a stopped scan (post-scan triage). The flag
+    // is cleared by the /api/session self-heal once every finding has a verdict.
+    const active = !!(s && s.triage_requested);
     if (!active) { banner.style.display = 'none'; banner.classList.remove('adjudication-banner-stalled'); return; }
     banner.style.display = '';
     const pend    = (typeof s.pending_adjudication === 'number') ? s.pending_adjudication : null;
@@ -581,6 +587,28 @@
       statusEl.textContent = session.status || '—';
       statusEl.className   = 'cmd-scan-status ' + (session.status || 'running').replace(/_/g, '-');
     }
+
+    // Complete vs Triage button visibility.
+    // While the scan runs, the operator can only Complete it. Triage is a
+    // POST-scan action: once the scan is stopped the Complete button is retired
+    // and the Triage button appears — clicking it (re)spawns Smith to adjudicate
+    // the findings (see triageFindings / POST /api/triage). Mutually exclusive so
+    // the operator is never offered both at once.
+    const terminal      = _isTerminalStatus(session.status);
+    const completeBtn   = document.getElementById('cmd-complete-btn');
+    const triageBtn     = document.getElementById('cmd-triage-btn');
+    const triageHint    = document.getElementById('cmd-smith-status-hint');
+    if (completeBtn) completeBtn.style.display = terminal ? 'none' : '';
+    if (triageBtn)   triageBtn.style.display   = terminal ? '' : 'none';
+    if (triageHint && terminal && !session.triage_requested) {
+      triageHint.textContent = 'Scan stopped. Run triage to relaunch Smith and have it adjudicate the findings.';
+    }
+  }
+
+  // Terminal (stopped) scan states — anything that is not actively running and
+  // not paused for human intervention.
+  function _isTerminalStatus(st) {
+    return ['complete', 'incomplete_with_unresolved_blockers', 'limit_reached'].includes(st);
   }
 
   let _lastCoverage = null;

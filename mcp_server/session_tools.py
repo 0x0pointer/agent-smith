@@ -1554,6 +1554,41 @@ def _do_recovery():
     # because Smith would otherwise try to start a new scan over the top of
     # a completed one.
     scan_status = current.get("status", "") if current else ""
+    # Operator-triggered triage on a stopped scan: the scan stays terminal, but
+    # an adjudication pass is in flight. Hand Smith a triage brief instead of the
+    # "stop, the scan is over" SCAN_COMPLETED brief, so the freshly-spawned run
+    # knows to record a verdict on every pending finding and then stop — without
+    # resuming testing or starting a new scan.
+    if scan_status in (
+        "complete", "incomplete_with_unresolved_blockers", "limit_reached",
+    ) and current.get("triage_requested"):
+        try:
+            from core.findings import _load as _load_findings
+            from core.adjunction import pending_findings
+            from core.adjunction.directive import build_adjudication_directive
+            pending = pending_findings(_load_findings())
+        except Exception:
+            pending = []
+        return json.dumps({
+            "status": "TRIAGE_ADJUDICATION",
+            "scan_status": scan_status,
+            "mode": "triage",
+            "target": current.get("target", ""),
+            "pending_adjudication": len(pending),
+            "EXECUTE_NOW": (
+                build_adjudication_directive(pending) if pending
+                else "All findings already adjudicated — write a one-line summary and stop."
+            ),
+            "message": (
+                "TRIAGE pass requested by the human operator on a STOPPED scan. "
+                "Record a verdict for every finding listed above via "
+                "report(action='update_finding', data={id, adjudication:{reproducible, "
+                "original_severity, revised_severity, rationale}}). You may re-verify a "
+                "finding with http()/kali() to confirm reproducibility. When every "
+                "finding has a verdict, STOP — do NOT resume testing and do NOT call "
+                "session(action='start'). The scan remains complete."
+            ),
+        }, indent=2)
     if scan_status in (
         "complete", "incomplete_with_unresolved_blockers", "limit_reached",
     ):

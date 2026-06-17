@@ -105,13 +105,13 @@
       <button class="cmd-smith-restart-btn" id="cmd-restart-btn" onclick="restartSmith()" style="display:none">
         &#9654; <span id="cmd-restart-label">Restart Smith</span>
       </button>
-      <button class="cmd-smith-triage-btn" id="cmd-triage-btn" onclick="triageFindings()">
+      <button class="cmd-smith-triage-btn" id="cmd-triage-btn" onclick="triageFindings()" style="display:none">
         &#9878; Triage findings
       </button>
       <button class="cmd-smith-complete-btn" id="cmd-complete-btn" onclick="completeScan()">
         &#10003; Complete Scan
       </button>
-      <span class="cmd-smith-complete-hint" id="cmd-smith-status-hint">Only you can end the scan — Smith will keep testing until you do. Triage is optional and won't close the scan.</span>
+      <span class="cmd-smith-complete-hint" id="cmd-smith-status-hint">Only you can end the scan — Smith will keep testing until you do. Triage runs after the scan stops.</span>
     </div>
     <div id="adjudication-banner" style="display:none" class="adjudication-banner">
       <span id="adjudication-banner-msg">&#9203; Triage in progress — Smith is recording verdicts&hellip;</span>

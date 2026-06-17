@@ -280,7 +280,10 @@ def set_triage_requested(value: bool = True) -> None:
     if not _current:
         return
     if value:
-        if _current.get("status") == "running":
+        # Triage is a post-scan step now: the flag must be settable on a STOPPED
+        # scan (status complete/limit_reached/...), not only while running. Any
+        # live session can carry it; completion never clears it.
+        if _current.get("status"):
             _current["triage_requested"] = True
             # Stall clock: stamped now and re-stamped whenever a verdict lands
             # (see note_triage_progress). The dashboard flips the banner to a
