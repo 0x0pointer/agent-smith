@@ -110,6 +110,18 @@ def _init_sentry() -> None:
             include_local_variables=True,
             # Attach the server name so you can tell instances apart.
             server_name="pentest-agent-mcp",
+            # CRITICAL: do NOT auto-enable the Starlette/FastAPI ASGI integrations.
+            # This MCP server's whole surface is a long-lived SSE *streaming*
+            # endpoint (/sse). Sentry's ASGI middleware wraps `send` and breaks
+            # streaming responses with
+            #   RuntimeError: Expected ASGI message 'http.response.body', but got
+            #   'http.response.start'.
+            # whenever the SSE client (Claude Code / Codex) disconnects or
+            # reconnects — which killed the daemon and is why MCP "kept dropping
+            # on restart". We still get full error capture via the default
+            # excepthook integration; we just don't let Sentry instrument the
+            # ASGI request/response cycle.
+            auto_enabling_integrations=False,
         )
         sys.stderr.write(f"[Sentry] Initialised (DSN: {dsn[:32]}...)\n")
         sys.stderr.flush()
@@ -317,13 +329,27 @@ def _start_sse_server_direct(host: str, port: int) -> None:
     sse_transport = SseServerTransport("/messages/")
 
     async def handle_sse(request):
-        async with sse_transport.connect_sse(
-            request.scope, request.receive, request._send
-        ) as streams:
-            await mcp._mcp_server.run(
-                streams[0], streams[1],
-                mcp._mcp_server.create_initialization_options(),
-            )
+        # Resilience: an SSE client (Claude Code / Codex) dropping or reconnecting
+        # mid-stream surfaces as CancelledError / ClosedResourceError / a uvicorn
+        # ASGI RuntimeError. None of those are server faults — swallow them so a
+        # routine disconnect can never take the daemon down. (The Sentry ASGI
+        # wrap that used to amplify this is now disabled in _init_sentry.)
+        try:
+            async with sse_transport.connect_sse(
+                request.scope, request.receive, request._send
+            ) as streams:
+                await mcp._mcp_server.run(
+                    streams[0], streams[1],
+                    mcp._mcp_server.create_initialization_options(),
+                )
+        except (asyncio.CancelledError, anyio.ClosedResourceError, anyio.BrokenResourceError):
+            sys.stderr.write(f"[WARN {_ts()}] SSE client disconnected — stream closed cleanly\n")
+            sys.stderr.flush()
+        except RuntimeError as exc:
+            # e.g. "Expected ASGI message 'http.response.body'..." on a torn-down
+            # stream. Log and keep serving other connections.
+            sys.stderr.write(f"[WARN {_ts()}] SSE stream RuntimeError suppressed: {exc}\n")
+            sys.stderr.flush()
         # Must return a Response — starlette raises TypeError: 'NoneType' not callable
         # when the client disconnects if handle_sse returns None.
         return Response()

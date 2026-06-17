@@ -5,14 +5,27 @@
 <dict>
     <key>Label</key>
     <string>com.agent-smith.mcp-sse</string>
+    <!-- Run the server in the FOREGROUND (run-mcp-server.sh exec's python -m
+         mcp_server), so launchd supervises the real process. The old config
+         called start-mcp-server.sh, which backgrounds via nohup and exits
+         immediately — launchd then tracked a dead wrapper and KeepAlive never
+         actually watched the server. -->
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>REPO_DIR/installers/start-mcp-server.sh</string>
-        <string>start</string>
+        <string>REPO_DIR/installers/run-mcp-server.sh</string>
+        <string>--transport</string>
+        <string>sse</string>
+        <string>--host</string>
+        <string>127.0.0.1</string>
+        <string>--port</string>
+        <string>7778</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
+    <!-- Restart the daemon whenever it exits for any reason (crash, kill,
+         reboot, logout/login). This is what makes the MCP server self-heal
+         instead of needing a manual restart. -->
     <key>KeepAlive</key>
     <true/>
     <key>WorkingDirectory</key>
@@ -21,7 +34,10 @@
     <string>REPO_DIR/logs/mcp_sse.log</string>
     <key>StandardErrorPath</key>
     <string>REPO_DIR/logs/mcp_sse.log</string>
+    <!-- launchd refuses to respawn more than once per ThrottleInterval seconds,
+         so a genuine crash-loop backs off to one start / 10s instead of a tight
+         fork loop. -->
     <key>ThrottleInterval</key>
-    <integer>5</integer>
+    <integer>10</integer>
 </dict>
 </plist>
