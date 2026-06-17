@@ -80,7 +80,55 @@ async def api_findings() -> JSONResponse:
 
 @router.get("/api/session")
 async def api_session() -> JSONResponse:
-    return JSONResponse(_api._read_json(_api._SESSION_FILE))
+    data = _api._read_json(_api._SESSION_FILE)
+    # Self-heal the triage banner + expose the live pending count so the dashboard
+    # can show progress (and a "stalled" warning if Smith goes idle mid-pass).
+    if isinstance(data, dict) and data.get("triage_requested"):
+        try:
+            import time
+            from core.findings import _load as _load_findings
+            from core.adjunction import pending_findings
+            from core import session as scan_session
+            pending = pending_findings(_load_findings())
+            data["pending_adjudication"] = len(pending)
+            if not pending:
+                # Every in-scope finding has a verdict — clear the flag so the
+                # banner doesn't linger after Smith finishes the pass.
+                scan_session.load_from_disk(force=True)
+                scan_session.set_triage_requested(False)
+                # Also acknowledge the steering directive itself. Clearing only
+                # the session flag (above) hid the banner but left the directive
+                # live in get_active(), so it kept replaying into Smith's spawn
+                # prompt / status / recovery responses — driving an unwanted
+                # adjudication pass on the next run. Ack it here, on completion,
+                # so a finished triage leaves nothing behind.
+                try:
+                    from core.steering import steering_queue
+                    steering_queue.cancel_by_trigger(
+                        "TRIAGE_ADJUDICATION", "all findings adjudicated"
+                    )
+                except Exception:
+                    pass
+                data = _api._read_json(_api._SESSION_FILE)
+            else:
+                # Advance the stall clock on real progress, then expose how long
+                # the pass has gone without recording a verdict. The dashboard
+                # uses this (not just the MCP heartbeat) to flip the banner to a
+                # "stalled" warning when Smith abandons the pass with findings
+                # still awaiting a verdict — even if it stays busy elsewhere.
+                scan_session.load_from_disk(force=True)
+                scan_session.note_triage_progress(len(pending))
+                data = _api._read_json(_api._SESSION_FILE)
+                data["pending_adjudication"] = len(pending)
+                progressed_at = (
+                    data.get("triage_progress_at")
+                    or data.get("triage_requested_at")
+                )
+                if progressed_at:
+                    data["triage_idle_s"] = int(time.time() - progressed_at)
+        except Exception:
+            pass
+    return JSONResponse(data)
 
 
 @router.get("/api/cost")
@@ -311,14 +359,10 @@ async def api_complete(request: Request) -> JSONResponse:
     Smith cannot complete a scan autonomously — session(action='complete') is blocked.
     Body: {"notes": "optional completion notes"}
 
-    Two-phase when adjudication is pending:
-      1. Sets force_complete_requested on the session and injects an adjudication
-         steering directive so Smith runs the final-QA pass first.
-      2. Returns status="adjudicating" — the dashboard shows a progress banner.
-         _do_complete() auto-completes once adjudication clears (skipping the
-         thorough-depth gate since the human has already signalled intent to stop).
-
-    If there are no pending adjudication findings, completes immediately as before.
+    Completion is unconditional — it does NOT run the adjudication pass. Triaging
+    findings is a separate, operator-chosen step via POST /api/triage (the
+    "Triage findings" button). This keeps the two decisions independent: review
+    findings when you want, finish the scan when you want.
 
     Side-effect cleanup mirrors Clear All but narrower: scan-tied operational
     pointers (smith.pid, smith.client, quick_log heartbeat) are wiped so the
@@ -334,89 +378,6 @@ async def api_complete(request: Request) -> JSONResponse:
         body  = await request.json()
         notes = str(body.get("notes", "")).strip()
 
-        # Check whether adjudication is still pending before completing.
-        try:
-            from core.findings import _load as _load_findings
-            from core.adjunction import pending_findings
-            pending = pending_findings(_load_findings())
-        except Exception:
-            pending = []
-
-        if pending and (scan_session.get() or {}).get("status") == "running":
-            # Arm the force-complete flag so _do_complete() auto-completes after
-            # adjudication and skips the thorough-depth gate.
-            scan_session.set_force_complete(notes or "Completed by human operator via dashboard")
-
-            # Inject an adjudication steering directive so Smith acts on it
-            # on its very next tool call (the directive rides the envelope).
-            from core.adjunction.directive import build_adjudication_directive
-            from core.steering import steering_queue, RESUME_REQUIRED
-            directive_body = (
-                build_adjudication_directive(pending)
-                + "\n\nIMPORTANT: The human operator has requested scan completion. "
-                "After you have adjudicated ALL findings above, call "
-                "session(action='complete') to finish the scan automatically."
-            )
-            steering_queue.add_directive(
-                code=RESUME_REQUIRED,
-                message=directive_body,
-                priority="high",
-                skill=None,
-                trigger="FORCE_COMPLETE_ADJUDICATION",
-                force=True,
-            )
-            try:
-                from core.adjunction.log import log_directive
-                log_directive(pending)
-            except Exception:
-                pass
-
-            # Actively deliver the directive instead of only queueing it.
-            # A queued directive is inert: it reaches Smith solely by riding
-            # the envelope on Smith's *next* tool call (or inline when Smith
-            # calls session(action='complete'/'status')). When the operator
-            # clicks "Complete Scan" Smith has usually already gone quiet —
-            # its non-interactive `claude -p` / `opencode run` turn has exited
-            # — so no tool call ever consumes the directive and adjudication
-            # never starts. The watchdog won't help promptly either: it keeps
-            # Smith "alive" for the full _SMITH_IDLE_SECONDS (300s) quick_log
-            # grace before respawning.
-            #
-            # So: if no live Smith *process* exists, spawn a fresh run now
-            # carrying this directive (its recovery prompt appends
-            # steering_queue.get_active(), so the adjudication directive is
-            # delivered verbatim — client-agnostic across claude/opencode/codex
-            # via _detect_active_client). We gate on process liveness, NOT on
-            # quick_log freshness: a just-exited `-p` turn leaves a <300s
-            # quick_log yet has no process to consume the directive. When a
-            # live process IS present we abstain — a looping Smith picks the
-            # directive up on its next call, and spawning a second `-p` Smith
-            # alongside a live (e.g. interactive) one would dual-write state,
-            # which is exactly what the watchdog avoids by the same rule.
-            smith_spawned = False
-            try:
-                smith_alive = (
-                    _api._signal_pid_file_alive()
-                    or _api._signal_process_scan_finds_client()
-                )
-                if not smith_alive:
-                    client = _api._detect_active_client()
-                    if _api._client_installed(client):
-                        ok, _result = await _api._spawn_smith(client, source="api")
-                        smith_spawned = bool(ok)
-            except Exception:
-                # Never fail the request on a spawn error — the directive is
-                # still queued and the watchdog remains a fallback.
-                _log.exception("api_complete: adjudication wake-spawn failed")
-
-            return JSONResponse({
-                "ok": True,
-                "status": "adjudicating",
-                "pending_adjudication": len(pending),
-                "smith_spawned": smith_spawned,
-            })
-
-        # No pending adjudication (or scan already non-running) — complete now.
         cfg    = scan_session.complete(notes)
         status = cfg.get("status", "complete")
 
@@ -433,11 +394,165 @@ async def api_complete(request: Request) -> JSONResponse:
         return JSONResponse({"ok": False, "error": _api._ERR_REQUEST_FAILED}, status_code=500)
 
 
+async def _wake_smith_if_idle() -> bool:
+    """Spawn a fresh Smith run iff no live Smith process exists.
+
+    A queued steering directive is inert: it reaches Smith only by riding the
+    envelope on Smith's *next* tool call. When the operator triggers triage,
+    Smith has usually gone quiet — its non-interactive `claude -p` /
+    `opencode run` turn has exited — so no tool call ever consumes the directive
+    and the pass never starts. The watchdog won't help promptly either (it keeps
+    Smith "alive" for the full _SMITH_IDLE_SECONDS quick_log grace before
+    respawning).
+
+    So if no live Smith *process* exists we spawn one now; its recovery prompt
+    appends steering_queue.get_active(), delivering the directive verbatim
+    (client-agnostic via _detect_active_client). We gate on process liveness,
+    NOT quick_log freshness — a just-exited `-p` turn leaves a <grace quick_log
+    yet has no process to consume the directive. When a live process IS present
+    we abstain: a looping Smith picks the directive up on its next call, and a
+    second `-p` Smith alongside a live one would dual-write state.
+    """
+    try:
+        smith_alive = (
+            _api._signal_pid_file_alive()
+            or _api._signal_process_scan_finds_client()
+        )
+        if smith_alive:
+            return False
+        client = _api._detect_active_client()
+        if _api._client_installed(client):
+            ok, _result = await _api._spawn_smith(client, source="api")
+            return bool(ok)
+    except Exception:
+        # Never fail the request on a spawn error — the directive is still
+        # queued and the watchdog remains a fallback.
+        _log.exception("triage wake-spawn failed")
+    return False
+
+
+@router.post("/api/triage")
+async def api_triage(request: Request) -> JSONResponse:
+    """Operator-triggered adjudication (triage) pass — does NOT complete the scan.
+
+    Injects the senior-review directive for every un-adjudicated in-scope
+    finding and wakes Smith if it has gone idle. Smith records a verdict per
+    finding, then resumes normal testing — the scan stays open. Completion is a
+    separate decision (POST /api/complete).
+    """
+    try:
+        from core import session as scan_session
+        scan_session.load_from_disk(force=True)
+
+        try:
+            from core.findings import _load as _load_findings
+            from core.adjunction import pending_findings
+            pending = pending_findings(_load_findings())
+        except Exception:
+            pending = []
+
+        if not pending:
+            return JSONResponse({"ok": True, "status": "nothing_to_triage", "pending_adjudication": 0})
+        if (scan_session.get() or {}).get("status") != "running":
+            return JSONResponse({"ok": False, "error": "scan is not running"}, status_code=409)
+
+        scan_session.set_triage_requested(True)
+
+        from core.adjunction.directive import build_adjudication_directive
+        from core.steering import steering_queue, RESUME_REQUIRED
+        directive_body = (
+            build_adjudication_directive(pending)
+            + "\n\nNOTE: This is a standalone TRIAGE pass requested by the human "
+            "operator. After you have adjudicated ALL findings above, DO NOT "
+            "complete the scan — resume normal testing where you left off. The "
+            "scan stays open."
+        )
+        steering_queue.add_directive(
+            code=RESUME_REQUIRED,
+            message=directive_body,
+            priority="high",
+            skill=None,
+            trigger="TRIAGE_ADJUDICATION",
+            force=True,
+        )
+        try:
+            from core.adjunction.log import log_directive
+            log_directive(pending)
+        except Exception:
+            pass
+
+        smith_spawned = await _wake_smith_if_idle()
+        return JSONResponse({
+            "ok": True,
+            "status": "triaging",
+            "pending_adjudication": len(pending),
+            "smith_spawned": smith_spawned,
+        })
+    except Exception:
+        _log.exception("api_triage failed")
+        return JSONResponse({"ok": False, "error": _api._ERR_REQUEST_FAILED}, status_code=500)
+
+
 # ── Smith lifecycle ─────────────────────────────────────────────────────────
 
 @router.get("/api/smith-status")
 async def api_smith_status() -> JSONResponse:
-    return JSONResponse({"running": _api._smith_running()})
+    """Smith liveness + activity heartbeat.
+
+    `running` is true if any Smith process exists (incl. an idle interactive one
+    sitting at a prompt). `heartbeat_age_s` is how long since the last MCP
+    tool-call (quick_log mtime) — the true *activity* signal — and `idle` flags
+    when that exceeds the heartbeat window. A live-but-idle Smith (running=true,
+    idle=true) is one that has stopped working and is likely awaiting input.
+    """
+    import time
+    heartbeat_age = None
+    try:
+        if _api._QUICK_LOG_FILE.exists():
+            heartbeat_age = int(time.time() - _api._QUICK_LOG_FILE.stat().st_mtime)
+    except OSError:
+        pass
+    # Soft "stopped working" threshold — deliberately shorter than the watchdog's
+    # _SMITH_IDLE_SECONDS respawn grace so the UI can warn before a respawn.
+    _HEARTBEAT_IDLE_S = 120
+    idle = heartbeat_age is not None and heartbeat_age >= _HEARTBEAT_IDLE_S
+    return JSONResponse({
+        "running": _api._smith_running(),
+        "heartbeat_age_s": heartbeat_age,
+        "idle": idle,
+    })
+
+
+@router.post("/api/triage-cancel")
+async def api_triage_cancel() -> JSONResponse:
+    """Clear an in-flight triage pass — operator escape hatch for the banner.
+
+    Drops the triage_requested flag and removes any un-consumed
+    TRIAGE_ADJUDICATION steering directives so the banner disappears and Smith
+    won't pick up a stale review directive. Does NOT touch findings or verdicts
+    already recorded.
+    """
+    try:
+        from core import session as scan_session
+        scan_session.load_from_disk(force=True)
+        scan_session.set_triage_requested(False)
+        removed = 0
+        try:
+            from core.steering import steering_queue
+            removed = steering_queue.cancel_by_trigger(
+                "TRIAGE_ADJUDICATION", "triage cancelled by operator"
+            )
+            # Also clear legacy force-complete directives, which otherwise have
+            # no cleanup path at all and would replay into the next run.
+            removed += steering_queue.cancel_by_trigger(
+                "FORCE_COMPLETE_ADJUDICATION", "triage cancelled by operator"
+            )
+        except Exception:
+            _log.exception("api_triage_cancel: directive cleanup failed")
+        return JSONResponse({"ok": True, "removed_directives": removed})
+    except Exception:
+        _log.exception("api_triage_cancel failed")
+        return JSONResponse({"ok": False, "error": _api._ERR_REQUEST_FAILED}, status_code=500)
 
 
 @router.get("/api/smith-clients")

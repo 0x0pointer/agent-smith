@@ -267,6 +267,20 @@ def _do_start(opts):
         _adj_log_clear()
     except Exception:
         pass
+    # Purge stale adjudication/triage steering directives on every scan start.
+    # These ride get_active() into the spawn prompt (core/api_server/smith.py)
+    # and the session status/recovery responses, so an un-acknowledged review
+    # directive left over from a prior run (operator triage that never finished,
+    # or a legacy FORCE_COMPLETE_ADJUDICATION) would otherwise replay into this
+    # fresh run and drive Smith straight into adjudication with no operator
+    # action. Starting a scan is a deliberate reset; the operator re-triggers
+    # triage via the dashboard button if they want it.
+    try:
+        from core.steering import steering_queue
+        steering_queue.cancel_by_trigger("TRIAGE_ADJUDICATION", "cleared on new scan start")
+        steering_queue.cancel_by_trigger("FORCE_COMPLETE_ADJUDICATION", "cleared on new scan start")
+    except Exception:
+        pass
     lim = cfg["limits"]
     cost_str  = f"${lim['max_cost_usd']:.2f}" if lim['max_cost_usd'] is not None else "unlimited"
     time_str  = f"{lim['max_time_minutes']}min" if lim['max_time_minutes'] is not None else "unlimited"
@@ -1117,57 +1131,26 @@ def _do_complete():
 
     data = findings_store._load()
     current = _persist_completion_counters()
-    force_complete = current.get("force_complete_requested", False)
 
     effective = _effective_tools()
     blockers = _collect_completion_blockers(data, effective)
-    # Skip the thorough-depth gate when the human has already signalled intent
-    # to stop via "Complete Scan" — adjudication is the only remaining gate.
-    if not force_complete:
-        blockers = _apply_thorough_depth_gate(blockers, current)
+    blockers = _apply_thorough_depth_gate(blockers, current)
 
     if blockers:
-        # Log the adjudication directive the first time it fires (non-force path).
-        # The force-complete path logs it earlier in api_complete.
-        if not force_complete:
-            try:
-                from core.adjunction import pending_findings
-                from core.adjunction.log import log_directive
-                pending = pending_findings(data)
-                if pending:
-                    log_directive(pending)
-            except Exception:
-                pass
+        # Log the adjudication directive whenever the gate fires so the Activity
+        # tab reflects that a review pass is owed.
+        try:
+            from core.adjunction import pending_findings
+            from core.adjunction.log import log_directive
+            pending = pending_findings(data)
+            if pending:
+                log_directive(pending)
+        except Exception:
+            pass
         return _build_blocker_response(blockers)
 
     _complete_attempts = 0
     _analysis_passes = 0
-
-    # Auto-complete when the human already clicked "Complete Scan" and we were
-    # only waiting for adjudication to finish.  No "COMPLETION HELD" dance.
-    if force_complete:
-        notes = current.get("force_complete_notes", "Completed by human operator via dashboard")
-        scan_session.complete(notes)
-        # Clean up operational pointers (mirrors api_complete's side-effect).
-        try:
-            from core.api_server import _api
-            for path in (_api._SMITH_PID_FILE, _api._SMITH_CLIENT_FILE, _api._QUICK_LOG_FILE):
-                _api._safe_unlink(path)
-        except Exception:
-            pass
-        log.note("Auto-completed after adjudication pass (force_complete_requested).")
-        try:
-            from core.adjunction.log import log_complete
-            from core.adjunction import pending_findings
-            n_done = len(data.get("findings", [])) - len(pending_findings(data))
-            log_complete(n_done)
-        except Exception:
-            pass
-        return (
-            "SCAN COMPLETE — adjudication pass finished and the scan has been automatically "
-            "marked complete as requested by the human operator.\n"
-            "Do NOT make any further scan tool calls. The session is now in a terminal state."
-        )
 
     # Only the human operator can mark a scan complete.
     # Smith passes all quality gates here — the scan is ready — but completion

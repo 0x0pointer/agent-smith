@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import uuid
 from datetime import datetime, timezone
 from core import paths as _paths
@@ -266,18 +267,55 @@ def complete(
     return _current or {}
 
 
-def set_force_complete(notes: str = "") -> None:
-    """Signal that the human wants the scan to complete after adjudication.
+def set_triage_requested(value: bool = True) -> None:
+    """Mark/clear that a standalone triage (adjudication) pass is in flight.
 
-    Sets force_complete_requested on session.json so _do_complete() can skip
-    the thorough-depth gate and auto-complete once adjudication clears.
+    Drives the dashboard's adjudication banner. Set when the operator triggers
+    POST /api/triage; cleared (by api_session self-heal) once every in-scope
+    finding carries a verdict. Triage never completes the scan, so there is no
+    force_complete coupling — completion stays an independent operator action.
     """
     global _current
     _reconcile_if_external_write()
-    if _current and _current.get("status") == "running":
-        _current["force_complete_requested"] = True
-        if notes:
-            _current["force_complete_notes"] = notes
+    if not _current:
+        return
+    if value:
+        if _current.get("status") == "running":
+            _current["triage_requested"] = True
+            # Stall clock: stamped now and re-stamped whenever a verdict lands
+            # (see note_triage_progress). The dashboard flips the banner to a
+            # "stalled" warning when this stops advancing — a progress signal
+            # that, unlike the MCP heartbeat, isn't fooled by Smith staying
+            # busy on unrelated testing while the triage pass is abandoned.
+            now = time.time()
+            _current["triage_requested_at"] = now
+            _current["triage_progress_at"] = now
+            _current.pop("triage_pending_last", None)
+            _flush()
+    else:
+        _current.pop("triage_requested", None)
+        _current.pop("triage_requested_at", None)
+        _current.pop("triage_progress_at", None)
+        _current.pop("triage_pending_last", None)
+        _flush()
+
+
+def note_triage_progress(pending_count: int) -> None:
+    """Advance the triage stall clock when the pending-verdict count drops.
+
+    Called from the /api/session self-heal with the live pending count. The
+    clock resets only on real progress (count decreased, or first observation),
+    so a slow-but-advancing pass never looks stalled, while a pass that stops
+    making verdicts — whether Smith went idle or wandered off to other work —
+    trips the dashboard's stalled warning after the threshold.
+    """
+    global _current
+    if not _current or not _current.get("triage_requested"):
+        return
+    last = _current.get("triage_pending_last")
+    if last is None or pending_count < last:
+        _current["triage_pending_last"] = pending_count
+        _current["triage_progress_at"] = time.time()
         _flush()
 
 

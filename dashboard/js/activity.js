@@ -282,7 +282,7 @@
         <span style="color:${color};font-weight:600;font-family:'IBM Plex Mono',monospace;font-size:0.76rem;">● ${esc(d.status.replace('_',' ').toUpperCase())}</span>
         <span style="color:var(--text-dim);font-size:0.72rem;">${priorityLabel} &nbsp; ${esc(ts)}</span>
       </div>
-      <div style="color:var(--text);font-size:0.8rem;line-height:1.5;margin-bottom:0.2rem;">${esc(d.message || '')}</div>
+      <div style="color:var(--text);font-size:0.8rem;line-height:1.5;margin-bottom:0.2rem;white-space:pre-wrap;overflow-wrap:anywhere;max-height:16rem;overflow-y:auto;">${esc(d.message || '')}</div>
       <div style="color:var(--text-dim);font-size:0.72rem;font-family:'IBM Plex Mono',monospace;">${esc(d.code || '')}${d.skill ? ' → ' + esc(d.skill) : ''} &nbsp;|&nbsp; trigger: ${esc(d.trigger || '—')}</div>
       ${d.ack_message ? `<div style="margin-top:0.3rem;padding:0.3rem 0.5rem;background:rgba(74,222,128,0.08);border-radius:4px;color:#86efac;font-size:0.75rem;">Smith: ${esc(d.ack_message)}</div>` : ''}
     `;

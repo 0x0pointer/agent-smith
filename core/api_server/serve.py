@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from pathlib import Path
 
 import core.api_server as _api
 
@@ -36,9 +35,39 @@ def _read_pid() -> tuple[int | None, float | None]:
         return None, None
 
 
+def _code_fingerprint() -> float:
+    """Newest mtime across all Python the dashboard process imports.
+
+    serve() reuses an already-running dashboard only when this value matches the
+    one saved when that process launched. The earlier check used serve.py's OWN
+    mtime alone — so edits to routes.py, __init__.py, smith.py, or any core/
+    helper the dashboard imports were served STALE until serve.py itself happened
+    to change (e.g. new triage endpoints never reloaded). Walking the Python
+    sources under core/ and mcp_server/ makes any backend edit invalidate the
+    reuse and force a fresh process.
+
+    Front-end assets (dashboard/*.html|js|css) are intentionally excluded:
+    StaticFiles serves them from disk per request and the template re-renders per
+    request, so they're already live without a restart. serve() runs only at
+    dashboard start, so this directory walk is cheap.
+    """
+    newest = 0.0
+    for pkg in ("core", "mcp_server"):
+        try:
+            for p in (_api._REPO_ROOT / pkg).rglob("*.py"):
+                try:
+                    m = p.stat().st_mtime
+                except OSError:
+                    continue
+                if m > newest:
+                    newest = m
+        except OSError:
+            continue
+    return newest
+
+
 def _write_pid(pid: int) -> None:
-    mtime = Path(__file__).stat().st_mtime
-    _api._PID_FILE.write_text(f"{pid}:{mtime:.6f}")
+    _api._PID_FILE.write_text(f"{pid}:{_code_fingerprint():.6f}")
 
 
 def _pid_alive(pid: int) -> bool:
@@ -69,9 +98,10 @@ async def serve(port: int = 7777) -> str:
     Start the dashboard server as an independent background process.
     Survives MCP server restarts — uses a PID file to detect and reuse
     a previously spawned dashboard instead of killing it.
-    Restarts automatically if api_server.py has been modified since launch.
+    Restarts automatically if any backend Python module has changed since launch
+    (see _code_fingerprint — not just serve.py's own mtime).
     """
-    current_mtime = Path(__file__).stat().st_mtime
+    current_mtime = _code_fingerprint()
 
     # Check PID file first — survives MCP server restarts
     saved_pid, saved_mtime = _api._read_pid()
