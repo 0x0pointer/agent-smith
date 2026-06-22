@@ -107,7 +107,7 @@ async def test_oob_start_parses_and_stores_domain():
     _start_session()
     fake_out = "[INF] Listing 1 payload for OOB Testing\nc8r4k2m9x7q1.oast.fun\n"
     with patch("tools.kali_runner.exec_command", new=AsyncMock(return_value=fake_out)):
-        res = await _do_oob_start({})
+        res = await _do_oob_start()
     assert "c8r4k2m9x7q1.oast.fun" in res
     import core.session.assets as A
     assert A.get_oob_listener()["base_domain"] == "c8r4k2m9x7q1.oast.fun"
@@ -120,11 +120,11 @@ async def test_oob_mint_requires_listener_then_registers():
     import core.session.assets as A
     _start_session()
     # No listener yet.
-    res = await _do_oob_mint({"cell_id": "cell-1"})
+    res = _do_oob_mint({"cell_id": "cell-1"})
     assert "oob_start" in res
     # With a listener, minting registers a callback.
     A.set_oob_listener("c8r4.oast.fun", oob.OOB_OUT_FILE)
-    res = await _do_oob_mint({"cell_id": "cell-1"})
+    res = _do_oob_mint({"cell_id": "cell-1"})
     assert "c8r4.oast.fun" in res
     reg = scan_session.get()["known_assets"]["oob_interactions"]
     assert len(reg) == 1 and reg[0]["linked_cell_id"] == "cell-1"
@@ -203,7 +203,7 @@ async def test_oob_start_http_mode_records_logger(monkeypatch):
     monkeypatch.setenv("OOB_SERVER_URL", "https://oob-logger.example.com")
     monkeypatch.setenv("OOB_POLL_URL", "https://oob-logger.example.com/logs/{id}")
     # http mode launches no Kali process — exec_command must NOT be needed.
-    res = await _do_oob_start({})
+    res = await _do_oob_start()
     assert "mode=http" in res and "oob-logger.example.com" in res
     listener = A.get_oob_listener()
     assert listener["mode"] == "http"
@@ -216,7 +216,7 @@ async def test_oob_start_http_mode_requires_url(monkeypatch):
     _start_session()
     monkeypatch.setenv("OOB_MODE", "http")
     monkeypatch.delenv("OOB_SERVER_URL", raising=False)
-    res = await _do_oob_start({})
+    res = await _do_oob_start()
     assert "OOB_MODE=http needs OOB_SERVER_URL" in res
 
 
@@ -233,8 +233,8 @@ async def test_oob_http_mint_and_poll_with_logger(monkeypatch, tmp_path):
     monkeypatch.setenv("OOB_POLL_URL", "https://oob-logger.example.com/logs/{id}")
     _start_session()
 
-    await _do_oob_start({})
-    mint = await _do_oob_mint({"cell_id": "cell-9"})
+    await _do_oob_start()
+    mint = _do_oob_mint({"cell_id": "cell-9"})
     assert "oob-logger.example.com/" in mint
     cid = scan_session.get()["known_assets"]["oob_interactions"][0]["correlation_id"]
 
@@ -254,8 +254,8 @@ async def test_oob_http_poll_manual_when_no_poll_url(monkeypatch):
     monkeypatch.setenv("OOB_SERVER_URL", "https://oob-logger.example.com")
     monkeypatch.delenv("OOB_POLL_URL", raising=False)
     _start_session()
-    await _do_oob_start({})
-    await _do_oob_mint({"cell_id": "c"})
+    await _do_oob_start()
+    _do_oob_mint({"cell_id": "c"})
     cid = scan_session.get()["known_assets"]["oob_interactions"][0]["correlation_id"]
     res = await _do_oob_poll({"correlation_id": cid})
     assert "no OOB_POLL_URL configured" in res and cid in res

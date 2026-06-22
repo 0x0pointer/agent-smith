@@ -324,6 +324,45 @@ def _log_adjudication_verdict(finding_id, updated, fields):
         pass
 
 
+def _coerce_finding_adjudication(finding_id: str, fields: dict) -> tuple[bool, str]:
+    """Normalise/validate the adjudication audit trail in ``fields`` (mutates it).
+
+    Returns ``(dropped, message)``. ``dropped=True`` means the adjudication was
+    removed — no rationale, or a reproducible verdict with no on-disk artifact —
+    and ``message`` explains why (it must not falsely satisfy the completion-time
+    adjudication gate). ``dropped=False`` means it was normalised and stored.
+    """
+    from core.adjunction import coerce_adjudication
+    from mcp_server.scan_engine.artifacts import artifact_exists
+    current = next(
+        (f for f in findings_store._load().get("findings", []) if f.get("id") == finding_id),
+        None,
+    )
+    coerced = coerce_adjudication(fields.get("adjudication"), current)
+    if coerced is None:
+        fields.pop("adjudication", None)
+        return True, (
+            "\n\nNOTE: adjudication was ignored — it needs a non-empty 'rationale'. "
+            "Re-send with adjudication={reproducible, original_severity, revised_severity, "
+            "rationale} for it to count toward completion."
+        )
+    if coerced.get("reproducible") and not artifact_exists(coerced.get("artifact_id", "")):
+        # A reproducible verdict must be backed by an artifact that actually
+        # exists on disk — mirrors the coverage layer's artifact-existence rule.
+        fields.pop("adjudication", None)
+        _aid = coerced.get("artifact_id", "")
+        _why = "no artifact_id was provided" if not _aid else f"artifact_id '{_aid}' does not exist on disk"
+        return True, (
+            f"\n\nREJECTED: adjudication claims reproducible=true but {_why}. Re-run the "
+            "attack that proves the finding reproduces, capture the artifact_id from that "
+            "tool response, and re-send the adjudication with it. (A self-attested 'it "
+            "reproduces' with no proving artifact is not accepted; set reproducible=false "
+            "to mark it a false positive instead.)"
+        )
+    fields["adjudication"] = coerced
+    return False, ""
+
+
 async def _do_update_finding(data):
     finding_id = data.get("id", "")
     if not finding_id:
@@ -339,47 +378,9 @@ async def _do_update_finding(data):
         if trace_reject:
             return trace_reject
 
-    # Normalise the adjudication audit trail so every senior-review verdict
-    # (especially a downgrade) is stored in a consistent, explainable shape.
-    # A verdict with no rationale is dropped — it must not falsely satisfy the
-    # completion-time adjudication gate (see adjunction/).
-    adjudication_dropped = False
-    adjudication_drop_msg = (
-        "\n\nNOTE: adjudication was ignored — it needs a non-empty 'rationale'. "
-        "Re-send with adjudication={reproducible, original_severity, revised_severity, "
-        "rationale} for it to count toward completion."
-    )
+    adjudication_dropped, adjudication_drop_msg = False, ""
     if "adjudication" in fields:
-        from core.adjunction import coerce_adjudication
-        from mcp_server.scan_engine.artifacts import artifact_exists
-        current = next(
-            (f for f in findings_store._load().get("findings", []) if f.get("id") == finding_id),
-            None,
-        )
-        coerced = coerce_adjudication(fields.get("adjudication"), current)
-        if coerced is None:
-            fields.pop("adjudication", None)
-            adjudication_dropped = True
-        elif coerced.get("reproducible") and not artifact_exists(coerced.get("artifact_id", "")):
-            # A reproducible verdict must be backed by an artifact that actually
-            # exists on disk — re-run the attack, capture the artifact_id, then
-            # re-submit. Mirrors the coverage layer's artifact-existence rule.
-            fields.pop("adjudication", None)
-            adjudication_dropped = True
-            _aid = coerced.get("artifact_id", "")
-            _why = (
-                "no artifact_id was provided" if not _aid
-                else f"artifact_id '{_aid}' does not exist on disk"
-            )
-            adjudication_drop_msg = (
-                f"\n\nREJECTED: adjudication claims reproducible=true but {_why}. Re-run the "
-                "attack that proves the finding reproduces, capture the artifact_id from that "
-                "tool response, and re-send the adjudication with it. (A self-attested 'it "
-                "reproduces' with no proving artifact is not accepted; set reproducible=false "
-                "to mark it a false positive instead.)"
-            )
-        else:
-            fields["adjudication"] = coerced
+        adjudication_dropped, adjudication_drop_msg = _coerce_finding_adjudication(finding_id, fields)
 
     # If the dropped adjudication was the only field, there's nothing left to
     # persist — surface the reject/drop guidance directly instead of a
@@ -416,7 +417,7 @@ async def _do_diagram(data):
     return f"Diagram saved: {title}"
 
 
-def _chain_mermaid(name: str, steps: list, titles: dict) -> str:
+def _chain_mermaid(steps: list, titles: dict) -> str:
     """Build a left-to-right MITRE-labelled Mermaid kill-chain from steps."""
     lines = ["graph LR"]
 
@@ -471,7 +472,7 @@ async def _do_chain(data):
     # Build the kill-chain diagram, labelling nodes with finding titles.
     all_findings = findings_store._load().get("findings", [])
     titles = {f.get("id"): f.get("title", "") for f in all_findings}
-    mermaid = _chain_mermaid(name, steps, titles)
+    mermaid = _chain_mermaid(steps, titles)
 
     await findings_store.add_chain(
         name=name,

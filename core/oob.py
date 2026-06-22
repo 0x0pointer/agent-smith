@@ -34,14 +34,18 @@ public logger (http).
 from __future__ import annotations
 
 import json
+import os
 import re
 import shlex
 
-# Files inside the (persistent) Kali container's /tmp. The JSONL out-file holds
-# interactions; the stdout log captures startup output incl. the minted domain.
-OOB_OUT_FILE = "/tmp/oob_interactions.jsonl"
-OOB_STDOUT_FILE = "/tmp/oob_client.log"
-OOB_PID_FILE = "/tmp/oob_client.pid"
+# Files inside the (persistent) Kali container, under root's home — NOT a
+# world-writable directory like /tmp, whose predictable paths invite the
+# symlink/race exposure Sonar S5443 flags. build_start_command creates the dir
+# (mkdir -p) before the client writes to it.
+_OOB_DIR = "/root/.agent-smith-oob"
+OOB_OUT_FILE = _OOB_DIR + "/oob_interactions.jsonl"
+OOB_STDOUT_FILE = _OOB_DIR + "/oob_client.log"
+OOB_PID_FILE = _OOB_DIR + "/oob_client.pid"
 
 # A collaborator domain: a long random label followed by the server host. Matches
 # both the public oast.* servers and a self-hosted server host.
@@ -69,8 +73,12 @@ def build_start_command(
     if token.strip():
         flags += ["-token", shlex.quote(token.strip())]
     flagstr = " ".join(flags)
+    # Ensure the (non-world-writable) parent dir(s) exist before the client writes.
+    dirs = sorted({os.path.dirname(p) for p in (out_file, stdout_file, pid_file) if os.path.dirname(p)})
+    mkdirs = "".join(f"mkdir -p {shlex.quote(d)}; " for d in dirs)
     return (
-        f'if [ -f {pid_file} ] && kill -0 "$(cat {pid_file})" 2>/dev/null; then '
+        mkdirs
+        + f'if [ -f {pid_file} ] && kill -0 "$(cat {pid_file})" 2>/dev/null; then '
         f"echo ALREADY_RUNNING; "
         f"else : > {out_file}; nohup interactsh-client {flagstr} > {stdout_file} 2>&1 & "
         f"echo $! > {pid_file}; sleep 3; fi; cat {stdout_file}"

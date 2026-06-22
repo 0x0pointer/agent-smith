@@ -113,7 +113,8 @@ async def run_in_sandbox(
         except Exception as exc:
             return {"ok": False, "error": f"docker run failed: {type(exc).__name__}: {exc}"}
         try:
-            out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            async with asyncio.timeout(timeout):
+                out, _ = await proc.communicate()
         except asyncio.TimeoutError:
             proc.kill()
             await proc.communicate()

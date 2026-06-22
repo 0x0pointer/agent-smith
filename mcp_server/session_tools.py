@@ -188,9 +188,7 @@ async def _dispatch_async_action(action: str, opts: dict) -> str | None:
     if action == "qa_reply":
         return await _do_qa_reply(opts)
     if action == "oob_start":
-        return await _do_oob_start(opts)
-    if action == "oob_mint":
-        return await _do_oob_mint(opts)
+        return await _do_oob_start()
     if action == "oob_poll":
         return await _do_oob_poll(opts)
     return None
@@ -224,6 +222,8 @@ def _dispatch_sync_action(action: str, opts: dict) -> str:
         return _do_wishlist_add(opts)
     if action == "wishlist_list":
         return _do_wishlist_list()
+    if action == "oob_mint":
+        return _do_oob_mint(opts)
     return f"Unknown action '{action}'. Use: start, complete, status, qa_reply, recovery, artifact, pre_chain, set_skill, set_step, resume, wishlist_add, wishlist_list, start_kali, stop_kali, start_metasploit, stop_metasploit, pull_images, set_codebase, oob_start, oob_mint, oob_poll"
 
 
@@ -318,6 +318,91 @@ def _prior_findings_brief(target: str) -> str:
     return "\n".join(lines)
 
 
+def _start_first_move(classification: dict, target: str) -> str:
+    """Advisory 'recommended first tool call' line, by target kind."""
+    kind = classification["kind"]
+    if kind == "codebase":
+        return f"  session(action='set_codebase', options={{'path': '{target}'}}) then scan(tool='semgrep', target='{target}')"
+    if kind == "network":
+        return f"  scan(tool='naabu', target='{target}')"
+    if kind == "cloud":
+        return f"  Invoke {classification['skill_prior']} (cloud posture — no httpx web scan)"
+    return f"  scan(tool='httpx', target='{target}')"  # api / web
+
+
+def _start_response(cfg: dict, classification: dict, target: str, scan_mode: str,
+                    depth: str, is_resume: bool) -> str:
+    """Build the human-facing scan-start message (advisory routing + EXECUTE NOW)."""
+    lim = cfg["limits"]
+    cost_str = f"${lim['max_cost_usd']:.2f}" if lim['max_cost_usd'] is not None else "unlimited"
+    time_str = f"{lim['max_time_minutes']}min" if lim['max_time_minutes'] is not None else "unlimited"
+    call_limit_str = f"{lim['max_tool_calls']} tool calls" if lim['max_tool_calls'] > 0 else "unlimited"
+    log.note(
+        f"Scan started — target={target}  depth={depth}  "
+        f"limits: {cost_str} / {time_str} / {call_limit_str}"
+    )
+    mode_label = (
+        "BENCHMARK (auto-exploit critical findings)" if scan_mode == "benchmark"
+        else "Pentest (human-in-the-loop for exploitation decisions)"
+    )
+    first_move = _start_first_move(classification, target)
+    lines = [
+        "Scan started.",
+        f"  Target: {target} | Depth: {cfg['depth_label']} | Mode: {mode_label} | Limits: {cost_str}/{time_str}/{call_limit_str}",
+        f"  Target classification (advisory — override if recon says otherwise): "
+        f"kind={classification['kind']} → recommended {classification['skill_prior']} "
+        f"({classification['reason']})",
+        f"  Model profile: {cfg.get('model_profile', 'full')} "
+        f"({cfg.get('model_profile_reason', 'default')}) — scopes context/output budgets. "
+        f"Override with options={{model_profile: 'full|medium|small'}} or env SMITH_MODEL_PROFILE.",
+        "",
+    ]
+    if scan_mode == "benchmark":
+        lines += [
+            "BENCHMARK MODE: On critical/high findings, do NOT pause — exploit the chain autonomously.",
+            "Demonstrate full impact: RCE → execute commands, SQLi → dump data, SSRF → pivot internally.",
+            "Document every step as a finding. All other safety checks and HIR triggers remain active.",
+            "",
+        ]
+    prior_brief = _prior_findings_brief(target)
+    if prior_brief:
+        lines += [prior_brief, ""]
+    if is_resume:
+        lines += [
+            "RESUME DETECTED: existing scan state found for this target.",
+            "Recovery state follows — read it before issuing any tool calls:",
+            "",
+            _do_recovery(),
+            "",
+        ]
+    try:
+        from core.adjunction import anti_fp_digest
+        lines += [anti_fp_digest(), ""]
+    except Exception:
+        pass
+    lines += [
+        "EXECUTE NOW (do not ask questions, do not output text):",
+        "  report(action='dashboard', data={'port': 7777})",
+        first_move if not is_resume else "  Continue from recovery state above — follow EXECUTE_NOW field.",
+        "",
+        "Then in order (skip steps in tools_already_run if this is a resume):",
+        f"  scan(tool='naabu', target='{target}')",
+        f"  scan(tool='spider', target='{target}')",
+        "  Register endpoints with report(action='coverage', data=...)",
+        f"  scan(tool='nuclei', target='{target}')",
+        "  Test each coverage cell with http() or kali()",
+        "",
+        "Skills available for full workflow automation (invoke instead of improvising):",
+        "  /pentester /web-exploit /param-fuzz /business-logic /codebase /ai-redteam",
+        "  /cloud-security /ad-assessment /network-assess /lateral-movement /credential-audit",
+        "  /post-exploit /container-k8s-security /osint /ssl-tls-audit /email-security",
+        "  /metasploit /reverse-shell /analyze-cve /threat-modeling /aikido-triage",
+        "  /gh-export /remediate /request-cves",
+        "  See CLAUDE.md for full skill descriptions and trigger conditions.",
+    ]
+    return "\n".join(lines)
+
+
 def _do_start(opts):
     global _complete_attempts, _analysis_passes, _last_blocker_count
     existing = scan_session.get() or {}
@@ -387,85 +472,7 @@ def _do_start(opts):
         steering_queue.cancel_by_trigger("FORCE_COMPLETE_ADJUDICATION", "cleared on new scan start")
     except Exception:
         pass
-    lim = cfg["limits"]
-    cost_str  = f"${lim['max_cost_usd']:.2f}" if lim['max_cost_usd'] is not None else "unlimited"
-    time_str  = f"{lim['max_time_minutes']}min" if lim['max_time_minutes'] is not None else "unlimited"
-    call_limit_str = f"{lim['max_tool_calls']} tool calls" if lim['max_tool_calls'] > 0 else "unlimited"
-    log.note(
-        f"Scan started — target={target}  depth={depth}  "
-        f"limits: {cost_str} / {time_str} / {call_limit_str}"
-    )
-    mode_label = "BENCHMARK (auto-exploit critical findings)" if scan_mode == "benchmark" else "Pentest (human-in-the-loop for exploitation decisions)"
-    # Recommended first move, derived from the target classification (advisory).
-    _kind = classification["kind"]
-    if _kind == "codebase":
-        first_move = f"  session(action='set_codebase', options={{'path': '{target}'}}) then scan(tool='semgrep', target='{target}')"
-    elif _kind == "network":
-        first_move = f"  scan(tool='naabu', target='{target}')"
-    elif _kind == "cloud":
-        first_move = f"  Invoke {classification['skill_prior']} (cloud posture — no httpx web scan)"
-    else:  # api / web
-        first_move = f"  scan(tool='httpx', target='{target}')"
-    lines = [
-        "Scan started.",
-        f"  Target: {target} | Depth: {cfg['depth_label']} | Mode: {mode_label} | Limits: {cost_str}/{time_str}/{call_limit_str}",
-        f"  Target classification (advisory — override if recon says otherwise): "
-        f"kind={_kind} → recommended {classification['skill_prior']} "
-        f"({classification['reason']})",
-        f"  Model profile: {cfg.get('model_profile', 'full')} "
-        f"({cfg.get('model_profile_reason', 'default')}) — scopes context/output budgets. "
-        f"Override with options={{model_profile: 'full|medium|small'}} or env SMITH_MODEL_PROFILE.",
-        "",
-    ]
-    if scan_mode == "benchmark":
-        lines += [
-            "BENCHMARK MODE: On critical/high findings, do NOT pause — exploit the chain autonomously.",
-            "Demonstrate full impact: RCE → execute commands, SQLi → dump data, SSRF → pivot internally.",
-            "Document every step as a finding. All other safety checks and HIR triggers remain active.",
-            "",
-        ]
-
-    prior_brief = _prior_findings_brief(target)
-    if prior_brief:
-        lines += [prior_brief, ""]
-
-    if is_resume:
-        recovery_brief = _do_recovery()
-        lines += [
-            "RESUME DETECTED: existing scan state found for this target.",
-            "Recovery state follows — read it before issuing any tool calls:",
-            "",
-            recovery_brief,
-            "",
-        ]
-
-    try:
-        from core.adjunction import anti_fp_digest
-        lines += [anti_fp_digest(), ""]
-    except Exception:
-        pass
-
-    lines += [
-        "EXECUTE NOW (do not ask questions, do not output text):",
-        "  report(action='dashboard', data={'port': 7777})",
-        first_move if not is_resume else "  Continue from recovery state above — follow EXECUTE_NOW field.",
-        "",
-        "Then in order (skip steps in tools_already_run if this is a resume):",
-        f"  scan(tool='naabu', target='{target}')",
-        f"  scan(tool='spider', target='{target}')",
-        "  Register endpoints with report(action='coverage', data=...)",
-        f"  scan(tool='nuclei', target='{target}')",
-        "  Test each coverage cell with http() or kali()",
-        "",
-        "Skills available for full workflow automation (invoke instead of improvising):",
-        "  /pentester /web-exploit /param-fuzz /business-logic /codebase /ai-redteam",
-        "  /cloud-security /ad-assessment /network-assess /lateral-movement /credential-audit",
-        "  /post-exploit /container-k8s-security /osint /ssl-tls-audit /email-security",
-        "  /metasploit /reverse-shell /analyze-cve /threat-modeling /aikido-triage",
-        "  /gh-export /remediate /request-cves",
-        "  See CLAUDE.md for full skill descriptions and trigger conditions.",
-    ]
-    return "\n".join(lines)
+    return _start_response(cfg, classification, target, scan_mode, depth, is_resume)
 
 
 def _low_coverage_blocker(
@@ -1483,9 +1490,11 @@ def _oob_module():
     return oob
 
 
-async def _do_oob_start(opts):
+async def _do_oob_start():
     """Start/confirm the OOB backend. interactsh → launch the Kali client and
-    return the minted domain; http → record the callback-logger base URL."""
+    return the minted domain; http → record the callback-logger base URL.
+
+    Takes no options — the backend is configured entirely from env (_oob_config)."""
     from tools import kali_runner
     from core.session import assets as sess_assets
     oob = _oob_module()
@@ -1532,9 +1541,9 @@ async def _do_oob_start(opts):
     )
 
 
-async def _do_oob_mint(opts):
+def _do_oob_mint(opts):
     """Mint a unique callback (subdomain for interactsh, URL for http) under the
-    active listener."""
+    active listener. Pure session-state work — no I/O, hence not async."""
     import uuid
     from datetime import datetime, timezone
     from core.session import assets as sess_assets
@@ -2081,6 +2090,44 @@ def _do_recovery():
         return json.dumps(result, indent=2, default=str)
 
 
+def _recovery_iter_status(current: dict) -> str | None:
+    """Thorough-scan analysis-pass progress line for the recovery brief, or None."""
+    if current.get("depth") != "thorough":
+        return None
+    analysis_iter = current.get("analysis_passes", _analysis_passes)
+    mi = _min_iterations()
+    remaining = max(0, mi - analysis_iter)
+    return (
+        f"Analysis pass {analysis_iter}/{mi} "
+        f"({'complete — quality gates only' if remaining == 0 else f'{remaining} more required'})"
+    )
+
+
+def _recovery_auth_context(known_assets: dict) -> dict:
+    """Compact auth context (creds / JWTs / login endpoints) for the recovery brief.
+
+    Surfaced so Smith authenticates before testing auth-protected endpoints
+    instead of marking them tested_clean on a 401/403.
+    """
+    creds = known_assets.get("credentials", [])
+    tokens = known_assets.get("auth_tokens", [])
+    auth_eps = known_assets.get("auth_endpoints", [])
+    ctx: dict = {}
+    if creds:
+        ctx["credentials"] = creds[-5:]          # most recent 5
+    if tokens:
+        ctx["jwt_tokens"] = tokens[-3:]          # most recent 3, keep brief compact
+    if auth_eps:
+        ctx["login_endpoints"] = auth_eps[:3]
+    if ctx:
+        ctx["how_to_use"] = (
+            "When an endpoint returns 401/403, send the JWT as 'Authorization: Bearer <value>'. "
+            "If no token is valid, POST to a login endpoint with credentials to mint a new one. "
+            "DO NOT mark cells tested_clean on 401/403 — the server returns 'REJECTED' now."
+        )
+    return ctx
+
+
 def _build_recovery_result(
     current: dict,
     cov: dict,
@@ -2096,40 +2143,8 @@ def _build_recovery_result(
     resume_step: str,
 ) -> dict:
     meta = cov.get("meta", {})
-
-    # Iteration progress for thorough scans.
-    # Use _analysis_passes (quality-clean passes) not _complete_attempts (includes quality-fix calls).
-    analysis_iter = current.get("analysis_passes", _analysis_passes)
-    iter_status: str | None = None
-    if current.get("depth") == "thorough":
-        _mi = _min_iterations()
-        remaining = max(0, _mi - analysis_iter)
-        iter_status = (
-            f"Analysis pass {analysis_iter}/{_mi} "
-            f"({'complete — quality gates only' if remaining == 0 else f'{remaining} more required'})"
-        )
-
-    # Auth context — credentials, JWTs, and login endpoints accumulated during
-    # the scan. Surfaced prominently so Smith can authenticate before testing
-    # auth-protected endpoints instead of marking them tested_clean on 401.
-    known_assets = current.get("known_assets", {})
-    auth_context = {}
-    creds = known_assets.get("credentials", [])
-    tokens = known_assets.get("auth_tokens", [])
-    auth_eps = known_assets.get("auth_endpoints", [])
-    if creds:
-        auth_context["credentials"] = creds[-5:]  # most recent 5
-    if tokens:
-        # Most recent token first; only most recent 3 to keep brief compact
-        auth_context["jwt_tokens"] = tokens[-3:]
-    if auth_eps:
-        auth_context["login_endpoints"] = auth_eps[:3]
-    if auth_context:
-        auth_context["how_to_use"] = (
-            "When an endpoint returns 401/403, send the JWT as 'Authorization: Bearer <value>'. "
-            "If no token is valid, POST to a login endpoint with credentials to mint a new one. "
-            "DO NOT mark cells tested_clean on 401/403 — the server returns 'REJECTED' now."
-        )
+    iter_status = _recovery_iter_status(current)
+    auth_context = _recovery_auth_context(current.get("known_assets", {}))
 
     result = {
         "EXECUTE_NOW": next_call,
