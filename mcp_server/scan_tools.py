@@ -1,6 +1,7 @@
 """
 Consolidated scan tool — replaces network.py, web.py, code_analysis.py, ai_red_team.py
 """
+import asyncio
 import shlex
 
 from core import cost as cost_tracker
@@ -428,16 +429,23 @@ async def _handle_exec_sandbox(target, flags, options):
         timeout = int(options.get("timeout", sandbox_runner.DEFAULT_TIMEOUT) or sandbox_runner.DEFAULT_TIMEOUT)
     except (TypeError, ValueError):
         timeout = sandbox_runner.DEFAULT_TIMEOUT
+    image = options.get("image", sandbox_runner.DEFAULT_IMAGE)
 
     log.tool_call("exec_sandbox", {"target": codebase, "subdir": options.get("subdir", "")})
-    res = await sandbox_runner.run_in_sandbox(
-        codebase_path=codebase,
-        cmd=cmd,
-        setup=options.get("setup", ""),
-        image=options.get("image", sandbox_runner.DEFAULT_IMAGE),
-        subdir=options.get("subdir", ""),
-        timeout=timeout,
-    )
+    # The deadline is owned here via asyncio.timeout() (the idiomatic place — the
+    # runner kills the container subprocess on cancellation so nothing is orphaned).
+    try:
+        async with asyncio.timeout(timeout):
+            res = await sandbox_runner.run_in_sandbox(
+                codebase_path=codebase,
+                cmd=cmd,
+                setup=options.get("setup", ""),
+                image=image,
+                subdir=options.get("subdir", ""),
+            )
+    except asyncio.TimeoutError:
+        res = {"ok": True, "timed_out": True, "exit_code": None, "output": "",
+               "image": image, "error": f"sandbox timed out after {timeout}s"}
     if not res.get("ok"):
         msg = f"[exec_sandbox] could not run (fall back to static evidence): {res.get('error', 'unknown')}"
         log.tool_result("exec_sandbox", msg)

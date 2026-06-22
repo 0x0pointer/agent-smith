@@ -59,12 +59,15 @@ async def run_in_sandbox(
     setup: str = "",
     image: str = DEFAULT_IMAGE,
     subdir: str = "",
-    timeout: int = DEFAULT_TIMEOUT,
 ) -> dict:
     """Stage a copy of the codebase and run ``cmd`` inside a hardened container.
 
     Returns ``{ok, exit_code, timed_out, output, image, error}``. ``ok=False``
     with ``error`` set means the sandbox could not run — NOT a finding signal.
+
+    The DEADLINE is owned by the caller via ``async with asyncio.timeout(...)``;
+    on cancellation this kills the container subprocess (so it isn't orphaned),
+    cleans up the staged copy, and re-raises so the caller records the timeout.
     """
     src = os.path.abspath(os.path.join(codebase_path, subdir)) if subdir else os.path.abspath(codebase_path)
     if not os.path.isdir(src):
@@ -113,13 +116,16 @@ async def run_in_sandbox(
         except Exception as exc:
             return {"ok": False, "error": f"docker run failed: {type(exc).__name__}: {exc}"}
         try:
-            async with asyncio.timeout(timeout):
-                out, _ = await proc.communicate()
-        except asyncio.TimeoutError:
+            out, _ = await proc.communicate()
+        except asyncio.CancelledError:
+            # Caller's asyncio.timeout() fired — kill the container so it isn't
+            # orphaned, drain it, then propagate so the caller records the timeout.
             proc.kill()
-            await proc.communicate()
-            return {"ok": True, "timed_out": True, "exit_code": None,
-                    "output": "", "image": image, "error": f"sandbox timed out after {timeout}s"}
+            try:
+                await proc.communicate()
+            except Exception:
+                pass
+            raise
         return {
             "ok": True, "timed_out": False,
             "exit_code": proc.returncode or 0,

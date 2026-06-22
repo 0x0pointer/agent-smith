@@ -2,6 +2,7 @@
 Tests for the exec_sandbox scan handler (Docker mocked — no real container run).
 Verifies the fail-soft contract and artifact-backed success path.
 """
+import asyncio
 import pytest
 from unittest.mock import AsyncMock, patch
 
@@ -25,6 +26,18 @@ async def test_success_returns_artifact(tmp_path):
     assert "artifact_id=exec_sandbox_abc" in res
     assert "exit_code=1" in res
     assert "Traceback" in res
+
+
+@pytest.mark.asyncio
+async def test_timeout_builds_timed_out_result(tmp_path):
+    # When the caller-owned asyncio.timeout() fires, the runner is cancelled and
+    # the handler records a timed_out result rather than raising.
+    async def _boom(**kwargs):
+        raise asyncio.TimeoutError
+    with patch("tools.sandbox_runner.run_in_sandbox", new=_boom), \
+         patch("mcp_server.scan_engine.artifacts.store_artifact", return_value="exec_sandbox_to"):
+        res = await _handle_exec_sandbox(str(tmp_path), "", {"cmd": "python repro.py", "timeout": 1})
+    assert "timed_out=True" in res
 
 
 @pytest.mark.asyncio
