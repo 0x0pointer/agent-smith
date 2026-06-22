@@ -20,7 +20,7 @@ Run any security scanner.
 | spider | URL | depth=3, mode=fast\|playwright, cookies={}, max_pages=200 |
 | semgrep | path | |
 | trufflehog | path | |
-| exec_sandbox | path (codebase) | cmd= (required), setup=, image=python:3.11-slim, subdir=, timeout=180 — build/run WHITE-BOX code in a network-isolated, caps-dropped sandbox over a staged copy to CONFIRM a finding; returns an `artifact_id`. Opt-in, fail-soft, never a completion gate. |
+| exec_sandbox | path (codebase) | cmd= (required), setup=, image=python:3.11-slim (any stack: node/golang/ruby/…), subdir=, timeout=180, allow_network=true — build/run WHITE-BOX code in a hardened, caps-dropped sandbox over a staged copy to CONFIRM a finding; returns an `artifact_id`. Network ON by default (deps install); allow_network=false to isolate untrusted code. Opt-in, fail-soft, never a completion gate. |
 | fuzzyai | URL | attack=jailbreak, provider=openai, model= |
 | pyrit | URL | attack=prompt_injection, objective=, max_turns=5, scorer=self_ask |
 | garak | URL | probes=dan,encoding,promptinject,..., generator=rest |

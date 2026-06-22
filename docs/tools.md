@@ -127,15 +127,16 @@ scan(tool="trufflehog", target="/target", flags="--only-verified")
 ---
 
 ### `exec_sandbox`
-Build & run **white-box target code** in a **network-isolated, capability-dropped** ephemeral container over a *staged copy* of the codebase (the original source is never mounted writable) to **confirm a finding with a real crash/exec artifact** instead of a static "input reaches sink" claim. Opt-in, fail-soft (a setup failure returns guidance, never an exception), and never a completion gate.
+Build & run **white-box target code** in a **hardened, capability-dropped** ephemeral container over a *staged copy* of the codebase (the original source is never mounted writable) to **confirm a finding with a real crash/exec artifact** instead of a static "input reaches sink" claim. Stack-agnostic — set `image` to any Docker image (`node:20-slim`, `golang:1.22`, `eclipse-temurin:21`, `ruby:3.3`, …). Opt-in, fail-soft (a setup failure returns guidance, never an exception), and never a completion gate.
 
 | Option | Default | Description |
 |---|---|---|
 | `cmd` | required | The build/run command (e.g. `python repro.py`) |
 | `setup` | `""` | Optional build/deps step run before `cmd` (e.g. `pip install -e .`) |
-| `image` | `python:3.11-slim` | Runtime image — match the stack (`node:20-slim`, `golang:1.22`, …) |
+| `image` | `python:3.11-slim` | Runtime image — match the stack (`node:20-slim`, `golang:1.22`, `ruby:3.3`, …) |
 | `subdir` | `""` | Stage only this subdirectory (keep the staged copy small) |
 | `timeout` | `180` | Seconds; the deadline is owned by the caller via `asyncio.timeout()` and kills the container on expiry |
+| `allow_network` | `true` | Network is **on by default** so dependency installs work (`pip install`, `npm ci`, `go mod download`, …). Set `false` for strict isolation (`--network=none`) when the target code is genuinely untrusted and must not call out. All other hardening (dropped caps, no-new-privileges, pid/mem/cpu caps, `--rm`, staged copy) applies regardless. |
 
 Returns an `artifact_id` of the captured stdout/stderr + exit code. If the output proves the finding (crash, code execution, leaked data), pass that `artifact_id` as the reproduction artifact; if it does not reproduce, the static claim is unconfirmed.
 

@@ -59,11 +59,22 @@ async def run_in_sandbox(
     setup: str = "",
     image: str = DEFAULT_IMAGE,
     subdir: str = "",
+    allow_network: bool = True,
 ) -> dict:
     """Stage a copy of the codebase and run ``cmd`` inside a hardened container.
 
-    Returns ``{ok, exit_code, timed_out, output, image, error}``. ``ok=False``
-    with ``error`` set means the sandbox could not run — NOT a finding signal.
+    Returns ``{ok, exit_code, timed_out, output, image, network, error}``.
+    ``ok=False`` with ``error`` set means the sandbox could not run — NOT a
+    finding signal.
+
+    ``allow_network`` (default True): the container gets a bridge network so
+    dependency installs work across stacks (``pip install`` / ``npm ci`` /
+    ``go mod download`` / ``mvn``). Pass False for strict isolation
+    (``--network=none``) when the target code is genuinely untrusted and must
+    not be able to call out. Either way the OTHER hardening always applies:
+    all capabilities dropped, no-new-privileges, pid/memory/cpu caps, an
+    ephemeral ``--rm`` container, and a staged COPY of the source (the original
+    is never mounted writable).
 
     The DEADLINE is owned by the caller via ``async with asyncio.timeout(...)``;
     on cancellation this kills the container subprocess (so it isn't orphaned),
@@ -97,9 +108,12 @@ async def run_in_sandbox(
             return {"ok": False, "error": f"failed to stage codebase: {type(exc).__name__}: {exc}"}
 
         full = f"{setup}\n{cmd}" if setup.strip() else cmd
+        # Network on by default so dependency installs work; opt out for strict
+        # isolation of untrusted code. All other hardening applies regardless.
+        net_arg = "--network=bridge" if allow_network else "--network=none"
         docker_cmd = [
             docker_executable(), "run", "--rm",
-            "--network=none",                       # untrusted code cannot call out
+            net_arg,
             "--memory=2g", "--cpus=1.5", "--pids-limit=512",
             "--cap-drop=ALL", "--security-opt=no-new-privileges",
             "-v", f"{work}:/work",                  # staged COPY, writable; original untouched
@@ -131,6 +145,7 @@ async def run_in_sandbox(
             "exit_code": proc.returncode or 0,
             "output": out.decode(errors="replace"),
             "image": image,
+            "network": "enabled" if allow_network else "isolated",
         }
     finally:
         shutil.rmtree(stage, ignore_errors=True)

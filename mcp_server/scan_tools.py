@@ -430,8 +430,14 @@ async def _handle_exec_sandbox(target, flags, options):
     except (TypeError, ValueError):
         timeout = sandbox_runner.DEFAULT_TIMEOUT
     image = options.get("image", sandbox_runner.DEFAULT_IMAGE)
+    # Network is ON by default (so dependency installs work); pass
+    # allow_network=false for strict isolation of genuinely untrusted code.
+    allow_network = options.get("allow_network", True)
+    if isinstance(allow_network, str):
+        allow_network = allow_network.strip().lower() not in ("false", "0", "no", "off")
 
-    log.tool_call("exec_sandbox", {"target": codebase, "subdir": options.get("subdir", "")})
+    log.tool_call("exec_sandbox", {"target": codebase, "subdir": options.get("subdir", ""),
+                                   "network": "enabled" if allow_network else "isolated"})
     # The deadline is owned here via asyncio.timeout() (the idiomatic place — the
     # runner kills the container subprocess on cancellation so nothing is orphaned).
     try:
@@ -442,10 +448,12 @@ async def _handle_exec_sandbox(target, flags, options):
                 setup=options.get("setup", ""),
                 image=image,
                 subdir=options.get("subdir", ""),
+                allow_network=allow_network,
             )
     except asyncio.TimeoutError:
-        res = {"ok": True, "timed_out": True, "exit_code": None, "output": "",
-               "image": image, "error": f"sandbox timed out after {timeout}s"}
+        res = {"ok": True, "timed_out": True, "exit_code": None, "output": "", "image": image,
+               "network": "enabled" if allow_network else "isolated",
+               "error": f"sandbox timed out after {timeout}s"}
     if not res.get("ok"):
         msg = f"[exec_sandbox] could not run (fall back to static evidence): {res.get('error', 'unknown')}"
         log.tool_result("exec_sandbox", msg)
@@ -459,8 +467,10 @@ async def _handle_exec_sandbox(target, flags, options):
     )
     header = (
         f"[exec_sandbox] image={res.get('image')} exit_code={res.get('exit_code')} "
-        f"timed_out={res.get('timed_out')} artifact_id={artifact_id}\n"
-        "(network-isolated, caps-dropped, over a staged copy — original source untouched)\n"
+        f"timed_out={res.get('timed_out')} network={res.get('network', 'enabled')} "
+        f"artifact_id={artifact_id}\n"
+        "(caps-dropped, pid/mem/cpu-capped, over a staged copy — original source untouched; "
+        "network on by default, pass allow_network=false to isolate)\n"
         "If this output PROVES the finding (crash / code execution / leaked data), file the "
         "finding and pass this artifact_id as the reproduction artifact. If it does NOT reproduce, "
         "the static claim is unconfirmed — downgrade or drop it. This is opt-in evidence, never a "

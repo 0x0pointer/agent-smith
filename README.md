@@ -46,7 +46,7 @@ A background QA daemon runs every 2 minutes and pushes the agent to go deeper ra
 - 🧪 **Evidence, not guesses.** 
 
 
-Every finding is artifact-backed and runs an always-on senior-review **adjudication gate** before completion. Blind vulns (SSRF / RCE / XXE / OAST-SQLi) are confirmed **out-of-band** via a callback server; multi-step attacks are recorded as **proven exploit chains** (each hand-off artifact-verified, auto-scored to the terminal blast radius); white-box findings carry a **source trace** whose `file:line` is resolved against the repo — a hallucinated location is rejected at the door. A code finding can be confirmed by building and running it in a **network-isolated sandbox**.
+Every finding is artifact-backed and runs an always-on senior-review **adjudication gate** before completion. Blind vulns (SSRF / RCE / XXE / OAST-SQLi) are confirmed **out-of-band** via a callback server; multi-step attacks are recorded as **proven exploit chains** (each hand-off artifact-verified, auto-scored to the terminal blast radius); white-box findings carry a **source trace** whose `file:line` is resolved against the repo — a hallucinated location is rejected at the door. A code finding can be confirmed by building and running it in a **hardened, capability-dropped sandbox** (any stack — Python, Node, Go, …).
 - 📊 **A dashboard built for collaboration, not observation.** 
 
 
