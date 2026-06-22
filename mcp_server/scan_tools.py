@@ -401,6 +401,68 @@ async def _handle_metasploit(target, flags, options):
     return result
 
 
+async def _handle_exec_sandbox(target, flags, options):
+    """Build & run white-box target code in a network-isolated, caps-dropped
+    sandbox to CONFIRM a finding with a real crash/exec artifact.
+
+    Opt-in and fail-soft: a setup/staging failure returns guidance (never an
+    exception, never a completion gate). Use it for the no-live-path white-box
+    slice (libraries, parsers, deserialization gadgets) where the always-on
+    adjudication gate can't re-run a live attack.
+    """
+    import os as _os
+    from tools import sandbox_runner
+    from mcp_server.scan_engine.artifacts import store_artifact
+    _record("exec_sandbox")
+
+    codebase = target or _os.environ.get("PENTEST_TARGET_PATH", "")
+    if not codebase or not _os.path.isdir(codebase):
+        return (
+            "[exec_sandbox] No codebase available. Pass target=<absolute path> or call "
+            "session(action='set_codebase', options={'path': '/abs/path'}) first. This tool "
+            "builds/runs WHITE-BOX target code in isolation to confirm a finding with a real "
+            "execution artifact."
+        )
+    cmd = options.get("cmd", "") or flags
+    try:
+        timeout = int(options.get("timeout", sandbox_runner.DEFAULT_TIMEOUT) or sandbox_runner.DEFAULT_TIMEOUT)
+    except (TypeError, ValueError):
+        timeout = sandbox_runner.DEFAULT_TIMEOUT
+
+    log.tool_call("exec_sandbox", {"target": codebase, "subdir": options.get("subdir", "")})
+    res = await sandbox_runner.run_in_sandbox(
+        codebase_path=codebase,
+        cmd=cmd,
+        setup=options.get("setup", ""),
+        image=options.get("image", sandbox_runner.DEFAULT_IMAGE),
+        subdir=options.get("subdir", ""),
+        timeout=timeout,
+    )
+    if not res.get("ok"):
+        msg = f"[exec_sandbox] could not run (fall back to static evidence): {res.get('error', 'unknown')}"
+        log.tool_result("exec_sandbox", msg)
+        return msg
+
+    output = res.get("output", "")
+    artifact_id = store_artifact(
+        "exec_sandbox",
+        f"$ {options.get('setup', '')}\n$ {cmd}\n"
+        f"exit_code={res.get('exit_code')} timed_out={res.get('timed_out')}\n\n{output}",
+    )
+    header = (
+        f"[exec_sandbox] image={res.get('image')} exit_code={res.get('exit_code')} "
+        f"timed_out={res.get('timed_out')} artifact_id={artifact_id}\n"
+        "(network-isolated, caps-dropped, over a staged copy — original source untouched)\n"
+        "If this output PROVES the finding (crash / code execution / leaked data), file the "
+        "finding and pass this artifact_id as the reproduction artifact. If it does NOT reproduce, "
+        "the static claim is unconfirmed — downgrade or drop it. This is opt-in evidence, never a "
+        "completion gate; a clean static trace remains acceptable.\n\n"
+    )
+    clipped = _clip(output, 8_000)
+    log.tool_result("exec_sandbox", f"exit={res.get('exit_code')} artifact={artifact_id}")
+    return header + clipped
+
+
 _DISPATCH = {
     "nmap":        _handle_nmap,
     "naabu":       _handle_naabu,
@@ -416,6 +478,7 @@ _DISPATCH = {
     "garak":       _handle_garak,
     "promptfoo":   _handle_promptfoo,
     "metasploit":  _handle_metasploit,
+    "exec_sandbox": _handle_exec_sandbox,
 }
 
 
@@ -439,6 +502,7 @@ async def scan(tool: str, target: str, flags: str = "", options: dict | None = N
     | spider     | URL         | depth=3, mode=fast|playwright, cookies={}, max_pages=200 |
     | semgrep    | path        |                                                   |
     | trufflehog | path        |                                                   |
+    | exec_sandbox | path (codebase) | cmd= (required), setup=, image=python:3.11-slim, subdir=, timeout=180 — build/run white-box code in a network-isolated, caps-dropped sandbox to confirm a finding; returns an artifact_id |
     | fuzzyai    | URL         | attack=jailbreak, provider=openai, model=         |
     | pyrit      | URL         | attack=prompt_injection, objective=, max_turns=5  |
     | garak      | URL         | probes=dan,encoding,..., generator=rest            |

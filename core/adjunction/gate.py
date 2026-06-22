@@ -34,9 +34,12 @@ def pending_findings(data: dict) -> list[dict]:
     return [f for f in findings if _in_scope(f) and not is_adjudicated(f)]
 
 
-def adjudication_blockers(data: dict) -> list[str]:
-    """Return [directive] if any in-scope finding still needs a verdict, else []."""
+def adjudication_blockers(data: dict, digest: bool = False) -> list[str]:
+    """Return [directive] if any in-scope finding still needs a verdict, else [].
+
+    digest=True emits the compact directive (medium/small profiles).
+    """
     pending = pending_findings(data)
     if not pending:
         return []
-    return [build_adjudication_directive(pending)]
+    return [build_adjudication_directive(pending, digest=digest)]

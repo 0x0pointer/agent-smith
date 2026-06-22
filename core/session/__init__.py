@@ -123,13 +123,26 @@ def start(
     max_time_minutes: int   | None = None,
     max_tool_calls:   int   | None = None,
     skill:            str   | None = None,
-    model_profile:    str        = "full",
+    model_profile:    str   | None = None,
     scan_mode:        str        = "pentest",
 ) -> dict:
     """scan_mode: "pentest" (default) — HIR pauses for human decisions on ambiguous situations.
-                  "benchmark" — fully autonomous, no HIR triggers, aggressive exploitation."""
+                  "benchmark" — fully autonomous, no HIR triggers, aggressive exploitation.
+
+    model_profile: full|medium|small, or None to AUTO-DETECT from the environment
+                   (model name in OPENCODE_MODEL/OLLAMA_MODEL/MODEL/…, or a
+                   SMITH_MODEL_PROFILE override). Auto-detection scopes the
+                   context window so a forgotten flag on a small local model
+                   (e.g. Qwen3-27B) doesn't silently overflow — it resolves to
+                   'full' when no local signal is present (cloud Claude/GPT)."""
     """Initialise a new scan session and write session.json."""
     global _current
+
+    # Resolve the model profile: an explicit value wins; otherwise auto-detect
+    # from the environment. Stored alongside the human-readable reason so the
+    # operator can see (and override) what was picked.
+    from core.model_detect import detect_profile
+    resolved_profile, profile_reason = detect_profile(model_profile)
 
     # Reset cost/call counters from any previous session
     cost_tracker.reset()
@@ -168,7 +181,8 @@ def start(
         "gates":         [],          # triggered gates that block completion
         "deferred_gates": [],         # gate IDs suppressed while a skill is active
         "spider_failures": {},        # targets where spider failed; cleared on success
-        "model_profile": model_profile,
+        "model_profile": resolved_profile,
+        "model_profile_reason": profile_reason,
         "scan_mode":     scan_mode,
         "tool_invocations": [],
         "known_assets": {
@@ -180,6 +194,9 @@ def start(
             "credentials":    [],   # [{username, password, source}]
             "auth_tokens":    [],   # [{type, value, user_id?, role?, obtained_at}]
             "auth_endpoints": [],   # [{path, method, body_template}]
+            # Out-of-band callbacks minted for blind-vuln confirmation. Survives
+            # compaction (recovery brief) so a callback fired now can be polled later.
+            "oob_interactions": [], # [{subdomain, correlation_id, linked_cell_id, minted_at, polled, hits}]
         },
         "context_chars_sent": 0,
         "complete_attempts":  0,        # incremented each time session(complete) is called

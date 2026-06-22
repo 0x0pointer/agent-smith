@@ -497,6 +497,14 @@ echo ""
 
 _ask_key "STATUS_UPDATE_INTERVAL_MINUTES" "Status update interval in minutes (default 30; 0 disables)"
 
+# OOB backend for blind-vuln (SSRF/RCE/XXE/OAST-SQLi, DNS exfil) confirmation.
+# OOB_MODE=interactsh (default, DNS+HTTP) or http (any logger URL, HTTP-only).
+# Blank everything = interactsh public servers (oast.fun).
+_ask_key "OOB_MODE"         "OOB backend: interactsh (default) or http (blank = interactsh)"
+_ask_key "OOB_SERVER_URL"   "interactsh server URL or http logger base URL (blank = public oast.fun)"
+_ask_key "OOB_SERVER_TOKEN" "Auth token for a protected self-hosted interactsh server (blank if none/public)"
+_ask_key "OOB_POLL_URL"     "http-mode log read-endpoint, supports {id} (blank = interactsh or manual)"
+
 # ── Docker images ─────────────────────────────────────────────────────────────
 echo ""
 echo "  Docker images"

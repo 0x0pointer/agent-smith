@@ -3,6 +3,7 @@ Consolidated report tool — replaces reporting.py
 """
 import asyncio
 import json
+import re
 from typing import Any
 
 from core import findings as findings_store
@@ -67,14 +68,23 @@ async def report(action: str, data: Any) -> str:
     finding data:
       title, severity (critical|high|medium|low|info), target,
       description, evidence, tool_used=, cve=, business_impact=,
-      reproduction= {type: http|command|script|manual, command: "...", expected: "..."}
+      reproduction= {type: http|command|script|manual, command: "...", expected: "..."},
+      trace= (optional, WHITE-BOX findings) source data flow as an ordered list
+        [{kind: entrypoint|propagation|sink, file, line, scope, description}] —
+        first step entrypoint, last step sink, >=2 steps. When a codebase is
+        pinned (session set_codebase), each cited file:line is RESOLVED against
+        the repo and a citation that doesn't exist is REJECTED. Omit for
+        black-box findings. Duplicate findings (same target+title+severity, not a
+        prior false_positive) are deduplicated — re-file distinct issues with a
+        more specific title.
 
     update_finding data:
       id (required), plus any fields to update:
       severity, title, description, evidence, status (confirmed|false_positive|draft),
       gh_issue, remediation, reproduction, escalation_leads,
-      adjudication ({reproducible, original_severity, revised_severity, rationale} —
-      the final senior-review verdict; rationale is required for it to count)
+      adjudication ({reproducible, artifact_id, original_severity, revised_severity, rationale} —
+      the final senior-review verdict; rationale is required, and artifact_id (an
+      artifact that exists on disk) is required when reproducible=true)
 
     delete_finding data:
       id — moves the finding to the archived[] array (not permanently deleted)
@@ -84,6 +94,13 @@ async def report(action: str, data: Any) -> str:
 
     note data:
       message
+
+    chain data:
+      name, steps=[{from_finding_id, to_finding_id, transition_artifact_id, mitre_technique}],
+      terminal_impact=, combined_severity=
+      — records a PROVEN exploit chain: every step's transition_artifact_id must
+      exist on disk (the artifact proving step N's output feeds step N+1), else the
+      chain is rejected. Auto-renders a MITRE-labelled Mermaid kill-chain diagram.
 
     dashboard data:
       port=7777
@@ -125,8 +142,79 @@ async def report(action: str, data: Any) -> str:
         return await _do_dashboard(data)
     elif action == "coverage":
         return await _do_coverage(data)
+    elif action == "chain":
+        return await _do_chain(data)
     else:
-        return f"Unknown action '{action}'. Use: finding, update_finding, delete_finding, diagram, note, dashboard, coverage"
+        return f"Unknown action '{action}'. Use: finding, update_finding, delete_finding, diagram, note, dashboard, coverage, chain"
+
+
+# ── Finding hygiene: trace validation + cross-run dedup ─────────────────────────
+_WS_RE = re.compile(r"\s+")
+
+
+def _norm_text(s: Any) -> str:
+    """Lowercase, strip, collapse internal whitespace — for stable comparison."""
+    return _WS_RE.sub(" ", str(s or "").strip().lower())
+
+
+def _norm_target(s: Any) -> str:
+    """Normalise a target so http://x/ and HTTP://X compare equal."""
+    return _norm_text(s).rstrip("/")
+
+
+def _validate_trace_field(data: dict) -> str | None:
+    """REJECTED message if data carries an invalid/unresolved trace[], else None.
+
+    Fires only when a trace is present — black-box findings (no source) are
+    untouched. When a codebase is pinned, this resolves each cited file:line
+    against disk, so a hallucinated source location is rejected at the boundary.
+    """
+    trace = data.get("trace")
+    if trace is None:
+        return None
+    from core.findings_validate import validate_finding_trace
+    ok, errors = validate_finding_trace(trace)
+    if ok:
+        return None
+    return (
+        "REJECTED: finding 'trace' has invalid or unresolved source citations — fix these "
+        "before filing (omit 'trace' for black-box findings that have no source location):\n  - "
+        + "\n  - ".join(errors)
+    )
+
+
+def _find_duplicate(title: str, target: str, severity: str) -> dict | None:
+    """Return an existing finding with the same target+title+severity, if any.
+
+    The cross-run/within-run dedup key. Gated on status (NEVER a bare title
+    match): a finding previously adjudicated ``false_positive`` does NOT
+    suppress a fresh one — re-discovering a was-FP-now-real issue must be
+    allowed. Severity is part of the key so a later, higher-severity re-rating
+    of the same issue is treated as an escalation (allowed), not a duplicate.
+    """
+    nt, ntg, nsev = _norm_text(title), _norm_target(target), _norm_text(severity)
+    if not nt:
+        return None
+    for f in findings_store._load().get("findings", []):
+        if (
+            _norm_text(f.get("title")) == nt
+            and _norm_target(f.get("target")) == ntg
+            and _norm_text(f.get("severity")) == nsev
+            and _norm_text(f.get("status")) != "false_positive"
+        ):
+            return f
+    return None
+
+
+def _dedup_message(existing: dict) -> str:
+    eid = existing.get("id", "?")
+    return (
+        f"DUPLICATE — a finding with the same target + title + severity is already on record "
+        f"(id={eid}). Not filed again, to keep findings.json and the adjudication gate clean "
+        "across runs. If this is a GENUINELY DISTINCT issue (different endpoint/parameter/"
+        "component), re-file with a more specific title. To revise the existing finding, use "
+        f"report(action='update_finding', data={{'id': '{eid}', ...}})."
+    )
 
 
 async def _do_finding(data):
@@ -135,6 +223,19 @@ async def _do_finding(data):
         return f"Invalid severity '{severity}'. Use: critical, high, medium, low, info"
     title = data.get("title", "")
     target = data.get("target", "")
+
+    # Reject hallucinated/invalid source citations before anything is stored.
+    trace_reject = _validate_trace_field(data)
+    if trace_reject:
+        return trace_reject
+
+    # Cross-run dedup: don't re-file an issue already on record (the app-wide
+    # misconfig that used to re-appear every run and re-block the gate).
+    dup = _find_duplicate(title, target, severity)
+    if dup:
+        log.note(f"finding deduplicated against {dup.get('id')} — {title}")
+        return _dedup_message(dup)
+
     await findings_store.add_finding(
         title=title, severity=severity, target=target,
         description=data.get("description", ""),
@@ -144,6 +245,7 @@ async def _do_finding(data):
         business_impact=data.get("business_impact", ""),
         reproduction=data.get("reproduction"),
         escalation_leads=data.get("escalation_leads"),
+        trace=data.get("trace"),
     )
     log.finding(severity, title, target)
 
@@ -230,13 +332,26 @@ async def _do_update_finding(data):
     if not fields:
         return "No fields to update. Provide severity, title, description, evidence, status, etc."
 
+    # Validate an updated trace[] the same way as on create — a corrected trace
+    # must still resolve against the codebase.
+    if "trace" in fields:
+        trace_reject = _validate_trace_field(fields)
+        if trace_reject:
+            return trace_reject
+
     # Normalise the adjudication audit trail so every senior-review verdict
     # (especially a downgrade) is stored in a consistent, explainable shape.
     # A verdict with no rationale is dropped — it must not falsely satisfy the
     # completion-time adjudication gate (see adjunction/).
     adjudication_dropped = False
+    adjudication_drop_msg = (
+        "\n\nNOTE: adjudication was ignored — it needs a non-empty 'rationale'. "
+        "Re-send with adjudication={reproducible, original_severity, revised_severity, "
+        "rationale} for it to count toward completion."
+    )
     if "adjudication" in fields:
         from core.adjunction import coerce_adjudication
+        from mcp_server.scan_engine.artifacts import artifact_exists
         current = next(
             (f for f in findings_store._load().get("findings", []) if f.get("id") == finding_id),
             None,
@@ -245,18 +360,38 @@ async def _do_update_finding(data):
         if coerced is None:
             fields.pop("adjudication", None)
             adjudication_dropped = True
+        elif coerced.get("reproducible") and not artifact_exists(coerced.get("artifact_id", "")):
+            # A reproducible verdict must be backed by an artifact that actually
+            # exists on disk — re-run the attack, capture the artifact_id, then
+            # re-submit. Mirrors the coverage layer's artifact-existence rule.
+            fields.pop("adjudication", None)
+            adjudication_dropped = True
+            _aid = coerced.get("artifact_id", "")
+            _why = (
+                "no artifact_id was provided" if not _aid
+                else f"artifact_id '{_aid}' does not exist on disk"
+            )
+            adjudication_drop_msg = (
+                f"\n\nREJECTED: adjudication claims reproducible=true but {_why}. Re-run the "
+                "attack that proves the finding reproduces, capture the artifact_id from that "
+                "tool response, and re-send the adjudication with it. (A self-attested 'it "
+                "reproduces' with no proving artifact is not accepted; set reproducible=false "
+                "to mark it a false positive instead.)"
+            )
         else:
             fields["adjudication"] = coerced
+
+    # If the dropped adjudication was the only field, there's nothing left to
+    # persist — surface the reject/drop guidance directly instead of a
+    # misleading "Finding not found".
+    if not fields and adjudication_dropped:
+        return f"Finding {finding_id}: adjudication not stored.{adjudication_drop_msg}"
 
     updated = await findings_store.update_finding(finding_id, **fields)
     if updated:
         msg = f"Finding updated: {finding_id} — fields: {', '.join(fields.keys())}"
         if adjudication_dropped:
-            msg += (
-                "\n\nNOTE: adjudication was ignored — it needs a non-empty 'rationale'. "
-                "Re-send with adjudication={reproducible, original_severity, revised_severity, "
-                "rationale} for it to count toward completion."
-            )
+            msg += adjudication_drop_msg
         else:
             _log_adjudication_verdict(finding_id, updated, fields)
         return msg
@@ -279,6 +414,76 @@ async def _do_diagram(data):
     await findings_store.add_diagram(title=title, mermaid=mermaid)
     log.diagram(title)
     return f"Diagram saved: {title}"
+
+
+def _chain_mermaid(name: str, steps: list, titles: dict) -> str:
+    """Build a left-to-right MITRE-labelled Mermaid kill-chain from steps."""
+    lines = ["graph LR"]
+
+    def _node(fid: str) -> str:
+        label = (titles.get(fid) or fid)[:48].replace('"', "'")
+        return f'  F_{_safe(fid)}["{label}"]'
+
+    seen: set[str] = set()
+    for s in steps:
+        for fid in (s.get("from_finding_id", ""), s.get("to_finding_id", "")):
+            if fid and fid not in seen:
+                seen.add(fid)
+                lines.append(_node(fid))
+    for s in steps:
+        a = _safe(s.get("from_finding_id", ""))
+        b = _safe(s.get("to_finding_id", ""))
+        tech = (s.get("mitre_technique", "") or "enables").replace('"', "'")
+        if a and b:
+            lines.append(f"  F_{a} -->|{tech}| F_{b}")
+    return "\n".join(lines)
+
+
+def _safe(fid: str) -> str:
+    """Make a finding id safe for a Mermaid node identifier."""
+    return "".join(c if c.isalnum() else "_" for c in str(fid))
+
+
+async def _do_chain(data):
+    name = data.get("name", "") or "exploit chain"
+    steps = data.get("steps", [])
+    if not isinstance(steps, list) or not steps:
+        return "Missing/empty 'steps'. Provide steps=[{from_finding_id, to_finding_id, transition_artifact_id, mitre_technique}]."
+
+    from mcp_server.scan_engine.artifacts import artifact_exists
+    # Enforce PROVEN hand-offs: every transition must be backed by an artifact
+    # that exists on disk. A chain is only as valid as its weakest edge, so any
+    # unproven transition rejects the whole submission.
+    unproven = [
+        f"step {i + 1} ({s.get('from_finding_id', '?')}→{s.get('to_finding_id', '?')}): "
+        f"transition_artifact_id '{s.get('transition_artifact_id', '')}' not found on disk"
+        for i, s in enumerate(steps)
+        if not artifact_exists(s.get("transition_artifact_id", ""))
+    ]
+    if unproven:
+        return (
+            "REJECTED: exploit chain has unproven transition(s) — every step needs a "
+            "transition_artifact_id whose artifact exists on disk (the evidence that step N's "
+            "output is consumed by step N+1). Run/capture the proving artifact, then re-submit.\n  - "
+            + "\n  - ".join(unproven)
+        )
+
+    # Build the kill-chain diagram, labelling nodes with finding titles.
+    all_findings = findings_store._load().get("findings", [])
+    titles = {f.get("id"): f.get("title", "") for f in all_findings}
+    mermaid = _chain_mermaid(name, steps, titles)
+
+    await findings_store.add_chain(
+        name=name,
+        steps=steps,
+        terminal_impact=data.get("terminal_impact", ""),
+        combined_severity=str(data.get("combined_severity", "")).lower(),
+        mermaid=mermaid,
+    )
+    # Also surface it as a diagram so it renders on the dashboard immediately.
+    await findings_store.add_diagram(title=f"Exploit chain: {name}", mermaid=mermaid)
+    log.note(f"Exploit chain recorded: {name} ({len(steps)} proven step(s))")
+    return f"Exploit chain saved: '{name}' — {len(steps)} proven step(s), diagram rendered."
 
 
 def _do_note(data):

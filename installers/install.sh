@@ -292,6 +292,27 @@ echo ""
 _ask_key "STATUS_UPDATE_INTERVAL_MINUTES" \
     "Status update interval in minutes (default 30; 0 disables)"
 
+echo ""
+echo "── Out-of-band (OOB) interaction backend ─────────────────────────────────────"
+echo "  Confirms BLIND vulns (blind SSRF/RCE/XXE/OAST-SQLi, DNS exfil) via callbacks."
+echo "  Pluggable backend:"
+echo "    OOB_MODE=interactsh (default) — DNS+HTTP via the bundled interactsh-client."
+echo "       blank OOB_SERVER_URL = public oast.fun; or your self-hosted interactsh URL."
+echo "    OOB_MODE=http — ANY HTTP request logger (e.g. https://oob-logger.example.com,"
+echo "       webhook.site). HTTP-only, zero infra. OOB_POLL_URL (optional, supports {id})"
+echo "       is the log read-endpoint for automatic polling."
+echo "  Press Enter on all to use interactsh public servers."
+echo ""
+
+_ask_key "OOB_MODE" \
+    "OOB backend: interactsh (default) or http (blank = interactsh)"
+_ask_key "OOB_SERVER_URL" \
+    "interactsh server URL, or http logger base URL (blank = public oast.fun)"
+_ask_key "OOB_SERVER_TOKEN" \
+    "Auth token for a protected self-hosted interactsh server (blank if none/public)"
+_ask_key "OOB_POLL_URL" \
+    "http-mode log read-endpoint, supports {id} (blank = interactsh or manual check)"
+
 # ── Auto-approve pentest-agent MCP tools ──────────────────────────────────────
 echo ""
 echo "Configuring tool permissions (auto-approve pentest-agent tools)..."

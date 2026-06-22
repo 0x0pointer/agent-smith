@@ -57,6 +57,93 @@ def _check_depth_after_finding(entries: list[dict], findings_data: dict) -> dict
     return None
 
 
+def _check_chain_correlation(findings_data: dict) -> dict | None:
+    """Nudge exploit-chain correlation.
+
+    When ≥2 high/critical findings (not adjudicated false-positive) share a
+    target and no exploit chain has been recorded yet, push Smith to correlate
+    them into a kill chain (report(action='chain')) or explicitly dismiss the
+    lead — compound criticals are exactly the high-impact findings that go
+    under-reported when chaining lives only in one agent's memory.
+    """
+    if findings_data.get("chains"):
+        return None  # a chain already exists — don't nag
+    confirmed = [
+        f for f in findings_data.get("findings", [])
+        if f.get("severity") in ("high", "critical")
+        and f.get("status", "confirmed") != "false_positive"
+    ]
+    if len(confirmed) < 2:
+        return None
+    from collections import Counter
+    by_target = Counter(f.get("target", "") for f in confirmed if f.get("target"))
+    hot = next((t for t, n in by_target.most_common() if n >= 2 and t), None)
+    if not hot:
+        return None
+    titles = [f.get("title", "?") for f in confirmed if f.get("target") == hot][:3]
+    if not _qa._has_pending_directives():
+        from core.steering import steering_queue, RESUME_TESTING
+        steering_queue.add_directive(
+            code=RESUME_TESTING,
+            message=(
+                f"{by_target[hot]} confirmed high/critical findings share target '{hot}' "
+                f"({', '.join(titles)}). Correlate them: can one feed another into a worse "
+                "terminal (account takeover, RCE, mass/cross-tenant data exfil)? If a transition "
+                "is proven, file the kill chain with report(action='chain', data={name, steps:[...]}) "
+                "— chains compose to terminal blast radius, they never average. If they don't chain, "
+                "note why and move on."
+            ),
+            priority="medium", skill=None, trigger="CHAIN_CORRELATION",
+        )
+    return {
+        "code": "CHAIN_CORRELATION", "urgency": "medium", "blocking": False,
+        "message": (
+            f"{by_target[hot]} confirmed high/critical findings on '{hot}' with no exploit "
+            "chain recorded — correlate into a kill chain or dismiss"
+        ),
+    }
+
+
+def _check_oob_unpolled(session_data: dict) -> dict | None:
+    """Nudge Smith to poll a fired-but-unchecked OOB callback.
+
+    A minted OOB subdomain that was never polled means a blind vuln was probed
+    but left unconfirmed — the received callback is the only proof for blind
+    SSRF/RCE/XXE/OAST-SQLi, so an unpolled callback is a coverage hole.
+    """
+    oob = (session_data.get("known_assets") or {}).get("oob_interactions") or []
+    now = datetime.now(timezone.utc)
+    stale = [
+        o for o in oob
+        if isinstance(o, dict) and not o.get("polled")
+        and _ts_age_secs(o.get("minted_at", ""), now) > 300  # 5 min
+    ]
+    if not stale:
+        return None
+    o = stale[0]
+    cid = o.get("correlation_id", "")
+    if not _qa._has_pending_directives():
+        from core.steering import steering_queue, RESUME_TESTING
+        steering_queue.add_directive(
+            code=RESUME_TESTING,
+            message=(
+                f"You minted an OOB callback ({o.get('subdomain', '')}) for a blind-vuln test "
+                "but never polled the result. Run "
+                f"session(action='oob_poll', options={{'correlation_id': '{cid}'}}) — a received "
+                "callback is the only proof for blind SSRF/RCE/XXE/OAST-SQLi. If none arrives after "
+                "a reasonable wait, that's evidence the payload did not reach an OOB sink."
+            ),
+            priority="medium", skill=None, trigger="OOB_UNPOLLED",
+        )
+    return {
+        "code": "OOB_UNPOLLED", "urgency": "medium", "blocking": False,
+        "message": (
+            f"{len(stale)} OOB callback(s) minted but never polled — confirm or rule out the "
+            "blind vuln before completing"
+        ),
+    }
+
+
 def _check_whitebox_passes(entries: list[dict], session_data: dict) -> dict | None:
     """Enforce 3 analysis passes on thorough-depth scans."""
     if session_data.get("depth") != "thorough":
