@@ -81,6 +81,12 @@ def _build_ffuf_cmd(
 ) -> list[str]:
     """Build the ffuf command parts. Pure function — no side effects, easy to test."""
     fuzz_url = f"{target.rstrip('/')}/FUZZ"
+    # Resolve a bare wordlist name (e.g. "common.txt" — the docs' wordlist=common.txt
+    # shorthand) to the seclists Web-Content dir. A relative name isn't present at the
+    # container CWD, so ffuf would error "wordlist not found" and dump its full usage
+    # instead of fuzzing.
+    if "/" not in wordlist:
+        wordlist = f"/usr/share/seclists/Discovery/Web-Content/{wordlist}"
     if "-rate" not in flags:
         flags = f"-rate 50 {flags}".strip()
     cmd_parts = ["ffuf", "-u", fuzz_url, "-w", wordlist, "-of", "json", "-s"]
@@ -133,9 +139,14 @@ async def _run_spider_thorough(target: str, flags: str, cookies: dict, depth: st
         f"--depth {depth} --max-pages {max_pages}"
     )
 
+    # Guard zap-cli: it isn't present in every Kali image build. Without this guard a
+    # missing binary leaks "zap-cli: command not found" into the merged spider output
+    # and muddies the result — skip the ZAP AJAX sub-tool cleanly instead.
     zap_cmd = (
+        f"if command -v zap-cli >/dev/null 2>&1; then "
         f"zap-cli --port 8090 --api-key zapscan quick-scan --spider --ajax-spider "
-        f"--start-options '-config api.key=zapscan -port 8090' {safe_url}"
+        f"--start-options '-config api.key=zapscan -port 8090' {safe_url}; "
+        f"else echo '[zap-ajax skipped: zap-cli not installed in the Kali image]'; fi"
     )
 
     parts = []
@@ -167,8 +178,10 @@ async def _run_spider_fast(target: str, flags: str, cookies: dict, depth: str, m
         )
     elif mode == "deep":
         cmd = (
+            f"if command -v zap-cli >/dev/null 2>&1; then "
             f"zap-cli --port 8090 --api-key zapscan quick-scan --spider --ajax-spider "
-            f"--start-options '-config api.key=zapscan -port 8090' {safe_url}"
+            f"--start-options '-config api.key=zapscan -port 8090' {safe_url}; "
+            f"else echo '[zap-ajax skipped: zap-cli not installed in the Kali image]'; fi"
         )
     else:
         safe_flags = shlex.join(shlex.split(flags)) if flags else ""
