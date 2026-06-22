@@ -30,7 +30,7 @@ Skills teach *methodology*; the LLM invents the actual attacks. No two scans loo
 - 🛠 **Bring your own LLM.** 
 
 
-Works with Claude Code, OpenAI Codex, [OpenCode](https://opencode.ai) (any provider — OpenAI, Gemini, Ollama, OpenRouter, local models), or any MCP-capable client.
+Works with Claude Code, OpenAI Codex, [OpenCode](https://opencode.ai) (any provider — OpenAI, Gemini, Ollama, OpenRouter, local models), or any MCP-capable client. Smith **auto-detects a small / local model** and scales its context budget, completion-blocker delivery, and review-pass count to fit a 16–32K window — so it stays runnable on a ~27B local model (Qwen3, Llama), not just frontier cloud ones.
 - 📦 **End-to-end deliverables.** 
 
 
@@ -43,10 +43,14 @@ Every scanner runs inside an ephemeral Docker container. Hard cost / time / call
 
 
 A background QA daemon runs every 2 minutes and pushes the agent to go deeper rather than surface-scanning. It detects stalls, premature completion, shortcut behaviour (bulk N/A marking, suspiciously fast cell closures), missing skill chains, and un-followed-up critical findings. When something is wrong it injects a steering directive that overrides whatever Smith was doing next. When the agent is genuinely stuck it escalates to a human-intervention pause (HIR) so you can unblock it.
+- 🧪 **Evidence, not guesses.** 
+
+
+Every finding is artifact-backed and runs an always-on senior-review **adjudication gate** before completion. Blind vulns (SSRF / RCE / XXE / OAST-SQLi) are confirmed **out-of-band** via a callback server; multi-step attacks are recorded as **proven exploit chains** (each hand-off artifact-verified, auto-scored to the terminal blast radius); white-box findings carry a **source trace** whose `file:line` is resolved against the repo — a hallucinated location is rejected at the door. A code finding can be confirmed by building and running it in a **network-isolated sandbox**.
 - 📊 **A dashboard built for collaboration, not observation.** 
 
 
-Watch findings, topology, coverage, and the threat model populate in real time at `localhost:7777`. But it's not just a display — you can steer Smith mid-scan, respond to intervention pauses, inject strategic directives, and watch Smith acknowledge them. The dashboard is the interface between your judgment and Smith's execution.
+Watch findings, topology, coverage, and the threat model populate in real time at `localhost:7777`. But it's not just a display — you can steer Smith mid-scan, respond to intervention pauses, inject strategic directives, and watch Smith acknowledge them. When Smith hits a wall it can't pass alone — it needs credentials, wider scope, or rate-limit relief — it drops the ask on a **non-blocking wishlist** you fulfill from the dashboard (which reopens the cells it was blocking), and it keeps testing meanwhile. The dashboard is the interface between your judgment and Smith's execution.
 
 ---
 
@@ -241,7 +245,7 @@ poetry run python -m mcp_server</code></pre>
   </tr>
 </table>
 
-> 🧠 **The LLM is your choice.** agent-smith doesn't care if it's Claude Opus 4.6, GPT-5, Gemini 2.5, Llama-4, or a local Qwen3 — anything strong enough to follow tool-use instructions will work. Bigger / smarter models find more interesting attack paths.
+> 🧠 **The LLM is your choice.** agent-smith doesn't care if it's Claude Opus 4.6, GPT-5, Gemini 2.5, Llama-4, or a local Qwen3 — anything strong enough to follow tool-use instructions will work. Bigger / smarter models find more interesting attack paths. On a small / local model Smith auto-scales to a tighter `small` profile so it doesn't overflow a 16–32K context; force it with `SMITH_MODEL_PROFILE=small` in `.env` (the one knob works identically across Claude Code, Codex, and opencode — handy because those clients don't pass their model name to the server).
 
 > ⚠️ **After install, fully restart your client.** The MCP server connects at startup.
 

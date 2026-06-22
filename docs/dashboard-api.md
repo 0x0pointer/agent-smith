@@ -32,7 +32,7 @@ Returns `templates/dashboard.html` — a single-page app with these tabs:
 | **Components** | Findings grouped by logical application component (Admin Panel, Database, FTP Server, etc.) |
 | **Coverage** | Live coverage matrix — endpoints × params × injection types. Cells colored by status: pending / in_progress / tested_clean / vulnerable / not_applicable / skipped. |
 | **Skills** | Skill-history timeline and chaining graph. |
-| **Activity** | Four-section live feed: **Stuck Events** (HIR + stalls), **QA Alerts** (high-urgency only), **Steering Directives** (pending / injected / acknowledged), and **Tool Activity** (newest 500 quick-log entries). Renders defensively — one failing renderer no longer blanks the whole tab. |
+| **Activity** | Live feed: **Stuck Events** (HIR + stalls), **QA Alerts** (high-urgency only), **Steering Directives** (pending / injected / acknowledged), **Resource Wishlist** (agent→operator needs, with Fulfill/Dismiss buttons), **Tool Activity** (newest 500 quick-log entries), and the **Adjudication ↔ Smith** verdict log. Renders defensively — one failing renderer no longer blanks the whole tab. |
 | **Threat Model** | Threat model reports from `threat-model/*.md` — dropdown to switch between reports, Mermaid diagrams pre-rendered server-side |
 | **Metrics** | Per-scan metrics: tool counts, coverage rate, finding-rate-per-hour. |
 | **Logs** | Structured session log — tool calls, results, notes, findings in real time |
@@ -260,6 +260,28 @@ Free-form HUMAN_STEER from the operator. Always queues (no dedup) so the operato
 
 ---
 
+### `GET /api/wishlist`
+
+The agent→operator **resource backlog** (open + resolved), newest first. Smith appends needs it can't satisfy itself (creds, scope, rate-limit relief, tooling) via `session(action="wishlist_add")` instead of marking a coverage cell `not_applicable`.
+
+**Response:** `{ "items": [{ "id", "ts", "need", "category", "rationale", "blocking_cell_ids": [...], "status": "open"|"fulfilled"|"dismissed", "resolution_note" }, ...] }`
+
+---
+
+### `POST /api/wishlist/{id}/fulfill`
+
+Operator supplies a wished-for resource. Marks the item `fulfilled` **and injects a high-priority steering directive** telling Smith to reopen the blocked cells and use the new resource — closing the loop without an HIR pause.
+
+**Request body:** `{ "note": "creds: analyst / Pw123 — sent to Smith" }`
+
+---
+
+### `POST /api/wishlist/{id}/dismiss`
+
+Operator declines a wishlist item (won't/can't supply it). **Request body:** `{ "note": "out of scope for this engagement" }`
+
+---
+
 ### `POST /api/complete`
 
 Terminate the scan. Sets `session.status = "complete"`, records the `finished` timestamp, and stores operator notes. Smith's next tool call returns a `SCAN_COMPLETED` envelope so the `opencode run` / `claude -p` process exits naturally instead of grinding on.
@@ -327,6 +349,6 @@ The dashboard polls in the background:
 - `/api/findings`, `/api/session`, `/api/coverage`, `/api/qa`, `/api/steering` — every 5 s
 - `/api/intervention` — every 3 s (HIR needs fast surface)
 - `/api/smith-status`, `/api/smith-clients` — every 10 s / 30 s
-- `/api/quicklog`, `/api/cycle-history` — only while the Activity tab is the active tab
+- `/api/quicklog`, `/api/cycle-history`, `/api/wishlist`, `/api/adjudication-log` — only while the Activity tab is the active tab
 - `/api/threat-model` — polled when the tab is open
 - Logs (`/api/logs`) — every 3 s when the Logs tab is active
