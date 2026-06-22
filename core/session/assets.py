@@ -83,6 +83,7 @@ def update_known_assets(asset_type: str, items: list) -> None:
         "domains": [], "ips": [], "ports": [],
         "technologies": [], "endpoints": [],
         "credentials": [], "auth_tokens": [], "auth_endpoints": [],
+        "oob_interactions": [],
     })
     if asset_type == "ports":
         _update_ports_assets(assets, items)
@@ -92,9 +93,68 @@ def update_known_assets(asset_type: str, items: list) -> None:
         _update_dict_assets(assets, asset_type, items, ("value",))
     elif asset_type == "auth_endpoints":
         _update_dict_assets(assets, asset_type, items, ("path", "method"))
+    elif asset_type == "oob_interactions":
+        _update_dict_assets(assets, asset_type, items, ("correlation_id",))
     else:
         _update_scalar_assets(assets, asset_type, items)
     _sess._flush()
+
+
+# ── Out-of-band (OOB) collaborator state ───────────────────────────────────────
+# The minted listener domain + the minted-callback registry live in session
+# state so a blind-vuln callback fired in one turn can be polled many turns
+# later — and survives context compaction via the recovery brief's known_assets.
+
+def set_oob_listener(
+    base_domain: str,
+    out_file: str = "",
+    mode: str = "interactsh",
+    poll_url: str = "",
+) -> None:
+    """Record the active OOB listener.
+
+    ``mode`` = interactsh|http. For interactsh, ``base_domain`` is the minted
+    collaborator domain and ``out_file`` the interactions JSONL path. For http,
+    ``base_domain`` is the callback base URL and ``poll_url`` the optional log
+    read-endpoint template.
+    """
+    if not _sess._current or _sess._current.get("status") != "running":
+        return
+    _sess._current["oob_listener"] = {
+        "mode": mode,
+        "base_domain": base_domain,
+        "out_file": out_file,
+        "poll_url": poll_url,
+        "started_at": datetime.now(timezone.utc).isoformat(),
+    }
+    _sess._flush()
+
+
+def get_oob_listener() -> dict | None:
+    """Return the active OOB listener record, or None if none is running."""
+    if _sess._current is None:
+        return None
+    return _sess._current.get("oob_listener")
+
+
+def mark_oob_polled(correlation_id: str, hits: int) -> None:
+    """Mark a minted OOB callback as polled, recording the hit count.
+
+    Lets the QA daemon distinguish a fired-but-never-polled callback (a blind
+    vuln left unconfirmed) from one that has been checked.
+    """
+    if _sess._current is None:
+        return
+    entries = (_sess._current.get("known_assets") or {}).get("oob_interactions") or []
+    changed = False
+    for e in entries:
+        if isinstance(e, dict) and e.get("correlation_id") == correlation_id:
+            e["polled"] = True
+            e["hits"] = hits
+            e["last_polled_at"] = datetime.now(timezone.utc).isoformat()
+            changed = True
+    if changed:
+        _sess._flush()
 
 
 def record_spider_failure(target: str) -> int:

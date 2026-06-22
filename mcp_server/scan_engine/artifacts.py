@@ -28,6 +28,20 @@ def store_artifact(tool: str, raw_output: str) -> str:
     return artifact_id
 
 
+def artifact_exists(artifact_id: str) -> bool:
+    """True if a stored artifact file exists on disk for this ID.
+
+    Shared disk-existence check (same convention as coverage validation): an
+    artifact_id is only trustworthy if the tool actually produced
+    ``artifacts/<artifact_id>.txt``. Used to enforce that adjudication
+    reproducibility verdicts and exploit-chain transitions are backed by a real
+    artifact, not a placeholder string.
+    """
+    if not artifact_id or not artifact_id.strip():
+        return False
+    return (_ARTIFACTS_DIR / f"{artifact_id.strip()}.txt").exists()
+
+
 def retrieve_artifact(
     artifact_id: str,
     mode: str = "summary",

@@ -23,6 +23,7 @@ from core.qa_agent import (
     _check_missing_skill,
     _check_suspicious_speed, _check_na_abuse, _check_depth_after_finding,
     _check_whitebox_passes, _check_premature_complete, _check_stuck_on_target,
+    _check_chain_correlation,
     _maybe_inject_web_exploit_directive, _maybe_inject_param_fuzz_directive,
     _maybe_inject_business_logic_directive, _check_core_skill_chain,
     _hir, _check_auth_failure, _check_budget_limit, _check_zero_endpoints,
@@ -147,6 +148,54 @@ def test_tool_inactivity_high_over_15(tmp_path, monkeypatch):
 def test_tool_inactivity_counts_spider_entries():
     entries = [_spider_entry(offset_min=5)]
     assert _check_tool_inactivity(entries) is None
+
+
+# ---------------------------------------------------------------------------
+# _check_chain_correlation
+# ---------------------------------------------------------------------------
+
+def _hc_finding(title, target="https://t"):
+    return {"title": title, "severity": "high", "target": target}
+
+
+def test_chain_correlation_needs_two_same_target_findings():
+    # Single finding → no nudge.
+    assert _check_chain_correlation({"findings": [_hc_finding("a")]}) is None
+    # Two findings on different targets → no shared-target chain candidate.
+    data = {"findings": [_hc_finding("a", "https://x"), _hc_finding("b", "https://y")]}
+    assert _check_chain_correlation(data) is None
+
+
+def test_chain_correlation_skips_when_chain_exists():
+    data = {
+        "findings": [_hc_finding("a"), _hc_finding("b")],
+        "chains": [{"name": "already"}],
+    }
+    assert _check_chain_correlation(data) is None
+
+
+def test_chain_correlation_fires_and_injects_directive(tmp_path, monkeypatch):
+    import core.steering as st_mod
+    import core.qa_agent as qa_mod
+    steering_file = tmp_path / "steering_queue.json"
+    monkeypatch.setattr(st_mod, "_STEERING_FILE", steering_file)
+    monkeypatch.setattr(qa_mod, "_STEERING_FILE", steering_file)
+
+    data = {"findings": [_hc_finding("Open redirect"), _hc_finding("OAuth code theft")]}
+    alert = _check_chain_correlation(data)
+    assert alert is not None
+    assert alert["code"] == "CHAIN_CORRELATION"
+    assert alert["blocking"] is False
+    q = st_mod.SteeringQueue()
+    assert any(d["trigger"] == "CHAIN_CORRELATION" for d in q._load())
+
+
+def test_chain_correlation_ignores_false_positives():
+    data = {"findings": [
+        _hc_finding("a"),
+        {**_hc_finding("b"), "status": "false_positive"},
+    ]}
+    assert _check_chain_correlation(data) is None
 
 
 # ---------------------------------------------------------------------------

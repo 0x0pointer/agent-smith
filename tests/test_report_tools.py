@@ -6,7 +6,7 @@ import pytest
 from unittest.mock import AsyncMock, patch
 
 from mcp_server.report_tools import (
-    _do_update_finding, _do_delete_finding, _do_finding, _do_dashboard, report,
+    _do_update_finding, _do_delete_finding, _do_finding, _do_dashboard, _do_chain, report,
     _DASHBOARD_CANONICAL_PORT, _LEGACY_DASHBOARD_PORTS,
 )
 
@@ -43,6 +43,111 @@ async def test_update_finding_success(findings_file):
 async def test_update_finding_not_found(findings_file):
     result = await _do_update_finding({"id": "nonexistent", "severity": "high"})
     assert "Finding not found" in result
+
+
+@pytest.mark.asyncio
+async def test_adjudication_reproducible_requires_existing_artifact(findings_file, tmp_path, monkeypatch):
+    """A reproducible=true verdict is rejected unless its artifact_id exists on disk."""
+    import core.findings
+    import mcp_server.scan_engine.artifacts as artifacts
+    artifacts_dir = tmp_path / "artifacts"
+    artifacts_dir.mkdir()
+    monkeypatch.setattr(artifacts, "_ARTIFACTS_DIR", artifacts_dir)
+
+    entry = await core.findings.add_finding(
+        title="Blind SQLi", severity="high", target="t", description="d", evidence="e"
+    )
+    fid = entry["id"]
+
+    # (a) reproducible=true, no artifact_id → rejected, not stored.
+    res = await _do_update_finding({
+        "id": fid, "adjudication": {"reproducible": True, "rationale": "it works"},
+    })
+    assert "REJECTED" in res and "no artifact_id was provided" in res
+    stored = next(f for f in core.findings._load()["findings"] if f["id"] == fid)
+    assert "adjudication" not in stored
+
+    # (b) reproducible=true, artifact_id that does not exist → rejected.
+    res = await _do_update_finding({
+        "id": fid,
+        "adjudication": {"reproducible": True, "rationale": "it works", "artifact_id": "ghost_1"},
+    })
+    assert "REJECTED" in res and "does not exist on disk" in res
+
+    # (c) artifact exists on disk → accepted and stored.
+    (artifacts_dir / "http_request_1_a.txt").write_text("HTTP/1.1 200 ... proof", encoding="utf-8")
+    res = await _do_update_finding({
+        "id": fid,
+        "adjudication": {"reproducible": True, "rationale": "it works", "artifact_id": "http_request_1_a"},
+    })
+    assert "Finding updated" in res
+    stored = next(f for f in core.findings._load()["findings"] if f["id"] == fid)
+    assert stored["adjudication"]["artifact_id"] == "http_request_1_a"
+
+    # (d) reproducible=false needs no artifact.
+    res = await _do_update_finding({
+        "id": fid, "adjudication": {"reproducible": False, "rationale": "could not reproduce"},
+    })
+    assert "Finding updated" in res
+
+
+# ── _do_delete_finding ───────────────────────────────────────────────────────
+
+# ── _do_chain (exploit-chain correlation) ────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_chain_requires_steps(findings_file):
+    res = await _do_chain({"name": "empty"})
+    assert "Missing/empty 'steps'" in res
+
+
+@pytest.mark.asyncio
+async def test_chain_rejects_unproven_transition(findings_file, tmp_path, monkeypatch):
+    import mcp_server.scan_engine.artifacts as artifacts
+    adir = tmp_path / "artifacts"
+    adir.mkdir()
+    monkeypatch.setattr(artifacts, "_ARTIFACTS_DIR", adir)
+    res = await _do_chain({
+        "name": "redir->oauth->ato",
+        "steps": [
+            {"from_finding_id": "a", "to_finding_id": "b",
+             "transition_artifact_id": "ghost", "mitre_technique": "T1190"},
+        ],
+    })
+    assert "REJECTED" in res and "unproven transition" in res
+
+
+@pytest.mark.asyncio
+async def test_chain_accepts_proven_transition_and_persists(findings_file, tmp_path, monkeypatch):
+    import core.findings
+    import mcp_server.scan_engine.artifacts as artifacts
+    adir = tmp_path / "artifacts"
+    adir.mkdir()
+    monkeypatch.setattr(artifacts, "_ARTIFACTS_DIR", adir)
+    (adir / "http_request_1_a.txt").write_text("code= captured at collector", encoding="utf-8")
+
+    f1 = await core.findings.add_finding(title="Open redirect", severity="low", target="t", description="d", evidence="e")
+    f2 = await core.findings.add_finding(title="OAuth code theft", severity="medium", target="t", description="d", evidence="e")
+
+    res = await _do_chain({
+        "name": "redir->oauth->ato",
+        "steps": [
+            {"from_finding_id": f1["id"], "to_finding_id": f2["id"],
+             "transition_artifact_id": "http_request_1_a", "mitre_technique": "T1539"},
+        ],
+        "terminal_impact": "account takeover",
+        "combined_severity": "Critical",
+    })
+    assert "Exploit chain saved" in res
+
+    data = core.findings._load()
+    assert len(data["chains"]) == 1
+    chain = data["chains"][0]
+    assert chain["combined_severity"] == "critical"
+    assert chain["mermaid"].startswith("graph LR")
+    assert "T1539" in chain["mermaid"]
+    # Also rendered as a diagram for the dashboard.
+    assert any("Exploit chain" in d.get("title", "") for d in data["diagrams"])
 
 
 # ── _do_delete_finding ───────────────────────────────────────────────────────

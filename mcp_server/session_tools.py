@@ -20,9 +20,40 @@ _background_tasks: set[asyncio.Task] = set()  # keeps fire-and-forget tasks aliv
 _complete_attempts = 0
 _MAX_COMPLETE_ATTEMPTS = 8
 
+# Blocker count from the previous complete() attempt. Under condensed (small/
+# medium) profiles, blockers are surfaced ONE AT A TIME, so a model legitimately
+# fixing them across several complete() calls would otherwise trip the 8-attempt
+# HIR. When the count DROPS (progress), we refund the attempt budget. None = no
+# prior attempt this scan.
+_last_blocker_count: int | None = None
+
 # Minimum complete() calls required before thorough scans are allowed to finish.
 # Each blocked call is one "iteration" — the model must go deeper and try again.
+# This is the FULL-profile default; _min_iterations() scales it down by profile.
 _THOROUGH_MIN_ITERATIONS = 3
+
+
+def _min_iterations() -> int:
+    """Profile-aware thorough-pass requirement (full=3, medium=2, small=1).
+
+    A 16-32K-token local model cannot hold three deep analysis passes in context;
+    capable (full-profile) models keep the full 3, honouring the white-box-3-passes
+    rule for them. Small/medium reduce so the run is completable instead of looping.
+    """
+    try:
+        from mcp_server.scan_engine.budget import get_profile
+        return int(get_profile().get("thorough_min_passes", _THOROUGH_MIN_ITERATIONS))
+    except Exception:
+        return _THOROUGH_MIN_ITERATIONS
+
+
+def _condensed_directives() -> bool:
+    """True under medium/small profiles — serialize blockers + emit digest directives."""
+    try:
+        from mcp_server.scan_engine.budget import get_profile
+        return bool(get_profile().get("condensed_directives", False))
+    except Exception:
+        return False
 
 # Counts complete() calls that passed ALL quality checks (no PoC gaps, no missing reproductions,
 # no coverage blockers).  Separate from _complete_attempts so that quality-fix attempts (where
@@ -70,7 +101,16 @@ def _effective_tools() -> set[str]:
 async def session(action: str, options: dict | None = None) -> str:
     """Scan lifecycle and infrastructure management.
 
-    action  : start | complete | status | recovery | artifact | qa_reply | set_skill | set_step | start_kali | stop_kali | start_metasploit | stop_metasploit | pull_images | set_codebase
+    action  : start | complete | status | recovery | artifact | qa_reply | set_skill | set_step | wishlist_add | wishlist_list | start_kali | stop_kali | start_metasploit | stop_metasploit | pull_images | set_codebase
+
+    wishlist_add options (NON-BLOCKING agent→operator backlog — use instead of
+      marking a cell not_applicable when you're blocked by a missing resource):
+      need= (required — what you need to go deeper, e.g. "analyst-role creds for /admin"),
+      category= (credentials|scope|rate_limit|tooling|access|environment|other),
+      rationale=, blocking_cell_ids=[...]. Does NOT pause the scan; keep testing
+      other coverage. Auth needs already satisfiable from known_assets are rejected.
+
+    wishlist_list: returns the open wishlist (what you've asked the operator for)
 
     start options:
       target, depth=standard (recon|standard|thorough), scope=[],
@@ -147,6 +187,10 @@ async def _dispatch_async_action(action: str, opts: dict) -> str | None:
         return await _do_pull_images()
     if action == "qa_reply":
         return await _do_qa_reply(opts)
+    if action == "oob_start":
+        return await _do_oob_start()
+    if action == "oob_poll":
+        return await _do_oob_poll(opts)
     return None
 
 
@@ -174,7 +218,13 @@ def _dispatch_sync_action(action: str, opts: dict) -> str:
         return _do_resume(opts)
     if action == "intervene":
         return _do_intervene(opts)
-    return f"Unknown action '{action}'. Use: start, complete, status, qa_reply, recovery, artifact, pre_chain, set_skill, set_step, resume, start_kali, stop_kali, start_metasploit, stop_metasploit, pull_images, set_codebase"
+    if action == "wishlist_add":
+        return _do_wishlist_add(opts)
+    if action == "wishlist_list":
+        return _do_wishlist_list()
+    if action == "oob_mint":
+        return _do_oob_mint(opts)
+    return f"Unknown action '{action}'. Use: start, complete, status, qa_reply, recovery, artifact, pre_chain, set_skill, set_step, resume, wishlist_add, wishlist_list, start_kali, stop_kali, start_metasploit, stop_metasploit, pull_images, set_codebase, oob_start, oob_mint, oob_poll"
 
 
 def _reset_coverage_matrix(target: str, prev_target: str, has_data: bool) -> bool:
@@ -223,8 +273,138 @@ def _reset_coverage_matrix(target: str, prev_target: str, has_data: bool) -> boo
     return bool(prev_target and prev_target == target and has_data)
 
 
+def _norm_target(s) -> str:
+    """Normalise a target so http://x/ and HTTP://X compare equal (mirrors report_tools)."""
+    return re.sub(r"\s+", " ", str(s or "").strip().lower()).rstrip("/")
+
+
+_SEV_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+
+
+def _prior_findings_brief(target: str) -> str:
+    """Compact 'already known — don't re-file' brief for prior findings on this target.
+
+    findings.json persists across runs; surfacing what is already recorded lets a
+    re-run skip known issues and weight effort toward untested coverage instead of
+    re-discovering (and the dedup gate re-blocking) the same app-wide misconfig.
+    Prior false_positives are excluded — they should NOT discourage a re-test.
+    """
+    try:
+        data = findings_store._load()
+    except Exception:
+        return ""
+    ntg = _norm_target(target)
+    if not ntg:
+        return ""
+    prior = [
+        f for f in data.get("findings", [])
+        if _norm_target(f.get("target")) == ntg
+        and str(f.get("status") or "").strip().lower() != "false_positive"
+    ]
+    if not prior:
+        return ""
+    prior.sort(key=lambda f: _SEV_ORDER.get(str(f.get("severity", "")).lower(), 5))
+    lines = [
+        f"KNOWN FINDINGS for this target ({len(prior)} on record from prior run(s) — do NOT re-file; "
+        "the server deduplicates same target+title+severity). Weight THIS run toward untested "
+        "coverage cells and gaps the prior run(s) missed:",
+    ]
+    lines += [
+        f"  - [{str(f.get('severity', '')).upper()}] {f.get('title', '')} (id={f.get('id', '?')})"
+        for f in prior[:12]
+    ]
+    if len(prior) > 12:
+        lines.append(f"  - (+{len(prior) - 12} more — see findings.json)")
+    return "\n".join(lines)
+
+
+def _start_first_move(classification: dict, target: str) -> str:
+    """Advisory 'recommended first tool call' line, by target kind."""
+    kind = classification["kind"]
+    if kind == "codebase":
+        return f"  session(action='set_codebase', options={{'path': '{target}'}}) then scan(tool='semgrep', target='{target}')"
+    if kind == "network":
+        return f"  scan(tool='naabu', target='{target}')"
+    if kind == "cloud":
+        return f"  Invoke {classification['skill_prior']} (cloud posture — no httpx web scan)"
+    return f"  scan(tool='httpx', target='{target}')"  # api / web
+
+
+def _start_response(cfg: dict, classification: dict, target: str, scan_mode: str,
+                    depth: str, is_resume: bool) -> str:
+    """Build the human-facing scan-start message (advisory routing + EXECUTE NOW)."""
+    lim = cfg["limits"]
+    cost_str = f"${lim['max_cost_usd']:.2f}" if lim['max_cost_usd'] is not None else "unlimited"
+    time_str = f"{lim['max_time_minutes']}min" if lim['max_time_minutes'] is not None else "unlimited"
+    call_limit_str = f"{lim['max_tool_calls']} tool calls" if lim['max_tool_calls'] > 0 else "unlimited"
+    log.note(
+        f"Scan started — target={target}  depth={depth}  "
+        f"limits: {cost_str} / {time_str} / {call_limit_str}"
+    )
+    mode_label = (
+        "BENCHMARK (auto-exploit critical findings)" if scan_mode == "benchmark"
+        else "Pentest (human-in-the-loop for exploitation decisions)"
+    )
+    first_move = _start_first_move(classification, target)
+    lines = [
+        "Scan started.",
+        f"  Target: {target} | Depth: {cfg['depth_label']} | Mode: {mode_label} | Limits: {cost_str}/{time_str}/{call_limit_str}",
+        f"  Target classification (advisory — override if recon says otherwise): "
+        f"kind={classification['kind']} → recommended {classification['skill_prior']} "
+        f"({classification['reason']})",
+        f"  Model profile: {cfg.get('model_profile', 'full')} "
+        f"({cfg.get('model_profile_reason', 'default')}) — scopes context/output budgets. "
+        f"Override with options={{model_profile: 'full|medium|small'}} or env SMITH_MODEL_PROFILE.",
+        "",
+    ]
+    if scan_mode == "benchmark":
+        lines += [
+            "BENCHMARK MODE: On critical/high findings, do NOT pause — exploit the chain autonomously.",
+            "Demonstrate full impact: RCE → execute commands, SQLi → dump data, SSRF → pivot internally.",
+            "Document every step as a finding. All other safety checks and HIR triggers remain active.",
+            "",
+        ]
+    prior_brief = _prior_findings_brief(target)
+    if prior_brief:
+        lines += [prior_brief, ""]
+    if is_resume:
+        lines += [
+            "RESUME DETECTED: existing scan state found for this target.",
+            "Recovery state follows — read it before issuing any tool calls:",
+            "",
+            _do_recovery(),
+            "",
+        ]
+    try:
+        from core.adjunction import anti_fp_digest
+        lines += [anti_fp_digest(), ""]
+    except Exception:
+        pass
+    lines += [
+        "EXECUTE NOW (do not ask questions, do not output text):",
+        "  report(action='dashboard', data={'port': 7777})",
+        first_move if not is_resume else "  Continue from recovery state above — follow EXECUTE_NOW field.",
+        "",
+        "Then in order (skip steps in tools_already_run if this is a resume):",
+        f"  scan(tool='naabu', target='{target}')",
+        f"  scan(tool='spider', target='{target}')",
+        "  Register endpoints with report(action='coverage', data=...)",
+        f"  scan(tool='nuclei', target='{target}')",
+        "  Test each coverage cell with http() or kali()",
+        "",
+        "Skills available for full workflow automation (invoke instead of improvising):",
+        "  /pentester /web-exploit /param-fuzz /business-logic /codebase /ai-redteam",
+        "  /cloud-security /ad-assessment /network-assess /lateral-movement /credential-audit",
+        "  /post-exploit /container-k8s-security /osint /ssl-tls-audit /email-security",
+        "  /metasploit /reverse-shell /analyze-cve /threat-modeling /aikido-triage",
+        "  /gh-export /remediate /request-cves",
+        "  See CLAUDE.md for full skill descriptions and trigger conditions.",
+    ]
+    return "\n".join(lines)
+
+
 def _do_start(opts):
-    global _complete_attempts, _analysis_passes
+    global _complete_attempts, _analysis_passes, _last_blocker_count
     existing = scan_session.get() or {}
     if existing.get("status") == "intervention_required":
         return (
@@ -234,6 +414,7 @@ def _do_start(opts):
         )
     _complete_attempts = 0
     _analysis_passes = 0
+    _last_blocker_count = None
     _session_tools_called.clear()
     target = opts.get("target", "")
 
@@ -259,9 +440,19 @@ def _do_start(opts):
         max_time_minutes=opts.get("max_time_minutes"),
         max_tool_calls=opts.get("max_tool_calls"),
         skill=opts.get("skill"),
-        model_profile=opts.get("model_profile", "full"),
+        model_profile=opts.get("model_profile"),  # None → auto-detect from env
         scan_mode=scan_mode,
     )
+    # Deterministic target classification — an advisory PRIOR, never a gate. It
+    # never overrides the LLM's own skill routing; it just makes the recommended
+    # first move fit the target kind so AUTONOMOUS/CI runs don't greet a codebase
+    # path or an IP range with a web scan. Stored for the dashboard too.
+    from core.target_class import classify_target
+    classification = classify_target(target)
+    _cur = scan_session.get()
+    if _cur is not None:
+        _cur["classifier"] = classification
+        scan_session._flush()
     try:
         from core.adjunction.log import clear as _adj_log_clear
         _adj_log_clear()
@@ -281,59 +472,7 @@ def _do_start(opts):
         steering_queue.cancel_by_trigger("FORCE_COMPLETE_ADJUDICATION", "cleared on new scan start")
     except Exception:
         pass
-    lim = cfg["limits"]
-    cost_str  = f"${lim['max_cost_usd']:.2f}" if lim['max_cost_usd'] is not None else "unlimited"
-    time_str  = f"{lim['max_time_minutes']}min" if lim['max_time_minutes'] is not None else "unlimited"
-    call_limit_str = f"{lim['max_tool_calls']} tool calls" if lim['max_tool_calls'] > 0 else "unlimited"
-    log.note(
-        f"Scan started — target={target}  depth={depth}  "
-        f"limits: {cost_str} / {time_str} / {call_limit_str}"
-    )
-    mode_label = "BENCHMARK (auto-exploit critical findings)" if scan_mode == "benchmark" else "Pentest (human-in-the-loop for exploitation decisions)"
-    lines = [
-        "Scan started.",
-        f"  Target: {target} | Depth: {cfg['depth_label']} | Mode: {mode_label} | Limits: {cost_str}/{time_str}/{call_limit_str}",
-        "",
-    ]
-    if scan_mode == "benchmark":
-        lines += [
-            "BENCHMARK MODE: On critical/high findings, do NOT pause — exploit the chain autonomously.",
-            "Demonstrate full impact: RCE → execute commands, SQLi → dump data, SSRF → pivot internally.",
-            "Document every step as a finding. All other safety checks and HIR triggers remain active.",
-            "",
-        ]
-
-    if is_resume:
-        recovery_brief = _do_recovery()
-        lines += [
-            "RESUME DETECTED: existing scan state found for this target.",
-            "Recovery state follows — read it before issuing any tool calls:",
-            "",
-            recovery_brief,
-            "",
-        ]
-
-    lines += [
-        "EXECUTE NOW (do not ask questions, do not output text):",
-        "  report(action='dashboard', data={'port': 7777})",
-        f"  scan(tool='httpx', target='{target}')" if not is_resume else "  Continue from recovery state above — follow EXECUTE_NOW field.",
-        "",
-        "Then in order (skip steps in tools_already_run if this is a resume):",
-        f"  scan(tool='naabu', target='{target}')",
-        f"  scan(tool='spider', target='{target}')",
-        "  Register endpoints with report(action='coverage', data=...)",
-        f"  scan(tool='nuclei', target='{target}')",
-        "  Test each coverage cell with http() or kali()",
-        "",
-        "Skills available for full workflow automation (invoke instead of improvising):",
-        "  /pentester /web-exploit /param-fuzz /business-logic /codebase /ai-redteam",
-        "  /cloud-security /ad-assessment /network-assess /lateral-movement /credential-audit",
-        "  /post-exploit /container-k8s-security /osint /ssl-tls-audit /email-security",
-        "  /metasploit /reverse-shell /analyze-cve /threat-modeling /aikido-triage",
-        "  /gh-export /remediate /request-cves",
-        "  See CLAUDE.md for full skill descriptions and trigger conditions.",
-    ]
-    return "\n".join(lines)
+    return _start_response(cfg, classification, target, scan_mode, depth, is_resume)
 
 
 def _low_coverage_blocker(
@@ -612,12 +751,49 @@ def _is_whitebox_scan() -> bool:
     return False
 
 
+def _deepen_brief_condensed(iteration: int, whitebox: bool) -> str:
+    """Short deepen brief for medium/small profiles — 3 concrete next actions, no prose.
+
+    The full multi-thousand-char briefs overwhelm a small-context model; under a
+    condensed profile the thorough gate also requires fewer passes (_min_iterations),
+    so the brief only needs to point at the highest-value next moves.
+    """
+    data = findings_store._load()
+    criticals = [f for f in data.get("findings", []) if f.get("severity") == "critical"]
+    mi = _min_iterations()
+    if whitebox:
+        actions = [
+            "Trace each injection-class finding source-to-sink and confirm the sanitizer is "
+            "actually bypassable; attach the call chain to the finding's evidence.",
+            "Read the trust-boundary interfaces between the top components — what attacker-"
+            "controlled value crosses, and is it re-validated on arrival?",
+            "For each critical, determine what an attacker reaches AFTER exploiting it and "
+            "record escalation_leads.",
+        ]
+    else:
+        actions = [
+            "Re-test every tested_clean cell with a deeper technique (higher sqlmap level/risk, "
+            "filter-bypass XSS, blind/OOB) — these are your likely false negatives.",
+            "Test the next pending coverage cells; mark each in_progress before testing.",
+            "Chain the criticals to maximum impact: record escalation_leads + a kill-chain via "
+            "report(action='chain').",
+        ]
+    numbered = "\n".join(f"  {i + 1}. {a}" for i, a in enumerate(actions))
+    return (
+        f"⛔ ITERATION GATE: analysis pass {iteration}/{mi} done — one condensed deepening pass "
+        f"required ({len(criticals)} critical finding(s) on record). Do these, then call "
+        f"session(action='complete') again:\n{numbered}"
+    )
+
+
 def _deepen_brief_whitebox(analysis_pass: int) -> str:
     """
     Generate a mandatory re-run brief for white-box code-review iteration gates.
     Each pass deepens the analysis rather than re-running live exploitation tools.
     analysis_pass is 1-indexed: 1 = just finished pass 1, need pass 2; 2 = need pass 3.
     """
+    if _condensed_directives():
+        return _deepen_brief_condensed(analysis_pass, whitebox=True)
     data = findings_store._load()
     findings = data.get("findings", [])
     criticals = [f for f in findings if f.get("severity") == "critical"]
@@ -860,6 +1036,8 @@ def _deepen_brief(iteration: int) -> str:
     Each iteration re-executes ALL applicable skills and tools with escalating
     aggressiveness — not advisory hints, but concrete ordered commands.
     """
+    if _condensed_directives():
+        return _deepen_brief_condensed(iteration, whitebox=False)
     from core.coverage import get_matrix
     data      = findings_store._load()
     current   = scan_session.get() or {}
@@ -972,7 +1150,7 @@ def _collect_completion_blockers(data: dict, effective: set) -> list[str]:
     # here (at completion) on purpose — never mid-scan, so discovery is not
     # interrupted and findings are judged with full chained context.
     from core.adjunction import adjudication_blockers
-    blockers.extend(adjudication_blockers(data))
+    blockers.extend(adjudication_blockers(data, digest=_condensed_directives()))
 
     from core.coverage import get_matrix
     blockers.extend(_coverage_blockers(get_matrix(), ctf_mode=_has_ctf_flag(data)))
@@ -1003,7 +1181,7 @@ def _apply_thorough_depth_gate(blockers: list, current: dict) -> list:
     if current:
         current["analysis_passes"] = _analysis_passes
         scan_session._flush()
-    if _analysis_passes < _THOROUGH_MIN_ITERATIONS:
+    if _analysis_passes < _min_iterations():
         brief = (
             _deepen_brief_whitebox(_analysis_passes)
             if _is_whitebox_scan()
@@ -1054,6 +1232,33 @@ def _pending_steer_block() -> str:
     except Exception:
         # Steering failures must never break tool dispatch.
         return ""
+
+
+# Priority for surfacing ONE blocker at a time under condensed (small/medium)
+# profiles — lower number = fix first. Concrete data prerequisites and required
+# verdicts come before the "re-run deeper" iteration brief.
+_BLOCKER_PRIORITY = (
+    ("QA BLOCKER", 0),
+    ("GATE [", 1),
+    ("EMPTY COVERAGE MATRIX", 2),
+    ("LOW COVERAGE", 2),
+    ("INJECTION BREADTH", 3),
+    ("INTEGRITY", 3),
+    ("ADJUDICATION REQUIRED", 4),
+    ("NO POC FILES", 5),
+    ("FINDING QUALITY", 5),
+    ("PENDING LEADS", 6),
+    ("NO SPIDER", 7),
+    ("NO DIAGRAM", 8),
+    ("ITERATION GATE", 9),
+)
+
+
+def _blocker_priority(b: str) -> int:
+    for key, pri in _BLOCKER_PRIORITY:
+        if key in b:
+            return pri
+    return 5
 
 
 def _build_blocker_response(blockers: list) -> str:
@@ -1108,25 +1313,39 @@ def _build_blocker_response(blockers: list) -> str:
             result = result + steer_block
         return result
     depth = (scan_session.get() or {}).get("depth", "")
-    if depth == "thorough" and _analysis_passes < _THOROUGH_MIN_ITERATIONS:
+    total = len(blockers)
+    if _condensed_directives() and total > 1:
+        # Serialize: surface only the highest-priority blocker so it fits a small
+        # context window. The progress-aware counter in _do_complete refunds the
+        # attempt budget as the count drops, so one-per-call fixing won't trip HIR.
+        shown = [min(blockers, key=_blocker_priority)]
         header = (
-            f"complete BLOCKED — thorough scan requires {_THOROUGH_MIN_ITERATIONS} analysis passes "
-            f"(quality-clean passes: {_analysis_passes}/{_THOROUGH_MIN_ITERATIONS}):\n\n"
+            f"complete BLOCKED — {total} blockers remain; fixing them ONE AT A TIME so each "
+            f"fits your context. Fix THIS one, then call session(action='complete') again for "
+            f"the next:\n\n"
+        )
+    elif depth == "thorough" and _analysis_passes < _min_iterations():
+        shown = blockers
+        _mi = _min_iterations()
+        header = (
+            f"complete BLOCKED — thorough scan requires {_mi} analysis passes "
+            f"(quality-clean passes: {_analysis_passes}/{_mi}):\n\n"
         )
     else:
+        shown = blockers
         header = f"complete BLOCKED (attempt {_complete_attempts}/{_MAX_COMPLETE_ATTEMPTS}) — fix the following first:\n\n"
-    msg = header + "\n\n".join(f"  [{i+1}] {b}" for i, b in enumerate(blockers))
+    msg = header + "\n\n".join(f"  [{i+1}] {b}" for i, b in enumerate(shown))
     if steer_block:
         msg = msg + steer_block
     log.note(
-        f"complete blocked (attempt {_complete_attempts}, analysis_passes={_analysis_passes}): "
-        f"{'; '.join(b[:80] for b in blockers)}"
+        f"complete blocked (attempt {_complete_attempts}, analysis_passes={_analysis_passes}, "
+        f"blockers={total}, shown={len(shown)}): {'; '.join(b[:80] for b in blockers)}"
     )
     return msg
 
 
 def _do_complete():
-    global _complete_attempts, _analysis_passes
+    global _complete_attempts, _analysis_passes, _last_blocker_count
     _complete_attempts += 1
 
     data = findings_store._load()
@@ -1135,6 +1354,19 @@ def _do_complete():
     effective = _effective_tools()
     blockers = _collect_completion_blockers(data, effective)
     blockers = _apply_thorough_depth_gate(blockers, current)
+
+    # Progress-aware HIR (condensed profiles): blockers are surfaced one at a
+    # time, so a model clearing them across several complete() calls is making
+    # progress, not stalling. When the count DROPS, refund the attempt budget so
+    # serialized fixing doesn't trip the 8-attempt HIR; HIR still fires when the
+    # count is stuck (genuine inability to progress).
+    if _condensed_directives() and blockers:
+        n = len(blockers)
+        if _last_blocker_count is not None and n < _last_blocker_count:
+            _complete_attempts = 1
+        _last_blocker_count = n
+    elif not blockers:
+        _last_blocker_count = None
 
     if blockers:
         # Log the adjudication directive whenever the gate fires so the Activity
@@ -1241,6 +1473,159 @@ async def _do_qa_reply(opts):
     if ack_id:
         return f"QA reply logged. Directive {ack_id} acknowledged."
     return "QA reply logged. (No active directive to acknowledge — reply recorded for audit trail.)"
+
+
+def _oob_config():
+    """Read OOB backend config from env: (mode, server_url, token, poll_template)."""
+    import os
+    server = os.environ.get("OOB_SERVER_URL", "").strip()
+    mode = _oob_module().resolve_mode(os.environ.get("OOB_MODE", ""))
+    token = os.environ.get("OOB_SERVER_TOKEN", "").strip()
+    poll_template = os.environ.get("OOB_POLL_URL", "").strip()
+    return mode, server, token, poll_template
+
+
+def _oob_module():
+    from core import oob
+    return oob
+
+
+async def _do_oob_start():
+    """Start/confirm the OOB backend. interactsh → launch the Kali client and
+    return the minted domain; http → record the callback-logger base URL.
+
+    Takes no options — the backend is configured entirely from env (_oob_config)."""
+    from tools import kali_runner
+    from core.session import assets as sess_assets
+    oob = _oob_module()
+    mode, server, token, poll_template = _oob_config()
+
+    if mode == "http":
+        if not server:
+            return (
+                "OOB_MODE=http needs OOB_SERVER_URL set to your HTTP request logger's base URL "
+                "(e.g. https://oob-logger.example.com). Set it in .env and restart, or unset "
+                "OOB_MODE to use interactsh's public servers."
+            )
+        sess_assets.set_oob_listener(server, mode="http", poll_url=poll_template)
+        poll_note = (
+            f"auto-poll via {poll_template}" if poll_template
+            else "no OOB_POLL_URL set → polling will tell you to check the logger's own UI/logs"
+        )
+        return (
+            f"OOB backend ready (mode=http, logger={server}; {poll_note}).\n"
+            "Next: session(action='oob_mint', options={'cell_id': '<blind cell id>'}) to get a "
+            "unique callback URL, embed it in your blind HTTP/SSRF payload, then "
+            "session(action='oob_poll', options={'correlation_id': '<id>'}). NOTE: http mode is "
+            "HTTP(S)-only — for DNS-based blind exfil use interactsh mode."
+        )
+
+    # interactsh mode
+    cmd = oob.build_start_command(server_url=server, token=token)
+    raw = await kali_runner.exec_command(cmd, timeout=60)
+    base = oob.parse_base_domain(raw)
+    if not base:
+        return (
+            "OOB listener start attempted, but no collaborator domain could be parsed from "
+            "interactsh-client output. Check that the Kali container is up and OOB_SERVER_URL "
+            "(if set) is reachable.\n--- interactsh output ---\n" + raw[:600]
+        )
+    sess_assets.set_oob_listener(base, out_file=oob.OOB_OUT_FILE, mode="interactsh")
+    src = f"self-hosted {server}" if server else "public interactsh servers (oast.fun)"
+    return (
+        f"OOB listener ready (mode=interactsh, DNS+HTTP). Base collaborator domain: {base}  "
+        f"(server: {src}).\n"
+        "Next: session(action='oob_mint', options={'cell_id': '<blind cell id>'}) to get a unique "
+        "callback host, embed it in your blind payload (SSRF/RCE/XXE/OAST-SQLi/DNS exfil), then "
+        "session(action='oob_poll', options={'correlation_id': '<id>'}) to confirm the callback."
+    )
+
+
+def _do_oob_mint(opts):
+    """Mint a unique callback (subdomain for interactsh, URL for http) under the
+    active listener. Pure session-state work — no I/O, hence not async."""
+    import uuid
+    from datetime import datetime, timezone
+    from core.session import assets as sess_assets
+    oob = _oob_module()
+
+    listener = sess_assets.get_oob_listener()
+    base = (listener or {}).get("base_domain", "")
+    if not base:
+        return "No OOB listener running. Call session(action='oob_start') first."
+    mode = (listener or {}).get("mode", "interactsh")
+    correlation_id = uuid.uuid4().hex[:12]
+    if mode == "http":
+        callback = oob.mint_http_callback(base, correlation_id)
+        embed_hint = f"Embed this URL in your blind HTTP/SSRF payload: {callback}"
+    else:
+        callback = oob.mint_subdomain(base, correlation_id)
+        embed_hint = (
+            f"Embed it in your blind payload — e.g. http://{callback}/ , a DNS lookup of "
+            f"{callback}, or an XXE/SSRF target."
+        )
+    sess_assets.update_known_assets("oob_interactions", [{
+        "subdomain": callback,
+        "correlation_id": correlation_id,
+        "linked_cell_id": str(opts.get("cell_id", "")),
+        "minted_at": datetime.now(timezone.utc).isoformat(),
+        "polled": False,
+        "hits": 0,
+    }])
+    return (
+        f"OOB callback minted: {callback}  (correlation_id={correlation_id}).\n"
+        f"{embed_hint}\n"
+        f"After firing, run session(action='oob_poll', options={{'correlation_id': "
+        f"'{correlation_id}'}}). Registered in known_assets so it survives context compaction."
+    )
+
+
+async def _do_oob_poll(opts):
+    """Poll the active backend for interactions matching a minted correlation id."""
+    import json as _json
+    from tools import kali_runner
+    from core.session import assets as sess_assets
+    from mcp_server.scan_engine.artifacts import store_artifact
+    oob = _oob_module()
+
+    correlation_id = str(opts.get("correlation_id", "")).strip()
+    if not correlation_id:
+        return "Missing correlation_id. Use the id returned by session(action='oob_mint')."
+    listener = sess_assets.get_oob_listener()
+    mode = (listener or {}).get("mode", "interactsh")
+
+    if mode == "http":
+        poll_url = oob.http_poll_url((listener or {}).get("poll_url", ""), correlation_id)
+        if not poll_url:
+            base = (listener or {}).get("base_domain", "")
+            return (
+                f"This OOB logger ({base}) has no OOB_POLL_URL configured, so the callback can't "
+                f"be fetched automatically. Check the logger's own UI/logs for a request to a path "
+                f"containing '{correlation_id}'. If it arrived, that confirms the blind vuln — save "
+                "the log line as a PoC and file the finding."
+            )
+        raw = await kali_runner.exec_command(oob.build_http_poll_command(poll_url), timeout=30)
+        hits = oob.parse_http_hits(raw, correlation_id)
+    else:
+        out_file = (listener or {}).get("out_file", oob.OOB_OUT_FILE)
+        raw = await kali_runner.exec_command(oob.build_poll_command(out_file), timeout=30)
+        hits = oob.parse_interactions(raw, correlation_id)
+
+    sess_assets.mark_oob_polled(correlation_id, len(hits))
+    if not hits:
+        return (
+            f"No OOB interactions for correlation_id={correlation_id} yet. Blind callbacks can "
+            "lag — if you just fired the payload, wait and poll again. No callback after a "
+            "reasonable wait is evidence the injection did NOT reach an OOB sink."
+        )
+    artifact_id = store_artifact("oob_interaction", _json.dumps(hits, indent=2))
+    protos = ", ".join(sorted({str(h.get("protocol", "?")) for h in hits}))
+    return (
+        f"OOB CONFIRMED: {len(hits)} interaction(s) for {correlation_id} (protocols: {protos}). "
+        f"artifact_id={artifact_id}. This is proof of a blind vulnerability — file "
+        "report(action='finding', ...) for it, then close the blind cell vulnerable with this "
+        "artifact_id and the returned finding_id."
+    )
 
 
 def _do_resume(opts: dict) -> str:
@@ -1705,6 +2090,44 @@ def _do_recovery():
         return json.dumps(result, indent=2, default=str)
 
 
+def _recovery_iter_status(current: dict) -> str | None:
+    """Thorough-scan analysis-pass progress line for the recovery brief, or None."""
+    if current.get("depth") != "thorough":
+        return None
+    analysis_iter = current.get("analysis_passes", _analysis_passes)
+    mi = _min_iterations()
+    remaining = max(0, mi - analysis_iter)
+    return (
+        f"Analysis pass {analysis_iter}/{mi} "
+        f"({'complete — quality gates only' if remaining == 0 else f'{remaining} more required'})"
+    )
+
+
+def _recovery_auth_context(known_assets: dict) -> dict:
+    """Compact auth context (creds / JWTs / login endpoints) for the recovery brief.
+
+    Surfaced so Smith authenticates before testing auth-protected endpoints
+    instead of marking them tested_clean on a 401/403.
+    """
+    creds = known_assets.get("credentials", [])
+    tokens = known_assets.get("auth_tokens", [])
+    auth_eps = known_assets.get("auth_endpoints", [])
+    ctx: dict = {}
+    if creds:
+        ctx["credentials"] = creds[-5:]          # most recent 5
+    if tokens:
+        ctx["jwt_tokens"] = tokens[-3:]          # most recent 3, keep brief compact
+    if auth_eps:
+        ctx["login_endpoints"] = auth_eps[:3]
+    if ctx:
+        ctx["how_to_use"] = (
+            "When an endpoint returns 401/403, send the JWT as 'Authorization: Bearer <value>'. "
+            "If no token is valid, POST to a login endpoint with credentials to mint a new one. "
+            "DO NOT mark cells tested_clean on 401/403 — the server returns 'REJECTED' now."
+        )
+    return ctx
+
+
 def _build_recovery_result(
     current: dict,
     cov: dict,
@@ -1720,39 +2143,8 @@ def _build_recovery_result(
     resume_step: str,
 ) -> dict:
     meta = cov.get("meta", {})
-
-    # Iteration progress for thorough scans.
-    # Use _analysis_passes (quality-clean passes) not _complete_attempts (includes quality-fix calls).
-    analysis_iter = current.get("analysis_passes", _analysis_passes)
-    iter_status: str | None = None
-    if current.get("depth") == "thorough":
-        remaining = max(0, _THOROUGH_MIN_ITERATIONS - analysis_iter)
-        iter_status = (
-            f"Analysis pass {analysis_iter}/{_THOROUGH_MIN_ITERATIONS} "
-            f"({'complete — quality gates only' if remaining == 0 else f'{remaining} more required'})"
-        )
-
-    # Auth context — credentials, JWTs, and login endpoints accumulated during
-    # the scan. Surfaced prominently so Smith can authenticate before testing
-    # auth-protected endpoints instead of marking them tested_clean on 401.
-    known_assets = current.get("known_assets", {})
-    auth_context = {}
-    creds = known_assets.get("credentials", [])
-    tokens = known_assets.get("auth_tokens", [])
-    auth_eps = known_assets.get("auth_endpoints", [])
-    if creds:
-        auth_context["credentials"] = creds[-5:]  # most recent 5
-    if tokens:
-        # Most recent token first; only most recent 3 to keep brief compact
-        auth_context["jwt_tokens"] = tokens[-3:]
-    if auth_eps:
-        auth_context["login_endpoints"] = auth_eps[:3]
-    if auth_context:
-        auth_context["how_to_use"] = (
-            "When an endpoint returns 401/403, send the JWT as 'Authorization: Bearer <value>'. "
-            "If no token is valid, POST to a login endpoint with credentials to mint a new one. "
-            "DO NOT mark cells tested_clean on 401/403 — the server returns 'REJECTED' now."
-        )
+    iter_status = _recovery_iter_status(current)
+    auth_context = _recovery_auth_context(current.get("known_assets", {}))
 
     result = {
         "EXECUTE_NOW": next_call,
@@ -1796,6 +2188,21 @@ def _build_recovery_result(
         result["pending_escalations"] = pending_escalations
     if integrity_warnings:
         result["integrity_warnings"] = integrity_warnings
+
+    # Open wishlist items — needs Smith raised for the operator. Surfaced so a
+    # fulfilled need (operator dropped in creds/scope) is picked up after
+    # compaction and the linked cells get reopened instead of forgotten.
+    try:
+        from core.wishlist import wishlist_queue
+        open_wish = wishlist_queue.list_open()
+        if open_wish:
+            result["wishlist_open"] = [
+                {"id": w.id, "need": w.need, "category": w.category,
+                 "blocking_cell_ids": w.blocking_cell_ids}
+                for w in open_wish[:8]
+            ]
+    except Exception:
+        pass
 
     return result
 
@@ -2085,3 +2492,89 @@ def _do_set_codebase(opts):
     os.environ["PENTEST_TARGET_PATH"] = abs_path
     log.note(f"codebase target set to {abs_path}")
     return f"Codebase target set to: {abs_path}"
+
+
+# ── Wishlist: non-blocking agent→operator backlog ──────────────────────────────
+# Terms that mean "I want auth Smith may already hold". A wishlist for these is
+# rejected when known_assets already has usable auth — so Smith can't quietly
+# route around the 401/403 re-test gate by asking the operator for creds.
+_AUTH_NEED_TERMS = (
+    "credential", "password", "login as", "auth token", "jwt", "bearer token",
+    "api key", "apikey", "session token", "valid account", "sign in", "sign-in", "log in",
+)
+
+
+def _wishlist_already_satisfiable(need: str) -> str | None:
+    """If the need is for auth Smith already holds, point at known_assets instead.
+
+    Closes the moral-hazard hole: without this, Smith could wishlist 'admin creds'
+    to sidestep the auth re-test gate rather than using auth already captured.
+    """
+    n = need.lower()
+    if not any(t in n for t in _AUTH_NEED_TERMS):
+        return None
+    ka = (scan_session.get() or {}).get("known_assets", {})
+    have: list[str] = []
+    if ka.get("credentials"):
+        have.append(f"{len(ka['credentials'])} credential pair(s)")
+    if ka.get("auth_tokens"):
+        have.append(f"{len(ka['auth_tokens'])} JWT/token(s)")
+    if ka.get("auth_endpoints"):
+        have.append(f"{len(ka['auth_endpoints'])} login endpoint(s)")
+    if not have:
+        return None
+    return (
+        "NOT QUEUED — you already hold auth context for this target: " + ", ".join(have) + ". "
+        "Use it instead of asking the operator: attach the JWT as 'Authorization: Bearer <value>' "
+        "(see session(action='recovery') → auth_context), or POST known credentials to a login "
+        "endpoint to mint a fresh token. Only wishlist auth if those are exhausted/expired — and "
+        "say so in the rationale."
+    )
+
+
+def _do_wishlist_add(opts):
+    from core.wishlist import wishlist_queue
+    need = str(opts.get("need", "")).strip()
+    if not need:
+        return (
+            "wishlist_add requires need= — what you need to go deeper "
+            "(e.g. 'valid analyst-role creds to reach /admin', 'scope expanded to the staging API', "
+            "'rate-limit relief on the login endpoint'). Optional: category= "
+            "(credentials|scope|rate_limit|tooling|access|environment|other), rationale=, "
+            "blocking_cell_ids=[...]."
+        )
+    guard = _wishlist_already_satisfiable(need)
+    if guard:
+        return guard
+    blocking = opts.get("blocking_cell_ids") or []
+    item_id = wishlist_queue.add(
+        need=need,
+        category=str(opts.get("category", "other")),
+        rationale=str(opts.get("rationale", "")),
+        blocking_cell_ids=blocking if isinstance(blocking, list) else [],
+    )
+    if item_id is None:
+        return "Already on the wishlist (an open item with this need exists) — not duplicated."
+    log.note(f"wishlist add: {need}")
+    link = f" Linked to {len(blocking)} blocked cell(s)." if blocking else ""
+    return (
+        f"Wishlist item {item_id} recorded (NON-BLOCKING) — the operator sees it on the dashboard "
+        f"and can fulfill it without pausing the scan.{link} Keep testing other coverage; do NOT "
+        "mark the blocked cells not_applicable just because the resource is missing — they stay "
+        "pending until the need is fulfilled."
+    )
+
+
+def _do_wishlist_list():
+    from core.wishlist import wishlist_queue
+    open_items = wishlist_queue.list_open()
+    return json.dumps({
+        "open": len(open_items),
+        "items": [
+            {
+                "id": i.id, "need": i.need, "category": i.category,
+                "rationale": i.rationale, "blocking_cell_ids": i.blocking_cell_ids,
+            }
+            for i in open_items
+        ],
+    }, indent=2)

@@ -19,7 +19,9 @@ from pathlib import Path
 import core.qa_agent as _qa
 from core import store as _store
 from .checks_depth import (
+    _check_chain_correlation,
     _check_depth_after_finding,
+    _check_oob_unpolled,
     _check_premature_complete,
     _check_stuck_on_target,
     _check_tool_inactivity,
@@ -78,6 +80,8 @@ _CHECKS: list[tuple] = [
     (_check_na_abuse,              ("coverage_data",)),
     # Depth enforcement
     (_check_depth_after_finding,   ("entries", "findings_data")),
+    (_check_chain_correlation,     ("findings_data",)),
+    (_check_oob_unpolled,          ("session_data",)),
     (_check_whitebox_passes,       ("entries", "session_data")),
     # Stall detection
     (_check_tool_inactivity,       ("entries",)),

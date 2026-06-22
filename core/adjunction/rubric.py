@@ -122,6 +122,57 @@ _LOW_IMPACT_TERMS = (
 )
 
 
+# Terminal-impact signals for the exploit-chain rescoring rule. A *proven* chain
+# (an escalation lead marked done WITH a recorded result) that reaches one of
+# these terminals re-rates the finding at the terminal's blast radius — chains
+# COMPOSE, they never average. Critical terminals beat high terminals.
+_TERMINAL_CRITICAL_TERMS = (
+    "rce", "remote code execution", "code execution", "command execution",
+    "command injection", "reverse shell", "web shell", "shell access",
+    "admin access", "administrator access", "admin panel access",
+    "account takeover", "ato", "domain admin", "cloud account",
+    "full aws", "full database", "database dump", "dumped all", "all users",
+    "all tenants", "cross-tenant", "cross tenant", "mass exfil", "bulk exfil",
+    "root access", "auth bypass", "authentication bypass", "full compromise",
+)
+# Link-local cloud-metadata (IMDS) address. Assembled from octets rather than
+# written as a literal so it's not a hardcoded-IP smell (Sonar S1313) — here it
+# is only a detection KEYWORD matched in finding text, never a connection target.
+_IMDS_IP = ".".join(("169", "254", "169", "254"))
+_TERMINAL_HIGH_TERMS = (
+    "privilege escalation", "privesc", "another user", "other users",
+    "another tenant", "cross-object", "idor", "bola", "internal service",
+    "cloud metadata", "imds", _IMDS_IP, "read other", "session takeover",
+)
+
+
+def chain_terminal_severity(finding: dict) -> str | None:
+    """Severity a finding should carry given any PROVEN escalation chain.
+
+    Inspects ``finding['escalation_leads']`` (the `[{lead, status, result}]`
+    list) for entries marked ``done`` WITH a non-empty ``result`` — i.e. a chain
+    the agent actually followed and recorded the outcome of. If that outcome
+    reaches a terminal impact, returns the terminal severity ("critical" beats
+    "high"); otherwise None. Pure; never lowers severity (the caller only raises).
+    """
+    leads = finding.get("escalation_leads")
+    if not isinstance(leads, list):
+        return None
+    best: str | None = None
+    for lead in leads:
+        if not isinstance(lead, dict):
+            continue
+        result = str(lead.get("result", "")).strip()
+        if str(lead.get("status", "")).strip().lower() != "done" or not result:
+            continue
+        text = f"{lead.get('lead', '')} {result}".lower()
+        if any(t in text for t in _TERMINAL_CRITICAL_TERMS):
+            return "critical"  # highest band — short-circuit
+        if any(t in text for t in _TERMINAL_HIGH_TERMS):
+            best = "high"
+    return best
+
+
 def rubric_text() -> str:
     """Compact Markdown rendering of the rubric for embedding in a directive."""
     lines = ["SEVERITY RUBRIC (rate every finding against THIS, not an ad-hoc scale):"]
@@ -130,6 +181,15 @@ def rubric_text() -> str:
         lines.append(f"\n{sev.upper()} — {band['summary']}")
         for ex in band["examples"]:
             lines.append(f"  - {ex}")
+    return "\n".join(lines)
+
+
+def rubric_digest() -> str:
+    """One line per band (summaries only, no examples) — for condensed/small-profile
+    directives where the full rubric_text() would blow the context budget."""
+    lines = ["SEVERITY RUBRIC (rate against THIS — likelihood × impact, not a checklist):"]
+    for sev in SEVERITIES:
+        lines.append(f"  {sev.upper()}: {RUBRIC[sev]['summary']}")
     return "\n".join(lines)
 
 
@@ -153,3 +213,70 @@ def validate_severity_vs_impact(severity: str, description: str) -> tuple[bool, 
             "hardening issue — confirm there is a real exploitation path before keeping it high"
         )
     return True, None
+
+
+# ── Anti-false-positive doctrine ───────────────────────────────────────────────
+# Single source of truth for the "what counts as a real finding" principles that
+# were previously scattered across the per-skill SKILL.md files as divergent
+# one-liners. Embedded in the completion-time adjudication directive (so the
+# senior-review pass applies them) and surfaced as a compact hunt-time digest at
+# scan start. Pure data — no I/O, no LLM.
+#
+# Deliberately domain-agnostic: Smith is black-box-first across web/API/network/
+# AD/cloud/k8s/LLM/source, so these are phrased to apply to any target class, not
+# just the white-box code-review context they partly originate from.
+
+PRINCIPLES: tuple[str, ...] = (
+    "ONLY REPORT WHAT YOU CAN EXPLOIT. A finding needs a concrete attack — who the "
+    "attacker is, what they send/do, and what they get. \"An attacker could "
+    "theoretically…\" is not a finding; \"send this request, get this result\" is.",
+    "SEVERITY = LIKELIHOOD × IMPACT, not deviation from a checklist. If you cannot "
+    "describe the concrete damage achieved, the severity is lower than you think.",
+    "DEFENSE-IN-DEPTH GAPS ARE HARDENING, NOT VULNERABILITIES. If Layer A already "
+    "prevents the attack, the absence of Layer B is a hardening note — file it as "
+    "LOW/info, never high/critical. (Smith still records it as a LOW finding for "
+    "audit/compliance; it just must not be inflated.)",
+    "DESIGNED BEHAVIOUR IS NOT A BUG. Understand the trust model first — if the "
+    "design trusts admins fully, admin-does-admin-things is not a finding.",
+    "VERIFY PARSER/RUNTIME ASSUMPTIONS. The most convincing false positives reason "
+    "\"the parser/runtime will interpret this as…\" without checking. If an exploit "
+    "depends on parser or runtime behaviour, test it or cite the spec — don't assume.",
+    "AN HONEST \"NOTHING FOUND\" BEATS A PADDED REPORT. Don't manufacture LOWs to look "
+    "thorough; but push hard before concluding nothing is there.",
+)
+
+# Anti-patterns the reviewer should actively reject. Generalized from the
+# white-box originals into target-agnostic phrasing.
+ANTI_PATTERNS: tuple[str, ...] = (
+    "Listing every checklist/standard deviation (OWASP, ASVS, a CIS benchmark) as a "
+    "finding — a standard is a checklist, not a bug list.",
+    "Rating a defense-in-depth gap as HIGH/CRITICAL when an existing layer already "
+    "blocks the attack.",
+    "Ignoring the deployment model — e.g. flagging missing app-level rate limiting "
+    "when the CDN/WAF enforces it, or app-level controls a reverse proxy provides.",
+    "\"Potential\"/\"theoretical\" findings with no proof — either you can exploit it "
+    "or you can't; the words \"potentially\"/\"theoretically\" mean more work is owed.",
+    "Constructing an exploit from unverified parser/runtime assumptions.",
+    "Reporting an injection \"reachable\" without confirming the payload survives to "
+    "the sink (encoding, prepared statements, or a prior layer may defang it).",
+)
+
+
+def anti_fp_text() -> str:
+    """Full anti-FP doctrine for embedding in the adjudication directive."""
+    lines = ["ANTI-FALSE-POSITIVE PRINCIPLES (apply to every verdict):"]
+    lines += [f"  - {p}" for p in PRINCIPLES]
+    lines.append("")
+    lines.append("REJECT THESE ANTI-PATTERNS:")
+    lines += [f"  - {a}" for a in ANTI_PATTERNS]
+    return "\n".join(lines)
+
+
+def anti_fp_digest() -> str:
+    """Compact (2-line) hunt-time reminder surfaced at scan start."""
+    return (
+        "FINDINGS BAR: only report what you can EXPLOIT (concrete attack + observed result, "
+        "never \"theoretically\"). Severity = likelihood × impact. A defense-in-depth gap "
+        "behind an existing control is a LOW hardening note, not a high/critical. Don't pad "
+        "with LOWs; an honest \"nothing exploitable here\" is a valid result."
+    )

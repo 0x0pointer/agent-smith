@@ -201,6 +201,7 @@
           _safeRender('quickLog',        renderQuickLog);
           _safeRender('cycleHistory',    renderCycleHistory);
           _safeRender('adjudicationLog', renderAdjudicationLog);
+          _safeRender('wishlist',        renderWishlist);
         }
         alerts = (_qaData.alerts || []);
 
@@ -381,6 +382,93 @@
       wrap.appendChild(frag);
       _adjudicationRenderedCount = entries.length;
     } catch { /* ignore */ }
+  }
+
+  // ── Resource Wishlist (agent → operator backlog) ──────────────────────────
+
+  const _WISH_CAT_COLOR = {
+    credentials: '#f87171', scope: '#fbbf24', rate_limit: '#a78bfa',
+    tooling: '#38bdf8', access: '#f472b6', environment: '#34d399', other: '#9b98b8',
+  };
+  const _WISH_STATUS = {
+    open: ['OPEN', '#38bdf8'], fulfilled: ['FULFILLED', '#4ade80'], dismissed: ['DISMISSED', '#9b98b8'],
+  };
+
+  async function renderWishlist() {
+    try {
+      const r = await fetch(`/api/wishlist?_=${Date.now()}`);
+      if (!r.ok) return;
+      const items = (await r.json()).items || [];
+      const openWrap = document.getElementById('wishlist-open-wrap');
+      const histWrap = document.getElementById('wishlist-history-wrap');
+      if (!openWrap || !histWrap) return;
+      const open = items.filter(i => i.status === 'open');
+      const resolved = items.filter(i => i.status !== 'open');
+      if (!open.length) {
+        openWrap.innerHTML = '<div class="empty-placeholder">No open requests — Smith has everything it asked for.</div>';
+      } else {
+        openWrap.innerHTML = '';
+        open.forEach(it => openWrap.appendChild(_buildWishlistCard(it, true)));
+      }
+      if (!resolved.length) {
+        histWrap.innerHTML = '<div class="empty-placeholder">No resolved wishlist items yet.</div>';
+      } else {
+        histWrap.innerHTML = '';
+        resolved.forEach(it => histWrap.appendChild(_buildWishlistCard(it, false)));
+      }
+    } catch { /* ignore */ }
+  }
+
+  function _buildWishlistCard(it, withActions) {
+    const color = _WISH_CAT_COLOR[it.category] || '#38bdf8';
+    const [statusLabel, statusColor] = _WISH_STATUS[it.status] || [it.status, '#9b98b8'];
+    const ts = it.ts ? new Date(it.ts).toLocaleTimeString() : '';
+    const cells = it.blocking_cell_ids || [];
+    const el = document.createElement('div');
+    el.style.cssText = `background:var(--bg-card);border:1px solid var(--border);border-left:3px solid ${color};border-radius:6px;padding:0.6rem 0.85rem;margin-bottom:0.5rem;font-size:0.82rem;`;
+    let html = `
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:0.25rem;">
+        <span style="color:${color};font-weight:600;font-family:'IBM Plex Mono',monospace;font-size:0.74rem;">${esc(it.category || 'other')}</span>
+        <span style="color:${statusColor};font-size:0.72rem;">${esc(statusLabel)} &nbsp; ${esc(ts)}</span>
+      </div>
+      <div style="color:var(--text);font-size:0.82rem;line-height:1.5;margin-bottom:0.2rem;overflow-wrap:anywhere;">${esc(it.need || '')}</div>`;
+    if (it.rationale) html += `<div style="color:var(--text-dim);font-size:0.74rem;margin-bottom:0.2rem;">${esc(it.rationale)}</div>`;
+    if (cells.length) html += `<div style="color:var(--text-dim);font-size:0.72rem;font-family:'IBM Plex Mono',monospace;">blocks ${cells.length} cell(s): ${esc(cells.slice(0, 6).join(', '))}${cells.length > 6 ? '…' : ''}</div>`;
+    if (it.resolution_note) html += `<div style="margin-top:0.3rem;padding:0.3rem 0.5rem;background:rgba(74,222,128,0.08);border-radius:4px;color:#86efac;font-size:0.75rem;">Operator: ${esc(it.resolution_note)}</div>`;
+    el.innerHTML = html;
+    if (withActions) {
+      const bar = document.createElement('div');
+      bar.style.cssText = 'display:flex;gap:0.4rem;margin-top:0.5rem;';
+      const mk = (label, bg, action) => {
+        const b = document.createElement('button');
+        b.textContent = label;
+        b.style.cssText = `padding:0.3rem 0.7rem;border:none;border-radius:4px;background:${bg};color:#fff;font-size:0.74rem;cursor:pointer;`;
+        b.addEventListener('click', () => _resolveWishlist(it.id, action, b));
+        return b;
+      };
+      bar.appendChild(mk('Fulfill', '#16a34a', 'fulfill'));
+      bar.appendChild(mk('Dismiss', '#6b7280', 'dismiss'));
+      el.appendChild(bar);
+    }
+    return el;
+  }
+
+  async function _resolveWishlist(id, action, btn) {
+    const msg = action === 'fulfill'
+      ? 'What are you giving Smith? (e.g. "creds analyst/Pw123", "scope now includes staging.api") — sent to Smith as a steering directive:'
+      : 'Reason for dismissing (optional):';
+    const note = window.prompt(msg);
+    if (action === 'fulfill' && note === null) return;  // cancelled
+    if (btn) { btn.disabled = true; btn.textContent = '…'; }
+    try {
+      const r = await fetch(`/api/wishlist/${encodeURIComponent(id)}/${action}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ note: note || '' }),
+      });
+      if (!r.ok) alert('Failed: ' + r.status);
+    } catch { alert('Request failed'); }
+    renderWishlist();
   }
 
   // ── Metrics ───────────────────────────────────────────────────────────────

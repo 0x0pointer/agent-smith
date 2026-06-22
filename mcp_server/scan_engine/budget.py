@@ -26,6 +26,15 @@ MODEL_PROFILES: dict[str, dict] = {
         "context_budget_chars": 400_000,  # ~100K tokens; warn at 80% (320K) before compaction fires
         "recovery_cells_shown": None,  # show all cells in recovery
         "execute_next_in_summary": True,
+        # condensed_directives: serialize completion blockers one-at-a-time and
+        # emit digest (not full) versions of the big instruction blocks. OFF for
+        # full — large-context models absorb the whole wall in one pass and a
+        # batch is fewer round-trips for them.
+        "condensed_directives": False,
+        # thorough_min_passes: how many quality-clean analysis passes a thorough
+        # scan must complete. Capable models do the full 3; small local models
+        # cannot hold 3 deep passes in a 16-32K window, so they do fewer.
+        "thorough_min_passes": 3,
     },
     "medium": {
         "enforce_budget": True,
@@ -33,6 +42,8 @@ MODEL_PROFILES: dict[str, dict] = {
         "context_budget_chars": 160_000,  # ~40K tokens
         "recovery_cells_shown": 10,
         "execute_next_in_summary": True,
+        "condensed_directives": True,
+        "thorough_min_passes": 2,
     },
     "small": {
         "enforce_budget": True,
@@ -40,6 +51,8 @@ MODEL_PROFILES: dict[str, dict] = {
         "context_budget_chars": 64_000,  # ~16K tokens
         "recovery_cells_shown": 3,
         "execute_next_in_summary": True,
+        "condensed_directives": True,
+        "thorough_min_passes": 1,
     },
 }
 

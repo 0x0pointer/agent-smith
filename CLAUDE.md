@@ -46,6 +46,7 @@ Run any security scanner.
 | spider | URL | depth=3, mode=fast\|playwright, cookies={}, max_pages=200 |
 | semgrep | path | |
 | trufflehog | path | |
+| exec_sandbox | path (codebase) | cmd= (required), setup=, image=python:3.11-slim (any stack: node/golang/ruby/…), subdir=, timeout=180, allow_network=true — build/run WHITE-BOX target code in a hardened, caps-dropped sandbox over a staged copy to CONFIRM a finding; returns an `artifact_id`. Network is ON by default (deps install); set allow_network=false to isolate untrusted code. Opt-in, fail-soft, never a completion gate. |
 | fuzzyai | URL | attack=jailbreak, provider=openai, model= |
 | pyrit | URL | attack=prompt_injection, objective=, max_turns=5, scorer=self_ask |
 | garak | URL | probes=dan,encoding,promptinject,..., generator=rest |
@@ -62,8 +63,10 @@ Raw HTTP requests and PoC saving.
 
 ### `report(action, data)`
 Log findings, diagrams, notes, and coverage matrix updates.
-- `action="finding"` — data: `{title, severity, target, description, evidence, tool_used, cve}` — returns `{id: "<finding_id>"}`. **Always file the finding BEFORE closing the related coverage cell** so you can pass the returned `id` as `finding_id`.
+- `action="finding"` — data: `{title, severity, target, description, evidence, tool_used, cve, trace?}` — returns `{id: "<finding_id>"}`. **Always file the finding BEFORE closing the related coverage cell** so you can pass the returned `id` as `finding_id`. **Dedup:** a finding with the same `target`+`title`+`severity` as one already on record (and not a prior `false_positive`) is rejected as a DUPLICATE — re-file a genuinely distinct issue with a more specific title. **`trace` (optional, WHITE-BOX findings):** an ordered source data flow `[{kind: entrypoint|propagation|sink, file, line, scope, description}]` (first step entrypoint, last sink, ≥2 steps). When a codebase is pinned (`set_codebase`), each cited `file:line` is RESOLVED against the repo and a citation that doesn't exist is REJECTED — so cite lines you actually read. Omit `trace` for black-box findings.
+- `action="update_finding"` — data: `{id, …fields}`. The `adjudication` audit-trail object is `{reproducible, artifact_id, original_severity, revised_severity, rationale}`: `rationale` is always required, and when `reproducible: true` an `artifact_id` that **exists on disk** (the artifact proving the re-run reproduces) is required — a self-attested "it reproduces" with no proving artifact is rejected. A finding with a **proven** `escalation_leads` chain to a worse terminal is auto-rescored to the terminal blast radius (chains compose, never average).
 - `action="diagram"` — data: `{title, mermaid}`
+- `action="chain"` — data: `{name, steps=[{from_finding_id, to_finding_id, transition_artifact_id, mitre_technique}], terminal_impact, combined_severity}`. Records a **proven** exploit chain: every step's `transition_artifact_id` must exist on disk (the evidence that step N's output feeds step N+1), else the chain is rejected. Auto-renders a MITRE-labelled Mermaid kill-chain diagram. File the compound finding at terminal-blast-radius severity.
 - `action="note"` — data: `{message}`
 - `action="dashboard"` — data: `{port: 7777}` (default)
 - `action="coverage"` — data: `{type, ...}` — manage the coverage matrix:
@@ -80,7 +83,7 @@ Log findings, diagrams, notes, and coverage matrix updates.
 
 ### `session(action, options)`
 Scan lifecycle and infrastructure.
-- `action="start"` — options: `{target, depth, scope, out_of_scope, max_cost_usd, max_time_minutes, max_tool_calls, model_profile=full}` (model_profile: full|medium|small)
+- `action="start"` — options: `{target, depth, scope, out_of_scope, max_cost_usd, max_time_minutes, max_tool_calls, model_profile}` (model_profile: full|medium|small). **`model_profile` AUTO-DETECTS** from the environment when omitted — a local model (e.g. `OPENCODE_MODEL`/`OLLAMA_MODEL`=qwen/llama/mistral, or `OLLAMA_HOST` set) scopes to `small`/`medium` so its context window isn't silently overflowed; cloud Claude/GPT (no local signal) stays `full`. Force it with the option or `SMITH_MODEL_PROFILE`. The resolved profile + reason are shown in the start output. Smaller profiles tighten tool/output budgets, surface completion blockers one at a time, condense the adjudication directive, and reduce required thorough passes (full=3/medium=2/small=1).
 - `action="complete"` — options: `{notes}`
 - `action="status"` — returns current scan state (tools run, findings count, cost, remaining calls). **When the response includes `qa_alerts`, immediately call `session(action="qa_reply")` with your acknowledgment before continuing.**
 - `action="qa_reply"` — options: `{message}` — log your response to the QA agent's alerts. Call this every time `session(action="status")` returns non-empty `qa_alerts`. Write one sentence per alert: what you acknowledge and what you will do. This is what the human sees in the QA ↔ Smith conversation view.
@@ -91,6 +94,13 @@ Scan lifecycle and infrastructure.
 - `action="pull_images"` — pre-pull all Docker images
 - `action="set_skill"` — options: `{skill, reason, chained_from}` — log skill selection with reasoning; **call this before invoking any skill** via the Skill tool
 - `action="set_codebase"` — options: `{path}` — set local codebase for semgrep/trufflehog
+- **Wishlist (non-blocking agent→operator backlog)** — when you're blocked from testing deeper by a missing resource, record it instead of marking the cell `not_applicable`. The operator sees it on the dashboard and can fulfill it without pausing the scan; a fulfilled need re-opens the cells it was blocking.
+  - `action="wishlist_add"` — options: `{need (required), category=credentials|scope|rate_limit|tooling|access|environment|other, rationale=, blocking_cell_ids=[...]}`. NON-BLOCKING — keep testing other coverage. An auth need already satisfiable from `known_assets` (you already hold creds/tokens) is rejected: use the auth you have, don't ask for it.
+  - `action="wishlist_list"` — returns your open requests.
+- **Out-of-band (OOB) blind-vuln confirmation** — confirm blind SSRF/RCE/XXE/OAST-SQLi/DNS-exfil via a callback server (backend configured by `OOB_MODE`: `interactsh` default = DNS+HTTP via the bundled interactsh-client; `http` = any HTTP request logger). Three-step lifecycle:
+  - `action="oob_start"` — ensure the OOB backend is ready; returns the minted base collaborator domain (interactsh) or records the logger base URL (http).
+  - `action="oob_mint"` — options: `{cell_id}` — returns a unique callback (a subdomain for interactsh, a URL for http) registered in `known_assets` so it survives compaction. Embed it in the blind payload.
+  - `action="oob_poll"` — options: `{correlation_id}` — checks for received callbacks; a hit is written as an artifact whose `artifact_id` (+ a `finding_id`) closes the blind injection cell `vulnerable`. No callback after a reasonable wait is evidence the payload did NOT reach an OOB sink.
 
 ## Skill Logging (mandatory)
 

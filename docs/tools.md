@@ -126,6 +126,30 @@ scan(tool="trufflehog", target="/target", flags="--only-verified")
 
 ---
 
+### `exec_sandbox`
+Build & run **white-box target code** in a **hardened, capability-dropped** ephemeral container over a *staged copy* of the codebase (the original source is never mounted writable) to **confirm a finding with a real crash/exec artifact** instead of a static "input reaches sink" claim. Stack-agnostic — set `image` to any Docker image (`node:20-slim`, `golang:1.22`, `eclipse-temurin:21`, `ruby:3.3`, …). Opt-in, fail-soft (a setup failure returns guidance, never an exception), and never a completion gate.
+
+| Option | Default | Description |
+|---|---|---|
+| `cmd` | required | The build/run command (e.g. `python repro.py`) |
+| `setup` | `""` | Optional build/deps step run before `cmd` (e.g. `pip install -e .`) |
+| `image` | `python:3.11-slim` | Runtime image — match the stack (`node:20-slim`, `golang:1.22`, `ruby:3.3`, …) |
+| `subdir` | `""` | Stage only this subdirectory (keep the staged copy small) |
+| `timeout` | `180` | Seconds; the deadline is owned by the caller via `asyncio.timeout()` and kills the container on expiry |
+| `allow_network` | `true` | Network is **on by default** so dependency installs work (`pip install`, `npm ci`, `go mod download`, …). Set `false` for strict isolation (`--network=none`) when the target code is genuinely untrusted and must not call out. All other hardening (dropped caps, no-new-privileges, pid/mem/cpu caps, `--rm`, staged copy) applies regardless. |
+
+Returns an `artifact_id` of the captured stdout/stderr + exit code. If the output proves the finding (crash, code execution, leaked data), pass that `artifact_id` as the reproduction artifact; if it does not reproduce, the static claim is unconfirmed.
+
+```
+scan(tool="exec_sandbox", target="/path/to/repo", options={
+  "subdir": "packages/parser", "setup": "pip install -e .",
+  "cmd": "python -c \"import parser; parser.loads(open('/work/poc.bin','rb').read())\""})
+```
+
+**Requires:** Docker. The default `python:3.11-slim` image auto-pulls on first use.
+
+---
+
 ### `fuzzyai`
 Stateless LLM fuzzer (CyberArk FuzzyAI). Probes for jailbreaks, prompt injection, PII extraction, and system-prompt leakage.
 
@@ -246,6 +270,9 @@ Log a confirmed vulnerability.
 | `evidence` | yes | Raw tool output, request/response, or PoC |
 | `tool_used` | no | Tool that found it |
 | `cve` | no | CVE ID if applicable |
+| `trace` | no | **White-box only.** Source data flow `[{kind: entrypoint\|propagation\|sink, file, line, scope, description}]` (first step `entrypoint`, last `sink`, ≥2 steps). When a codebase is pinned (`set_codebase`), each cited `file:line` is **resolved against the repo and a citation that doesn't exist is REJECTED** — so cite lines you actually read. Omit for black-box findings. |
+
+**Dedup:** a finding with the same `target` + `title` + `severity` as one already on record (and not a prior `false_positive`) is rejected as a `DUPLICATE` — re-file a genuinely distinct issue with a more specific title. This keeps `findings.json` and the adjudication gate clean across re-runs.
 
 ```
 report(action="finding", data={
@@ -254,9 +281,42 @@ report(action="finding", data={
   "target": "https://example.com/login",
   "description": "The username parameter is injectable...",
   "evidence": "sqlmap output...",
-  "tool_used": "sqlmap"
+  "tool_used": "sqlmap",
+  "trace": [
+    {"kind": "entrypoint", "file": "api/login.py", "line": 42, "scope": "login", "description": "username from request body"},
+    {"kind": "sink", "file": "db/query.py", "line": 91, "scope": "execute_raw", "description": "concatenated into raw SQL"}
+  ]
 })
 ```
+
+---
+
+### `action="update_finding"`
+Update fields on an existing finding by `id`. Used by the completion-time adjudication pass to record a senior-review verdict.
+
+| Field | Required | Description |
+|---|---|---|
+| `id` | yes | Finding id to update |
+| any of | — | `severity`, `title`, `description`, `evidence`, `status` (`confirmed`\|`false_positive`), `remediation`, `reproduction`, `escalation_leads`, `trace` |
+| `adjudication` | — | Audit trail `{reproducible, artifact_id, original_severity, revised_severity, rationale}`. `rationale` is always required; when `reproducible: true`, an `artifact_id` that **exists on disk** (the run proving reproduction) is required — a self-attested "it reproduces" with no proving artifact is rejected. A finding with a **proven** `escalation_leads` chain to a worse terminal is auto-rescored to the terminal blast radius. |
+
+```
+report(action="update_finding", data={"id": "<id>", "status": "confirmed", "severity": "high",
+  "adjudication": {"reproducible": true, "artifact_id": "exec_sandbox_ab12", "original_severity": "medium",
+                   "revised_severity": "high", "rationale": "re-ran the attack; confirmed data read"}})
+```
+
+---
+
+### `action="chain"`
+Record a **proven** exploit chain. Every step's `transition_artifact_id` must exist on disk (the evidence that step N's output feeds step N+1), else the chain is rejected. Auto-renders a MITRE-labelled Mermaid kill-chain; file the compound finding at terminal-blast-radius severity.
+
+| Field | Required | Description |
+|---|---|---|
+| `name` | yes | Chain name |
+| `steps` | yes | `[{from_finding_id, to_finding_id, transition_artifact_id, mitre_technique}]` |
+| `terminal_impact` | no | What the chain ultimately achieves |
+| `combined_severity` | no | Severity of the full chain |
 
 ---
 
@@ -315,6 +375,7 @@ Initialise a scan session. **Always call this first.**
 | `max_cost_usd` | depth preset | Hard cost limit |
 | `max_time_minutes` | depth preset | Hard time limit |
 | `max_tool_calls` | depth preset | Hard call limit |
+| `model_profile` | auto-detect | `full`\|`medium`\|`small` — scales context/output budgets, blocker delivery, and thorough-pass count. **Auto-detected** when omitted: a local model (via `OLLAMA_HOST` or a `OPENCODE_MODEL`/`OLLAMA_MODEL`/`MODEL` name like qwen/llama/mistral) → `small`/`medium`; cloud → `full`. Force it here or via `SMITH_MODEL_PROFILE` in `.env` (the cross-client lever — opencode/Codex don't pass their model name to the server). |
 
 **Depth presets:**
 
@@ -350,11 +411,47 @@ session(action="status")
 ---
 
 ### `action="set_codebase"`
-Set the local directory that `scan(tool="semgrep")` and `scan(tool="trufflehog")` will mount.
+Set the local directory that `scan(tool="semgrep")`, `scan(tool="trufflehog")`, and `scan(tool="exec_sandbox")` will use (also enables the white-box finding `trace[]` file:line resolver).
 
 ```
 session(action="set_codebase", options={"path": "/path/to/my-app"})
 ```
+
+---
+
+### `action="wishlist_add"` / `action="wishlist_list"`
+A **non-blocking agent→operator backlog**. When Smith is blocked from testing deeper by a missing resource, it records the need instead of marking a coverage cell `not_applicable`. The operator sees it on the dashboard and can fulfill it without pausing the scan; a fulfilled need re-opens the cells it was blocking.
+
+| Option (`wishlist_add`) | Default | Description |
+|---|---|---|
+| `need` | required | What's needed to go deeper (e.g. "analyst-role creds for /admin") |
+| `category` | `other` | `credentials`\|`scope`\|`rate_limit`\|`tooling`\|`access`\|`environment`\|`other` |
+| `rationale` | `""` | Why it's blocking |
+| `blocking_cell_ids` | `[]` | Coverage cells this unblocks |
+
+An auth need already satisfiable from `known_assets` (Smith already holds creds/tokens) is rejected — use the auth you have. `wishlist_list` returns the open backlog.
+
+```
+session(action="wishlist_add", options={"need": "analyst-role creds for /admin",
+  "category": "credentials", "blocking_cell_ids": ["c12", "c13"]})
+```
+
+---
+
+### `action="oob_start"` / `action="oob_mint"` / `action="oob_poll"`
+Out-of-band confirmation of **blind** vulnerabilities (blind SSRF/RCE/XXE/OAST-SQLi, DNS exfil) via a callback server. Backend configured by `OOB_MODE` in `.env` (`interactsh` default — DNS+HTTP via the Kali-bundled client; or `http` — any request logger).
+
+- `oob_start` — ready the backend; returns the minted base collaborator domain (interactsh) or records the logger base URL (http). *No options.*
+- `oob_mint` — `options={cell_id}` → returns a unique callback (subdomain or URL), stored in `known_assets` so it survives compaction. Embed it in the blind payload.
+- `oob_poll` — `options={correlation_id}` → a received callback is written as an artifact whose `artifact_id` (+ a `finding_id`) closes the blind cell `vulnerable`. No callback after a reasonable wait = the payload didn't reach an OOB sink.
+
+```
+session(action="oob_start")
+session(action="oob_mint", options={"cell_id": "c42"})
+session(action="oob_poll", options={"correlation_id": "<id from mint>"})
+```
+
+**Requires:** Kali image (interactsh mode). See the OOB block in `.env.example` for backend config.
 
 ---
 

@@ -9,16 +9,19 @@ explainable rather than silent.
 Audit-trail shape:
   {
     "reproducible":      bool,
+    "artifact_id":       "<id of the artifact proving reproduction; required if reproducible=true>",
     "original_severity": "critical|high|medium|low|info",
     "revised_severity":  "critical|high|medium|low|info",
     "rationale":         "<non-empty reviewer reasoning>",
   }
 
-Pure functions — no I/O.
+Pure functions — no I/O. These check only the *presence* of artifact_id; the
+*disk-existence* check is enforced at the report_tools boundary (mirroring how
+coverage validates artifacts), keeping this layer side-effect-free.
 """
 from __future__ import annotations
 
-from core.adjunction.rubric import SEVERITIES
+from core.adjunction.rubric import SEVERITIES, chain_terminal_severity, severity_rank
 
 
 def is_adjudicated(finding: dict) -> bool:
@@ -30,9 +33,18 @@ def is_adjudicated(finding: dict) -> bool:
     rationale). Otherwise a blank verdict would slip a finding past
     pending_findings(), and the dashboard "Complete Scan" path would silently
     complete the scan with an un-reviewed finding.
+
+    A verdict claiming ``reproducible: true`` additionally requires a non-empty
+    ``artifact_id`` — a self-attested "it reproduces" with no proving artifact
+    is not enough to clear the gate (the disk-existence of that artifact is
+    enforced earlier, at the report_tools boundary).
     """
     adj = finding.get("adjudication")
-    return isinstance(adj, dict) and bool(str(adj.get("rationale") or "").strip())
+    if not isinstance(adj, dict) or not str(adj.get("rationale") or "").strip():
+        return False
+    if adj.get("reproducible") is True and not str(adj.get("artifact_id") or "").strip():
+        return False
+    return True
 
 
 def _norm_sev(value, fallback: str | None = None) -> str | None:
@@ -64,17 +76,37 @@ def coerce_adjudication(raw, finding: dict | None = None) -> dict | None:
     original = _norm_sev(raw.get("original_severity"), _norm_sev(current_sev))
     revised = _norm_sev(raw.get("revised_severity"), original)
 
+    # Terminal-blast-radius rule: if the finding carries a PROVEN escalation
+    # chain to a worse terminal (done lead + recorded result), re-rate it at the
+    # terminal impact — chains compose, they never average. Only ever raises.
+    chain_sev = chain_terminal_severity(finding or {})
+    chain_escalated_from = None
+    if chain_sev and severity_rank(chain_sev) > severity_rank(revised or "info"):
+        chain_escalated_from = revised
+        revised = chain_sev
+
     reproducible = raw.get("reproducible")
     if not isinstance(reproducible, bool):
         # Coerce common truthy/falsey encodings; default True (kept finding).
         reproducible = str(reproducible).strip().lower() not in ("false", "0", "no", "")
 
+    # Carry the reproduction artifact_id through if supplied. Presence +
+    # disk-existence of this artifact for a reproducible verdict is enforced at
+    # the report_tools boundary (which can emit an actionable REJECTED message);
+    # is_adjudicated() is the gate-level backstop. Keeping coerce side-effect-free
+    # and refusing only a hollow rationale preserves its single responsibility.
+    artifact_id = str(raw.get("artifact_id", "")).strip()
+
     out: dict = {
         "reproducible": reproducible,
         "rationale": rationale,
     }
+    if artifact_id:
+        out["artifact_id"] = artifact_id
     if original:
         out["original_severity"] = original
     if revised:
         out["revised_severity"] = revised
+    if chain_escalated_from and chain_escalated_from != revised:
+        out["chain_escalated_from"] = chain_escalated_from
     return out

@@ -58,6 +58,7 @@ def _load() -> dict:
         "meta":     {"created": datetime.now(timezone.utc).isoformat(), "target": ""},
         "findings": [],
         "diagrams": [],
+        "chains":   [],
     }
 
 
@@ -80,8 +81,15 @@ async def add_finding(
     reproduction: dict | None = None,
     escalation_leads: list[dict] | None = None,
     business_impact: str = "",
+    trace: list[dict] | None = None,
 ) -> dict:
-    """Append a vulnerability finding. Returns the stored entry."""
+    """Append a vulnerability finding. Returns the stored entry.
+
+    ``trace`` is the optional source-code data flow (entrypoint→propagation→sink
+    with file:line:scope) for white-box findings. Its shape and — when a codebase
+    is pinned — its file:line resolution are validated at the report_tools
+    boundary before this is called, so anything stored here is already sound.
+    """
     entry = {
         "id":          str(uuid.uuid4()),
         "timestamp":   datetime.now(timezone.utc).isoformat(),
@@ -99,6 +107,8 @@ async def add_finding(
         entry["reproduction"] = reproduction
     if escalation_leads:
         entry["escalation_leads"] = escalation_leads
+    if trace:
+        entry["trace"] = trace
     async with _lock:
         data = _load()
         data["findings"].append(entry)
@@ -109,7 +119,7 @@ async def add_finding(
 _UPDATABLE_FIELDS = {
     "severity", "title", "description", "evidence", "status",
     "gh_issue", "remediation", "reproduction", "escalation_leads", "business_impact",
-    "poc_files", "adjudication",
+    "poc_files", "adjudication", "trace",
 }
 
 
@@ -181,5 +191,34 @@ async def add_diagram(title: str, mermaid: str) -> dict:
     async with _lock:
         data = _load()
         data["diagrams"].append(entry)
+        _save(data)
+    return entry
+
+
+async def add_chain(
+    name: str,
+    steps: list[dict],
+    terminal_impact: str = "",
+    combined_severity: str = "",
+    mermaid: str = "",
+) -> dict:
+    """Append a proven exploit chain. Returns the stored entry.
+
+    steps: [{from_finding_id, to_finding_id, transition_artifact_id, mitre_technique}]
+    — each transition is artifact-backed (validated at the report_tools boundary),
+    so a stored chain only ever contains proven hand-offs.
+    """
+    entry = {
+        "id":                str(uuid.uuid4()),
+        "timestamp":         datetime.now(timezone.utc).isoformat(),
+        "name":              name,
+        "steps":             steps,
+        "terminal_impact":   terminal_impact,
+        "combined_severity": combined_severity,
+        "mermaid":           mermaid,
+    }
+    async with _lock:
+        data = _load()
+        data.setdefault("chains", []).append(entry)
         _save(data)
     return entry
