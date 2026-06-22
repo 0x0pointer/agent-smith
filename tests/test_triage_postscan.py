@@ -262,6 +262,7 @@ class TestEnsureMcpSseAlive:
         proc = MagicMock()
         proc.wait = AsyncMock(return_value=0)
         with patch.object(smith_mod, "_mcp_sse_alive", side_effect=lambda: next(alive_seq)), \
+             patch.object(smith_mod, "_launchd_supervises_mcp", new=AsyncMock(return_value=False)), \
              patch("asyncio.create_subprocess_exec",
                    new=AsyncMock(return_value=proc)) as spawn, \
              patch("core.notifiers.notify"):
@@ -272,6 +273,25 @@ class TestEnsureMcpSseAlive:
     async def test_no_restart_when_launcher_missing(self, tmp_path, monkeypatch):
         monkeypatch.setattr(api, "_REPO_ROOT", tmp_path)  # no installers/ dir
         with patch.object(smith_mod, "_mcp_sse_alive", return_value=False), \
+             patch.object(smith_mod, "_launchd_supervises_mcp", new=AsyncMock(return_value=False)), \
              patch("asyncio.create_subprocess_exec") as spawn:
             await api._ensure_mcp_sse_alive(time.time())
         spawn.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_restarts_via_launchd_when_supervised(self, monkeypatch):
+        # When launchd already supervises the daemon, restart THROUGH it
+        # (launchctl kickstart) — never spawn a second launcher that would
+        # race it for port 7778 and orphan a process.
+        alive_seq = iter([False, True])
+        proc = MagicMock()
+        proc.wait = AsyncMock(return_value=0)
+        with patch.object(smith_mod, "_mcp_sse_alive", side_effect=lambda: next(alive_seq)), \
+             patch.object(smith_mod, "_launchd_supervises_mcp", new=AsyncMock(return_value=True)), \
+             patch("asyncio.create_subprocess_exec",
+                   new=AsyncMock(return_value=proc)) as spawn, \
+             patch("core.notifiers.notify"):
+            await api._ensure_mcp_sse_alive(time.time())
+        spawn.assert_awaited_once()
+        argv = spawn.await_args.args
+        assert argv[0] == "launchctl" and "kickstart" in argv
