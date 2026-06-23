@@ -346,8 +346,11 @@
       if (processEl) {
         const confirmedStopped = smithRes.running === false && scanActive;
         if (smithRes.running === true || !scanActive) {
-          // Running, OR no active scan (idle is fine — not an error state)
-          processEl.textContent = smithRes.running === true ? 'running' : 'idle';
+          // Running, OR no active scan (idle is fine — not an error state).
+          // A post-complete triage relaunch reports adjudicating=true — label it
+          // as such so it reads as intended work, not a hung/stuck scan.
+          processEl.textContent = (smithRes.running === true && smithRes.adjudicating) ? 'adjudicating'
+                                : smithRes.running === true ? 'running' : 'idle';
           processEl.className = 'cmd-smith-process-status cmd-smith-process-running';
         } else if (confirmedStopped) {
           processEl.textContent = 'stopped';
@@ -430,6 +433,45 @@
       if (fb) fb.textContent = '✗ Request failed';
       if (btn) { btn.disabled = false; btn.textContent = '✓ Complete Scan'; }
     }
+  }
+
+  // Hard stop — flips the session terminal, cancels triage, AND kills the live
+  // Smith process (POST /api/force-stop). Unlike Complete Scan it doesn't leave
+  // a mid-adjudication Smith running. Two-step inline confirm (destructive).
+  let _forceStopConfirmExpires = 0;
+  function _fsSet(btn, fb, btnText, fbText) {
+    if (btn && btnText != null) btn.textContent = btnText;
+    if (fb  && fbText  != null) fb.textContent  = fbText;
+  }
+  async function forceStop() {
+    const btn = document.getElementById('cmd-force-stop-btn');
+    const fb  = document.getElementById('cmd-smith-feedback');
+    const now = Date.now();
+    if (now > _forceStopConfirmExpires) {           // first click arms the confirm
+      _forceStopConfirmExpires = now + 5000;
+      _fsSet(btn, fb, '⚠ Click again to force stop',
+             'Click again within 5 s — kills Smith and ends the scan (findings are kept).');
+      setTimeout(() => {
+        if (Date.now() >= _forceStopConfirmExpires && btn && !btn.disabled) btn.textContent = '⛔ Force stop';
+      }, 5000);
+      return;
+    }
+    _forceStopConfirmExpires = 0;
+    if (btn) btn.disabled = true;
+    _fsSet(btn, fb, null, 'Stopping Smith…');
+    try {
+      const res = await (await fetch('/api/force-stop', { method: 'POST' })).json();
+      if (res.ok) {
+        _fsSet(btn, fb, '✓ Stopped',
+               '✓ Smith stopped' + (res.killed ? ' (pid ' + res.pid + ' killed)' : ''));
+        pollSession(); pollFindings(); pollIntervention(); _pollSmithStatus();
+        return;
+      }
+      _fsSet(btn, fb, '⛔ Force stop', '✗ Failed: ' + (res.error || 'unknown'));
+    } catch (e) {
+      _fsSet(btn, fb, '⛔ Force stop', '✗ Request failed');
+    }
+    if (btn) btn.disabled = false;
   }
 
   // Operator-triggered triage (adjudication) pass — wakes Smith to record a
