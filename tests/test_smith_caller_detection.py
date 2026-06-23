@@ -424,3 +424,52 @@ class TestStartIntegration:
         monkeypatch.setattr(scan_session, "_detect_smith_caller", lambda: None)
         cur = scan_session.start(target="http://x.test", depth="quick")
         assert "smith_proc" not in cur
+
+
+class TestPreferClientDisambiguation:
+    """When several clients share the SSE server (e.g. a dev Claude Code session
+    alongside the opencode scanner), _detect_smith_caller(prefer_client=...) must
+    return the handshake-named client's PID, not whichever process iterates first."""
+
+    def test_prefer_returns_matching_connected_pid(self):
+        import core.session.process_detect as pd
+        with patch.object(pd, "_connected_pids", return_value=[11, 22]), \
+             patch.object(pd, "_resolve_client_for_pid",
+                          side_effect=lambda p: {11: "claude", 22: "opencode"}[p]):
+            # plain detection picks the first-iterated client — the old ambiguity
+            assert pd._detect_smith_caller() == {"pid": 11, "client": "claude"}
+            # handshake says opencode -> opencode's PID, not claude's
+            assert pd._detect_smith_caller(prefer_client="opencode") == {"pid": 22, "client": "opencode"}
+
+    def test_prefer_unconnected_client_trusts_handshake_name(self):
+        import core.session.process_detect as pd
+        with patch.object(pd, "_connected_pids", return_value=[11]), \
+             patch.object(pd, "_resolve_client_for_pid", return_value="claude"):
+            # codex isn't connected, but the handshake name is authoritative
+            assert pd._detect_smith_caller(prefer_client="codex") == {"pid": -1, "client": "codex"}
+
+
+class TestClientFromHandshake:
+    """Map the MCP initialize handshake's clientInfo.name to a canonical client."""
+
+    @staticmethod
+    def _ctx(name):
+        return type("Ctx", (), {"session": type("S", (), {
+            "client_params": type("P", (), {
+                "clientInfo": type("I", (), {"name": name})})})})
+
+    @pytest.mark.parametrize("raw,expected", [
+        ("opencode", "opencode"),
+        ("Claude Code", "claude"),
+        ("claude-code", "claude"),
+        ("codex", "codex"),
+        ("vscode", None),
+        ("", None),
+    ])
+    def test_maps_clientinfo_name(self, raw, expected):
+        import mcp_server.session_tools as st
+        assert st._client_from_ctx(self._ctx(raw)) == expected
+
+    def test_none_ctx_is_safe(self):
+        import mcp_server.session_tools as st
+        assert st._client_from_ctx(None) is None
