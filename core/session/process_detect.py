@@ -19,17 +19,41 @@ import core.session as _sess
 _MCP_SSE_PORT = 7778
 
 
-def _detect_smith_caller(port: int = _MCP_SSE_PORT) -> dict | None:
+def _connected_client_candidates(port: int) -> list[dict]:
+    """Connected PIDs that resolve to a known Smith client, in iteration order."""
+    out: list[dict] = []
+    for pid in _connected_pids(port):
+        client = _resolve_client_for_pid(pid)
+        if client:
+            out.append({"pid": pid, "client": client})
+    return out
+
+
+def _detect_smith_caller(port: int = _MCP_SSE_PORT, prefer_client: str | None = None) -> dict | None:
     """Identify the calling Smith client.
 
     Returns ``{"pid": int, "client": "claude" | "opencode" | "codex"}`` for
     the most likely caller, or ``None`` when nothing recognizable is connected.
     Never raises — failure to detect is a routine outcome, not an error.
+
+    ``prefer_client`` is the client name from the MCP ``initialize`` handshake
+    (``clientInfo.name``) — authoritative and per-connection. When given, we
+    return the connected PID whose cmdline matches THAT client. This
+    disambiguates the case where several clients share the SSE server (e.g. a
+    dev Claude Code session alongside the opencode scanner), which otherwise
+    resolves to whichever PID ``process_iter`` yields first and silently
+    mislabels the scan. If no connected PID matches, we still trust the
+    handshake name and return ``pid=-1`` so the watchdog falls back to its
+    other liveness signals.
     """
-    for pid in _connected_pids(port):
-        client = _resolve_client_for_pid(pid)
-        if client:
-            return {"pid": pid, "client": client}
+    candidates = _connected_client_candidates(port)
+    if prefer_client:
+        for cand in candidates:
+            if cand["client"] == prefer_client:
+                return cand
+        return {"pid": -1, "client": prefer_client}
+    if candidates:
+        return candidates[0]
     # Stdio MCP fallback: the MCP server runs as a child of the client process.
     try:
         parent_pid = os.getppid()

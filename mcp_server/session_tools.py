@@ -13,6 +13,7 @@ from core import logger as log
 from core import session as scan_session
 from core.taxonomy import BYPASS_REQUIRED_TYPES as _BYPASS_REQUIRED_TYPES
 from mcp_server._app import mcp, _ensure_dict, _session_tools_called
+from mcp.server.fastmcp import Context
 
 _background_tasks: set[asyncio.Task] = set()  # keeps fire-and-forget tasks alive
 
@@ -97,8 +98,40 @@ def _effective_tools() -> set[str]:
     return _session_tools_called | set(current.get("tools_called", []))
 
 
+def _client_from_ctx(ctx) -> str | None:
+    """Map the MCP ``initialize`` handshake's ``clientInfo.name`` to a canonical
+    Smith client (claude | opencode | codex). Per-connection and unambiguous —
+    unlike TCP/PID scanning it isn't confused by several clients sharing the SSE
+    server. Returns None when ctx/clientInfo is absent or unrecognized."""
+    try:
+        name = (ctx.session.client_params.clientInfo.name or "").lower()
+    except Exception:
+        return None
+    for key in ("opencode", "codex", "claude"):
+        if key in name:
+            return key
+    return None
+
+
+def _record_handshake_client(ctx) -> None:
+    """On session.start(), lock the session to the client the MCP handshake
+    names — authoritative, overriding the best-effort TCP/PID detection that
+    mislabels the scan when a dev Claude Code session shares the SSE server with
+    the opencode scanner. No-op when the handshake doesn't identify a client."""
+    name = _client_from_ctx(ctx)
+    if not name:
+        return
+    try:
+        from core.session.process_detect import _detect_smith_caller
+        caller = _detect_smith_caller(prefer_client=name)
+        scan_session.set_smith_proc(caller["pid"], name, "mcp_handshake")
+        log.note(f"client locked from MCP handshake: {name} (pid={caller['pid']})")
+    except Exception as e:
+        log.note(f"handshake client record failed: {e}")
+
+
 @mcp.tool()
-async def session(action: str, options: dict | None = None) -> str:
+async def session(action: str, options: dict | None = None, ctx: Context | None = None) -> str:
     """Scan lifecycle and infrastructure management.
 
     action  : start | complete | status | recovery | artifact | qa_reply | set_skill | set_step | wishlist_add | wishlist_list | start_kali | stop_kali | start_metasploit | stop_metasploit | pull_images | set_codebase
@@ -168,9 +201,13 @@ async def session(action: str, options: dict | None = None) -> str:
     # closes.
     scan_session.load_from_disk(force=True)
     result = await _dispatch_async_action(action, opts)
-    if result is not None:
-        return result
-    return _dispatch_sync_action(action, opts)
+    if result is None:
+        result = _dispatch_sync_action(action, opts)
+    if action == "start":
+        # Lock the session to the client named in the MCP initialize handshake
+        # (authoritative, per-connection) — overrides the ambiguous PID scan.
+        _record_handshake_client(ctx)
+    return result
 
 
 async def _dispatch_async_action(action: str, opts: dict) -> str | None:

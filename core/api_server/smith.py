@@ -564,6 +564,32 @@ def _mcp_sse_alive() -> bool:
 _mcp_sse_last_restart_ts: float = 0.0
 _MCP_SSE_RESTART_MIN_GAP_SECONDS = 30
 
+# Canonical launchd label for the MCP SSE daemon — matches the plist
+# (installers/com.agent-smith.mcp-sse.plist) and install-launchd.sh.
+_MCP_LAUNCHD_LABEL = "com.agent-smith.mcp-sse"
+
+
+async def _launchd_supervises_mcp(label: str = _MCP_LAUNCHD_LABEL) -> bool:
+    """True when a loaded launchd job is already supervising the MCP SSE daemon.
+
+    macOS only — on Linux/Windows ``launchctl`` is absent and this returns False,
+    so the watchdog falls back to the launcher script. When launchd IS managing
+    the daemon we restart *through* it (kickstart) instead of spawning a second,
+    unsupervised process that would fight launchd for port 7778 and leave an
+    orphan blocking the next bootstrap.
+    """
+    import os
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "launchctl", "print", f"gui/{os.getuid()}/{label}",
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await asyncio.wait_for(proc.wait(), timeout=5)
+        return proc.returncode == 0
+    except Exception:
+        return False
+
 
 async def _ensure_mcp_sse_alive(now: float) -> None:
     """Cross-platform self-heal for the MCP SSE daemon (port 7778).
@@ -589,17 +615,29 @@ async def _ensure_mcp_sse_alive(now: float) -> None:
     _mcp_sse_last_restart_ts = now
 
     import os
-    if os.name == "nt":
+    # If launchd already supervises the daemon, restart THROUGH it — spawning a
+    # parallel start-mcp-server.sh races launchd's own KeepAlive restart for port
+    # 7778 and leaves an orphan that blocks the next bootstrap. kickstart -k
+    # force-restarts the supervised process with no competing launcher.
+    if os.name != "nt" and await _launchd_supervises_mcp():
+        cmd = ["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{_MCP_LAUNCHD_LABEL}"]
+        launcher_name = f"launchctl kickstart {_MCP_LAUNCHD_LABEL}"
+    elif os.name == "nt":
         launcher = _api._REPO_ROOT / "installers" / "start-mcp-server.ps1"
         cmd = ["powershell", "-ExecutionPolicy", "Bypass", "-File", str(launcher), "start"]
+        launcher_name = launcher.name
+        if not launcher.exists():
+            _log.warning("MCP SSE down but launcher missing: %s", launcher)
+            return
     else:
         launcher = _api._REPO_ROOT / "installers" / "start-mcp-server.sh"
         cmd = ["/bin/bash", str(launcher), "start"]
-    if not launcher.exists():
-        _log.warning("MCP SSE down but launcher missing: %s", launcher)
-        return
+        launcher_name = launcher.name
+        if not launcher.exists():
+            _log.warning("MCP SSE down but launcher missing: %s", launcher)
+            return
 
-    _log.warning("MCP SSE server down on 127.0.0.1:7778 — auto-restarting via %s", launcher.name)
+    _log.warning("MCP SSE server down on 127.0.0.1:7778 — auto-restarting via %s", launcher_name)
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
