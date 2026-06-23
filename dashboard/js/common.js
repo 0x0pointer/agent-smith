@@ -452,7 +452,7 @@
       _fsSet(btn, fb, '⚠ Click again to force stop',
              'Click again within 5 s — kills Smith and ends the scan (findings are kept).');
       setTimeout(() => {
-        if (Date.now() >= _forceStopConfirmExpires && btn && !btn.disabled) btn.textContent = '🛑 Force stop';
+        if (Date.now() >= _forceStopConfirmExpires && btn && !btn.disabled) btn.textContent = '✕ Force stop';
       }, 5000);
       return;
     }
@@ -467,9 +467,9 @@
         pollSession(); pollFindings(); pollIntervention(); _pollSmithStatus();
         return;
       }
-      _fsSet(btn, fb, '🛑 Force stop', '✗ Failed: ' + (res.error || 'unknown'));
+      _fsSet(btn, fb, '✕ Force stop', '✗ Failed: ' + (res.error || 'unknown'));
     } catch (e) {
-      _fsSet(btn, fb, '🛑 Force stop', '✗ Request failed');
+      _fsSet(btn, fb, '✕ Force stop', '✗ Request failed');
     }
     if (btn) btn.disabled = false;
   }
