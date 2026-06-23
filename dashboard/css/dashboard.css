@@ -266,15 +266,6 @@
     }
     .cmd-smith-restart-btn:hover    { background: #ea6c0a; }
     .cmd-smith-restart-btn:disabled { opacity: 0.35; cursor: not-allowed; }
-    .cmd-smith-forcestop-btn {
-      flex-shrink: 0;
-      background: #da3633; color: #fff; border: none;
-      border-radius: 6px; padding: 0.4rem 0.9rem;
-      font-size: 0.78rem; font-weight: 600; cursor: pointer;
-      transition: background 0.15s, opacity 0.15s;
-    }
-    .cmd-smith-forcestop-btn:hover    { background: #b62324; }
-    .cmd-smith-forcestop-btn:disabled { opacity: 0.35; cursor: not-allowed; }
     .cmd-smith-complete-hint {
       font-size: 0.68rem; color: var(--muted); line-height: 1.35;
     }
