@@ -422,7 +422,7 @@ def _chain_mermaid(steps: list, titles: dict) -> str:
     lines = ["graph LR"]
 
     def _node(fid: str) -> str:
-        label = (titles.get(fid) or fid)[:48].replace('"', "'")
+        label = _mermaid_label((titles.get(fid) or fid)[:48])
         return f'  F_{_safe(fid)}["{label}"]'
 
     seen: set[str] = set()
@@ -434,7 +434,7 @@ def _chain_mermaid(steps: list, titles: dict) -> str:
     for s in steps:
         a = _safe(s.get("from_finding_id", ""))
         b = _safe(s.get("to_finding_id", ""))
-        tech = (s.get("mitre_technique", "") or "enables").replace('"', "'")
+        tech = _mermaid_label(s.get("mitre_technique", "") or "enables")
         if a and b:
             lines.append(f"  F_{a} -->|{tech}| F_{b}")
     return "\n".join(lines)
@@ -443,6 +443,25 @@ def _chain_mermaid(steps: list, titles: dict) -> str:
 def _safe(fid: str) -> str:
     """Make a finding id safe for a Mermaid node identifier."""
     return "".join(c if c.isalnum() else "_" for c in str(fid))
+
+
+# Characters that break a Mermaid label. Unquoted edge labels (-->|...|) are the
+# worst offenders: '(' is parsed as a node-shape opener (the "got 'PS'" error)
+# and '|' closes the label early — both occur in MITRE technique names like
+# "T1078 - Valid Accounts (Privileged Account Creation…)". HTML entity codes
+# render as the literal character in every Mermaid theme, so the text is unchanged.
+_MERMAID_ESCAPES = {
+    '"': "#34;", "(": "#40;", ")": "#41;", "|": "#124;",
+    "[": "#91;", "]": "#93;", "{": "#123;", "}": "#125;",
+}
+
+
+def _mermaid_label(text: str) -> str:
+    """Escape characters that break a Mermaid node/edge label."""
+    out = str(text)
+    for ch, ent in _MERMAID_ESCAPES.items():
+        out = out.replace(ch, ent)
+    return out
 
 
 async def _do_chain(data):

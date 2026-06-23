@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, patch
 
 from mcp_server.report_tools import (
     _do_update_finding, _do_delete_finding, _do_finding, _do_dashboard, _do_chain, report,
+    _chain_mermaid, _mermaid_label,
     _DASHBOARD_CANONICAL_PORT, _LEGACY_DASHBOARD_PORTS,
 )
 
@@ -378,3 +379,24 @@ async def test_dashboard_serves_canonical_on_malformed_port_input():
     # The injected payload must NOT appear anywhere in what we return
     assert "INJECTED" not in result
     assert "\n" not in result
+
+
+# ── chain mermaid label escaping ─────────────────────────────────────────────
+
+def test_mermaid_label_escapes_breaking_chars():
+    out = _mermaid_label('T1078 (Privileged) |x| [y] {z} "q"')
+    for ch in '()|[]{}"':
+        assert ch not in out, f"{ch!r} left unescaped in: {out}"
+
+
+def test_chain_mermaid_edge_label_has_no_raw_parens():
+    # MITRE technique names with parentheses used to break Mermaid's parser
+    # ("got 'PS'"): '(' opened a node shape inside the unquoted edge label.
+    steps = [{"from_finding_id": "F-a", "to_finding_id": "F-b",
+              "mitre_technique": "T1078 - Valid Accounts (Privileged Account Creation)"}]
+    titles = {"F-a": "Mass Assignment (BOPLA) on /register", "F-b": "Debug exposure"}
+    mm = _chain_mermaid(steps, titles)
+    assert "graph LR" in mm
+    assert "(" not in mm and ")" not in mm
+    # entity codes preserve the visible parentheses
+    assert "#40;" in mm and "#41;" in mm
