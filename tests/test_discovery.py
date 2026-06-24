@@ -187,6 +187,54 @@ def test_spider_endpoints_filter_static_and_extract_params():
     assert sum(1 for e in eps if e["path"].startswith("/profile")) == 1
 
 
+# ── _fetch reads the FULL body (chunked), not just the first chunk ────────────
+
+@pytest.mark.asyncio
+async def test_fetch_reads_full_chunked_body(monkeypatch):
+    """Regression: a spec split across TCP chunks must be read whole.
+
+    The original _fetch used content.read(n), which returns only the first
+    available chunk — a 50 KB spec arrived as ~1 KB and JSON parsing failed,
+    silently skipping spec expansion. iter_chunked must accumulate all chunks.
+    """
+    import aiohttp
+
+    class FakeContent:
+        def __init__(self, chunks):
+            self._chunks = chunks
+
+        async def iter_chunked(self, _n):
+            for c in self._chunks:
+                yield c
+
+    class FakeResp:
+        status = 200
+
+        def __init__(self, chunks):
+            self.content = FakeContent(chunks)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    class FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def get(self, *a, **k):
+            return FakeResp([b'{"openapi":"3.0.0",', b'"paths":', b'{}}'])
+
+    monkeypatch.setattr(aiohttp, "ClientSession", lambda *a, **k: FakeSession())
+    status, text = await disc._fetch("http://t/openapi.json")
+    assert status == 200
+    assert text == '{"openapi":"3.0.0","paths":{}}'  # all 3 chunks joined, not truncated
+
+
 # ── discover_and_register (orchestration, _fetch monkeypatched) ────────────────
 
 @pytest.mark.asyncio

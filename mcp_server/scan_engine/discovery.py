@@ -61,44 +61,65 @@ def _hint(schema: dict | None) -> str:
     return "integer" if t in ("integer", "number") else "string"
 
 
-def _openapi3_params(operation: dict, path_level: list) -> list[dict]:
-    params: list[dict] = []
-    loc_map = {"query": "query", "path": "path", "header": "header", "cookie": "cookie"}
-    for p in list(path_level) + list(operation.get("parameters") or []):
+def _named_params(entries: list, loc_map: dict) -> list[dict]:
+    """Map non-body OpenAPI/Swagger parameter entries to typed params.
+
+    ``_hint`` reads the type from ``schema`` (OpenAPI 3) or the entry itself
+    (Swagger 2 puts ``type`` on the parameter), so this serves both specs.
+    """
+    out: list[dict] = []
+    for p in entries:
         if not isinstance(p, dict):
             continue
-        name = p.get("name", "")
-        ptype = loc_map.get(p.get("in", ""))
+        name, ptype = p.get("name", ""), loc_map.get(p.get("in", ""))
         if name and ptype:
-            params.append({"name": name, "type": ptype, "value_hint": _hint(p.get("schema"))})
+            out.append({"name": name, "type": ptype, "value_hint": _hint(p.get("schema") or p)})
+    return out
+
+
+def _schema_props_params(schema, ptype: str) -> list[dict]:
+    """Map a schema's ``properties`` to params of the given type."""
+    props = (schema or {}).get("properties") or {} if isinstance(schema, dict) else {}
+    return [{"name": n, "type": ptype, "value_hint": _hint(s)} for n, s in props.items()]
+
+
+def _openapi3_params(operation: dict, path_level: list) -> list[dict]:
+    loc_map = {"query": "query", "path": "path", "header": "header", "cookie": "cookie"}
+    params = _named_params(list(path_level) + list(operation.get("parameters") or []), loc_map)
     body = operation.get("requestBody") or {}
     content = body.get("content") or {} if isinstance(body, dict) else {}
     for ctype, media in content.items():
-        if not isinstance(media, dict):
-            continue
-        props = (media.get("schema") or {}).get("properties") or {}
-        ptype = "body_form" if ("form" in ctype or "urlencoded" in ctype) else "body_json"
-        for pname, pschema in props.items():
-            params.append({"name": pname, "type": ptype, "value_hint": _hint(pschema)})
+        if isinstance(media, dict):
+            ptype = "body_form" if ("form" in ctype or "urlencoded" in ctype) else "body_json"
+            params += _schema_props_params(media.get("schema"), ptype)
     return params
 
 
 def _swagger2_params(operation: dict, path_level: list) -> list[dict]:
-    params: list[dict] = []
     loc_map = {"query": "query", "path": "path", "header": "header", "formData": "body_form"}
-    for p in list(path_level) + list(operation.get("parameters") or []):
-        if not isinstance(p, dict):
-            continue
-        if p.get("in") == "body":
-            props = (p.get("schema") or {}).get("properties") or {}
-            for pname, pschema in props.items():
-                params.append({"name": pname, "type": "body_json", "value_hint": _hint(pschema)})
-            continue
-        name = p.get("name", "")
-        ptype = loc_map.get(p.get("in", ""))
-        if name and ptype:
-            params.append({"name": name, "type": ptype, "value_hint": _hint(p)})
+    entries = list(path_level) + list(operation.get("parameters") or [])
+    params = _named_params([p for p in entries if isinstance(p, dict) and p.get("in") != "body"], loc_map)
+    for p in entries:
+        if isinstance(p, dict) and p.get("in") == "body":
+            params += _schema_props_params(p.get("schema"), "body_json")
     return params
+
+
+def _expand_path_item(path: str, item: dict, is_v2: bool, base: str) -> list[dict]:
+    """Expand one spec path item into one endpoint dict per HTTP method."""
+    path_level = item.get("parameters") or []
+    out: list[dict] = []
+    for method, op in item.items():
+        if method.lower() not in _HTTP_METHODS or not isinstance(op, dict):
+            continue
+        params = _swagger2_params(op, path_level) if is_v2 else _openapi3_params(op, path_level)
+        out.append({
+            "path": (base + path) if base else path,
+            "method": method.upper(),
+            "params": params,
+            "discovered_by": "openapi-spec",
+        })
+    return out
 
 
 def parse_openapi(spec: dict) -> list[dict]:
@@ -117,21 +138,10 @@ def parse_openapi(spec: dict) -> list[dict]:
     base = (spec.get("basePath", "") or "").rstrip("/") if is_v2 else ""
     out: list[dict] = []
     for path, item in paths.items():
-        if not isinstance(item, dict):
-            continue
-        path_level = item.get("parameters") or []
-        for method, op in item.items():
-            if method.lower() not in _HTTP_METHODS or not isinstance(op, dict):
-                continue
-            params = _swagger2_params(op, path_level) if is_v2 else _openapi3_params(op, path_level)
-            out.append({
-                "path": (base + path) if base else path,
-                "method": method.upper(),
-                "params": params,
-                "discovered_by": "openapi-spec",
-            })
-            if len(out) >= _MAX_OPS:
-                return out
+        if isinstance(item, dict):
+            out += _expand_path_item(path, item, is_v2, base)
+        if len(out) >= _MAX_OPS:
+            return out[:_MAX_OPS]
     return out
 
 
@@ -144,6 +154,20 @@ def _attr(blob: str, name: str) -> str | None:
     return m.group(1) if m else None
 
 
+def _form_params(inner: str, ptype: str) -> list[dict]:
+    """Extract named, testable input fields from a form body."""
+    params, seen = [], set()
+    for tag in _INPUT_RE.findall(inner):
+        name = _attr(tag, "name")
+        itype = (_attr(tag, "type") or "text").lower()
+        if not name or name in seen or itype in ("submit", "button", "reset", "image", "hidden"):
+            continue
+        seen.add(name)
+        params.append({"name": name, "type": ptype,
+                       "value_hint": "integer" if itype == "number" else "string"})
+    return params
+
+
 def extract_form_endpoints(html: str, page_url: str) -> list[dict]:
     """Parse ``<form>`` blocks into endpoints with their input fields as params."""
     out: list[dict] = []
@@ -152,18 +176,7 @@ def extract_form_endpoints(html: str, page_url: str) -> list[dict]:
         if method not in ("GET", "POST", "PUT", "DELETE", "PATCH"):
             method = "POST"
         action = _attr(attrs, "action") or page_url
-        ptype = "query" if method == "GET" else "body_form"
-        params, seen = [], set()
-        for tag in _INPUT_RE.findall(inner):
-            name = _attr(tag, "name")
-            if not name or name in seen:
-                continue
-            itype = (_attr(tag, "type") or "text").lower()
-            if itype in ("submit", "button", "reset", "image", "hidden"):
-                continue
-            seen.add(name)
-            params.append({"name": name, "type": ptype,
-                           "value_hint": "integer" if itype == "number" else "string"})
+        params = _form_params(inner, "query" if method == "GET" else "body_form")
         try:
             path = urlparse(urljoin(page_url, action)).path or "/"
         except Exception:
@@ -180,29 +193,34 @@ _JS_PATTERNS = [
 ]
 
 
+def _path_ext(path: str) -> str:
+    last = path.rsplit("/", 1)[-1]
+    return "." + last.rsplit(".", 1)[-1].lower() if "." in last else ""
+
+
+def _clean_js_route(raw: str) -> str | None:
+    """Normalize a mined string into a route path, or None if it isn't one."""
+    route = raw.split("${", 1)[0].split("?", 1)[0].split("#", 1)[0].strip()
+    if not route.startswith("/") or not (2 <= len(route) <= 200):
+        return None
+    return None if _path_ext(route) in _STATIC_EXTS else route
+
+
 def extract_js_routes(js_text: str) -> list[str]:
     """Mine a JS bundle for API route strings (fetch/axios/url:/api-path literals)."""
     found: set[str] = set()
     for pat in _JS_PATTERNS:
         for raw in pat.findall(js_text or ""):
-            route = raw.split("${", 1)[0].split("?", 1)[0].split("#", 1)[0].strip()
-            if not route.startswith("/") or not (2 <= len(route) <= 200):
-                continue
-            last = route.rsplit("/", 1)[-1]
-            ext = "." + last.rsplit(".", 1)[-1].lower() if "." in last else ""
-            if ext in _STATIC_EXTS:
-                continue
-            found.add(route)
+            route = _clean_js_route(raw)
+            if route:
+                found.add(route)
     return sorted(found)
 
 
 # ── fetching + orchestration ──────────────────────────────────────────────────
 
 def _is_static(url: str) -> bool:
-    path = urlparse(url).path
-    last = path.rsplit("/", 1)[-1]
-    ext = "." + last.rsplit(".", 1)[-1].lower() if "." in last else ""
-    return ext in _STATIC_EXTS
+    return _path_ext(urlparse(url).path) in _STATIC_EXTS
 
 
 def _spider_endpoints(urls: list[str]) -> list[dict]:
@@ -231,12 +249,22 @@ async def _fetch(url: str) -> tuple[int, str]:
     import aiohttp
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(
+            # ssl=False is intentional: a pentest tool must reach targets that
+            # use self-signed / invalid certs. NOSONAR(python:S4830)
+            async with session.get(  # NOSONAR
                 url, timeout=aiohttp.ClientTimeout(total=_FETCH_TIMEOUT),
                 ssl=False, allow_redirects=True,
             ) as resp:
-                body = await resp.content.read(_MAX_FETCH_BYTES)
-                return resp.status, body.decode("utf-8", "replace")
+                # content.read(n) returns only the first available chunk, which
+                # truncates a streamed/chunked body (a 50 KB spec arrived as a
+                # 1 KB first chunk → JSON parse failed → spec silently skipped).
+                # Accumulate full chunks up to the byte cap instead.
+                buf = bytearray()
+                async for chunk in resp.content.iter_chunked(65536):
+                    buf.extend(chunk)
+                    if len(buf) >= _MAX_FETCH_BYTES:
+                        break
+                return resp.status, bytes(buf).decode("utf-8", "replace")
     except Exception:
         return 0, ""
 
@@ -252,52 +280,55 @@ def _parse_spec_text(text: str) -> dict | None:
     return None
 
 
-async def discover_and_register(target: str, spider_urls: list[str], auth_context: str = "none") -> dict:
-    """Enrich spider output with spec/JS/form discovery and auto-register everything.
-
-    Returns ``{"registered", "cells", "by_source", "spec_found", "inventory"}``.
-    Fail-soft: any fetch/parse error is swallowed; partial results still register.
-    """
-    from core.coverage import add_endpoint
-
-    parsed_t = urlparse(target)
-    base = f"{parsed_t.scheme}://{parsed_t.netloc}"
-    inventory: list[dict] = list(_spider_endpoints(spider_urls))
-
-    # 1. OpenAPI / Swagger spec — spider-found spec URLs first, then common probes.
-    spec_urls, seen = [], set()
+def _spec_candidate_urls(base: str, spider_urls: list[str]) -> list[str]:
+    """Spider-found spec URLs first, then common probe locations (deduped)."""
+    urls, seen = [], set()
     for u in spider_urls:
         if re.search(r"(openapi|swagger|api-docs)", u, re.I) and u not in seen:
-            seen.add(u); spec_urls.append(u)
+            seen.add(u); urls.append(u)
     for c in _SPEC_CANDIDATES:
         cu = urljoin(base, c)
         if cu not in seen:
-            seen.add(cu); spec_urls.append(cu)
-    spec_found = False
-    spec_results = await asyncio.gather(*(_fetch(u) for u in spec_urls[:16]), return_exceptions=True)
-    for res in spec_results:
+            seen.add(cu); urls.append(cu)
+    return urls
+
+
+async def _discover_spec(base: str, spider_urls: list[str]) -> list[dict] | None:
+    """Fetch + parse the first valid OpenAPI/Swagger spec; return its operations."""
+    urls = _spec_candidate_urls(base, spider_urls)
+    for res in await asyncio.gather(*(_fetch(u) for u in urls[:16]), return_exceptions=True):
         if isinstance(res, tuple):
             spec = _parse_spec_text(res[1])
             if spec:
-                inventory += parse_openapi(spec)
-                spec_found = True
-                break
+                return parse_openapi(spec)
+    return None
 
-    # 2. JS bundles → mined routes.
+
+async def _discover_js(spider_urls: list[str]) -> list[dict]:
+    """Mine linked JS bundles for routes."""
     js_urls = [u for u in spider_urls if u.lower().split("?", 1)[0].endswith(".js")][:_MAX_JS_FILES]
+    eps: list[dict] = []
     for res in await asyncio.gather(*(_fetch(u) for u in js_urls), return_exceptions=True):
         if isinstance(res, tuple) and res[0] and res[1]:
-            inventory += [{"path": r, "method": "GET", "params": [], "discovered_by": "js-bundle"}
-                          for r in extract_js_routes(res[1])]
+            eps += [{"path": r, "method": "GET", "params": [], "discovered_by": "js-bundle"}
+                    for r in extract_js_routes(res[1])]
+    return eps
 
-    # 3. HTML forms → body params.
+
+async def _discover_forms(spider_urls: list[str]) -> list[dict]:
+    """Read forms on HTML pages into endpoints with body params."""
     html_urls = [u for u in spider_urls if not _is_static(u)][:_MAX_HTML_PAGES]
-    html_results = await asyncio.gather(*(_fetch(u) for u in html_urls), return_exceptions=True)
-    for url, res in zip(html_urls, html_results):
+    results = await asyncio.gather(*(_fetch(u) for u in html_urls), return_exceptions=True)
+    eps: list[dict] = []
+    for url, res in zip(html_urls, results):
         if isinstance(res, tuple) and res[0] and "<form" in res[1].lower():
-            inventory += extract_form_endpoints(res[1], url)
+            eps += extract_form_endpoints(res[1], url)
+    return eps
 
-    # 4. Register the whole inventory (add_endpoint dedups on normalized path+method).
+
+async def _register_inventory(inventory: list[dict], auth_context: str) -> dict:
+    """Register every endpoint (add_endpoint dedups); tally new registrations/cells."""
+    from core.coverage import add_endpoint
     registered = cells = 0
     by_source: dict[str, int] = {}
     for ep in inventory:
@@ -311,5 +342,26 @@ async def discover_and_register(target: str, spider_urls: list[str], auth_contex
             cells += r.get("new_cells", 0)
             src = ep.get("discovered_by", "spider")
             by_source[src] = by_source.get(src, 0) + 1
-    return {"registered": registered, "cells": cells, "by_source": by_source,
-            "spec_found": spec_found, "inventory": len(inventory)}
+    return {"registered": registered, "cells": cells, "by_source": by_source}
+
+
+async def discover_and_register(target: str, spider_urls: list[str], auth_context: str = "none") -> dict:
+    """Enrich spider output with spec/JS/form discovery and auto-register everything.
+
+    Returns ``{"registered", "cells", "by_source", "spec_found", "inventory"}``.
+    Fail-soft: any fetch/parse error is swallowed; partial results still register.
+    """
+    parsed_t = urlparse(target)
+    base = f"{parsed_t.scheme}://{parsed_t.netloc}"
+
+    inventory: list[dict] = list(_spider_endpoints(spider_urls))
+    spec_ops = await _discover_spec(base, spider_urls)
+    if spec_ops:
+        inventory += spec_ops
+    inventory += await _discover_js(spider_urls)
+    inventory += await _discover_forms(spider_urls)
+
+    result = await _register_inventory(inventory, auth_context)
+    result["spec_found"] = spec_ops is not None
+    result["inventory"] = len(inventory)
+    return result
