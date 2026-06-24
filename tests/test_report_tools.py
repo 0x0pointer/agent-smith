@@ -7,9 +7,58 @@ from unittest.mock import AsyncMock, patch
 
 from mcp_server.report_tools import (
     _do_update_finding, _do_delete_finding, _do_finding, _do_dashboard, _do_chain, report,
-    _chain_mermaid, _mermaid_label,
+    _chain_mermaid, _mermaid_label, _auto_trigger_finding_gates,
     _DASHBOARD_CANONICAL_PORT, _LEGACY_DASHBOARD_PORTS,
 )
+
+
+# ── _auto_trigger_finding_gates — false-trigger guards ───────────────────────
+
+class _FakeSession:
+    def __init__(self, depth="thorough"):
+        self.depth = depth
+        self.triggered = []
+
+    def trigger_gate(self, gate_id, reason, skills):
+        self.triggered.append(gate_id)
+
+    def get(self):
+        return {"depth": self.depth}
+
+
+def test_finding_gates_skip_benign(monkeypatch):
+    """A mitigated / not-applicable / working-as-intended finding triggers nothing."""
+    import mcp_server.report_tools as rt
+    sess = _FakeSession()
+    monkeypatch.setattr(rt, "scan_session", sess)
+    out = _auto_trigger_finding_gates(
+        "SSTI in admin panel (marked not_applicable, no user input)", "high",
+        "The deserialization endpoint uses a safe parser and works correctly.")
+    assert out == []
+    assert sess.triggered == []
+
+
+def test_finding_gates_credential_audit_needs_weakness(monkeypatch):
+    """Merely naming an auth service must not fire credential-audit; a real weakness does."""
+    import mcp_server.report_tools as rt
+    sess = _FakeSession()
+    monkeypatch.setattr(rt, "scan_session", sess)
+    # auth service named, low severity, no weakness → no gate
+    assert _auto_trigger_finding_gates("MySQL service present", "low", "mysql running on 3306") == []
+    # real auth weakness → credential_audit fires
+    out = _auto_trigger_finding_gates(
+        "Authentication bypass on admin panel", "critical",
+        "login form bypass with a default password grants admin")
+    assert "credential_audit" in out
+
+
+def test_finding_gates_rce_fires_on_real(monkeypatch):
+    import mcp_server.report_tools as rt
+    sess = _FakeSession()
+    monkeypatch.setattr(rt, "scan_session", sess)
+    out = _auto_trigger_finding_gates(
+        "Remote code execution via deserialization", "critical", "achieved shell via os command")
+    assert "post_exploit_rce" in out
 
 
 # ── _do_update_finding ───────────────────────────────────────────────────────

@@ -64,17 +64,21 @@ def test_small_profile_surfaces_one_blocker(monkeypatch):
     ]
     out = st._build_blocker_response(blockers)
     assert "ONE AT A TIME" in out
-    assert "3 blockers remain" in out
+    assert "3 steps left" in out
     # the highest-priority blocker (GATE) is surfaced; the others are held back
     assert "GATE [auth_coverage]" in out
     assert "ITERATION GATE" not in out
     assert "NO DIAGRAM" not in out
 
 
-def test_full_profile_shows_all_blockers(monkeypatch):
+def test_full_profile_also_serializes(monkeypatch):
+    # Serialization now applies to ALL profiles — even large-context models rush
+    # under a wall of blockers, so they get one focused step at a time too.
     _set_profile(monkeypatch, "full")
     monkeypatch.setattr(st, "_complete_attempts", 0)
     blockers = ["GATE [a]: x", "NO DIAGRAM: y"]
     out = st._build_blocker_response(blockers)
-    assert "ONE AT A TIME" not in out
-    assert "GATE [a]" in out and "NO DIAGRAM" in out
+    assert "ONE AT A TIME" in out
+    assert "2 steps left" in out
+    assert "GATE [a]" in out          # highest-priority blocker surfaced
+    assert "NO DIAGRAM" not in out    # held back for the next round

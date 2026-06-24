@@ -989,10 +989,17 @@ def test_whitebox_passes_fires_at_zero(tmp_path, monkeypatch):
     monkeypatch.setattr(st_mod, "_STEERING_FILE", steering_file)
     monkeypatch.setattr(qa_mod, "_STEERING_FILE", steering_file)
 
-    alert = _check_whitebox_passes([], {"depth": "thorough"})
+    wb = {"depth": "thorough", "skill_history": [{"skill": "codebase"}]}
+    alert = _check_whitebox_passes([], wb)
     assert alert is not None
     assert alert["code"] == "WHITEBOX_PASSES"
     assert "0/3" in alert["message"]
+
+
+def test_whitebox_passes_skipped_on_blackbox():
+    # No codebase / semgrep / trufflehog → black-box scan → gate must NOT fire.
+    assert _check_whitebox_passes([], {"depth": "thorough"}) is None
+    assert _check_whitebox_passes([], {"depth": "thorough", "skill_history": [{"skill": "web-exploit"}]}) is None
 
 
 def test_whitebox_passes_fires_at_one(tmp_path, monkeypatch):
@@ -1016,7 +1023,7 @@ def test_whitebox_passes_directive_injected(tmp_path, monkeypatch):
     monkeypatch.setattr(st_mod, "_STEERING_FILE", steering_file)
     monkeypatch.setattr(qa_mod, "_STEERING_FILE", steering_file)
 
-    _check_whitebox_passes([], {"depth": "thorough"})
+    _check_whitebox_passes([], {"depth": "thorough", "skill_history": [{"skill": "codebase"}]})
     q = st_mod.SteeringQueue()
     assert any(d.get("trigger") == "WHITEBOX_PASSES" for d in q._load())
 
@@ -1041,11 +1048,19 @@ def test_premature_complete_enough_passes():
 
 def test_premature_complete_fires():
     entries = [{"type": "COMPLETE", "ts": _ts(1)}]
-    alert = _check_premature_complete(entries, {"depth": "thorough"})
+    wb = {"depth": "thorough", "skill_history": [{"skill": "codebase"}]}
+    alert = _check_premature_complete(entries, wb)
     assert alert is not None
     assert alert["code"] == "PREMATURE_COMPLETE"
     assert alert["blocking"] is True
     assert "0 done" in alert["message"]
+
+
+def test_premature_complete_skipped_on_blackbox():
+    # Black-box thorough scan (no codebase): the semgrep-pass gate must NOT block
+    # completion (it would deadlock — semgrep has nothing to scan).
+    entries = [{"type": "COMPLETE", "ts": _ts(1)}]
+    assert _check_premature_complete(entries, {"depth": "thorough"}) is None
 
 
 # ---------------------------------------------------------------------------

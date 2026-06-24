@@ -256,6 +256,96 @@ async def get_pending(endpoint_id: str | None = None) -> list[dict]:
     return cells
 
 
+# Injection-type test priority for the focused batch — high-signal types first
+# (mirrors the planner's ordering in scan_engine/planner.py).
+_BATCH_INJECTION_PRIORITY = [
+    "sqli", "xss", "ssti", "cmdi", "ssrf", "xxe", "nosqli", "idor",
+    "traversal", "crlf", "mass_assignment", "prototype", "redirect",
+]
+
+
+def _endpoint_closed_count(matrix: list, endpoint_id: str) -> int:
+    return sum(1 for c in matrix
+              if c.get("endpoint_id") == endpoint_id and c.get("status") in _cov.ADDRESSED_STATUSES)
+
+
+def _choose_focus_endpoint(pending: list, matrix: list, ep_order: dict) -> str:
+    """Pick the endpoint to focus on: one already started (has a closed or
+    in_progress cell) before opening new ground, tie-broken by registration order."""
+    candidates = list({c["endpoint_id"] for c in pending})
+
+    def _started(eid: str) -> bool:
+        if _endpoint_closed_count(matrix, eid) > 0:
+            return True
+        return any(c["endpoint_id"] == eid and c["status"] == "in_progress" for c in pending)
+
+    candidates.sort(key=lambda eid: (0 if _started(eid) else 1, ep_order.get(eid, 1 << 30)))
+    return candidates[0]
+
+
+def select_next_batch(data: dict, count: int = 10, endpoint_id: str | None = None) -> dict:
+    """Pure (no-I/O) focused-batch selection over a loaded matrix dict.
+
+    Groups by endpoint (finish one before opening the next), orders by
+    high-signal injection type, and returns per-endpoint + overall progress so
+    testing is a paced step-by-step loop instead of navigating 700+ cells solo.
+
+    Returns ``{batch, endpoint_focus, progress:{endpoint, overall}, remaining}``;
+    each batch cell carries the context to test+close it. Sync so the (sync)
+    scan-engine planner can reuse it; ``get_next_batch`` is the async wrapper.
+    The mcp_server layer enriches each cell with a concrete test request.
+    """
+    matrix = data.get("matrix", [])
+    endpoints_by_id = {ep["id"]: ep for ep in data.get("endpoints", [])}
+    ep_order = {ep["id"]: i for i, ep in enumerate(data.get("endpoints", []))}
+
+    overall_total = len(matrix)
+    overall_closed = sum(1 for c in matrix if c.get("status") in _cov.ADDRESSED_STATUSES)
+    pending = [c for c in matrix if c.get("status") in ("pending", "in_progress")]
+
+    if not pending:
+        return {"batch": [], "endpoint_focus": None, "remaining": 0,
+                "progress": {"endpoint": "0/0", "overall": f"{overall_closed}/{overall_total}"}}
+
+    focus_id = endpoint_id or _choose_focus_endpoint(pending, matrix, ep_order)
+    ep = endpoints_by_id.get(focus_id, {})
+
+    def _prio(cell: dict) -> int:
+        it = cell.get("injection_type", "")
+        return _BATCH_INJECTION_PRIORITY.index(it) if it in _BATCH_INJECTION_PRIORITY else len(_BATCH_INJECTION_PRIORITY)
+
+    focus_pending = sorted((c for c in pending if c["endpoint_id"] == focus_id), key=_prio)
+    chosen = focus_pending[:max(1, count)]
+
+    ep_total = sum(1 for c in matrix if c.get("endpoint_id") == focus_id)
+    ep_closed = _endpoint_closed_count(matrix, focus_id)
+
+    batch = [{
+        "cell_id":        c.get("id"),
+        "endpoint_id":    focus_id,
+        "endpoint_path":  ep.get("path"),
+        "method":         ep.get("method"),
+        "param":          c.get("param"),
+        "param_type":     c.get("param_type"),
+        "injection_type": c.get("injection_type"),
+        "auth_context":   ep.get("auth_context"),
+    } for c in chosen]
+
+    return {
+        "batch": batch,
+        "endpoint_focus": {"endpoint_id": focus_id, "path": ep.get("path"), "method": ep.get("method")},
+        "progress": {"endpoint": f"{ep_closed}/{ep_total}", "overall": f"{overall_closed}/{overall_total}"},
+        "remaining": len(pending),
+    }
+
+
+async def get_next_batch(count: int = 10, endpoint_id: str | None = None) -> dict:
+    """Async wrapper around ``select_next_batch`` — loads the matrix under lock."""
+    async with _cov._lock:
+        data = _cov._load()
+    return select_next_batch(data, count, endpoint_id)
+
+
 async def list_cells(
     endpoint_path: str | None = None,
     method:        str | None = None,

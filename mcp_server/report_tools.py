@@ -58,6 +58,25 @@ _AUTH_KEYWORDS = (
     "mysql", "postgres", "mssql", "mongodb", "redis", "ldap",
 )
 
+# Negative markers — a finding that is mitigated / not exploitable / working as
+# intended must NOT trigger a mandatory skill gate. The keyword gates were firing
+# on benign findings ("login CSRF protection works", "mysql not reachable",
+# "SSTI marked not_applicable", "deserialization uses a safe parser").
+_GATE_BENIGN_MARKERS = (
+    "not reachable", "not exploitable", "not vulnerable", "working correctly",
+    "properly configured", "correctly configured", "is enforced", "protection works",
+    "mitigated", "false positive", "not applicable", "no impact", "safe parser",
+    "no user input", "out of scope", "out-of-scope",
+)
+
+# Stronger auth-weakness signal so credential-audit fires on a real weakness,
+# not on the mere mention of an auth service in passing.
+_AUTH_WEAKNESS_KEYWORDS = (
+    "bypass", "weak", "default cred", "default password", "brute", "guessable",
+    "credential", "password leak", "token leak", "exposed", "reuse",
+    "predictable", "no lockout", "no rate limit", "enumerat",
+)
+
 
 @mcp.tool()
 async def report(action: str, data: Any) -> str:
@@ -272,9 +291,18 @@ async def _do_finding(data):
 
 
 def _auto_trigger_finding_gates(title: str, severity: str, description: str) -> list[str]:
-    """Check finding content and trigger appropriate gates. Returns list of triggered gate IDs."""
+    """Check finding content and trigger appropriate gates. Returns list of triggered gate IDs.
+
+    Guarded against false triggers: a mitigated / non-exploitable / working-as-
+    intended finding triggers nothing, and credential-audit needs a real auth
+    WEAKNESS signal — not just the name of an auth service.
+    """
     triggered: list[str] = []
     text = f"{title} {description}".lower()
+
+    # Mitigated / not-exploitable findings must not impose a mandatory skill gate.
+    if any(marker in text for marker in _GATE_BENIGN_MARKERS):
+        return triggered
 
     # RCE-class finding → post-exploit is mandatory
     if severity in ("critical", "high") and any(kw in text for kw in _RCE_KEYWORDS):
@@ -285,8 +313,10 @@ def _auto_trigger_finding_gates(title: str, severity: str, description: str) -> 
         )
         triggered.append("post_exploit_rce")
 
-    # Auth service finding → credential-audit is mandatory
-    if any(kw in text for kw in _AUTH_KEYWORDS):
+    # Auth weakness → credential-audit is mandatory. Require a real weakness
+    # (high/critical severity OR a weakness keyword), not just an auth-service name.
+    auth_weakness = severity in ("critical", "high") or any(k in text for k in _AUTH_WEAKNESS_KEYWORDS)
+    if auth_weakness and any(kw in text for kw in _AUTH_KEYWORDS):
         current = scan_session.get()
         depth = current.get("depth", "standard") if current else "standard"
         if depth in ("standard", "thorough"):
@@ -768,11 +798,60 @@ async def _do_coverage(data):
         return await _do_coverage_reset(cov)
     if cov_type == "list":
         return await _do_coverage_list(data, cov)
+    if cov_type == "next_batch":
+        return await _do_coverage_next_batch(data, cov)
     return (
-        f"Unknown coverage type '{cov_type}'. Use: endpoint, tested, bulk_tested, list, reset. "
+        f"Unknown coverage type '{cov_type}'. Use: endpoint, tested, bulk_tested, list, next_batch, reset. "
         f"Example: report(action='coverage', data={{type:'endpoint', path:'/login', method:'GET', "
         f"params:[{{name:'user', type:'query', value_hint:'string'}}]}})"
     )
+
+
+async def _do_coverage_next_batch(data, cov):
+    """Hand the agent a FOCUSED, concrete batch of the next cells to test.
+
+    Returns a small batch (profile-capped) of the next pending cells on one
+    endpoint, each enriched with the exact test request to send, plus progress
+    (this endpoint X/Y · overall X/Y). The agent runs each request, then closes
+    the whole batch in one bulk_tested call citing each artifact_id — a tight
+    test→close loop instead of navigating 700+ cells solo.
+    """
+    from mcp_server.scan_engine.budget import get_profile
+    from mcp_server.scan_engine.planner import _concrete_test_command
+
+    cap = get_profile().get("next_batch_size", 10)
+    try:
+        count = min(int(data.get("count", cap)), cap)
+    except (TypeError, ValueError):
+        count = cap
+    endpoint_id = (data.get("endpoint_id") or "").strip() or None
+
+    current = scan_session.get() or {}
+    target = current.get("target", "")
+
+    result = await cov.get_next_batch(count=max(1, count), endpoint_id=endpoint_id)
+    for cell in result.get("batch", []):
+        cell["test_request"] = _concrete_test_command(
+            cell.get("injection_type", ""), target,
+            cell.get("endpoint_path") or "", cell.get("method") or "GET",
+            cell.get("param") or "_endpoint", cell.get("param_type") or "query",
+        )
+
+    n = len(result.get("batch", []))
+    if n:
+        prog = result.get("progress", {})
+        result["next_step"] = (
+            f"Test these {n} cell(s) on {result['endpoint_focus']['method']} "
+            f"{result['endpoint_focus']['path']} "
+            f"[{prog.get('endpoint','?')} this endpoint · {prog.get('overall','?')} overall]. "
+            "Run each test_request, then CLOSE them in one call: "
+            "report(action='coverage', data={type:'bulk_tested', updates:[{cell_id, status:'tested_clean|vulnerable|not_applicable', "
+            "artifact_id:'<from the http/kali response>', finding_id:'<required if vulnerable>'}, ...]}). "
+            "Then call this again for the next batch."
+        )
+    else:
+        result["next_step"] = "All cells addressed — proceed to validation/reporting."
+    return json.dumps(result, indent=2)
 
 
 async def _do_coverage_list(data, cov):

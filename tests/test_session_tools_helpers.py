@@ -927,7 +927,7 @@ class TestDoComplete:
              patch("mcp_server.session_tools._collect_completion_blockers",
                    return_value=["NO DIAGRAM: call report(action='diagram')"]):
             result = _do_complete()
-        assert "complete BLOCKED" in result
+        assert "step left" in result  # reframed, progress-based header
         assert "NO DIAGRAM" in result
 
     def test_blocked_increments_attempt_counter(self, tmp_path, monkeypatch):
@@ -966,14 +966,18 @@ class TestDoComplete:
             result = _do_complete()
         assert "ITERATION GATE" in result or "complete BLOCKED" in result
 
-    def test_multiple_blockers_listed(self, tmp_path, monkeypatch):
+    def test_multiple_blockers_serialized_one_at_a_time(self, tmp_path, monkeypatch):
+        # All profiles now serialize: only the single highest-priority blocker is
+        # shown, with the remaining count — so the model fixes one thing at a time.
         self._setup_session(tmp_path, monkeypatch)
         with patch("mcp_server.session_tools._effective_tools", return_value=set()), \
              patch("mcp_server.session_tools._collect_completion_blockers",
                    return_value=["NO DIAGRAM", "NO SPIDER", "NO POC"]):
             result = _do_complete()
-        assert "NO DIAGRAM" in result
-        assert "NO SPIDER" in result
+        assert "3 steps left" in result
+        assert "ONE AT A TIME" in result
+        shown = [b for b in ("NO DIAGRAM", "NO SPIDER", "NO POC") if b in result]
+        assert len(shown) == 1  # only the highest-priority blocker, not all three
 
 
 # ---------------------------------------------------------------------------

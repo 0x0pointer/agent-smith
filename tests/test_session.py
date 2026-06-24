@@ -634,6 +634,28 @@ def _cell(ep_id, param, param_type, inj_type, status="pending", tested_by="", ar
     }
 
 
+def test_low_coverage_floor_blocks_below_40():
+    from mcp_server.session_tools import _low_coverage_blocker
+    cov = {"matrix": [{"id": "c1", "status": "pending"}]}
+    # 20% addressed, passes done → still blocks (below the 40% hard floor)
+    out = _low_coverage_blocker(cov, total=10, addressed=2, pct=20.0, passes_done=True)
+    assert out is not None and "COVERAGE FLOOR" in out
+
+
+def test_low_coverage_advisory_after_passes():
+    from mcp_server.session_tools import _low_coverage_blocker
+    cov = {"matrix": [{"id": "c1", "status": "pending"}]}
+    # 60% addressed: advisory (no block) once the thorough passes are done...
+    assert _low_coverage_blocker(cov, total=10, addressed=6, pct=60.0, passes_done=True) is None
+    # ...but still nudges (blocks) while the passes are NOT yet complete.
+    assert _low_coverage_blocker(cov, total=10, addressed=6, pct=60.0, passes_done=False) is not None
+
+
+def test_low_coverage_none_at_or_above_target():
+    from mcp_server.session_tools import _low_coverage_blocker
+    assert _low_coverage_blocker({"matrix": []}, total=10, addressed=9, pct=90.0, passes_done=False) is None
+
+
 def test_injection_breadth_blocker_no_gaps():
     cells = [
         _cell("ep1", "q", "query", "sqli"),

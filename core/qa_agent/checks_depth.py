@@ -8,11 +8,29 @@ consecutive cycle).
 """
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 
 import core.qa_agent as _qa
 from ._util import _ts_age_secs
 from .hir import _hir
+
+
+def _is_whitebox_scan(entries: list[dict], session_data: dict) -> bool:
+    """True when the scan is a white-box code review (semgrep can actually run).
+
+    Mirrors session_tools._is_whitebox_scan but computed from session_data +
+    entries, since core can't import mcp_server. The 3-semgrep-pass gates assume
+    a codebase; on a black-box remote target there's nothing for semgrep to scan,
+    so those gates must NOT fire (they'd deadlock the scan forever).
+    """
+    if os.environ.get("PENTEST_TARGET_PATH"):
+        return True
+    tools = {e.get("name") for e in entries if e.get("type") == "TOOL"}
+    if tools & {"semgrep", "trufflehog"}:
+        return True
+    skills = [s.get("skill", "") for s in (session_data.get("skill_history") or [])]
+    return "codebase" in skills
 
 
 def _check_depth_after_finding(entries: list[dict], findings_data: dict) -> dict | None:
@@ -145,9 +163,11 @@ def _check_oob_unpolled(session_data: dict) -> dict | None:
 
 
 def _check_whitebox_passes(entries: list[dict], session_data: dict) -> dict | None:
-    """Enforce 3 analysis passes on thorough-depth scans."""
+    """Enforce 3 semgrep passes on thorough WHITE-BOX scans (needs a codebase)."""
     if session_data.get("depth") != "thorough":
         return None
+    if not _is_whitebox_scan(entries, session_data):
+        return None  # black-box remote scan: no codebase for semgrep to scan
     semgrep_runs = [e for e in entries if e.get("type") == "TOOL" and e.get("name") == "semgrep"]
     pass_count = len(semgrep_runs)
     if pass_count >= 3:
@@ -175,9 +195,11 @@ def _check_whitebox_passes(entries: list[dict], session_data: dict) -> dict | No
 
 
 def _check_premature_complete(entries: list[dict], session_data: dict) -> dict | None:
-    """Block scan completion when called before 3-pass requirement is met on thorough scans."""
+    """Block completion before the 3 semgrep passes on thorough WHITE-BOX scans."""
     if session_data.get("depth") != "thorough":
         return None
+    if not _is_whitebox_scan(entries, session_data):
+        return None  # black-box remote scan: the semgrep-pass gate can't apply
     complete_events = [e for e in entries if e.get("type") == "COMPLETE"]
     if not complete_events:
         return None
