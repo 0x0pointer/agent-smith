@@ -132,6 +132,7 @@ from .validation import (  # noqa: E402
     _validate_auth_response,
     _validate_finding_link,
     cell_has_test_evidence,
+    unregistered_finding_paths,
 )
 from .operations import (  # noqa: E402
     _apply_bulk_cell,
@@ -156,4 +157,5 @@ __all__ = [
     "list_cells",
     "reset",
     "cell_has_test_evidence",
+    "unregistered_finding_paths",
 ]

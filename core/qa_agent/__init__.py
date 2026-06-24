@@ -93,6 +93,9 @@ def _has_pending_directives() -> bool:
 
 from ._util import _ts_age_secs  # noqa: E402
 from .hir import _hir  # noqa: E402
+from .checks_coverage import (  # noqa: E402
+    _check_unregistered_findings,
+)
 from .checks_shortcuts import (  # noqa: E402
     _check_bulk_marking,
     _check_coverage_integrity,

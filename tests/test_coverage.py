@@ -430,6 +430,40 @@ def test_cell_evidence_neither_is_unevidenced():
 
 
 # ---------------------------------------------------------------------------
+# unregistered_finding_paths — discovery-before-testing predicate
+# ---------------------------------------------------------------------------
+
+def test_unregistered_finding_paths_flags_untested_endpoints():
+    from core.coverage import unregistered_finding_paths
+    cov = {"endpoints": [{"path": "/login", "_normalized": "/login"}]}
+    fnd = {"findings": [
+        {"target": "http://t/login", "status": "confirmed"},      # registered → ok
+        {"target": "http://t/transfer", "status": "confirmed"},   # not registered
+        {"target": "http://t/admin/delete/42"},                   # not registered, normalized
+    ]}
+    assert unregistered_finding_paths(fnd, cov) == ["/admin/delete/{id}", "/transfer"]
+
+
+def test_unregistered_finding_paths_registered_ok():
+    from core.coverage import unregistered_finding_paths
+    cov = {"endpoints": [{"path": "/transfer", "_normalized": "/transfer"}]}
+    assert unregistered_finding_paths({"findings": [{"target": "http://t/transfer"}]}, cov) == []
+
+
+def test_unregistered_finding_paths_empty_matrix_returns_empty():
+    from core.coverage import unregistered_finding_paths
+    fnd = {"findings": [{"target": "http://t/x"}]}
+    assert unregistered_finding_paths(fnd, {"endpoints": []}) == []
+
+
+def test_unregistered_finding_paths_ignores_false_positive():
+    from core.coverage import unregistered_finding_paths
+    cov = {"endpoints": [{"path": "/login", "_normalized": "/login"}]}
+    fnd = {"findings": [{"target": "http://t/ghost", "status": "false_positive"}]}
+    assert unregistered_finding_paths(fnd, cov) == []
+
+
+# ---------------------------------------------------------------------------
 # Path normalization
 # ---------------------------------------------------------------------------
 

@@ -27,6 +27,9 @@ from .checks_depth import (
     _check_tool_inactivity,
     _check_whitebox_passes,
 )
+from .checks_coverage import (
+    _check_unregistered_findings,
+)
 from .checks_health import (
     _check_auth_failure,
     _check_budget_limit,
@@ -65,6 +68,7 @@ _CHECKS: list[tuple] = [
     # Blocking anti-shortcuts (complete gate)
     (_check_bulk_marking,          ("entries",)),
     (_check_coverage_integrity,    ("entries",)),
+    (_check_unregistered_findings, ("findings_data", "coverage_data")),
     (_check_premature_complete,    ("entries", "session_data")),
     # HIR conditions — Smith cannot self-resolve these (suppressed in benchmark mode)
     (_check_auth_failure,          ("entries",)),
