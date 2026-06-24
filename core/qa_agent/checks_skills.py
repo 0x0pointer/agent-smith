@@ -130,7 +130,25 @@ def _maybe_inject_business_logic_directive(
         )
 
 
-def _check_core_skill_chain(entries: list[dict], session_data: dict) -> list[dict]:
+def _target_is_web(coverage_data: dict | None) -> bool:
+    """True unless EVERY registered endpoint is an AI/LLM/MCP surface. A pure-LLM
+    target routes to /ai-redteam, so the web skill-chain mandate must not fire on
+    it (taxonomy-blind misfire that hijacked an ai-redteam scan into /web-exploit).
+    Unknown/empty coverage → True (preserve prior behavior; don't over-suppress)."""
+    if not coverage_data:
+        return True
+    try:
+        from core.coverage import classify_endpoint
+    except Exception:
+        return True
+    eps = coverage_data.get("endpoints", [])
+    if not eps:
+        return True
+    return not all(classify_endpoint(e.get("path", "")) == "ai-redteam" for e in eps)
+
+
+def _check_core_skill_chain(entries: list[dict], session_data: dict,
+                            coverage_data: dict | None = None) -> list[dict]:
     """Enforce the mandatory skill progression every web pentest must complete.
 
     Sequence enforced:
@@ -151,9 +169,12 @@ def _check_core_skill_chain(entries: list[dict], session_data: dict) -> list[dic
     web_exploit_entry = next((e for e in reversed(skill_history) if e.get("skill") == "web-exploit"), None)
     web_exploit_ts = web_exploit_entry.get("ts", "") if web_exploit_entry else ""
 
-    _maybe_inject_web_exploit_directive(spider_ts, skills_run, now, alerts)
-    _maybe_inject_param_fuzz_directive(web_exploit_ts, skills_run, now, alerts)
-    _maybe_inject_business_logic_directive(depth, skill_history, skills_run, now, alerts)
+    # Skip the web skill-chain mandate on a pure-LLM/MCP target (it routes to
+    # /ai-redteam, not /web-exploit) — prevents the taxonomy-blind misfire.
+    if _target_is_web(coverage_data):
+        _maybe_inject_web_exploit_directive(spider_ts, skills_run, now, alerts)
+        _maybe_inject_param_fuzz_directive(web_exploit_ts, skills_run, now, alerts)
+        _maybe_inject_business_logic_directive(depth, skill_history, skills_run, now, alerts)
 
     return alerts
 

@@ -507,8 +507,31 @@ def _do_start(opts):
         from core.steering import steering_queue
         steering_queue.cancel_by_trigger("TRIAGE_ADJUDICATION", "cleared on new scan start")
         steering_queue.cancel_by_trigger("FORCE_COMPLETE_ADJUDICATION", "cleared on new scan start")
+        # Also clear stale SKILL-CHAIN directives so a prior run's mandate (e.g.
+        # MISSING_WEB_EXPLOIT) can't replay into — and hijack — this fresh scan.
+        for _trig in ("MISSING_WEB_EXPLOIT", "MISSING_PARAM_FUZZ", "MISSING_BUSINESS_LOGIC"):
+            steering_queue.cancel_by_trigger(_trig, "cleared on new scan start")
     except Exception:
         pass
+    # On a NON-resume start, reset the QA daemon's input log + alert state so a
+    # prior scan's SPIDER/SKILL/TOOL entries don't re-derive stale skill-chain
+    # alerts against this run (the cross-session bleed that hijacked a fresh
+    # ai-redteam scan into /web-exploit). Archive rather than delete.
+    if not is_resume:
+        try:
+            import shutil
+            from datetime import datetime as _dt, timezone as _tz
+            from core.coverage import COVERAGE_FILE
+            base = COVERAGE_FILE.parent
+            arch = base / "logs"; arch.mkdir(exist_ok=True)
+            _ts = _dt.now(_tz.utc).strftime("%Y%m%d_%H%M%S")
+            for stale in ("quick_log.json", _QA_STATE_FILENAME):
+                p = base / stale
+                if p.exists():
+                    shutil.copy2(p, arch / f"{p.stem}_{_ts}.json")
+                    p.unlink()
+        except Exception:
+            pass
     return _start_response(cfg, classification, target, scan_mode, depth, is_resume)
 
 
@@ -2120,12 +2143,13 @@ def _do_recovery():
     data = findings_store._load()
     pending_escalations = []
     for f in data.get("findings", []):
-        leads = [l for l in f.get("escalation_leads", []) if l.get("status") == "pending"]
+        leads = [l for l in f.get("escalation_leads", [])
+                 if isinstance(l, dict) and l.get("status") == "pending"]
         if leads:
             pending_escalations.append({
                 "finding_id": f["id"],
                 "title": f["title"],
-                "pending_leads": [l["lead"] for l in leads],
+                "pending_leads": [l.get("lead") for l in leads],
             })
 
     tools_run = _effective_tools()

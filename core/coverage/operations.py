@@ -22,6 +22,17 @@ from .validation import (
 )
 
 
+def _tested_by_from_artifact(artifact_id: str) -> str:
+    """Derive the tool name from a tool-prefixed artifact_id so artifact-backed
+    closures aren't falsely flagged 'untooled' (artifact_id is the real evidence
+    gate). Format: <tool>_<digits>_<hex> — e.g. 'http_request_134016_d4fd92c3'
+    -> 'http_request', 'garak_134016_730a2dab' -> 'garak'."""
+    if not artifact_id:
+        return ""
+    parts = artifact_id.rsplit("_", 2)
+    return parts[0] if len(parts) == 3 else artifact_id
+
+
 async def add_endpoint(
     path: str,
     method: str,
@@ -162,7 +173,7 @@ async def update_cell(
                 )
                 cell["status"]      = status
                 cell["notes"]       = notes
-                cell["tested_by"]   = tested_by
+                cell["tested_by"]   = tested_by or _tested_by_from_artifact(artifact_id)
                 cell["artifact_id"] = artifact_id
                 if finding_id:
                     cell["finding_id"] = finding_id
@@ -189,7 +200,7 @@ def _apply_bulk_cell(cell: dict, upd: dict, warnings: list[str]) -> None:
         warnings.append(warning)
     cell["status"]      = st
     cell["notes"]       = notes_text
-    cell["tested_by"]   = upd.get("tested_by", "")
+    cell["tested_by"]   = upd.get("tested_by") or _tested_by_from_artifact(upd.get("artifact_id", ""))
     cell["artifact_id"] = upd.get("artifact_id", "")
     if upd.get("finding_id"):
         cell["finding_id"] = upd["finding_id"]

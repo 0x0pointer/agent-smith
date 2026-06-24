@@ -87,7 +87,7 @@ _CHECKS: list[tuple] = [
     (_check_tool_inactivity,       ("entries",)),
     # Mandatory tool / skill chain (core_skill_chain + missing_skill return lists)
     (_check_no_spider_after_httpx, ("entries",)),
-    (_check_core_skill_chain,      ("entries", "session_data")),
+    (_check_core_skill_chain,      ("entries", "session_data", "coverage_data")),
     (_check_missing_skill,         ("coverage_data", "session_data")),
 ]
 
