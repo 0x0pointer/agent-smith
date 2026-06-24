@@ -285,8 +285,15 @@ class TestSmithRunning:
             r = client.get("/api/smith-status")
         # Endpoint now also reports the activity heartbeat (heartbeat_age_s/idle)
         # the triage banner relies on. With no quick_log in the sandbox, the
-        # heartbeat is unknown (None) and Smith is not flagged idle.
-        assert r.json() == {"running": True, "heartbeat_age_s": None, "idle": False}
+        # heartbeat is unknown (None) and Smith is not flagged idle. The
+        # "adjudicating" flag (running AND triage_requested) is False with no
+        # triage pending.
+        assert r.json() == {
+            "running": True,
+            "heartbeat_age_s": None,
+            "idle": False,
+            "adjudicating": False,
+        }
 
     def test_running_true_via_session_fallback_when_quick_log_missing(
         self, sandbox_smith_files, tmp_path
