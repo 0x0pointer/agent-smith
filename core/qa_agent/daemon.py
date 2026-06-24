@@ -72,7 +72,7 @@ _CHECKS: list[tuple] = [
     (_check_zero_endpoints,        ("entries", "coverage_data")),
     (_check_target_unreachable,    ("entries",)),
     (_check_repeated_tool_failure, ("entries",)),
-    (_check_stuck_on_target,       ("entries", "findings_data", "previous_alerts")),
+    (_check_stuck_on_target,       ("entries", "findings_data", "session_data", "previous_alerts")),
     # Benchmark-only: push exploitation instead of pausing
     (_check_exploit_escalation,    ("entries", "findings_data", "session_data")),
     # Active shortcut detection

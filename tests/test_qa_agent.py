@@ -1012,7 +1012,7 @@ def test_premature_complete_fires():
 
 def test_stuck_on_target_too_few_tool_calls():
     entries = [_tool_entry(offset_min=5)] * 3
-    assert _check_stuck_on_target(entries, {}, []) is None
+    assert _check_stuck_on_target(entries, {}, {},[]) is None
 
 
 def test_stuck_on_target_spread_across_targets():
@@ -1020,13 +1020,13 @@ def test_stuck_on_target_spread_across_targets():
         _tool_entry("nmap", f"https://host{i}.com", offset_min=5)
         for i in range(5)
     ]
-    assert _check_stuck_on_target(entries, {}, []) is None
+    assert _check_stuck_on_target(entries, {}, {},[]) is None
 
 
 def test_stuck_on_target_recent_finding_allows_pass():
     entries = [_tool_entry("nmap", "https://example.com", offset_min=5)] * 5
     findings = {"findings": [_finding_entry(target="https://example.com", offset_min=10)]}
-    assert _check_stuck_on_target(entries, findings, []) is None
+    assert _check_stuck_on_target(entries, findings, {}, []) is None
 
 
 def test_stuck_on_target_first_detection(tmp_path, monkeypatch):
@@ -1037,7 +1037,7 @@ def test_stuck_on_target_first_detection(tmp_path, monkeypatch):
     monkeypatch.setattr(qa_mod, "_STEERING_FILE", steering_file)
 
     entries = [_tool_entry("nmap", "https://example.com", offset_min=5)] * 6
-    alert = _check_stuck_on_target(entries, {}, [])
+    alert = _check_stuck_on_target(entries, {}, {},[])
     assert alert is not None
     assert alert["code"] == "STUCK_ON_TARGET"
     assert "example.com" in alert["message"]
@@ -1057,7 +1057,7 @@ def test_stuck_on_target_second_detection_triggers_hir(tmp_path, monkeypatch):
         previous_alerts = [
             {"code": "STUCK_ON_TARGET", "message": "Stuck on target: 6 tool calls against 'https://example.com' ..."}
         ]
-        alert = _check_stuck_on_target(entries, {}, previous_alerts)
+        alert = _check_stuck_on_target(entries, {}, {},previous_alerts)
         assert alert is not None
         assert alert["code"] == "STUCK_ON_TARGET"
         mock_trigger.assert_called_once()
@@ -1084,8 +1084,51 @@ def test_stuck_on_target_no_double_hir(tmp_path, monkeypatch):
         previous_alerts = [
             {"code": "STUCK_ON_TARGET", "message": "Stuck on target: 6 tool calls against 'https://example.com' ..."}
         ]
-        _check_stuck_on_target(entries, {}, previous_alerts)
+        _check_stuck_on_target(entries, {}, {},previous_alerts)
         mock_trigger.assert_not_called()
+
+
+def test_stuck_on_target_suppressed_after_resolution():
+    # The STUCK HIR for this target was already resolved 2 min ago, and the 6
+    # stale calls are OLDER than that resolution (no new spinning since) — must
+    # NOT re-fire. Without the fix, those stale calls stay in the 30-min window
+    # and re-trigger the HIR every cycle (the storm the operator hit).
+    entries = [_tool_entry("nmap", "https://example.com", offset_min=10)] * 6
+    session_data = {"intervention_history": [{
+        "code": "HIR_STUCK_ON_TARGET",
+        "situation": "Smith has made 6 tool calls against 'https://example.com' ...",
+        "resolved_at": _ts(2),
+    }]}
+    previous_alerts = [
+        {"code": "STUCK_ON_TARGET", "message": "Stuck on target: 6 ... 'https://example.com' ..."}
+    ]
+    assert _check_stuck_on_target(entries, {}, session_data, previous_alerts) is None
+
+
+def test_stuck_on_target_refires_on_new_spinning_after_resolution(tmp_path, monkeypatch):
+    # Resolved 10 min ago, then 5+ FRESH calls (1 min ago) with no progress →
+    # genuinely still stuck after going deeper → SHOULD re-escalate.
+    import core.steering as st_mod
+    import core.qa_agent as qa_mod
+    steering_file = tmp_path / "steering_queue.json"
+    monkeypatch.setattr(st_mod, "_STEERING_FILE", steering_file)
+    monkeypatch.setattr(qa_mod, "_STEERING_FILE", steering_file)
+
+    session_data = {"intervention_history": [{
+        "code": "HIR_STUCK_ON_TARGET",
+        "situation": "...against 'https://example.com'...",
+        "resolved_at": _ts(10),
+    }]}
+    entries = [_tool_entry("nmap", "https://example.com", offset_min=1)] * 6
+    previous_alerts = [
+        {"code": "STUCK_ON_TARGET", "message": "Stuck on target: 6 ... 'https://example.com' ..."}
+    ]
+    with patch("core.session.get_intervention", return_value=None), \
+         patch("core.session.trigger_intervention"):
+        alert = _check_stuck_on_target(entries, {}, session_data, previous_alerts)
+    # Returns the alert (refire path taken) — the opposite of the suppressed case,
+    # which returns None. (Whether _hir's min-gap fires the trigger is its own concern.)
+    assert alert is not None and alert["code"] == "STUCK_ON_TARGET"
 
 
 # ---------------------------------------------------------------------------

@@ -8,7 +8,7 @@
   <link rel="shortcut icon" type="image/vnd.microsoft.icon" href="/favicon.ico">
   <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked@9/marked.min.js"></script>
-  <link rel="stylesheet" href="/static/css/dashboard.css">
+  <link rel="stylesheet" href="/static/css/dashboard.css?v=2">
 </head>
 <body>
 
@@ -110,6 +110,9 @@
       </button>
       <button class="cmd-smith-complete-btn" id="cmd-complete-btn" onclick="completeScan()">
         &#10003; Complete Scan
+      </button>
+      <button class="cmd-smith-complete-btn" id="cmd-force-stop-btn" onclick="forceStop()" style="background:#da3633;color:#fff" title="Kill Smith now and end the scan — skips the adjudication relaunch (findings are kept)">
+        &#10005; Force stop
       </button>
       <span class="cmd-smith-complete-hint" id="cmd-smith-status-hint">Only you can end the scan — Smith will keep testing until you do. Triage runs after the scan stops.</span>
     </div>

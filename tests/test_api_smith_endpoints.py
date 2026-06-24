@@ -285,8 +285,15 @@ class TestSmithRunning:
             r = client.get("/api/smith-status")
         # Endpoint now also reports the activity heartbeat (heartbeat_age_s/idle)
         # the triage banner relies on. With no quick_log in the sandbox, the
-        # heartbeat is unknown (None) and Smith is not flagged idle.
-        assert r.json() == {"running": True, "heartbeat_age_s": None, "idle": False}
+        # heartbeat is unknown (None) and Smith is not flagged idle. The
+        # "adjudicating" flag (running AND triage_requested) is False with no
+        # triage pending.
+        assert r.json() == {
+            "running": True,
+            "heartbeat_age_s": None,
+            "idle": False,
+            "adjudicating": False,
+        }
 
     def test_running_true_via_session_fallback_when_quick_log_missing(
         self, sandbox_smith_files, tmp_path
@@ -1593,3 +1600,62 @@ class TestWatchdogNotifies:
 
         # And the restart still happened despite the notify explosion.
         spawn.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# POST /api/force-stop  — terminal status + cancel triage + KILL Smith
+# ---------------------------------------------------------------------------
+
+class TestForceStop:
+
+    def test_marks_complete_and_kills_live_smith(self, sandbox_session, sandbox_smith_files):
+        _write_session(sandbox_session, status="running", triage_requested=True)
+        with patch.object(api, "_live_pid_from_pid_file", return_value=4242), \
+             patch.object(api, "_live_pid_from_process_scan", return_value=None), \
+             patch.object(api, "_kill_hung_smith", return_value=True) as kill, \
+             patch("core.steering.steering_queue.cancel_by_trigger", return_value=0):
+            r = client.post("/api/force-stop")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["ok"] is True and body["killed"] is True and body["pid"] == 4242
+        kill.assert_called_once_with(4242)
+        # session is terminal on disk so the watchdog won't respawn
+        assert json.loads(sandbox_session.read_text())["status"] == "complete"
+
+    def test_completes_even_with_no_live_smith(self, sandbox_session, sandbox_smith_files):
+        _write_session(sandbox_session, status="running")
+        with patch.object(api, "_live_pid_from_pid_file", return_value=None), \
+             patch.object(api, "_live_pid_from_process_scan", return_value=None), \
+             patch.object(api, "_kill_hung_smith") as kill, \
+             patch("core.steering.steering_queue.cancel_by_trigger", return_value=0):
+            r = client.post("/api/force-stop")
+        assert r.status_code == 200
+        assert r.json()["killed"] is False
+        kill.assert_not_called()
+        assert json.loads(sandbox_session.read_text())["status"] == "complete"
+
+
+# ---------------------------------------------------------------------------
+# GET /api/smith-status  — `adjudicating` flag
+# ---------------------------------------------------------------------------
+
+class TestSmithStatusAdjudicating:
+
+    def test_running_plus_triage_is_adjudicating(self, sandbox_session):
+        _write_session(sandbox_session, status="running", triage_requested=True)
+        with patch.object(api, "_smith_running", return_value=True):
+            r = client.get("/api/smith-status")
+        assert r.status_code == 200
+        assert r.json()["adjudicating"] is True
+
+    def test_running_without_triage_not_adjudicating(self, sandbox_session):
+        _write_session(sandbox_session, status="running")
+        with patch.object(api, "_smith_running", return_value=True):
+            r = client.get("/api/smith-status")
+        assert r.json()["adjudicating"] is False
+
+    def test_not_running_is_never_adjudicating(self, sandbox_session):
+        _write_session(sandbox_session, status="running", triage_requested=True)
+        with patch.object(api, "_smith_running", return_value=False):
+            r = client.get("/api/smith-status")
+        assert r.json()["adjudicating"] is False

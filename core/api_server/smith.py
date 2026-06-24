@@ -20,13 +20,14 @@ import core.api_server as _api
 
 _log = logging.getLogger(__name__)
 
-# >5 min with no scan activity → Smith is considered stopped.
-# Was 60s previously, but Qwen3.6-A3B thinking-mode reasoning regularly runs
-# 2–3 min between tool calls. 60s caused steady false positives during
-# normal thinking pauses, sending bogus WATCHDOG_SMITH_STOPPED alerts to
-# Telegram/Slack/Discord. 300s catches real Smith deaths within 5 min while
-# tolerating long internal reasoning blocks.
-_SMITH_IDLE_SECONDS = 300
+# No scan activity for this long → Smith is considered stopped/hung.
+# History: 60s → 300s (Qwen3.6-A3B thinking-mode runs 2–3 min between tool
+# calls) → 1800s. On a large/near-full context window a single turn (slow
+# prefill + compaction on the local model) can exceed 5 min with no tool call,
+# so 300s false-killed a healthy-but-slow Smith and triggered a kill→respawn
+# death spiral (the watchdog killed every respawn before it could call a tool).
+# 30 min tolerates the slowest realistic turn while still catching real deaths.
+_SMITH_IDLE_SECONDS = 1800
 
 # Process patterns a psutil-based fallback considers "Smith is alive".
 # Used by _smith_running() as a last-resort signal after the PID-file and
