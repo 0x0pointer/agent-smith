@@ -284,8 +284,9 @@ def _check_stuck_on_target(entries: list[dict], findings_data: dict, previous_al
             code="HIR_STUCK_ON_TARGET",
             situation=(
                 f"Smith has made {hit_count} tool calls against '{stuck_target}' "
-                f"in the last 30 min with no finding logged and no coverage progress. "
-                "It appears to be stuck investigating something it cannot confirm or rule out."
+                f"with no finding logged and no coverage cell closed for it (flagged across "
+                f"two QA cycles). It appears to be stuck investigating something it cannot "
+                f"confirm or rule out."
             ),
             tried=[
                 f"Ran {hit_count} tool calls against {stuck_target} without result"
@@ -301,7 +302,7 @@ def _check_stuck_on_target(entries: list[dict], findings_data: dict, previous_al
             "code": "STUCK_ON_TARGET", "urgency": "high", "blocking": False,
             "message": (
                 f"HIR triggered: Smith made {hit_count} tool calls against '{stuck_target}' "
-                "over 30 min with no finding — human guidance required"
+                "with no finding or coverage progress — human guidance required"
             ),
         }
 
@@ -311,8 +312,8 @@ def _check_stuck_on_target(entries: list[dict], findings_data: dict, previous_al
         steering_queue.add_directive(
             code=RESUME_TESTING,
             message=(
-                f"You have run {hit_count} tools against '{stuck_target}' in the last 30 min "
-                "with no finding logged. You may be stuck. "
+                f"You have run {hit_count} tools against '{stuck_target}' "
+                "with no finding logged and no coverage cell closed. You may be stuck. "
                 "Choose one: (1) Log what you observed as an informational finding and move on. "
                 "(2) Run one final targeted attempt with a specific technique — then move on regardless. "
                 "(3) Call session(action='intervene') if you genuinely cannot proceed without human input."
@@ -322,7 +323,7 @@ def _check_stuck_on_target(entries: list[dict], findings_data: dict, previous_al
     return {
         "code": "STUCK_ON_TARGET", "urgency": "high", "blocking": False,
         "message": (
-            f"Stuck on target: {hit_count} tool calls against '{stuck_target}' "
-            "in 30 min, no finding logged — directive sent, HIR queued if unresolved"
+            f"Stuck on target: {hit_count} tool calls against '{stuck_target}', "
+            "no finding/coverage progress — directive sent, HIR queued if unresolved"
         ),
     }
