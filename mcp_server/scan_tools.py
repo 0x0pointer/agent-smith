@@ -40,6 +40,18 @@ def _stage_file_cmd(content: str, path: str) -> str:
     return f"printf %s {shlex.quote(b64)} | base64 -d > {shlex.quote(path)}"
 
 
+def _kali_scratch_dir() -> str:
+    """A private, per-invocation scratch dir inside the (single-tenant, ephemeral)
+    Kali container, under root's home rather than a world-writable temp dir.
+
+    Avoids the predictable /tmp symlink class (Sonar python:S5443) AND prevents two
+    concurrent AI scans from clobbering each other's staged config files. /root is
+    writable in the kali image (garak already writes its reports under /root).
+    """
+    import uuid
+    return f"/root/.cache/agent-smith/{uuid.uuid4().hex[:12]}"
+
+
 # Headers a model can pass via options={"headers": {...}} to authenticate an AI
 # scan; merged on top of a JSON Content-Type default.
 def _ai_headers(options: dict) -> dict:
@@ -399,8 +411,9 @@ async def _handle_garak(target, flags, options):
         gen["response_json_field"] = resp_field
     rest_cfg = {"rest": {"RestGenerator": gen}}
 
-    cfg_path = "/tmp/garak_rest.json"
-    prefix   = "/tmp/garak_run"
+    scratch  = _kali_scratch_dir()
+    cfg_path = f"{scratch}/garak_rest.json"
+    prefix   = f"{scratch}/garak_run"
     stage = _stage_file_cmd(_json.dumps(rest_cfg), cfg_path)
     # Garak's REST generator is config-driven (-G). The old invocation passed
     # only `--generator_option api_base=<url>`, which defined neither a request
@@ -415,7 +428,7 @@ async def _handle_garak(target, flags, options):
         garak_cmd += f" {shlex.join(shlex.split(flags))}"
     # Append the structured per-probe report so the summarizer can extract hits.
     full = (
-        f"{stage} && {garak_cmd}; "
+        f"mkdir -p {shlex.quote(scratch)} && {stage} && {garak_cmd}; "
         f"echo '=== GARAK REPORT JSONL ==='; "
         f"tail -n 300 {prefix}.report.jsonl 2>/dev/null"
     )
@@ -463,9 +476,10 @@ async def _handle_promptfoo(target, flags, options):
     if attacker:
         config["redteam"]["provider"] = attacker
 
-    cfg_path = "/tmp/promptfooconfig.json"
-    gen_path = "/tmp/promptfoo_redteam.yaml"
-    out_path = "/tmp/promptfoo_out.json"
+    scratch  = _kali_scratch_dir()
+    cfg_path = f"{scratch}/promptfooconfig.json"
+    gen_path = f"{scratch}/promptfoo_redteam.yaml"
+    out_path = f"{scratch}/promptfoo_out.json"
     stage = _stage_file_cmd(_json.dumps(config), cfg_path)
     # Config-driven two-step (verified against promptfoo 0.121.2): `redteam
     # generate` writes adversarial test cases (needs an attacker-LLM key via
@@ -479,7 +493,7 @@ async def _handle_promptfoo(target, flags, options):
     if flags:
         eval_cmd += f" {shlex.join(shlex.split(flags))}"
     full = (
-        f"{stage} && {gen_cmd} && {eval_cmd}; "
+        f"mkdir -p {shlex.quote(scratch)} && {stage} && {gen_cmd} && {eval_cmd}; "
         f"echo '=== PROMPTFOO RESULTS JSON ==='; "
         f"cat {out_path} 2>/dev/null"
     )
