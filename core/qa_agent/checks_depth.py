@@ -220,7 +220,30 @@ def _check_tool_inactivity(entries: list[dict]) -> dict | None:
     }
 
 
-def _check_stuck_on_target(entries: list[dict], findings_data: dict, previous_alerts: list[dict]) -> dict | None:
+def _last_resolved_stuck_age(session_data: dict, target: str, now) -> float | None:
+    """Age (seconds) of the most recent RESOLVED STUCK-on-target HIR for ``target``,
+    or None if none has been resolved. Used to keep a resolved target from
+    re-firing off its own stale tool calls still inside the lookback window."""
+    best = None
+    history = list(session_data.get("intervention_history", []) or [])
+    cur = session_data.get("intervention")
+    if isinstance(cur, dict):
+        history.append(cur)
+    for h in history:
+        if h.get("code") != "HIR_STUCK_ON_TARGET":
+            continue
+        if target not in (h.get("situation") or ""):
+            continue
+        resolved_at = h.get("resolved_at")
+        if not resolved_at:
+            continue
+        age = _ts_age_secs(resolved_at, now)
+        if best is None or age < best:
+            best = age
+    return best
+
+
+def _check_stuck_on_target(entries: list[dict], findings_data: dict, session_data: dict, previous_alerts: list[dict]) -> dict | None:
     """Detect when Smith is spinning on a target with no progress — escalates to HIR on second cycle.
 
     Pattern: 5+ tool calls against the same target in the last 30 min, no new finding logged
@@ -251,7 +274,22 @@ def _check_stuck_on_target(entries: list[dict], findings_data: dict, previous_al
     if not stuck_target:
         return None
 
-    hit_count = target_counts[stuck_target]
+    # Don't re-escalate a target whose STUCK HIR the operator already resolved,
+    # unless Smith has spun 5+ MORE times against it SINCE that resolution. Without
+    # this, the original calls stay inside the 30-min lookback and re-fire the HIR
+    # every QA cycle even after it was resolved — an HIR storm against one target.
+    resolved_age = _last_resolved_stuck_age(session_data, stuck_target, now)
+    if resolved_age is not None:
+        new_calls = sum(
+            1 for e in tool_entries
+            if e.get("target") == stuck_target
+            and _ts_age_secs(e.get("ts", ""), now) < resolved_age  # newer than the resolution
+        )
+        if new_calls < 5:
+            return None
+        hit_count = new_calls
+    else:
+        hit_count = target_counts[stuck_target]
 
     # Check if a new finding was logged for this target in the same window
     recent_findings = [
