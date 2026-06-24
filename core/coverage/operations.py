@@ -83,8 +83,13 @@ async def add_endpoint(
                 data["matrix"].append(cell)
                 new_cells += 1
 
-        # Endpoint-level cells (CORS, CSRF, headers, etc.)
-        for inj_type in _APPLICABILITY["endpoint/default"]:
+        # Endpoint-level cells (CORS, CSRF, headers, etc.). AI endpoints also
+        # get the endpoint-level LLM weakness cells (RAG poisoning, embedding
+        # manipulation) which apply per-endpoint rather than per-param.
+        endpoint_level_types = list(_APPLICABILITY["endpoint/default"])
+        if classify_endpoint(path) == "ai-redteam":
+            endpoint_level_types += _APPLICABILITY.get("llm_endpoint/default", [])
+        for inj_type in endpoint_level_types:
             cell = {
                 "id": f"cell-{uuid.uuid4().hex[:12]}",
                 "endpoint_id": ep_id,

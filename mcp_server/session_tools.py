@@ -570,8 +570,9 @@ def _coverage_blockers(cov: dict, ctf_mode: bool = False) -> list[str]:
     meta = cov.get("meta", {})
     total = meta.get("total_cells", 0)
 
-    # Empty matrix gate — only enforced for non-CTF runs where web work happened.
+    # Empty matrix gate — only enforced for non-CTF runs where web OR AI work happened.
     web_work_done = any(t in _effective_tools() for t in ("httpx", "spider", "ffuf", "nuclei"))
+    ai_work_done = any(t in _effective_tools() for t in ("fuzzyai", "garak", "pyrit", "promptfoo"))
     if total == 0:
         if not ctf_mode and web_work_done:
             blockers.append(
@@ -582,6 +583,16 @@ def _coverage_blockers(cov: dict, ctf_mode: bool = False) -> list[str]:
                 "The matrix is the audit trail of what was tested — without it, coverage gaps "
                 "are invisible and re-spider can't deduplicate. See /web-exploit Phase 1 for the "
                 "full registration pattern."
+            )
+        elif not ctf_mode and ai_work_done:
+            blockers.append(
+                "EMPTY AI COVERAGE MATRIX: AI red-team tools were run "
+                "(fuzzyai/garak/pyrit/promptfoo) but no LLM/MCP endpoint was registered. "
+                "Register the chat/LLM (or MCP) endpoint so each OWASP LLM/MCP category becomes a "
+                "closable cell: report(action='coverage', data={'type':'endpoint', 'path':'/...', "
+                "'method':'POST', 'params':[{'name':'message','type':'llm_prompt'}], "
+                "'discovered_by':'ai-redteam'}). For MCP tools add params with type 'mcp_tool_arg'. "
+                "Then close each category cell with the scan's artifact_id. See /ai-redteam Phase 0."
             )
         return blockers
 
@@ -990,10 +1001,16 @@ def _deepen_steps_pass1(
     )
     if has_ai_ep or "ai-redteam" in skills_run:
         steps.append(
-            "Re-invoke /ai-redteam (SECOND PASS) — run PyRIT crescendo (10 turns), "
-            "Garak with full probe set (dan,encoding,promptinject,leakreplay,gcg,glitch,"
-            "grandma,goodside,snowball,misleading,packagehallucination,malwaregen), "
-            "and manual multi-objective authority-marker payloads on all AI endpoints."
+            "Re-invoke /ai-redteam (SECOND PASS) — run PyRIT crescendo (10 turns); "
+            "Garak with the full probe set (dan,encoding,promptinject,leakreplay,xss,"
+            "latentinjection,snowball,misleading,packagehallucination,malwaregen,gcg,"
+            "glitch,grandma,goodside); promptfoo redteam (plugins prompt-injection,"
+            "excessive-agency,pii,rag-poisoning,prompt-extraction; strategies jailbreak,"
+            "crescendo); plus manual multi-objective authority-marker payloads on all AI "
+            "endpoints. Close each OWASP LLM/MCP coverage cell with the run's artifact_id, "
+            "and re-run every confirmed jailbreak/injection N times to record a k/N "
+            "reproducibility rate (report(action='update_finding', adjudication=...)) before "
+            "filing — LLM outputs are non-deterministic."
         )
     steps.append(
         "Re-run nuclei with ALL template categories: "
@@ -1088,7 +1105,28 @@ def _deepen_brief(iteration: int) -> str:
 
     skills_run = {s["skill"] for s in current.get("skill_history", [])}
     endpoints  = current.get("known_assets", {}).get("endpoints", [])
-    has_ai_ep  = any("ai" in ep or "chat" in ep or "llm" in ep for ep in endpoints)
+    # Robust AI-surface detection: an AI scan rarely populates known_assets.endpoints
+    # (the URL is passed straight to the scan tool, no spider). The old spider-only
+    # substring check (`"ai" in ep`) was both a false-negative for that case and a
+    # false-positive on paths like /detail, /email, /maintenance. Detect AI work by
+    # the AI tools actually run, the ai-redteam skill, or any AI/MCP coverage cell.
+    from core.coverage.classify import classify_endpoint
+    _AI_TOOLS = {"fuzzyai", "garak", "pyrit", "promptfoo"}
+    _AI_CELL_PREFIXES = (
+        "prompt_injection", "jailbreak", "system_prompt_leak", "sensitive_info_disclosure",
+        "improper_output_handling", "excessive_agency", "misinformation",
+        "unbounded_consumption", "model_extraction", "content_bias",
+        "membership_inference", "rag_poisoning", "embedding_manipulation", "mcp_",
+    )
+    has_ai_ep = (
+        bool(_AI_TOOLS & _effective_tools())
+        or "ai-redteam" in skills_run
+        # Precise path classifier (chat/completions/mcp/...) — not the old naive
+        # `"ai" in ep` substring that false-matched /detail, /email, /maintenance.
+        or any(classify_endpoint(ep) == "ai-redteam" for ep in endpoints)
+        or any(str(c.get("injection_type", "")).startswith(_AI_CELL_PREFIXES)
+               for c in cov.get("matrix", []))
+    )
 
     unchained  = [f for f in criticals if not f.get("escalation_leads")]
     finding_summary = (
@@ -1786,6 +1824,7 @@ def _build_status_base(
         },
     }
     web_work_done = any(t in _effective_tools() for t in ("httpx", "spider", "ffuf", "nuclei"))
+    ai_work_done = any(t in _effective_tools() for t in ("fuzzyai", "garak", "pyrit", "promptfoo"))
     if meta.get("total_cells", 0) == 0 and web_work_done and not _has_ctf_flag(data):
         result["coverage_warning"] = (
             "MATRIX EMPTY: web tools have run but no endpoints are registered. "
@@ -1793,6 +1832,14 @@ def _build_status_base(
             "data={'type': 'endpoint', 'path': ..., 'method': ..., 'params': [...], "
             "'discovered_by': 'spider'}). The matrix drives Phase 2's systematic "
             "per-cell testing and prevents you from forgetting which params you tested. "
+            "complete_scan will be blocked until at least one endpoint is registered."
+        )
+    elif meta.get("total_cells", 0) == 0 and ai_work_done and not _has_ctf_flag(data):
+        result["coverage_warning"] = (
+            "MATRIX EMPTY: AI red-team tools have run but no LLM/MCP endpoint is registered. "
+            "Register the chat/LLM endpoint with report(action='coverage', data={'type':'endpoint', "
+            "'path': ..., 'method':'POST', 'params':[{'name':'message','type':'llm_prompt'}], "
+            "'discovered_by':'ai-redteam'}) so every OWASP LLM/MCP category becomes a closable cell. "
             "complete_scan will be blocked until at least one endpoint is registered."
         )
     if remaining:
