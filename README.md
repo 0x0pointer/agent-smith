@@ -319,7 +319,9 @@ Things that bite on a slow local model:
 - **`external_directory: allow`** lets `/codebase` review paths outside opencode's cwd without an unanswerable permission prompt.
 - opencode reads the **served** `max_model_len` from `/v1/models` at runtime, so the effective window follows whatever you launch vLLM with. Local reasoning models are slow on a full window, so the dashboard watchdog tolerates up to **30 min** between tool calls before treating Smith as hung.
 
-### Running on Windows
+### Running on Windows 
+
+> ⚠️ **Experimental — not fully tested.** The native Windows / PowerShell path (the `.ps1` installers) is provided as-is and has not been thoroughly validated. For the most reliable setup, run under **WSL2** with the bash installers above. Bug reports and PRs for the Windows path are welcome.
 
 The installers above are bash-only (macOS / Linux / WSL). For native Windows
 PowerShell, use the `.ps1` siblings:
