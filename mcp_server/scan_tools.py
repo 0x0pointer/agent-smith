@@ -392,9 +392,12 @@ async def _handle_garak(target, flags, options):
     method     = options.get("method", "post")
     resp_field = options.get("response_field", "")  # JSONPath to the reply text
 
-    # Garak needs fully-qualified probe names (e.g. "probes.dan" not "dan").
+    # garak 0.15.0 wants canonical probe names WITHOUT a "probes." prefix:
+    # both "dan" and "dan.Dan_11_0" are accepted, but "probes.dan[.Class]" is
+    # REJECTED ("Unknown probes" -> garak runs nothing). Strip any stray prefix;
+    # never add one.
     qualified = ",".join(
-        p if p.startswith("probes.") else f"probes.{p}"
+        p[len("probes."):] if p.startswith("probes.") else p
         for p in (s.strip() for s in probes.split(",")) if p
     )
 
@@ -420,7 +423,7 @@ async def _handle_garak(target, flags, options):
     # body (no $INPUT slot) nor a response parser, so every probe scored empty
     # output. The JSON config above supplies both.
     garak_cmd = (
-        f"garak --model_type rest -G {cfg_path}"
+        f"garak --target_type rest -G {cfg_path}"
         f" --probes {shlex.quote(qualified)}"
         f" --report_prefix {prefix}"
     )

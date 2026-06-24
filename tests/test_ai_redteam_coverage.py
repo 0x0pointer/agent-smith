@@ -133,6 +133,23 @@ def test_pyrit_summarizer_detects_success_and_degradation():
     assert r.evidence["degraded"] is True
 
 
+def test_tested_by_derived_from_artifact_id():
+    """bulk_tested closures backed by artifact_id alone must not read as 'untooled'."""
+    from core.coverage.operations import _tested_by_from_artifact
+    assert _tested_by_from_artifact("http_request_134016_d4fd92c3") == "http_request"
+    assert _tested_by_from_artifact("garak_134016_730a2dab") == "garak"
+    assert _tested_by_from_artifact("") == ""
+
+
+def test_target_is_web_suppresses_web_mandate_on_ai_only():
+    """Pure-LLM target -> web skill-chain mandate suppressed; mixed/unknown -> not."""
+    from core.qa_agent.checks_skills import _target_is_web
+    assert _target_is_web({"endpoints": [{"path": "/v1/chat/completions"}, {"path": "/chat"}]}) is False
+    assert _target_is_web({"endpoints": [{"path": "/login"}, {"path": "/chat"}]}) is True
+    assert _target_is_web({"endpoints": []}) is True
+    assert _target_is_web(None) is True
+
+
 def test_ai_summarizers_degrade_without_crashing():
     # No structured section present — must produce a useful summary, not raise.
     assert summarize("garak", "garbage", {}).summary
@@ -195,10 +212,30 @@ async def test_garak_handler_builds_rest_config_invocation(monkeypatch):
     from mcp_server.scan_tools import _handle_garak
     out = await _handle_garak("http://t/chat", "", {"probes": "dan,encoding"})
     assert out == "WRAP:garak"
-    assert "--model_type rest -G" in cap["cmd"]
+    assert "--target_type rest -G" in cap["cmd"]   # not the deprecated --model_type
     assert "garak_rest.json" in cap["cmd"]
-    assert "api_base=" not in cap["cmd"]      # the old broken form is gone
-    assert "probes.dan,probes.encoding" in cap["cmd"]
+    assert "api_base=" not in cap["cmd"]           # the old broken form is gone
+    # garak 0.15.0 rejects "probes." prefixes — names must be passed bare.
+    assert "--probes dan,encoding" in cap["cmd"]
+    assert "probes.dan" not in cap["cmd"]
+
+
+@pytest.mark.asyncio
+async def test_garak_handler_strips_stray_probes_prefix(monkeypatch):
+    """A caller that mistakenly supplies a 'probes.'-prefixed name gets it stripped
+    (garak 0.15.0 only accepts the bare form, incl. module.Class like dan.Dan_11_0)."""
+    import tools.kali_runner as kr
+    import mcp_server.scan_engine as se
+    cap = {}
+    async def fake_exec(cmd, timeout=900):
+        cap["cmd"] = cmd
+        return "raw"
+    monkeypatch.setattr(kr, "exec_command", fake_exec)
+    monkeypatch.setattr(se, "wrap", lambda tool, raw, ctx=None: f"WRAP:{tool}")
+    from mcp_server.scan_tools import _handle_garak
+    await _handle_garak("http://t/chat", "", {"probes": "probes.dan.Dan_11_0,probes.encoding"})
+    assert "--probes dan.Dan_11_0,encoding" in cap["cmd"]
+    assert "probes.dan" not in cap["cmd"]
 
 
 @pytest.mark.asyncio
