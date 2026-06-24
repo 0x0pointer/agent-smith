@@ -656,6 +656,23 @@ def test_low_coverage_none_at_or_above_target():
     assert _low_coverage_blocker({"matrix": []}, total=10, addressed=9, pct=90.0, passes_done=False) is None
 
 
+def test_set_last_artifact_stashes_on_running_session(monkeypatch):
+    import core.session as sess
+    monkeypatch.setattr(sess, "_current", {"status": "running"})
+    monkeypatch.setattr(sess, "_flush", lambda: None)
+    sess.set_last_artifact("http_request", "http_request_1_xyz")
+    assert sess._current["last_artifact_id"] == "http_request_1_xyz"
+    assert sess._current["last_artifacts_by_tool"]["http_request"] == "http_request_1_xyz"
+
+
+def test_set_last_artifact_noop_when_not_running(monkeypatch):
+    import core.session as sess
+    monkeypatch.setattr(sess, "_current", {"status": "complete"})
+    monkeypatch.setattr(sess, "_flush", lambda: None)
+    sess.set_last_artifact("http_request", "x")
+    assert "last_artifact_id" not in sess._current
+
+
 def test_injection_breadth_blocker_no_gaps():
     cells = [
         _cell("ep1", "q", "query", "sqli"),

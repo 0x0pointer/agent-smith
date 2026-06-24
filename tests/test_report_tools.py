@@ -61,6 +61,33 @@ def test_finding_gates_rce_fires_on_real(monkeypatch):
     assert "post_exploit_rce" in out
 
 
+# ── adjudication reuses the finding's linked proof artifact (no re-run) ───────
+
+def test_adjudication_reuses_linked_evidence_artifact(monkeypatch):
+    import mcp_server.report_tools as rt
+    finding = {"id": "f1", "severity": "high", "evidence_artifact_id": "http_request_1_aaaa"}
+    monkeypatch.setattr(rt.findings_store, "_load", lambda: {"findings": [finding]})
+    # Only the finding's linked artifact exists on disk; the supplied one is stale.
+    monkeypatch.setattr("mcp_server.scan_engine.artifacts.artifact_exists",
+                        lambda aid: aid == "http_request_1_aaaa")
+    fields = {"adjudication": {"reproducible": True, "rationale": "confirmed",
+                               "artifact_id": "stale_missing"}}
+    dropped, _ = rt._coerce_finding_adjudication("f1", fields)
+    assert dropped is False
+    assert fields["adjudication"]["artifact_id"] == "http_request_1_aaaa"  # substituted, not re-run
+
+
+def test_adjudication_rejected_when_no_linked_artifact(monkeypatch):
+    import mcp_server.report_tools as rt
+    finding = {"id": "f1", "severity": "high"}  # no evidence_artifact_id linked
+    monkeypatch.setattr(rt.findings_store, "_load", lambda: {"findings": [finding]})
+    monkeypatch.setattr("mcp_server.scan_engine.artifacts.artifact_exists", lambda aid: False)
+    fields = {"adjudication": {"reproducible": True, "rationale": "confirmed", "artifact_id": "missing"}}
+    dropped, msg = rt._coerce_finding_adjudication("f1", fields)
+    assert dropped is True
+    assert "no linked evidence artifact" in msg
+
+
 # ── _do_update_finding ───────────────────────────────────────────────────────
 
 @pytest.mark.asyncio

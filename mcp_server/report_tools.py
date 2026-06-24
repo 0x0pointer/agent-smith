@@ -87,6 +87,10 @@ async def report(action: str, data: Any) -> str:
     finding data:
       title, severity (critical|high|medium|low|info), target,
       description, evidence, tool_used=, cve=, business_impact=,
+      artifact_id= (optional) the artifact_id of the tool call that proves this
+        finding — links the proof so adjudication can REUSE it instead of making
+        you re-run the attack. If omitted, the session's most-recent tool
+        artifact is auto-linked.
       reproduction= {type: http|command|script|manual, command: "...", expected: "..."},
       trace= (optional, WHITE-BOX findings) source data flow as an ordered list
         [{kind: entrypoint|propagation|sink, file, line, scope, description}] —
@@ -255,6 +259,13 @@ async def _do_finding(data):
         log.note(f"finding deduplicated against {dup.get('id')} — {title}")
         return _dedup_message(dup)
 
+    # Link the proof artifact: explicit artifact_id if the model passed one,
+    # else the session's most-recent tool artifact (the call that produced this
+    # finding). Adjudication reuses it so the attack never has to be re-run.
+    evidence_artifact_id = (data.get("artifact_id") or "").strip()
+    if not evidence_artifact_id:
+        evidence_artifact_id = (scan_session.get() or {}).get("last_artifact_id", "") or ""
+
     await findings_store.add_finding(
         title=title, severity=severity, target=target,
         description=data.get("description", ""),
@@ -265,6 +276,7 @@ async def _do_finding(data):
         reproduction=data.get("reproduction"),
         escalation_leads=data.get("escalation_leads"),
         trace=data.get("trace"),
+        evidence_artifact_id=evidence_artifact_id,
     )
     log.finding(severity, title, target)
 
@@ -377,18 +389,26 @@ def _coerce_finding_adjudication(finding_id: str, fields: dict) -> tuple[bool, s
             "rationale} for it to count toward completion."
         )
     if coerced.get("reproducible") and not artifact_exists(coerced.get("artifact_id", "")):
-        # A reproducible verdict must be backed by an artifact that actually
-        # exists on disk — mirrors the coverage layer's artifact-existence rule.
-        fields.pop("adjudication", None)
-        _aid = coerced.get("artifact_id", "")
-        _why = "no artifact_id was provided" if not _aid else f"artifact_id '{_aid}' does not exist on disk"
-        return True, (
-            f"\n\nREJECTED: adjudication claims reproducible=true but {_why}. Re-run the "
-            "attack that proves the finding reproduces, capture the artifact_id from that "
-            "tool response, and re-send the adjudication with it. (A self-attested 'it "
-            "reproduces' with no proving artifact is not accepted; set reproducible=false "
-            "to mark it a false positive instead.)"
-        )
+        # The supplied artifact is missing/absent — but the proof was already
+        # captured when the finding was filed. Reuse that linked evidence
+        # artifact so the model doesn't re-run the attack just to regenerate an
+        # artifact_id it lost to context compaction.
+        linked = (current or {}).get("evidence_artifact_id", "")
+        if linked and artifact_exists(linked):
+            coerced["artifact_id"] = linked
+        else:
+            # A reproducible verdict must be backed by an artifact that exists on
+            # disk — mirrors the coverage layer's artifact-existence rule.
+            fields.pop("adjudication", None)
+            _aid = coerced.get("artifact_id", "")
+            _why = "no artifact_id was provided" if not _aid else f"artifact_id '{_aid}' does not exist on disk"
+            return True, (
+                f"\n\nREJECTED: adjudication claims reproducible=true but {_why}, and the finding "
+                "has no linked evidence artifact to fall back on. Re-run the attack that proves "
+                "the finding reproduces, capture the artifact_id from that tool response, and "
+                "re-send the adjudication with it. (Set reproducible=false to mark it a false "
+                "positive instead.)"
+            )
     fields["adjudication"] = coerced
     return False, ""
 

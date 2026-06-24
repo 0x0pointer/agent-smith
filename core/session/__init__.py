@@ -793,6 +793,7 @@ from .assets import (  # noqa: E402
     get_spider_failures,
     has_spider_failure,
     record_spider_failure,
+    set_last_artifact,
     spider_max_retries,
     update_known_assets,
 )
