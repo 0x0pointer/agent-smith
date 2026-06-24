@@ -79,6 +79,26 @@ def _validate_artifact(artifact_id: str, status: str) -> str:
     return ""
 
 
+def cell_has_test_evidence(cell: dict) -> bool:
+    """True if a closed cell carries real test evidence.
+
+    ``artifact_id`` is THE enforcement mechanism — ``_validate_artifact``
+    rejects any tested_clean/vulnerable closure whose artifact doesn't exist
+    on disk, so a closed cell with an ``artifact_id`` provably ran a tool.
+    ``tested_by`` is retained only as human-readable context ("Free-text
+    tested_by is no longer accepted" — see ``_validate_artifact``).
+
+    A cell is evidenced if it has EITHER. The completion gates used to key on
+    ``tested_by`` alone, which made a cell closed with a real artifact but an
+    empty ``tested_by`` permanently un-completable: the proof was on disk, yet
+    the gate demanded the deprecated field. After a context compaction Smith
+    loses the cell IDs and can't backfill that field, so the whole scan
+    deadlocks short of completion. Gate on the artifact, with ``tested_by`` as
+    a back-compat fallback for older matrices.
+    """
+    return bool(cell.get("artifact_id") or cell.get("tested_by"))
+
+
 # Injection cell types where 401/403 is meaningless evidence of cleanliness —
 # the test payload was never evaluated because auth blocked the request first.
 # Excluded: auth/access-control cell types where 401/403 IS the finding signal.

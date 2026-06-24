@@ -15,7 +15,7 @@ from ._util import _ts_age_secs
 
 
 def _check_bulk_marking(entries: list[dict]) -> dict | None:
-    """Block completion when >10 N/A cells have no tested_by tool."""
+    """Block completion when >10 N/A cells cite no test evidence (artifact_id)."""
     cov_entries = [e for e in entries if e.get("type") == "COVERAGE"]
     if not cov_entries:
         return None
@@ -24,12 +24,12 @@ def _check_bulk_marking(entries: list[dict]) -> dict | None:
         return None
     return {
         "code": "BULK_MARKING", "urgency": "high", "blocking": True,
-        "message": f"Bulk-marking detected: {na_untooled} N/A cells have no tested_by tool — run actual tools before marking N/A",
+        "message": f"Bulk-marking detected: {na_untooled} N/A cells cite no artifact_id — run actual tools and cite the artifact before marking N/A",
     }
 
 
 def _check_coverage_integrity(entries: list[dict]) -> dict | None:
-    """Block completion when tested/vulnerable cells have no tested_by tool."""
+    """Block completion when tested/vulnerable cells cite no test evidence (artifact_id)."""
     cov_entries = [e for e in entries if e.get("type") == "COVERAGE"]
     if not cov_entries:
         return None
@@ -38,7 +38,7 @@ def _check_coverage_integrity(entries: list[dict]) -> dict | None:
         return None
     return {
         "code": "COVERAGE_INTEGRITY", "urgency": "high", "blocking": True,
-        "message": f"Coverage integrity: {untooled} tested/vulnerable cells lack a tested_by tool — cite the artifact before closing",
+        "message": f"Coverage integrity: {untooled} tested/vulnerable cells cite no artifact_id — re-test and pass the artifact_id from the tool response",
     }
 
 

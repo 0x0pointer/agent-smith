@@ -406,6 +406,30 @@ async def test_meta_counters_accurate(coverage_file):
 
 
 # ---------------------------------------------------------------------------
+# cell_has_test_evidence — the completion-gate evidence predicate
+# ---------------------------------------------------------------------------
+
+def test_cell_evidence_artifact_only_is_evidenced():
+    # The deadlock fix: a cell closed with a real artifact_id but an empty
+    # tested_by IS evidenced. Keying the completion gates on tested_by alone
+    # made such cells permanently un-completable after a context compaction.
+    from core.coverage import cell_has_test_evidence
+    assert cell_has_test_evidence({"artifact_id": "http_request_120000_abcd1234", "tested_by": ""})
+
+
+def test_cell_evidence_tested_by_only_is_evidenced():
+    # Back-compat: older matrices recorded only the free-text tested_by.
+    from core.coverage import cell_has_test_evidence
+    assert cell_has_test_evidence({"artifact_id": "", "tested_by": "sqlmap"})
+
+
+def test_cell_evidence_neither_is_unevidenced():
+    from core.coverage import cell_has_test_evidence
+    assert not cell_has_test_evidence({"artifact_id": "", "tested_by": ""})
+    assert not cell_has_test_evidence({})
+
+
+# ---------------------------------------------------------------------------
 # Path normalization
 # ---------------------------------------------------------------------------
 

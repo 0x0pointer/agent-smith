@@ -817,6 +817,11 @@ async def _emit_coverage_event() -> None:
         matrix    = _cov.get_matrix()
         meta      = matrix.get("meta", {})
         all_cells = matrix.get("matrix", [])
+        # "Unevidenced" = closed without an artifact_id (the write-enforced proof
+        # a tool ran) AND without legacy tested_by. Keying these counts on
+        # artifact_id keeps the QA completion gates satisfiable: a cell closed
+        # with a real artifact but empty tested_by is evidenced, not orphaned.
+        from core.coverage import cell_has_test_evidence
         await _qlog.append({
             "type":           "COVERAGE",
             "registered":     len(matrix.get("endpoints", [])),
@@ -826,10 +831,11 @@ async def _emit_coverage_event() -> None:
             "not_applicable": sum(1 for c in all_cells if c["status"] == "not_applicable"),
             "skipped":        sum(1 for c in all_cells if c["status"] == "skipped"),
             "na_untooled":    sum(1 for c in all_cells
-                                  if c["status"] == "not_applicable" and not c.get("tested_by")),
+                                  if c["status"] == "not_applicable"
+                                  and not cell_has_test_evidence(c)),
             "untooled":       sum(1 for c in all_cells
                                   if c["status"] in ("tested_clean", "vulnerable")
-                                  and not c.get("tested_by")),
+                                  and not cell_has_test_evidence(c)),
         })
     except Exception:
         pass

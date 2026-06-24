@@ -621,7 +621,7 @@ def test_update_known_assets_multiple_types_independent():
 from mcp_server.session_tools import _injection_breadth_blocker, _na_untooled_blocker
 
 
-def _cell(ep_id, param, param_type, inj_type, status="pending", tested_by=""):
+def _cell(ep_id, param, param_type, inj_type, status="pending", tested_by="", artifact_id=""):
     return {
         "id": f"cell-{ep_id}-{param}-{inj_type}",
         "endpoint_id": ep_id,
@@ -630,6 +630,7 @@ def _cell(ep_id, param, param_type, inj_type, status="pending", tested_by=""):
         "injection_type": inj_type,
         "status": status,
         "tested_by": tested_by,
+        "artifact_id": artifact_id,
     }
 
 
@@ -676,15 +677,24 @@ def test_na_untooled_blocker_no_issue():
 
 
 def test_na_untooled_blocker_fires():
+    # N/A bypass-type cell with neither artifact_id nor tested_by → no evidence → blocks.
     cells = [_cell("ep1", "q", "query", "sqli", status="not_applicable", tested_by="")]
     result = _na_untooled_blocker(cells, {"sqli": "blind bypass"})
     assert result is not None
     assert "INTEGRITY" in result
-    assert "tested_by" in result
+    assert "artifact_id" in result
 
 
 def test_na_untooled_blocker_with_tested_by_ok():
     cells = [_cell("ep1", "q", "query", "sqli", status="not_applicable", tested_by="sqlmap")]
+    assert _na_untooled_blocker(cells, {"sqli": "blind bypass"}) is None
+
+
+def test_na_untooled_blocker_with_artifact_only_ok():
+    # artifact_id is the real evidence — a bypass-tested N/A cell that cites an
+    # artifact but left tested_by blank must NOT block completion (the deadlock fix).
+    cells = [_cell("ep1", "q", "query", "sqli", status="not_applicable",
+                   tested_by="", artifact_id="http_request_120000_abcd1234")]
     assert _na_untooled_blocker(cells, {"sqli": "blind bypass"}) is None
 
 

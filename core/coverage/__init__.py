@@ -131,6 +131,7 @@ from .validation import (  # noqa: E402
     _validate_artifact,
     _validate_auth_response,
     _validate_finding_link,
+    cell_has_test_evidence,
 )
 from .operations import (  # noqa: E402
     _apply_bulk_cell,
@@ -154,4 +155,5 @@ __all__ = [
     "get_pending",
     "list_cells",
     "reset",
+    "cell_has_test_evidence",
 ]
