@@ -604,12 +604,13 @@ def _coverage_blockers(cov: dict, ctf_mode: bool = False) -> list[str]:
         blockers.append(low_cov)
 
     all_cells = cov.get("matrix", [])
+    from core.coverage import cell_has_test_evidence
     untooled = [c for c in all_cells
-                if c["status"] in ("tested_clean", "vulnerable") and not c.get("tested_by")]
+                if c["status"] in ("tested_clean", "vulnerable") and not cell_has_test_evidence(c)]
     if untooled:
         blockers.append(
-            f"INTEGRITY: {len(untooled)} cell(s) marked tested/vulnerable but have no "
-            f"tested_by tool. Re-test these cells or add the tested_by field."
+            f"INTEGRITY: {len(untooled)} cell(s) marked tested/vulnerable but cite no "
+            f"artifact_id. Re-test these cells and pass the artifact_id from the tool response."
         )
 
     suspect_na = _suspect_na_cells(all_cells, _BYPASS_REQUIRED_TYPES)
@@ -636,11 +637,12 @@ def _coverage_blockers(cov: dict, ctf_mode: bool = False) -> list[str]:
 
 
 def _na_untooled_blocker(cells: list[dict], bypass_types: dict) -> str | None:
-    """Return a blocker string if any bypass-type N/A cells lack a tested_by tool."""
+    """Return a blocker string if any bypass-type N/A cells cite no test evidence."""
+    from core.coverage import cell_has_test_evidence
     na_untooled = [
         c for c in cells
         if c["status"] == "not_applicable"
-        and not c.get("tested_by")
+        and not cell_has_test_evidence(c)
         and c.get("injection_type") in bypass_types
     ]
     if not na_untooled:
@@ -649,8 +651,8 @@ def _na_untooled_blocker(cells: list[dict], bypass_types: dict) -> str | None:
     if len(na_untooled) > 5:
         sample += f" ... ({len(na_untooled) - 5} more)"
     return (
-        f"INTEGRITY: {len(na_untooled)} injection-type N/A cell(s) have no tested_by tool "
-        f"recorded: {sample}. Run the bypass technique and record tested_by before marking N/A."
+        f"INTEGRITY: {len(na_untooled)} injection-type N/A cell(s) cite no artifact_id "
+        f"of a bypass attempt: {sample}. Run the bypass technique and pass its artifact_id before marking N/A."
     )
 
 
@@ -1943,14 +1945,15 @@ def _check_coverage_integrity(matrix: list[dict], tools_run: set[str]) -> list[s
     """Cross-check coverage cell statuses against tools actually run."""
     warnings: list[str] = []
 
-    # Cells marked tested/vulnerable without a tested_by field
+    # Cells marked tested/vulnerable that cite no test evidence (artifact_id)
+    from core.coverage import cell_has_test_evidence
     by_type: dict[str, list[str]] = {}
     for c in matrix:
-        if c["status"] in ("tested_clean", "vulnerable") and not c.get("tested_by"):
+        if c["status"] in ("tested_clean", "vulnerable") and not cell_has_test_evidence(c):
             by_type.setdefault(c["injection_type"], []).append(c["id"])
     for inj, ids in by_type.items():
         warnings.append(
-            f"SUSPECT: {len(ids)} {inj} cell(s) marked tested but have no tested_by tool. "
+            f"SUSPECT: {len(ids)} {inj} cell(s) marked tested but cite no artifact_id. "
             f"Re-verify these cells with actual tool execution."
         )
 

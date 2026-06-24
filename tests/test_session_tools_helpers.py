@@ -946,7 +946,14 @@ class TestDoComplete:
              patch("mcp_server.session_tools._collect_completion_blockers", return_value=[]), \
              patch("mcp_server.session_tools._record_metrics"):
             result = _do_complete()
-        assert "complete" in result.lower() or "Scan marked" in result
+        # With no blockers the scan passes all quality gates and is HELD for
+        # human sign-off via the dashboard (finding-adjudication flow), rather
+        # than being auto-marked complete.
+        assert (
+            "completion held" in result.lower()
+            or "sign-off" in result.lower()
+            or "complete" in result.lower()
+        )
 
     def test_thorough_depth_no_blockers_adds_iteration_gate(self, tmp_path, monkeypatch):
         import mcp_server.session_tools as st
