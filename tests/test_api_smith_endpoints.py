@@ -1659,3 +1659,119 @@ class TestSmithStatusAdjudicating:
         with patch.object(api, "_smith_running", return_value=False):
             r = client.get("/api/smith-status")
         assert r.json()["adjudicating"] is False
+
+
+# ---------------------------------------------------------------------------
+# Fast loop-exit stall detection (connection-aware): _smith_generating,
+# _scan_has_pending_cells, _smith_stalled_pid, and the watchdog-tick wiring.
+# ---------------------------------------------------------------------------
+
+import psutil  # noqa: E402
+from core.api_server import smith  # noqa: E402
+
+
+def _conn(status, ip):
+    raddr = type("R", (), {"ip": ip})() if ip else None
+    return type("C", (), {"status": status, "raddr": raddr})()
+
+
+class _FakeProc:
+    def __init__(self, conns):
+        self._conns = conns
+
+    def net_connections(self, kind="inet"):
+        return self._conns
+
+
+def test_smith_generating_true_on_remote_connection(monkeypatch):
+    monkeypatch.setattr(psutil, "Process",
+                        lambda pid: _FakeProc([_conn("ESTABLISHED", "127.0.0.1"),
+                                               _conn("ESTABLISHED", "100.106.191.8")]))
+    assert smith._smith_generating(123) is True
+
+
+def test_smith_generating_false_when_only_loopback(monkeypatch):
+    monkeypatch.setattr(psutil, "Process",
+                        lambda pid: _FakeProc([_conn("ESTABLISHED", "127.0.0.1"),
+                                               _conn("CLOSE_WAIT", "100.106.191.8")]))
+    assert smith._smith_generating(123) is False
+
+
+def test_smith_generating_failsafe_true_on_error(monkeypatch):
+    def boom(pid):
+        raise psutil.AccessDenied(pid)
+    monkeypatch.setattr(psutil, "Process", boom)
+    assert smith._smith_generating(123) is True  # can't tell → never stall-kill
+
+
+def test_scan_has_pending_cells(tmp_path, monkeypatch):
+    cov = tmp_path / "coverage.json"
+    monkeypatch.setattr(api, "_COVERAGE_FILE", cov)
+    cov.write_text(json.dumps({"matrix": [{"status": "pending"}, {"status": "tested_clean"}]}))
+    assert smith._scan_has_pending_cells() is True
+    cov.write_text(json.dumps({"matrix": [{"status": "tested_clean"}, {"status": "not_applicable"}]}))
+    assert smith._scan_has_pending_cells() is False
+    monkeypatch.setattr(api, "_COVERAGE_FILE", tmp_path / "missing.json")
+    assert smith._scan_has_pending_cells() is False
+
+
+def _stub_stalled(monkeypatch, *, age, generating, pending, recently_started=False, pid=4242):
+    monkeypatch.setattr(smith, "_signal_session_recently_started", lambda: recently_started)
+    monkeypatch.setattr(smith, "_quick_log_age_seconds", lambda: age)
+    monkeypatch.setattr(api, "_live_pid_from_pid_file", lambda: pid)
+    monkeypatch.setattr(api, "_live_pid_from_process_scan", lambda: None)
+    monkeypatch.setattr(smith, "_smith_generating", lambda p: generating)
+    monkeypatch.setattr(smith, "_scan_has_pending_cells", lambda: pending)
+
+
+def test_smith_stalled_pid_fires_on_exited_loop(monkeypatch):
+    # idle 10 min, not generating, cells pending → stalled.
+    _stub_stalled(monkeypatch, age=600.0, generating=False, pending=True)
+    assert smith._smith_stalled_pid() == 4242
+
+
+def test_smith_stalled_pid_none_when_generating(monkeypatch):
+    _stub_stalled(monkeypatch, age=600.0, generating=True, pending=True)
+    assert smith._smith_stalled_pid() is None  # mid-generation — leave it alone
+
+
+def test_smith_stalled_pid_none_when_no_pending(monkeypatch):
+    _stub_stalled(monkeypatch, age=600.0, generating=False, pending=False)
+    assert smith._smith_stalled_pid() is None  # scan effectively done
+
+
+def test_smith_stalled_pid_none_when_fresh(monkeypatch):
+    _stub_stalled(monkeypatch, age=60.0, generating=False, pending=True)  # 1 min < 5 min
+    assert smith._smith_stalled_pid() is None
+
+
+def test_smith_stalled_pid_none_when_recently_started(monkeypatch):
+    _stub_stalled(monkeypatch, age=600.0, generating=False, pending=True, recently_started=True)
+    assert smith._smith_stalled_pid() is None
+
+
+@pytest.mark.asyncio
+async def test_watchdog_tick_respawns_on_stall(tmp_path, monkeypatch):
+    # session running, NOT hung (within 30 min), but loop exited → stalled pid.
+    session_file = tmp_path / "session.json"
+    session_file.write_text(json.dumps({"status": "running"}))
+    monkeypatch.setattr(api, "_SESSION_FILE", session_file)
+    monkeypatch.setattr(api, "_smith_hung_pid", lambda: None)
+    monkeypatch.setattr(api, "_smith_stalled_pid", lambda: 4242)
+    monkeypatch.setattr(api, "_smith_running", lambda: True)   # would early-return without the stall path
+    monkeypatch.setattr(api, "_mcp_sse_alive", lambda: True)
+    killed = []
+    monkeypatch.setattr(api, "_kill_hung_smith", lambda pid: killed.append(pid) or True)
+    spawned = []
+
+    async def _fake_spawn(client, source="api"):
+        spawned.append((client, source)); return True, 5555
+    monkeypatch.setattr(api, "_spawn_smith", _fake_spawn)
+    monkeypatch.setattr(api, "_detect_active_client", lambda: "opencode")
+    # neutralize rate-limit gates so the spawn path is reached
+    monkeypatch.setattr(api, "_watchdog_last_restart_ts", 0.0)
+    monkeypatch.setattr(api, "_watchdog_restart_count_window", [])
+
+    await smith._watchdog_tick(10_000.0)
+    assert killed == [4242]          # the stalled pid was killed
+    assert spawned and spawned[0][0] == "opencode"  # and a fresh client respawned
