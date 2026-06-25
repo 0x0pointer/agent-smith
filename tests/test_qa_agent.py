@@ -258,30 +258,32 @@ def test_unregistered_findings_none_when_matrix_empty():
     assert _check_unregistered_findings(fnd, {"endpoints": []}) is None
 
 
-def test_unregistered_findings_blocks_with_alert():
+def test_unregistered_findings_advisory_not_blocking():
+    """The gap-guard now nudges but does NOT block completion or steer the model.
+    The blocking + STOP-opening-new-ground steering suppressed creative
+    exploitation (see the coverage-grind regression analysis)."""
     cov = {"endpoints": [{"path": "/login", "_normalized": "/login"}]}
     fnd = {"findings": [{"target": "http://t/transfer"}]}
     alert = _check_unregistered_findings(fnd, cov)
     assert alert is not None
     assert alert["code"] == "DISCOVERY_GAP"
-    assert alert["blocking"] is True and alert["urgency"] == "high"
+    assert alert["blocking"] is False
+    assert alert["urgency"] == "low"
     assert "/transfer" in alert["message"]
 
 
-def test_unregistered_findings_steers_when_three_or_more(monkeypatch):
-    import core.qa_agent as _qa
+def test_unregistered_findings_no_steer_directive(monkeypatch):
+    """Even with many unregistered findings, no steering directive is emitted —
+    the model should keep exploiting freely, not be told to STOP opening new ground."""
     import core.steering as steering
-    monkeypatch.setattr(_qa, "_has_pending_directives", lambda: False)
     calls = []
     monkeypatch.setattr(steering.steering_queue, "add_directive",
                         lambda **kw: calls.append(kw))
     cov = {"endpoints": [{"path": "/login", "_normalized": "/login"}]}
-    fnd = {"findings": [{"target": f"http://t/u{i}"} for i in range(3)]}
+    fnd = {"findings": [{"target": f"http://t/u{i}"} for i in range(5)]}
     alert = _check_unregistered_findings(fnd, cov)
     assert alert["code"] == "DISCOVERY_GAP"
-    assert len(calls) == 1
-    assert calls[0]["trigger"] == "DISCOVERY_GAP"
-    assert calls[0]["priority"] == "high"
+    assert calls == []  # no steering directive emitted
 
 
 # ---------------------------------------------------------------------------

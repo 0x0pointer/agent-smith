@@ -512,29 +512,28 @@ def _do_start(opts):
     return _start_response(cfg, classification, target, scan_mode, depth, is_resume)
 
 
-# Coverage gating thresholds (percent of cells addressed). The FLOOR is a hard
-# block — a scan that tested almost nothing isn't a real scan. The TARGET only
-# nudges DURING the thorough analysis passes; once the passes are done coverage
-# is advisory (the focused next_batch loop + status progress drive it without
-# walling completion). This is the "progress-based & paced" policy.
+# Coverage gating threshold (percent of cells addressed). With auto-discovery
+# producing matrices of 700-900 cells per OpenAPI spec, this is a HARD FLOOR
+# only — exceeding it means the scan did real testing, not a wall demanding
+# every cell be ground through. Pushing the model past the floor used to drive
+# it into a canned-payload treadmill that produced false-negative tested_clean
+# closures (see the coverage-grind regression analysis: one HTTP request was
+# being reused to "close" 36 different injection cells).
 _COVERAGE_FLOOR_PCT = 40
-_COVERAGE_TARGET_PCT = 80
 
 
 def _low_coverage_blocker(
-    cov: dict, total: int, addressed: int, pct: float, passes_done: bool
+    cov: dict, coverage_enforced: bool, total: int, addressed: int, pct: float
 ) -> str | None:
-    if pct >= _COVERAGE_TARGET_PCT:
+    if not coverage_enforced or pct >= _COVERAGE_FLOOR_PCT:
         return None
-    if pct >= _COVERAGE_FLOOR_PCT and passes_done:
-        return None  # above the floor and passes complete → advisory, not blocking
     all_cells = cov.get("matrix", [])
     pending = [c["id"] for c in all_cells if c.get("status", "pending") == "pending"]
     hint = (
         "For each pending cell: either test it (set status=tested_clean/vulnerable with "
-        "tested_by=<tool>) or mark it not_applicable if the injection type is inherently "
-        "irrelevant to the param/endpoint type (with a specific reason in notes). "
-        "Do NOT bulk-skip — skipped cells are excluded from coverage. Sample pending cells:\n"
+        "an artifact_id from the tool response) or mark it not_applicable if the injection "
+        "type is inherently irrelevant to the param/endpoint type (with a specific reason in "
+        "notes). Do NOT bulk-skip — skipped cells are excluded from coverage. Sample pending cells:\n"
         '  report(action="coverage", data={"type": "bulk_tested", "updates": ['
     )
     hint += ", ".join(
@@ -544,11 +543,10 @@ def _low_coverage_blocker(
     if len(pending) > 10:
         hint += f", ... ({len(pending) - 10} more)"
     hint += "]})"
-    label = "COVERAGE FLOOR" if pct < _COVERAGE_FLOOR_PCT else "LOW COVERAGE"
     return (
-        f"{label}: only {addressed}/{total} matrix cells tested or marked N/A ({pct:.0f}%). "
-        f"{len(pending)} pending cell(s). Work the focused loop: "
-        "report(action='coverage', data={type:'next_batch'}) → run each test_request → bulk_tested. "
+        f"COVERAGE FLOOR: only {addressed}/{total} matrix cells tested or marked N/A ({pct:.0f}%). "
+        f"{len(pending)} pending cell(s). Pick the high-value endpoints (auth, file upload, search, "
+        f"admin) and test those properly — do not grind the matrix with canned payloads. "
         + hint
     )
 
@@ -606,18 +604,14 @@ def _coverage_blockers(cov: dict, ctf_mode: bool = False) -> list[str]:
     addressed = meta.get("addressed", meta.get("tested", 0) + meta.get("not_applicable", 0))
     pct = (addressed / total) * 100
 
-    # Progress-based & paced: the 80% target only blocks while the thorough
-    # analysis passes are still running; once they're done (or the scan isn't
-    # thorough) only the 40% FLOOR blocks. The focused next_batch loop + status
-    # progress drive coverage up without walling completion — so the model isn't
-    # pressured into marking cells N/A just to escape an unreachable threshold.
+    # Model-profile-aware: only enforce the coverage floor for "full" profile.
+    # Medium/small models can't invoke /web-exploit and end up with dozens of
+    # auto-generated cells they can't address, causing completion loops.
     from mcp_server.scan_engine.budget import get_profile
     profile = get_profile()
-    coverage_enforced = not profile.get("enforce_budget", True)  # used by injection-breadth blocker below
-    depth = (scan_session.get() or {}).get("depth", "")
-    passes_done = depth != "thorough" or _analysis_passes >= _min_iterations()
+    coverage_enforced = not profile.get("enforce_budget", True)
 
-    low_cov = _low_coverage_blocker(cov, total, addressed, pct, passes_done)
+    low_cov = _low_coverage_blocker(cov, coverage_enforced, total, addressed, pct)
     if low_cov:
         blockers.append(low_cov)
 
@@ -1371,27 +1365,26 @@ def _build_blocker_response(blockers: list) -> str:
         return result
     depth = (scan_session.get() or {}).get("depth", "")
     total = len(blockers)
-    if total > 1:
-        # Serialize for ALL profiles: surface only the highest-priority blocker so
-        # the model fixes ONE thing at a time instead of facing a wall of blockers
-        # — the wall is what makes it rush and cut corners. The progress-aware
-        # refund in _do_complete resets the attempt budget as the count drops, so
-        # one-per-call fixing won't trip HIR. (Even large-context models rush
-        # under a 10-blocker wall, so this is no longer gated on the profile.)
+    if _condensed_directives() and total > 1:
+        # Serialize: surface only the highest-priority blocker so it fits a small
+        # context window. The progress-aware counter in _do_complete refunds the
+        # attempt budget as the count drops, so one-per-call fixing won't trip HIR.
         shown = [min(blockers, key=_blocker_priority)]
-        pass_note = ""
-        if depth == "thorough" and _analysis_passes < _min_iterations():
-            pass_note = f" · thorough analysis passes {_analysis_passes}/{_min_iterations()}"
         header = (
-            f"Almost there — {total} steps left{pass_note}. Fixing them ONE AT A TIME: "
-            f"do THIS one, then call session(action='complete') again for the next:\n\n"
+            f"complete BLOCKED — {total} blockers remain; fixing them ONE AT A TIME so each "
+            f"fits your context. Fix THIS one, then call session(action='complete') again for "
+            f"the next:\n\n"
+        )
+    elif depth == "thorough" and _analysis_passes < _min_iterations():
+        shown = blockers
+        _mi = _min_iterations()
+        header = (
+            f"complete BLOCKED — thorough scan requires {_mi} analysis passes "
+            f"(quality-clean passes: {_analysis_passes}/{_mi}):\n\n"
         )
     else:
         shown = blockers
-        header = (
-            f"Almost there — 1 step left (attempt {_complete_attempts}/{_MAX_COMPLETE_ATTEMPTS}). "
-            f"Fix this, then complete:\n\n"
-        )
+        header = f"complete BLOCKED (attempt {_complete_attempts}/{_MAX_COMPLETE_ATTEMPTS}) — fix the following first:\n\n"
     msg = header + "\n\n".join(f"  [{i+1}] {b}" for i, b in enumerate(shown))
     if steer_block:
         msg = msg + steer_block
@@ -1413,12 +1406,12 @@ def _do_complete():
     blockers = _collect_completion_blockers(data, effective)
     blockers = _apply_thorough_depth_gate(blockers, current)
 
-    # Progress-aware HIR (all profiles now serialize one-at-a-time): a model
-    # clearing blockers across several complete() calls is making progress, not
-    # stalling. When the count DROPS, refund the attempt budget so serialized
-    # fixing doesn't trip the 8-attempt HIR; HIR still fires when the count is
-    # stuck (genuine inability to progress).
-    if blockers:
+    # Progress-aware HIR (condensed profiles): blockers are surfaced one at a
+    # time, so a model clearing them across several complete() calls is making
+    # progress, not stalling. When the count DROPS, refund the attempt budget so
+    # serialized fixing doesn't trip the 8-attempt HIR; HIR still fires when the
+    # count is stuck (genuine inability to progress).
+    if _condensed_directives() and blockers:
         n = len(blockers)
         if _last_blocker_count is not None and n < _last_blocker_count:
             _complete_attempts = 1
@@ -1804,18 +1797,6 @@ def _build_status_base(
             "not_applicable": meta.get("not_applicable", 0),
             "skipped": meta.get("skipped", 0),
             "endpoints": len(cov.get("endpoints", [])),
-            # Step-by-step progress + the pointer to the focused testing loop, so
-            # the agent sees forward motion and always knows the next concrete move.
-            "progress": (
-                f"{meta.get('addressed', meta.get('tested', 0) + meta.get('not_applicable', 0))}"
-                f"/{meta.get('total_cells', 0)} cells addressed"
-            ),
-            "next": (
-                "report(action='coverage', data={type:'next_batch'}) — next focused batch to test"
-                if meta.get("total_cells", 0) > meta.get("addressed",
-                    meta.get("tested", 0) + meta.get("not_applicable", 0))
-                else "coverage complete"
-            ),
         },
     }
     web_work_done = any(t in _effective_tools() for t in ("httpx", "spider", "ffuf", "nuclei"))
@@ -2222,10 +2203,7 @@ def _build_recovery_result(
         "target": target,
         "phase": resume_step,
         "tools_already_run": sorted(tools_run),
-        "coverage": (
-            f"{meta.get('addressed', meta.get('tested', 0) + meta.get('not_applicable', 0))}"
-            f"/{meta.get('total_cells', 0)} cells addressed"
-        ),
+        "coverage": f"{meta.get('tested', 0)}/{meta.get('total_cells', 0)}",
         "findings": len(data.get("findings", [])),
         "action_required": action_list,
         "TOOLS": (
@@ -2298,10 +2276,7 @@ def _concrete_next_call(target: str, tools_run: set, in_progress: list, pending_
     if "nuclei" not in tools_run:
         return f"scan(tool='nuclei', target='{target}')"
     if pending_count > 0:
-        return (
-            "report(action='coverage', data={type:'next_batch'}) — get the next FOCUSED batch "
-            f"(cells on one endpoint, each with its test request) — {pending_count} cells remaining"
-        )
+        return f"Test the next pending coverage cell — {pending_count} cells remaining"
     return "session(action='complete', options={\"notes\": \"all testing complete\"})"
 
 

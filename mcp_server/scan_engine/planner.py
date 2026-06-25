@@ -136,38 +136,53 @@ def compute_next(tool: str, state: dict) -> dict:
 
 
 def _add_testing_actions(required: list[str], recommended: list[str], target: str) -> None:
-    """Hand the agent a FOCUSED batch of next cells (concrete requests + per-
-    endpoint/overall progress) instead of one cell at a time, so testing is a
-    paced step-by-step loop. Pairs each batch with a single bulk-close call."""
-    from core.coverage import select_next_batch
-    from mcp_server.scan_engine.budget import get_profile
+    """Surface the highest-priority pending cell as a single hint, NOT a forced
+    batch. The matrix is a guide — the model decides whether to test it via the
+    suggested probe or to spend the turn on richer exploitation (sqlmap with
+    higher levels, /web-exploit, custom payload chains). When the matrix was
+    surfaced as a 10-cell batch with canned single-payload probes, the model
+    rationally ground through cells with naive payloads and false-negatived
+    real vulnerabilities — see the coverage-grind regression analysis."""
+    cov = get_matrix()
+    endpoints = {ep["id"]: ep for ep in cov.get("endpoints", [])}
 
-    cap = get_profile().get("next_batch_size", 10)
-    result = select_next_batch(get_matrix(), count=cap)
-    batch = result.get("batch", [])
-    if not batch:
+    pending = [c for c in cov.get("matrix", []) if c["status"] == "pending"]
+    in_progress = [c for c in cov.get("matrix", []) if c["status"] == "in_progress"]
+
+    if in_progress:
+        cell = in_progress[0]
+        ep = endpoints.get(cell["endpoint_id"], {})
+        required.append(
+            f"Continue testing: {cell['injection_type']} on "
+            f"{ep.get('method', '?')} {ep.get('path', '?')} param={cell['param']} "
+            f"(cell {cell['id']})"
+        )
+        return
+
+    if not pending:
         recommended.append("All cells addressed — proceed to validation/reporting")
         return
 
-    focus = result.get("endpoint_focus") or {}
-    prog = result.get("progress", {})
-    lines = [
-        f"  - [{c.get('injection_type')}] "
-        f"{_concrete_test_command(c.get('injection_type', ''), target, c.get('endpoint_path') or '', c.get('method') or 'GET', c.get('param') or '_endpoint', c.get('param_type') or 'query')} "
-        f"(cell {c.get('cell_id')})"
-        for c in batch
-    ]
-    required.append(
-        f"Test these {len(batch)} cell(s) on {focus.get('method', '?')} {focus.get('path', '?')} "
-        f"[{prog.get('endpoint', '?')} this endpoint · {prog.get('overall', '?')} overall]:\n"
-        + "\n".join(lines)
-        + "\nThen CLOSE them in one call: report(action='coverage', data={type:'bulk_tested', "
-        "updates:[{cell_id, status:'tested_clean|vulnerable|not_applicable', artifact_id:'<from response>', "
-        "finding_id:'<if vulnerable>'}, ...]}). Then fetch the next batch: "
-        "report(action='coverage', data={type:'next_batch'})."
+    # Prioritize high-signal types first.
+    priority_order = ["sqli", "xss", "ssti", "cmdi", "ssrf", "xxe", "nosqli", "idor"]
+    best = next(
+        (c for inj_type in priority_order for c in pending if c["injection_type"] == inj_type),
+        pending[0],
     )
-    if result.get("remaining", 0) > len(batch):
-        recommended.append(f"{result['remaining'] - len(batch)} more pending cells after this batch")
+
+    ep = endpoints.get(best["endpoint_id"], {})
+    path = ep.get("path", "?")
+    method = ep.get("method", "?")
+    param = best["param"]
+    param_type = best.get("param_type", "query")
+    inj = best["injection_type"]
+
+    test_cmd = _concrete_test_command(inj, target, path, method, param, param_type)
+    required.append(f"{test_cmd} (cell {best['id']})")
+
+    total = len(pending)
+    if total > 1:
+        recommended.append(f"{total - 1} more pending cells — pick the highest-value targets, not all of them")
 
 
 def _resolve_url(target: str, path: str, param: str, param_type: str, payload: str) -> str:

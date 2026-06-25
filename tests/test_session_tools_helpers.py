@@ -927,8 +927,7 @@ class TestDoComplete:
              patch("mcp_server.session_tools._collect_completion_blockers",
                    return_value=["NO DIAGRAM: call report(action='diagram')"]):
             result = _do_complete()
-        assert "step left" in result  # reframed, progress-based header
-        assert "NO DIAGRAM" in result
+        assert "BLOCKED" in result and "NO DIAGRAM" in result
 
     def test_blocked_increments_attempt_counter(self, tmp_path, monkeypatch):
         import mcp_server.session_tools as st
@@ -966,18 +965,36 @@ class TestDoComplete:
             result = _do_complete()
         assert "ITERATION GATE" in result or "complete BLOCKED" in result
 
-    def test_multiple_blockers_serialized_one_at_a_time(self, tmp_path, monkeypatch):
-        # All profiles now serialize: only the single highest-priority blocker is
-        # shown, with the remaining count — so the model fixes one thing at a time.
+    def test_multiple_blockers_full_profile_shows_all(self, tmp_path, monkeypatch):
+        """Full profile (large context, ``condensed_directives=False``) gets the
+        whole wall — capable models absorb it in one pass and a batched fix is
+        fewer round-trips for them. Serialization is only for condensed
+        profiles."""
+        import mcp_server.session_tools as st
         self._setup_session(tmp_path, monkeypatch)
         with patch("mcp_server.session_tools._effective_tools", return_value=set()), \
              patch("mcp_server.session_tools._collect_completion_blockers",
-                   return_value=["NO DIAGRAM", "NO SPIDER", "NO POC"]):
+                   return_value=["NO DIAGRAM", "NO SPIDER", "NO POC"]), \
+             patch.object(st, "_condensed_directives", return_value=False):
             result = _do_complete()
-        assert "3 steps left" in result
+        # all three shown
+        for b in ("NO DIAGRAM", "NO SPIDER", "NO POC"):
+            assert b in result
+
+
+    def test_multiple_blockers_condensed_profile_serializes(self, tmp_path, monkeypatch):
+        """Condensed profiles (medium/small) get one blocker at a time — keeps
+        the message in a small context window."""
+        import mcp_server.session_tools as st
+        self._setup_session(tmp_path, monkeypatch)
+        with patch("mcp_server.session_tools._effective_tools", return_value=set()), \
+             patch("mcp_server.session_tools._collect_completion_blockers",
+                   return_value=["NO DIAGRAM", "NO SPIDER", "NO POC"]), \
+             patch.object(st, "_condensed_directives", return_value=True):
+            result = _do_complete()
         assert "ONE AT A TIME" in result
         shown = [b for b in ("NO DIAGRAM", "NO SPIDER", "NO POC") if b in result]
-        assert len(shown) == 1  # only the highest-priority blocker, not all three
+        assert len(shown) == 1
 
 
 # ---------------------------------------------------------------------------

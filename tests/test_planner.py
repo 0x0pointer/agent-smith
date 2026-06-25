@@ -16,17 +16,21 @@ def _matrix():
     }
 
 
-def test_add_testing_actions_emits_focused_batch():
+def test_add_testing_actions_emits_single_high_priority_cell():
+    """Single highest-priority pending cell, NOT a 10-cell batch with canned
+    payloads. The batch loop drove the model to grind cells with naive payloads
+    and false-negative real vulnerabilities — see the coverage-grind regression."""
     required: list = []
     recommended: list = []
-    with patch.object(planner, "get_matrix", return_value=_matrix()), \
-         patch("mcp_server.scan_engine.budget.get_profile", return_value={"next_batch_size": 10}):
+    with patch.object(planner, "get_matrix", return_value=_matrix()):
         planner._add_testing_actions(required, recommended, "http://t")
     assert len(required) == 1
     msg = required[0]
-    assert "/login" in msg and "overall" in msg          # endpoint focus + progress
-    assert "cell c1" in msg and "cell c2" in msg          # whole batch, with concrete requests
-    assert "bulk_tested" in msg and "next_batch" in msg   # close + loop guidance
+    # sqli wins the priority order over xss
+    assert "cell c1" in msg
+    assert "cell c2" not in msg  # not a batch
+    # planner emits a concrete suggestion for the chosen cell only
+    assert "sqlmap" in msg.lower() or "/login" in msg
 
 
 def test_add_testing_actions_done_when_all_addressed():
@@ -35,8 +39,7 @@ def test_add_testing_actions_done_when_all_addressed():
     data = _matrix()
     for c in data["matrix"]:
         c["status"] = "tested_clean"
-    with patch.object(planner, "get_matrix", return_value=data), \
-         patch("mcp_server.scan_engine.budget.get_profile", return_value={"next_batch_size": 10}):
+    with patch.object(planner, "get_matrix", return_value=data):
         planner._add_testing_actions(required, recommended, "http://t")
     assert required == []
     assert any("All cells addressed" in r for r in recommended)
