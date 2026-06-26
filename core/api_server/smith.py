@@ -582,10 +582,87 @@ def _spawn_source_tag(source: str) -> str:
     return _SPAWN_SOURCE_TAGS.get(source, f"spawn_{source}")
 
 
+def _latest_opencode_session(directory: str) -> str | None:
+    """Newest opencode session whose directory matches `directory` — i.e. the
+    scan's own session, so a watchdog respawn can ``--session <id>`` resume it
+    (keeping the agent's in-context memory of what it already tested and which
+    tools fail here) instead of cold-starting from the recovery brief and
+    re-walking the same dead ends.
+
+    Read-only and best-effort: shells out to opencode's own ``session list``
+    rather than coupling to its SQLite schema, and returns None on ANY problem
+    so the caller cleanly falls back to a cold start (first launch, opencode
+    missing, mismatched dir, parse error, timeout).
+    """
+    import json
+    import os
+    import shutil
+    import subprocess
+    try:
+        binary = shutil.which("opencode")
+        if not binary:
+            return None
+        target = os.path.realpath(directory)
+        out = subprocess.run(
+            [binary, "session", "list", "--format", "json", "-n", "20"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if out.returncode != 0 or not out.stdout.strip():
+            return None
+        sessions = json.loads(out.stdout)
+        if not isinstance(sessions, list):
+            return None
+        for s in sessions:  # session list returns newest-first
+            d = s.get("directory")
+            if d and s.get("id") and os.path.realpath(d) == target:
+                return s["id"]
+        return None
+    except Exception:
+        return None
+
+
+def _cold_recovery_prompt(directive_text: str) -> str:
+    """Prompt for a COLD spawn (no resumable session): the agent has no prior
+    context, so it must reconstruct its position from session(action='recovery')."""
+    return (
+        "Recover the active pentest scan. "
+        "Call session(action='recovery') to get your current position, "
+        "then immediately execute the EXECUTE_NOW field — do NOT ask for confirmation, "
+        "do NOT summarise what you plan to do, just start tool calls. "
+        "If session(action='status') returns qa_alerts, answer them with "
+        "session(action='qa_reply') before continuing. "
+        "Keep working autonomously until you are genuinely blocked and cannot "
+        "proceed without new human input. Do NOT stop to ask questions."
+        + directive_text
+    )
+
+
+def _resume_prompt(directive_text: str) -> str:
+    """Prompt for a RESUMED spawn (--session <id>): the agent's full prior
+    conversation is rehydrated, so it must NOT re-run recovery from scratch —
+    just continue, and explicitly break out of any failing-tool loop it was
+    stuck in (the wedge that cold recovery kept resurrecting)."""
+    return (
+        "You are resuming your OWN pentest session after an automatic restart — your full "
+        "prior context is intact. Do NOT call session(action='recovery') or re-read everything "
+        "from scratch; pick up exactly where you left off and continue testing the next pending "
+        "coverage cells. If you were stuck repeating a tool that kept FAILING, STOP using it and "
+        "switch approaches (e.g. use kali with curl instead of http_request). You may call "
+        "session(action='status') once to re-sync coverage and answer any qa_alerts with "
+        "session(action='qa_reply'). Keep working autonomously until you are genuinely blocked. "
+        "Do NOT stop to ask questions, do NOT summarise — just resume tool calls."
+        + directive_text
+    )
+
+
 async def _spawn_smith(client: str, source: str = "api") -> tuple[bool, int | str]:
     """Core spawn logic shared by the /api/restart-smith endpoint and the
     watchdog. Returns (ok, pid_or_error_message). source is logged so the
     audit trail distinguishes manual restarts from auto-restarts.
+
+    For opencode, a respawn RESUMES the scan's own session (``--session <id>``)
+    when one is found, so the agent keeps its memory instead of cold-starting;
+    it falls back to a cold ``run`` + full recovery prompt otherwise.
     """
     try:
         from core.steering import steering_queue
@@ -623,22 +700,25 @@ async def _spawn_smith(client: str, source: str = "api") -> tuple[bool, int | st
         except Exception as _e:
             _log.debug("spawn_smith: qa_state clear failed: %s", _e)
 
-        prompt = (
-            "Recover the active pentest scan. "
-            "Call session(action='recovery') to get your current position, "
-            "then immediately execute the EXECUTE_NOW field — do NOT ask for confirmation, "
-            "do NOT summarise what you plan to do, just start tool calls. "
-            "If session(action='status') returns qa_alerts, answer them with "
-            "session(action='qa_reply') before continuing. "
-            "Keep working autonomously until you are genuinely blocked and cannot "
-            "proceed without new human input. Do NOT stop to ask questions."
-            + directive_text
-        )
-
         log_path = _api._REPO_ROOT / "logs" / "smith_restart.log"
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, lambda: log_path.parent.mkdir(parents=True, exist_ok=True))
-        audit_line = f"\n=== [{source}] spawning {client} at {loop.time()} ===\n"
+
+        # Resume the agent's own opencode session when one exists for this scan,
+        # so the respawn keeps its in-context memory (what it already tested,
+        # which tools fail here) instead of cold-starting from the recovery brief
+        # and re-walking the same dead ends. None → cold start (first launch /
+        # mismatch / opencode not resolvable).
+        resume_sid = None
+        if client == "opencode":
+            resume_sid = await loop.run_in_executor(
+                None, lambda: _api._latest_opencode_session(str(_api._REPO_ROOT))
+            )
+
+        prompt = _resume_prompt(directive_text) if resume_sid else _cold_recovery_prompt(directive_text)
+
+        audit_kind = f"resume session={resume_sid}" if resume_sid else "cold-start"
+        audit_line = f"\n=== [{source}] spawning {client} ({audit_kind}) at {loop.time()} ===\n"
         await loop.run_in_executor(None, lambda: log_path.open("a").write(audit_line))
 
         import shutil
@@ -647,8 +727,13 @@ async def _spawn_smith(client: str, source: str = "api") -> tuple[bool, int | st
             return False, f"{client} binary not found on PATH"
         if client == "claude":
             args = [binary, "--dangerously-skip-permissions", "-p", prompt]
+        elif resume_sid:
+            # opencode resume: --session <id> rehydrates the scan's prior
+            # conversation so the agent continues with full memory. Linear
+            # continue (not --fork) so all work accrues to one chain.
+            args = [binary, "run", "--session", resume_sid, "--dangerously-skip-permissions", prompt]
         else:
-            # opencode: detached background spawn has no controlling TTY, so any
+            # opencode cold: detached background spawn has no controlling TTY, so any
             # permission prompt either hangs forever (waiting on closed stdin)
             # or exits because no TTY is available. --dangerously-skip-permissions
             # auto-approves prompts that aren't explicitly denied in opencode.json's

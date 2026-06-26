@@ -1053,6 +1053,10 @@ class TestSpawnSmith:
         monkeypatch.setattr(api, "_SMITH_PID_FILE", logs_dir / "smith.pid")
         monkeypatch.setattr(api, "_SMITH_CLIENT_FILE", logs_dir / "smith.client")
         monkeypatch.setattr(api, "_REPO_ROOT", tmp_path)
+        # Default: no resumable opencode session → cold start (keeps the existing
+        # spawn tests on the cold path and stops them shelling out to real opencode).
+        # Resume tests override this.
+        monkeypatch.setattr(api, "_latest_opencode_session", lambda *a, **k: None)
 
         # Steering queue — return no active directives
         steering_mock = MagicMock()
@@ -1297,6 +1301,129 @@ class TestSpawnSmith:
 
         assert ok is True
         assert pid == 66666
+
+    # ── Session-resume on respawn ────────────────────────────────────────────
+    # A bare `opencode run` cold-starts a fresh session every respawn, wiping the
+    # agent's memory of what it tested + which tools fail → it re-walks the same
+    # dead ends. When the scan's own session is resolvable, the respawn must
+    # `--session <id>` resume it (keeping context) with a continue/steer prompt.
+
+    def _capture_opencode_argv(self, env, resolver):
+        """Run _spawn_smith('opencode') with `resolver` patched in; return argv."""
+        fake_proc = MagicMock(); fake_proc.pid = 77777
+        captured: list = []
+
+        async def _record_spawn(*args, **kw):
+            captured.append(list(args))
+            return fake_proc
+
+        with patch.dict("sys.modules", {"core.steering": env["steering_module"]}), \
+             patch("core.session.load_from_disk"), \
+             patch("core.session.get", return_value={}), \
+             patch.object(api, "_latest_opencode_session", resolver), \
+             patch("shutil.which", return_value="/usr/local/bin/opencode"), \
+             patch("asyncio.create_subprocess_exec", side_effect=_record_spawn):
+            ok, _ = asyncio.get_event_loop().run_until_complete(
+                api._spawn_smith("opencode", source="watchdog")
+            )
+        assert ok is True
+        return captured[0]
+
+    def test_opencode_respawn_resumes_session_when_resolved(self, spawn_env):
+        argv = self._capture_opencode_argv(spawn_env, lambda *_a, **_k: "ses_RESUMEME123")
+        # --session <id> present, in order, before the prompt
+        assert "--session" in argv
+        assert argv[argv.index("--session") + 1] == "ses_RESUMEME123"
+        assert "run" in argv and "--dangerously-skip-permissions" in argv
+        # Resume prompt (memory intact), NOT the cold recovery prompt
+        prompt = argv[-1]
+        assert "resuming your OWN pentest session" in prompt
+        assert "Recover the active pentest scan" not in prompt
+
+    def test_opencode_respawn_cold_starts_when_no_session(self, spawn_env):
+        argv = self._capture_opencode_argv(spawn_env, lambda *_a, **_k: None)
+        # No --session → bare cold `run` with the full recovery prompt
+        assert "--session" not in argv
+        assert "run" in argv and "--dangerously-skip-permissions" in argv
+        prompt = argv[-1]
+        assert "Recover the active pentest scan" in prompt
+        assert "resuming your OWN pentest session" not in prompt
+
+    def test_claude_respawn_never_uses_session_flag(self, spawn_env):
+        """Resume is opencode-only; claude must never get --session even if a
+        resolver would return one (it isn't consulted for claude)."""
+        fake_proc = MagicMock(); fake_proc.pid = 88888
+        captured: list = []
+
+        async def _record_spawn(*args, **kw):
+            captured.append(list(args))
+            return fake_proc
+
+        # Resolver returns an id, but claude branch must ignore it entirely.
+        with patch.dict("sys.modules", {"core.steering": spawn_env["steering_module"]}), \
+             patch("core.session.load_from_disk"), \
+             patch("core.session.get", return_value={}), \
+             patch.object(api, "_latest_opencode_session", lambda *_a, **_k: "ses_x"), \
+             patch("shutil.which", return_value="/opt/homebrew/bin/claude"), \
+             patch("asyncio.create_subprocess_exec", side_effect=_record_spawn):
+            ok, _ = asyncio.get_event_loop().run_until_complete(
+                api._spawn_smith("claude", source="watchdog")
+            )
+        assert ok is True
+        assert "--session" not in captured[0]
+
+
+# ---------------------------------------------------------------------------
+# _latest_opencode_session — resolve the scan's resumable session id
+# ---------------------------------------------------------------------------
+
+class TestLatestOpencodeSession:
+    """Resolves the newest opencode session matching the repo dir (via the
+    opencode CLI), so a respawn can --session resume it. Best-effort: any
+    failure must return None so the caller cold-starts."""
+
+    def _run(self, monkeypatch, *, which="/usr/local/bin/opencode",
+             returncode=0, stdout="[]"):
+        import subprocess
+        monkeypatch.setattr("shutil.which", lambda _n: which)
+        result = MagicMock(); result.returncode = returncode; result.stdout = stdout
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: result)
+        return api._latest_opencode_session("/Users/gibson/agent-smith")
+
+    def test_returns_newest_matching_dir(self, monkeypatch):
+        stdout = json.dumps([
+            {"id": "ses_new", "directory": "/Users/gibson/agent-smith", "title": "scan"},
+            {"id": "ses_old", "directory": "/Users/gibson/agent-smith", "title": "scan"},
+        ])
+        assert self._run(monkeypatch, stdout=stdout) == "ses_new"
+
+    def test_skips_other_directories(self, monkeypatch):
+        stdout = json.dumps([
+            {"id": "ses_other", "directory": "/some/other/proj", "title": "x"},
+            {"id": "ses_mine", "directory": "/Users/gibson/agent-smith", "title": "scan"},
+        ])
+        assert self._run(monkeypatch, stdout=stdout) == "ses_mine"
+
+    def test_none_when_no_match(self, monkeypatch):
+        stdout = json.dumps([{"id": "ses_other", "directory": "/elsewhere", "title": "x"}])
+        assert self._run(monkeypatch, stdout=stdout) is None
+
+    def test_none_when_opencode_missing(self, monkeypatch):
+        assert self._run(monkeypatch, which=None) is None
+
+    def test_none_on_nonzero_exit(self, monkeypatch):
+        assert self._run(monkeypatch, returncode=1, stdout="boom") is None
+
+    def test_none_on_bad_json(self, monkeypatch):
+        assert self._run(monkeypatch, stdout="not json") is None
+
+    def test_none_on_subprocess_exception(self, monkeypatch):
+        import subprocess
+        monkeypatch.setattr("shutil.which", lambda _n: "/usr/local/bin/opencode")
+        def _boom(*a, **k):
+            raise subprocess.TimeoutExpired(cmd="opencode", timeout=10)
+        monkeypatch.setattr(subprocess, "run", _boom)
+        assert api._latest_opencode_session("/Users/gibson/agent-smith") is None
 
 
 # ---------------------------------------------------------------------------
