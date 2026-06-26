@@ -1514,12 +1514,12 @@ def test_hir_min_gap_allows_retrigger_after_window(monkeypatch):
 
 def test_auth_failure_too_few_entries():
     entries = [_http_entry(status_code=401)] * 3
-    assert _check_auth_failure(entries) is None
+    assert _check_auth_failure(entries, {}, []) is None
 
 
 def test_auth_failure_never_authed():
     entries = [_http_entry(status_code=401)] * 5
-    assert _check_auth_failure(entries) is None
+    assert _check_auth_failure(entries, {}, []) is None
 
 
 def test_auth_failure_low_failure_rate():
@@ -1527,32 +1527,44 @@ def test_auth_failure_low_failure_rate():
         [_http_entry(status_code=200)] * 5 +
         [_http_entry(status_code=401)] * 2
     )
-    assert _check_auth_failure(entries) is None
+    assert _check_auth_failure(entries, {}, []) is None
 
 
-def test_auth_failure_fires(tmp_path, monkeypatch):
+def test_auth_failure_first_detection_steers_reauth(monkeypatch):
+    # FIRST detection self-heals: steer Smith to re-auth + AUTH_REAUTH advisory,
+    # NOT a human HIR.
+    import core.qa_agent as _qa
+    import core.steering as steering
+    monkeypatch.setattr(_qa, "_has_pending_directives", lambda: False)
+    calls = []
+    monkeypatch.setattr(steering.steering_queue, "add_directive", lambda **kw: calls.append(kw))
+    with patch("core.session.trigger_intervention") as mock_trigger:
+        entries = [_http_entry(status_code=200)] * 5 + [_http_entry(status_code=401)] * 8
+        sess = {"known_assets": {"credentials": [{"username": "u"}],
+                                 "auth_endpoints": [{"path": "/login"}]}}
+        alert = _check_auth_failure(entries, sess, [])
+    assert alert["code"] == "AUTH_REAUTH" and alert["blocking"] is False
+    mock_trigger.assert_not_called()                  # no human pause on first detection
+    assert calls and calls[0]["trigger"] == "AUTH_REAUTH"
+    assert "/login" in calls[0]["message"]            # concrete re-auth hint included
+
+
+def test_auth_failure_escalates_to_hir_after_reauth_attempt():
+    # A prior cycle already steered AUTH_REAUTH and 401/403 still dominates → HIR.
     with patch("core.session.get_intervention", return_value=None), \
          patch("core.session.trigger_intervention") as mock_trigger:
-        entries = (
-            [_http_entry(status_code=200)] * 5 +
-            [_http_entry(status_code=401)] * 8
-        )
-        alert = _check_auth_failure(entries)
-        assert alert is not None
+        entries = [_http_entry(status_code=200)] * 5 + [_http_entry(status_code=401)] * 8
+        alert = _check_auth_failure(entries, {}, [{"code": "AUTH_REAUTH"}])
         assert alert["code"] == "HIR_AUTH_FAILURE"
         mock_trigger.assert_called_once()
 
 
-def test_auth_failure_403_also_counts():
-    with patch("core.session.get_intervention", return_value=None), \
-         patch("core.session.trigger_intervention"):
-        entries = (
-            [_http_entry(status_code=200)] * 5 +
-            [_http_entry(status_code=403)] * 8
-        )
-        alert = _check_auth_failure(entries)
-        assert alert is not None
-        assert alert["code"] == "HIR_AUTH_FAILURE"
+def test_auth_failure_403_first_detection_steers(monkeypatch):
+    import core.qa_agent as _qa
+    monkeypatch.setattr(_qa, "_has_pending_directives", lambda: True)  # skip add_directive side effect
+    entries = [_http_entry(status_code=200)] * 5 + [_http_entry(status_code=403)] * 8
+    alert = _check_auth_failure(entries, {}, [])
+    assert alert["code"] == "AUTH_REAUTH"
 
 
 # ---------------------------------------------------------------------------

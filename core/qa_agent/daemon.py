@@ -71,7 +71,7 @@ _CHECKS: list[tuple] = [
     (_check_unregistered_findings, ("findings_data", "coverage_data")),
     (_check_premature_complete,    ("entries", "session_data")),
     # HIR conditions — Smith cannot self-resolve these (suppressed in benchmark mode)
-    (_check_auth_failure,          ("entries",)),
+    (_check_auth_failure,          ("entries", "session_data", "previous_alerts")),
     (_check_budget_limit,          ("session_data", "coverage_data")),
     (_check_zero_endpoints,        ("entries", "coverage_data")),
     (_check_target_unreachable,    ("entries",)),
