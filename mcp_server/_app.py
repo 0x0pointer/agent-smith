@@ -90,11 +90,24 @@ _rehydrate_tools()
 # ── Parameter coercion ────────────────────────────────────────────────────
 
 def _ensure_dict(value):
-    """Coerce a JSON string to dict. LLMs sometimes serialize dict params as strings."""
+    """Coerce a dict-ish tool argument to a dict (or None).
+
+    LLMs — especially smaller local models — serialize dict params as JSON
+    strings, or send an empty string for "no options". A bare ``json.loads``
+    raised on ``''`` and crashed the tool call (the validation/loop error that
+    spun the watchdog). Empty/blank or unparseable strings now coerce to None;
+    callers do ``_ensure_dict(x) or {}``.
+    """
     if value is None:
         return None
     if isinstance(value, str):
-        return json.loads(value)
+        s = value.strip()
+        if not s:
+            return None
+        try:
+            return json.loads(s)
+        except (ValueError, TypeError):
+            return None
     return value
 
 

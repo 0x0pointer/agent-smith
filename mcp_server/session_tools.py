@@ -131,7 +131,7 @@ def _record_handshake_client(ctx) -> None:
 
 
 @mcp.tool()
-async def session(action: str, options: dict | None = None, ctx: Context | None = None) -> str:
+async def session(action: str, options: dict | str | None = None, ctx: Context | None = None) -> str:
     """Scan lifecycle and infrastructure management.
 
     action  : start | complete | status | recovery | artifact | qa_reply | set_skill | set_step | wishlist_add | wishlist_list | start_kali | stop_kali | start_metasploit | stop_metasploit | pull_images | set_codebase
@@ -523,9 +523,14 @@ _COVERAGE_FLOOR_PCT = 40
 
 
 def _low_coverage_blocker(
-    cov: dict, coverage_enforced: bool, total: int, addressed: int, pct: float
+    cov: dict, coverage_enforced: bool, total: int, addressed: int, pct: float,
+    rich_exploitation: bool = False,
 ) -> str | None:
-    if not coverage_enforced or pct >= _COVERAGE_FLOOR_PCT:
+    # A findings-rich scan is NOT "trivially incomplete" even at low cell
+    # coverage — waive the floor so it can complete with documented gaps instead
+    # of being trapped (it won't grind low-value cells, correctly, to avoid
+    # false-negative tested_clean closures; see the coverage-grind regression).
+    if not coverage_enforced or rich_exploitation or pct >= _COVERAGE_FLOOR_PCT:
         return None
     all_cells = cov.get("matrix", [])
     pending = [c["id"] for c in all_cells if c.get("status", "pending") == "pending"]
@@ -570,7 +575,16 @@ def _skipped_no_evidence_blocker(all_cells: list[dict]) -> str | None:
     )
 
 
-def _coverage_blockers(cov: dict, ctf_mode: bool = False) -> list[str]:
+def _rich_exploitation(data: dict | None) -> bool:
+    """True when the scan has found substantial real issues — used to waive the
+    coverage floor (a findings-rich scan isn't 'trivially incomplete')."""
+    findings = (data or {}).get("findings", []) if isinstance(data, dict) else []
+    live = [f for f in findings if f.get("status") != "false_positive"]
+    hi_crit = sum(1 for f in live if f.get("severity") in ("high", "critical"))
+    return len(live) >= 8 or hi_crit >= 3
+
+
+def _coverage_blockers(cov: dict, data: dict | None = None, ctf_mode: bool = False) -> list[str]:
     """Return coverage-related completion blockers for the given matrix state.
 
     For non-CTF runs, an empty matrix is a hard blocker if web testing happened —
@@ -611,7 +625,9 @@ def _coverage_blockers(cov: dict, ctf_mode: bool = False) -> list[str]:
     profile = get_profile()
     coverage_enforced = not profile.get("enforce_budget", True)
 
-    low_cov = _low_coverage_blocker(cov, coverage_enforced, total, addressed, pct)
+    low_cov = _low_coverage_blocker(
+        cov, coverage_enforced, total, addressed, pct, rich_exploitation=_rich_exploitation(data),
+    )
     if low_cov:
         blockers.append(low_cov)
 
@@ -1204,7 +1220,7 @@ def _collect_completion_blockers(data: dict, effective: set) -> list[str]:
     blockers.extend(adjudication_blockers(data, digest=_condensed_directives()))
 
     from core.coverage import get_matrix
-    blockers.extend(_coverage_blockers(get_matrix(), ctf_mode=_has_ctf_flag(data)))
+    blockers.extend(_coverage_blockers(get_matrix(), data=data, ctf_mode=_has_ctf_flag(data)))
 
     return blockers
 
@@ -2276,8 +2292,40 @@ def _concrete_next_call(target: str, tools_run: set, in_progress: list, pending_
     if "nuclei" not in tools_run:
         return f"scan(tool='nuclei', target='{target}')"
     if pending_count > 0:
-        return f"Test the next pending coverage cell — {pending_count} cells remaining"
+        # Concrete next action so a respawned/recovered model doesn't flounder
+        # (it kept looking for in_progress work, found none, and idled). Give a
+        # specific high-value probe AND the finish-up path — never a vague nudge.
+        return (
+            f"{pending_count} cells still pending. Do ONE of these now — do NOT idle: "
+            f"(A) test a high-value endpoint: {_next_pending_probe(target)}; or "
+            "(B) if exploitation is done, FINISH — adjudicate each high/critical finding "
+            "(report(action='update_finding', data={id, adjudication:{reproducible, rationale, "
+            "artifact_id}})), then session(action='complete')."
+        )
     return "session(action='complete', options={\"notes\": \"all testing complete\"})"
+
+
+def _next_pending_probe(target: str) -> str:
+    """One concrete test request for the highest-priority pending cell (best
+    effort) — so recovery hands the model an exact next move, not a vague hint."""
+    try:
+        from core.coverage import get_matrix
+        from mcp_server.scan_engine.planner import _concrete_test_command
+        cov = get_matrix()
+        eps = {e["id"]: e for e in cov.get("endpoints", [])}
+        pending = [c for c in cov.get("matrix", []) if c.get("status") == "pending"]
+        if not pending:
+            return "report(action='coverage', data={type:'list', status:'pending', limit:20})"
+        prio = ["sqli", "xss", "ssti", "cmdi", "ssrf", "xxe", "nosqli", "idor"]
+        best = next((c for it in prio for c in pending if c.get("injection_type") == it), pending[0])
+        ep = eps.get(best.get("endpoint_id"), {})
+        cmd = _concrete_test_command(
+            best.get("injection_type", ""), target, ep.get("path", "/"),
+            ep.get("method", "GET"), best.get("param", "_endpoint"), best.get("param_type", "query"),
+        )
+        return f"{cmd} (cell {best.get('id')})"
+    except Exception:
+        return "report(action='coverage', data={type:'list', status:'pending', limit:20})"
 
 
 def _do_artifact(opts):

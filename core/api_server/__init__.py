@@ -253,9 +253,11 @@ from .smith import (  # noqa: E402
     _SMITH_PROC_NEEDLES,
     _SMITH_STALL_SECONDS,
     _SPAWN_SOURCE_TAGS,
+    _WATCHDOG_MAX_NO_PROGRESS,
     _client_installed,
     _client_process_running,
     _detect_active_client,
+    _escalate_no_progress_hir,
     _kill_hung_smith,
     _ensure_mcp_sse_alive,
     _live_pid_from_pid_file,
@@ -267,6 +269,7 @@ from .smith import (  # noqa: E402
     _resolve_client_from_session,
     _resolve_client_from_smith_client_file,
     _scan_has_pending_cells,
+    _scan_progress_snapshot,
     _signal_pid_file_alive,
     _signal_process_scan_finds_client,
     _signal_quick_log_fresh,
@@ -278,6 +281,7 @@ from .smith import (  # noqa: E402
     _smith_watchdog_loop,
     _spawn_smith,
     _spawn_source_tag,
+    _watchdog_should_escalate_no_progress,
     _watchdog_tick,
 )
 

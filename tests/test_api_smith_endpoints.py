@@ -640,9 +640,15 @@ class TestWatchdogHungIntegration:
         watchdog ticks. Tests that successfully drive _spawn_smith mutate
         those globals and bleed into the next test in test_spawns_when_*
         (the min-gap suppression then kicks in and asserts fail). Snapshot
-        + restore both globals per-test so each starts from a clean slate."""
+        + restore both globals per-test so each starts from a clean slate.
+
+        Also resets the no-progress backoff globals (tracked on the smith
+        module) so a prior test that drove the counter up can't trip the
+        HIR_NO_PROGRESS escalation in an unrelated spawn test."""
         monkeypatch.setattr(api, "_watchdog_last_restart_ts", 0.0)
         monkeypatch.setattr(api, "_watchdog_restart_count_window", [])
+        monkeypatch.setattr(api.smith, "_watchdog_no_progress_count", 0)
+        monkeypatch.setattr(api.smith, "_watchdog_last_progress", None)
 
     def _stale_log(self, tmp_path, age_seconds: int) -> None:
         import os as _os
@@ -703,6 +709,112 @@ class TestWatchdogHungIntegration:
 
         mock_spawn.assert_not_called()
         mock_notify.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# No-progress backoff — escalate to a human instead of respawning forever
+# (the recovery→list→exit loop that re-spawned every 2 min for >1h, burning
+# the model with zero MCP progress). _scan_progress_snapshot fingerprints the
+# scan; N identical fingerprints across respawns → HIR_NO_PROGRESS.
+# ---------------------------------------------------------------------------
+
+class TestWatchdogNoProgressBackoff:
+
+    @pytest.fixture(autouse=True)
+    def _reset_no_progress_globals(self, monkeypatch):
+        monkeypatch.setattr(api.smith, "_watchdog_no_progress_count", 0)
+        monkeypatch.setattr(api.smith, "_watchdog_last_progress", None)
+
+    def test_snapshot_reads_findings_cells_and_mtime(self, tmp_path, monkeypatch):
+        findings = tmp_path / "findings.json"
+        coverage = tmp_path / "coverage.json"
+        quick = tmp_path / "quick_log.json"
+        findings.write_text(json.dumps({"findings": [{"id": "a"}, {"id": "b"}]}))
+        coverage.write_text(json.dumps({"matrix": [
+            {"status": "tested_clean"}, {"status": "vulnerable"},
+            {"status": "not_applicable"}, {"status": "pending"},  # pending not counted
+        ]}))
+        quick.write_text("{}\n")
+        monkeypatch.setattr(api, "_FINDINGS_FILE", findings)
+        monkeypatch.setattr(api, "_COVERAGE_FILE", coverage)
+        monkeypatch.setattr(api, "_QUICK_LOG_FILE", quick)
+
+        findings_n, addressed, qmtime = api._scan_progress_snapshot()
+        assert findings_n == 2
+        assert addressed == 3          # tested_clean + vulnerable + not_applicable
+        assert qmtime == round(quick.stat().st_mtime, 1)
+
+    def test_snapshot_is_all_zero_when_files_missing(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(api, "_FINDINGS_FILE", tmp_path / "nope.json")
+        monkeypatch.setattr(api, "_COVERAGE_FILE", tmp_path / "nope2.json")
+        monkeypatch.setattr(api, "_QUICK_LOG_FILE", tmp_path / "nope3.json")
+        assert api._scan_progress_snapshot() == (0, 0, 0.0)
+
+    def test_first_call_never_escalates(self, monkeypatch):
+        """Reset globals → last_progress is None → the very first observation
+        can't escalate (we have nothing to compare against yet)."""
+        monkeypatch.setattr(api.smith, "_scan_progress_snapshot", lambda: (1, 5, 123.0))
+        assert api._watchdog_should_escalate_no_progress() is False
+
+    def test_escalates_after_max_unchanged_snapshots(self, monkeypatch):
+        monkeypatch.setattr(api.smith, "_scan_progress_snapshot", lambda: (1, 5, 123.0))
+        # First call seeds last_progress (False); each subsequent identical call
+        # increments; escalation fires once the counter hits the cap.
+        results = [api._watchdog_should_escalate_no_progress()
+                   for _ in range(api._WATCHDOG_MAX_NO_PROGRESS + 1)]
+        assert results[0] is False
+        assert results[-1] is True
+        assert any(results)  # cap reached within the window
+
+    def test_progress_resets_the_counter(self, monkeypatch):
+        snaps = [(1, 5, 1.0), (1, 5, 1.0), (2, 6, 2.0), (2, 6, 2.0)]
+        it = iter(snaps)
+        monkeypatch.setattr(api.smith, "_scan_progress_snapshot", lambda: next(it))
+        api._watchdog_should_escalate_no_progress()      # seed (1,5,1.0)
+        api._watchdog_should_escalate_no_progress()      # unchanged → count 1
+        # Snapshot changes (new finding + cell) → counter must reset to 0
+        api._watchdog_should_escalate_no_progress()      # changed → count 0
+        assert api.smith._watchdog_no_progress_count == 0
+
+    def test_escalate_triggers_hir_and_notifies_and_resets(self, monkeypatch):
+        monkeypatch.setattr(api.smith, "_watchdog_no_progress_count", 3)
+        monkeypatch.setattr(api.smith, "_watchdog_last_progress", (1, 5, 1.0))
+        with patch("core.session.trigger_intervention") as mock_hir, \
+             patch("core.notifiers.notify") as mock_notify:
+            api._escalate_no_progress_hir()
+        assert mock_hir.call_args.kwargs["code"] == "HIR_NO_PROGRESS"
+        assert mock_notify.call_args.kwargs["code"] == "WATCHDOG_NO_PROGRESS"
+        # Globals reset so a resolved HIR starts the backoff clean.
+        assert api.smith._watchdog_no_progress_count == 0
+        assert api.smith._watchdog_last_progress is None
+
+    @pytest.mark.asyncio
+    async def test_respawn_flow_escalates_instead_of_spawning_at_cap(self, monkeypatch):
+        monkeypatch.setattr(api, "_watchdog_last_restart_ts", 0.0)
+        monkeypatch.setattr(api, "_watchdog_restart_count_window", [])
+        with patch.object(api, "_mcp_sse_alive", return_value=True), \
+             patch.object(api, "_watchdog_should_escalate_no_progress", return_value=True), \
+             patch.object(api, "_escalate_no_progress_hir") as mock_escalate, \
+             patch.object(api, "_spawn_smith", new_callable=AsyncMock) as mock_spawn, \
+             patch("core.notifiers.notify"):
+            await api.smith._watchdog_respawn_flow(time.time())
+        mock_escalate.assert_called_once()
+        mock_spawn.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_respawn_flow_spawns_when_progress_present(self, monkeypatch):
+        monkeypatch.setattr(api, "_watchdog_last_restart_ts", 0.0)
+        monkeypatch.setattr(api, "_watchdog_restart_count_window", [])
+        with patch.object(api, "_mcp_sse_alive", return_value=True), \
+             patch.object(api, "_watchdog_should_escalate_no_progress", return_value=False), \
+             patch.object(api, "_detect_active_client", return_value="opencode"), \
+             patch.object(api, "_escalate_no_progress_hir") as mock_escalate, \
+             patch.object(api, "_spawn_smith", new_callable=AsyncMock,
+                          return_value=(True, 4242)) as mock_spawn, \
+             patch("core.notifiers.notify"):
+            await api.smith._watchdog_respawn_flow(time.time())
+        mock_escalate.assert_not_called()
+        mock_spawn.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -1771,6 +1883,10 @@ async def test_watchdog_tick_respawns_on_stall(tmp_path, monkeypatch):
     # neutralize rate-limit gates so the spawn path is reached
     monkeypatch.setattr(api, "_watchdog_last_restart_ts", 0.0)
     monkeypatch.setattr(api, "_watchdog_restart_count_window", [])
+    # reset no-progress backoff so a single fresh tick spawns (first observation
+    # never escalates) rather than tripping HIR_NO_PROGRESS from leaked globals
+    monkeypatch.setattr(api.smith, "_watchdog_no_progress_count", 0)
+    monkeypatch.setattr(api.smith, "_watchdog_last_progress", None)
 
     await smith._watchdog_tick(10_000.0)
     assert killed == [4242]          # the stalled pid was killed

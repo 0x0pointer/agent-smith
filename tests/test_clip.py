@@ -105,3 +105,25 @@ def test_ensure_dict_returns_none_for_none():
 def test_ensure_dict_handles_nested_json():
     result = _ensure_dict('{"a": {"b": [1, 2, 3]}}')
     assert result["a"]["b"] == [1, 2, 3]
+
+
+# Item 4 — small local models send '' / blank / unparseable for "no options".
+# A bare json.loads('') raised ValueError and crashed the tool call (the loop
+# error that spun the watchdog). These must coerce to None, never raise.
+
+def test_ensure_dict_empty_string_returns_none():
+    assert _ensure_dict("") is None
+
+
+def test_ensure_dict_blank_string_returns_none():
+    assert _ensure_dict("   ") is None
+
+
+def test_ensure_dict_unparseable_string_returns_none():
+    assert _ensure_dict("not json at all") is None
+
+
+def test_ensure_dict_partial_json_returns_none():
+    # A truncated dict literal must not raise — coerce to None so the caller's
+    # `_ensure_dict(x) or {}` yields an empty dict instead of a crash.
+    assert _ensure_dict('{"key": ') is None

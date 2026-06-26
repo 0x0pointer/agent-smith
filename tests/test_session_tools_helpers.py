@@ -1282,3 +1282,140 @@ class TestResolveResetsCompleteAttempts:
         st._complete_attempts = 5
         scan_session.resolve_intervention("X", "")  # no active intervention
         assert st._complete_attempts == 5
+
+
+# ---------------------------------------------------------------------------
+# Item 1 — findings-aware coverage floor: a findings-rich scan isn't "trivially
+# incomplete" at low cell coverage, so the floor is waived (it correctly won't
+# grind low-value cells with canned payloads → false-negative tested_clean).
+# ---------------------------------------------------------------------------
+
+from mcp_server.session_tools import _rich_exploitation, _low_coverage_blocker
+
+
+def test_rich_exploitation_false_on_empty():
+    assert _rich_exploitation(None) is False
+    assert _rich_exploitation({}) is False
+    assert _rich_exploitation({"findings": []}) is False
+
+
+def test_rich_exploitation_true_on_eight_live_findings():
+    findings = [{"severity": "low"} for _ in range(8)]
+    assert _rich_exploitation({"findings": findings}) is True
+
+
+def test_rich_exploitation_true_on_three_high_crit():
+    findings = [{"severity": "high"}, {"severity": "critical"}, {"severity": "high"}]
+    assert _rich_exploitation({"findings": findings}) is True
+
+
+def test_rich_exploitation_ignores_false_positives():
+    # 8 findings but all false_positive → not rich; 2 high + 1 FP high → not 3
+    fps = [{"severity": "high", "status": "false_positive"} for _ in range(8)]
+    assert _rich_exploitation({"findings": fps}) is False
+    mixed = [
+        {"severity": "high"}, {"severity": "critical"},
+        {"severity": "high", "status": "false_positive"},
+    ]
+    assert _rich_exploitation({"findings": mixed}) is False
+
+
+def test_low_coverage_blocker_waived_when_rich_exploitation():
+    cov = {"matrix": [{"id": "c1", "status": "pending"}]}
+    # Low coverage (0%), floor enforced — but rich exploitation waives it.
+    assert _low_coverage_blocker(
+        cov, coverage_enforced=True, total=100, addressed=0, pct=0.0,
+        rich_exploitation=True,
+    ) is None
+
+
+def test_low_coverage_blocker_fires_when_not_rich_and_below_floor():
+    cov = {"matrix": [{"id": "c1", "status": "pending"}, {"id": "c2", "status": "pending"}]}
+    blocker = _low_coverage_blocker(
+        cov, coverage_enforced=True, total=100, addressed=10, pct=10.0,
+        rich_exploitation=False,
+    )
+    assert blocker is not None
+    assert "COVERAGE FLOOR" in blocker
+
+
+def test_low_coverage_blocker_waived_above_floor_pct():
+    cov = {"matrix": []}
+    # At/above the 40% floor, no blocker even without rich exploitation.
+    assert _low_coverage_blocker(
+        cov, coverage_enforced=True, total=100, addressed=50, pct=50.0,
+        rich_exploitation=False,
+    ) is None
+
+
+def test_low_coverage_blocker_waived_when_not_enforced():
+    cov = {"matrix": [{"id": "c1", "status": "pending"}]}
+    assert _low_coverage_blocker(
+        cov, coverage_enforced=False, total=100, addressed=0, pct=0.0,
+        rich_exploitation=False,
+    ) is None
+
+
+# ---------------------------------------------------------------------------
+# Item 3 — recovery hands the model a CONCRETE next move (a high-value probe
+# AND the finish path) instead of a vague nudge that made it idle/loop.
+# ---------------------------------------------------------------------------
+
+from mcp_server.session_tools import _concrete_next_call, _next_pending_probe
+
+
+def test_concrete_next_call_continues_in_progress_cell():
+    out = _concrete_next_call(
+        "http://t", tools_run={"httpx", "naabu", "spider", "nuclei"},
+        in_progress=[{"injection": "sqli", "endpoint": "/login",
+                      "param": "user", "cell_id": "c9"}],
+        pending_count=5,
+    )
+    assert "c9" in out and "sqli" in out
+
+
+def test_concrete_next_call_runs_missing_recon_first():
+    assert _concrete_next_call("http://t", set(), [], 0).startswith("scan(tool='httpx'")
+
+
+def test_concrete_next_call_pending_offers_probe_and_finish():
+    out = _concrete_next_call(
+        "http://t", tools_run={"httpx", "naabu", "spider", "nuclei"},
+        in_progress=[], pending_count=12,
+    )
+    # Must be actionable: a concrete probe (A) AND the finish path (B), never idle.
+    assert "12 cells still pending" in out
+    assert "do NOT idle" in out
+    assert "session(action='complete')" in out
+
+
+def test_concrete_next_call_all_done_completes():
+    out = _concrete_next_call(
+        "http://t", tools_run={"httpx", "naabu", "spider", "nuclei"},
+        in_progress=[], pending_count=0,
+    )
+    assert "session(action='complete'" in out
+
+
+def test_next_pending_probe_is_best_effort_string(monkeypatch):
+    # Empty/exploding matrix must never raise — recovery still gets a usable hint.
+    import mcp_server.session_tools as st
+    monkeypatch.setattr("core.coverage.get_matrix", lambda: {"matrix": [], "endpoints": []})
+    out = _next_pending_probe("http://t")
+    assert isinstance(out, str) and "coverage" in out
+
+
+def test_next_pending_probe_picks_highest_priority(monkeypatch):
+    cov = {
+        "endpoints": [{"id": "e1", "path": "/search", "method": "GET"}],
+        "matrix": [
+            {"id": "x1", "status": "pending", "injection_type": "xss",
+             "endpoint_id": "e1", "param": "q", "param_type": "query"},
+            {"id": "s1", "status": "pending", "injection_type": "sqli",
+             "endpoint_id": "e1", "param": "q", "param_type": "query"},
+        ],
+    }
+    monkeypatch.setattr("core.coverage.get_matrix", lambda: cov)
+    out = _next_pending_probe("http://t")
+    # sqli outranks xss in the priority list → its cell id is the one cited.
+    assert "s1" in out

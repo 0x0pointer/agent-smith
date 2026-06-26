@@ -21,9 +21,9 @@ async def http(
     action:  str,
     url:     str,
     method:  str = "GET",
-    headers: dict | None = None,
+    headers: dict | str | None = None,
     body:    Any = None,
-    options: dict | None = None,
+    options: dict | str | None = None,
 ) -> str:
     """Raw HTTP request or PoC saving.
 

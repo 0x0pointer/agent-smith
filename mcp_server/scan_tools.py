@@ -538,7 +538,7 @@ _DISPATCH = {
 
 
 @mcp.tool()
-async def scan(tool: str, target: str, flags: str = "", options: dict | None = None) -> str:
+async def scan(tool: str, target: str, flags: str = "", options: dict | str | None = None) -> str:
     """Run a security scanner.
 
     tool    : scanner name (see table)
