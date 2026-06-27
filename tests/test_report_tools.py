@@ -61,6 +61,32 @@ def test_finding_gates_rce_fires_on_real(monkeypatch):
     assert "post_exploit_rce" in out
 
 
+def test_finding_gates_rce_skips_speculative_ssti(monkeypatch):
+    """The exact run failure: a SQLi auth-bypass finding that name-drops an
+    UNCONFIRMED SSTI ('appears to support SSTI; ${7*7} reflected') must NOT impose
+    the mandatory post-exploit gate — code execution isn't confirmed."""
+    import mcp_server.report_tools as rt
+    sess = _FakeSession()
+    monkeypatch.setattr(rt, "scan_session", sess)
+    out = _auto_trigger_finding_gates(
+        "SQL injection in login endpoint bypasses authentication", "critical",
+        "admin' OR '1'='1' bypasses auth. The username field appears to support SSTI; "
+        "injected ${7*7} was reflected in the response.")
+    assert "post_exploit_rce" not in out
+    assert "post_exploit_rce" not in sess.triggered
+
+
+def test_finding_gates_rce_still_fires_on_confirmed_ssti(monkeypatch):
+    """Positive control: a CONFIRMED SSTI (no speculation hedging) still gates."""
+    import mcp_server.report_tools as rt
+    sess = _FakeSession()
+    monkeypatch.setattr(rt, "scan_session", sess)
+    out = _auto_trigger_finding_gates(
+        "Server-side template injection in name field", "critical",
+        "Confirmed SSTI: injected ${7*7} evaluated to 49; achieved code execution.")
+    assert "post_exploit_rce" in out
+
+
 # ── adjudication reuses the finding's linked proof artifact (no re-run) ───────
 
 def test_adjudication_reuses_linked_evidence_artifact(monkeypatch):

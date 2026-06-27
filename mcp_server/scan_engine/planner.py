@@ -62,10 +62,10 @@ def _inject_pending_gates(required: list[str]) -> None:
             trigger = gate.get("trigger", "")
             for skill in missing:
                 required.insert(0, (
-                    f"CHAIN REQUIRED: invoke /{skill} NOW — gate '{gate['id']}' triggered by {trigger}. "
-                    f"Call session(action='set_skill', options={{skill: '{skill}', reason: '{trigger}'}}) "
-                    f"then Skill('{skill}') before any other action. "
-                    "Context is freshest right now — do not defer."
+                    f"CHAIN REQUIRED (before completion): /{skill} — gate '{gate['id']}' triggered by {trigger}. "
+                    f"Finish your current recon/mapping step first if you're mid-task, then chain it: "
+                    f"session(action='set_skill', options={{skill: '{skill}', reason: '{trigger}'}}) then Skill('{skill}'). "
+                    "Don't leave it unaddressed — this gate blocks completion."
                 ))
             # Inject at most one gate per response to avoid context flooding.
             break

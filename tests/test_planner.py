@@ -43,3 +43,35 @@ def test_add_testing_actions_done_when_all_addressed():
         planner._add_testing_actions(required, recommended, "http://t")
     assert required == []
     assert any("All cells addressed" in r for r in recommended)
+
+
+# ── _inject_pending_gates — required-before-completion, not drop-everything-NOW ──
+
+def test_inject_pending_gates_lets_model_finish_recon_first():
+    """The chain directive must read as a completion-time requirement that lets the
+    model finish its current recon/mapping step — not an insistent 'invoke NOW,
+    before any other action, do not defer' that yanks it mid-recon."""
+    required = []
+    gate = {"id": "auth_coverage", "required_skills": ["credential-audit"],
+            "trigger": "auth endpoint /login"}
+    with patch("core.session.pending_gates", return_value=[gate]), \
+         patch("core.session.get", return_value={"skill_history": []}):
+        planner._inject_pending_gates(required)
+    assert len(required) == 1
+    msg = required[0].lower()
+    assert "credential-audit" in msg
+    assert "before completion" in msg
+    assert "finish your current recon" in msg
+    # No drop-everything-now insistence
+    assert "before any other action" not in msg
+    assert "invoke /credential-audit now" not in msg
+    assert "do not defer" not in msg
+
+
+def test_inject_pending_gates_skips_already_invoked_skill():
+    required = []
+    gate = {"id": "auth_coverage", "required_skills": ["credential-audit"], "trigger": "auth"}
+    with patch("core.session.pending_gates", return_value=[gate]), \
+         patch("core.session.get", return_value={"skill_history": [{"skill": "credential-audit"}]}):
+        planner._inject_pending_gates(required)
+    assert required == []   # skill already chained → no directive

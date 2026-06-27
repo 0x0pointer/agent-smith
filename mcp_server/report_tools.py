@@ -69,6 +69,16 @@ _GATE_BENIGN_MARKERS = (
     "no user input", "out of scope", "out-of-scope",
 )
 
+# Speculation markers — an UNCONFIRMED finding ("the username appears to support
+# SSTI; ${7*7} was reflected") must not impose the mandatory post-exploit gate.
+# RCE/post-exploit is expensive and only makes sense once code execution is
+# actually confirmed, so a speculative RCE/SSTI keyword fires nothing.
+_SPECULATION_MARKERS = (
+    "appears to", "appear to", "may be", "might be", "possibly", "suspected",
+    "potential", "unconfirmed", "not confirmed", "could be", "seems to",
+    "may allow", "might allow", "may indicate", "if exploitable",
+)
+
 # Stronger auth-weakness signal so credential-audit fires on a real weakness,
 # not on the mere mention of an auth service in passing.
 _AUTH_WEAKNESS_KEYWORDS = (
@@ -316,8 +326,14 @@ def _auto_trigger_finding_gates(title: str, severity: str, description: str) -> 
     if any(marker in text for marker in _GATE_BENIGN_MARKERS):
         return triggered
 
-    # RCE-class finding → post-exploit is mandatory
-    if severity in ("critical", "high") and any(kw in text for kw in _RCE_KEYWORDS):
+    # RCE-class finding → post-exploit is mandatory — but ONLY when code execution
+    # is actually confirmed. A speculative mention ("appears to support SSTI",
+    # ${7*7} merely reflected) is not RCE, so it must not impose the post-exploit
+    # gate (the false-fire seen on a SQLi-auth-bypass finding that name-dropped SSTI).
+    speculative = any(m in text for m in _SPECULATION_MARKERS)
+    if (severity in ("critical", "high")
+            and any(kw in text for kw in _RCE_KEYWORDS)
+            and not speculative):
         scan_session.trigger_gate(
             "post_exploit_rce",
             f"RCE confirmed: {title}",
