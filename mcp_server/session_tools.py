@@ -439,6 +439,13 @@ def _start_response(cfg: dict, classification: dict, target: str, scan_mode: str
         "  /metasploit /reverse-shell /analyze-cve /threat-modeling /aikido-triage",
         "  /gh-export /remediate /request-cves",
         "  See CLAUDE.md for full skill descriptions and trigger conditions.",
+        "",
+        "DEFINITION OF DONE: this scan is complete when the COVERAGE MATRIX is worked —",
+        "every endpoint/param tested or justified not_applicable — NOT when you've found",
+        "some bugs. Finding vulnerabilities happens WHILE you work the matrix; it is not a",
+        "substitute for it. After each tool call you'll be handed the next cells to test;",
+        "keep working them. Completion is coverage-gated and will be refused while the",
+        "matrix is mostly untested.",
     ]
     return "\n".join(lines)
 

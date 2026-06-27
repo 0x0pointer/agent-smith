@@ -8,7 +8,7 @@ Also detects drift: duplicate tests, phase-inappropriate tools, skipped coverage
 from __future__ import annotations
 
 from core import session as scan_session
-from core.coverage import get_matrix
+from core.coverage import get_matrix, select_next_batch
 
 
 def _add_recon_actions(required: list[str], recommended: list[str], tools_run: set, target: str) -> None:
@@ -136,53 +136,66 @@ def compute_next(tool: str, state: dict) -> dict:
 
 
 def _add_testing_actions(required: list[str], recommended: list[str], target: str) -> None:
-    """Surface the highest-priority pending cell as a single hint, NOT a forced
-    batch. The matrix is a guide — the model decides whether to test it via the
-    suggested probe or to spend the turn on richer exploitation (sqlmap with
-    higher levels, /web-exploit, custom payload chains). When the matrix was
-    surfaced as a 10-cell batch with canned single-payload probes, the model
-    rationally ground through cells with naive payloads and false-negatived
-    real vulnerabilities — see the coverage-grind regression analysis."""
+    """Continuously drive the model through the coverage matrix.
+
+    On every tool response, hand the next FOCUSED batch (endpoint-grouped, profile-
+    sized) with the concrete request for each cell, plus progress — so the model is
+    always being pulled toward the matrix and never drifts into "I found some bugs,
+    I'm done". The matrix is the deliverable; finding bugs happens *while* working
+    it. Anti-grind: the commands are REAL probes (sqlmap for sqli, targeted
+    payloads), the framing forbids canned filler, and the honesty guards + the
+    completion coverage-gate reject shallow tested_clean closures — so this drives
+    honest testing rather than the naive single-payload grind that the old forced
+    10-cell batch produced.
+    """
     cov = get_matrix()
-    endpoints = {ep["id"]: ep for ep in cov.get("endpoints", [])}
-
-    pending = [c for c in cov.get("matrix", []) if c["status"] == "pending"]
-    in_progress = [c for c in cov.get("matrix", []) if c["status"] == "in_progress"]
-
+    matrix = cov.get("matrix", [])
+    in_progress = [c for c in matrix if c["status"] == "in_progress"]
     if in_progress:
         cell = in_progress[0]
-        ep = endpoints.get(cell["endpoint_id"], {})
+        ep = {e["id"]: e for e in cov.get("endpoints", [])}.get(cell["endpoint_id"], {})
         required.append(
-            f"Continue testing: {cell['injection_type']} on "
-            f"{ep.get('method', '?')} {ep.get('path', '?')} param={cell['param']} "
-            f"(cell {cell['id']})"
+            f"Continue testing (then close the cell): {cell['injection_type']} on "
+            f"{ep.get('method', '?')} {ep.get('path', '?')} param={cell['param']} (cell {cell['id']})"
         )
         return
 
-    if not pending:
+    if not any(c["status"] == "pending" for c in matrix):
         recommended.append("All cells addressed — proceed to validation/reporting")
         return
 
-    # Prioritize high-signal types first.
-    priority_order = ["sqli", "xss", "ssti", "cmdi", "ssrf", "xxe", "nosqli", "idor"]
-    best = next(
-        (c for inj_type in priority_order for c in pending if c["injection_type"] == inj_type),
-        pending[0],
+    from mcp_server.scan_engine.budget import get_profile
+    count = get_profile().get("next_batch_size", 5)
+    sel = select_next_batch(cov, count=count)
+    batch = sel.get("batch", [])
+    if not batch:
+        return
+
+    prog = sel.get("progress", {})
+    foc = sel.get("endpoint_focus") or {}
+    lines = []
+    for c in batch:
+        cmd = _concrete_test_command(
+            c.get("injection_type", ""), target,
+            c.get("endpoint_path") or "?", c.get("method") or "?",
+            c.get("param") or "_endpoint", c.get("param_type") or "query",
+        )
+        lines.append(f"  • {cmd} (cell {c.get('cell_id')})")
+
+    required.append(
+        f"WORK THE MATRIX (it's the deliverable) — next {len(batch)} cell(s) on "
+        f"{foc.get('method', '?')} {foc.get('path', '?')} [this endpoint {prog.get('endpoint', '?')} · "
+        f"overall {prog.get('overall', '?')}]. Test each with a REAL probe (commands below — never "
+        f"canned filler; one benign response is NOT proof a cell is clean), then close it with its "
+        f"artifact_id via report(action='coverage', data={{type:'bulk_tested', updates:[...]}}). The "
+        f"scan finishes when the matrix is worked, not when you've found a few bugs:\n" + "\n".join(lines)
     )
-
-    ep = endpoints.get(best["endpoint_id"], {})
-    path = ep.get("path", "?")
-    method = ep.get("method", "?")
-    param = best["param"]
-    param_type = best.get("param_type", "query")
-    inj = best["injection_type"]
-
-    test_cmd = _concrete_test_command(inj, target, path, method, param, param_type)
-    required.append(f"{test_cmd} (cell {best['id']})")
-
-    total = len(pending)
-    if total > 1:
-        recommended.append(f"{total - 1} more pending cells — pick the highest-value targets, not all of them")
+    rem = sel.get("remaining", 0)
+    if rem > len(batch):
+        recommended.append(
+            f"{rem} cells pending overall — call report(action='coverage', data={{type:'next_batch'}}) "
+            "any time for the next focused batch."
+        )
 
 
 def _resolve_url(target: str, path: str, param: str, param_type: str, payload: str) -> str:

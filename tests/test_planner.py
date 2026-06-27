@@ -16,20 +16,21 @@ def _matrix():
     }
 
 
-def test_add_testing_actions_emits_single_high_priority_cell():
-    """Single highest-priority pending cell, NOT a 10-cell batch with canned
-    payloads. The batch loop drove the model to grind cells with naive payloads
-    and false-negative real vulnerabilities — see the coverage-grind regression."""
+def test_add_testing_actions_drives_focused_batch():
+    """Continuous drive: hand the next focused batch (endpoint-grouped) with a
+    concrete command per cell + progress, framed as 'work the matrix'. Anti-grind
+    lives in the framing (real probes, honest closures) + the completion gate, not
+    in starving the model of guidance."""
     required: list = []
     recommended: list = []
     with patch.object(planner, "get_matrix", return_value=_matrix()):
         planner._add_testing_actions(required, recommended, "http://t")
     assert len(required) == 1
     msg = required[0]
-    # sqli wins the priority order over xss
-    assert "cell c1" in msg
-    assert "cell c2" not in msg  # not a batch
-    # planner emits a concrete suggestion for the chosen cell only
+    # both cells on the focused endpoint are handed as a batch, sqli first
+    assert "cell c1" in msg and "cell c2" in msg
+    assert "WORK THE MATRIX" in msg
+    assert "overall" in msg            # progress is surfaced
     assert "sqlmap" in msg.lower() or "/login" in msg
 
 
