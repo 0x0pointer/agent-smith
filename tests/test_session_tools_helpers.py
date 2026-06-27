@@ -1320,40 +1320,18 @@ def test_rich_exploitation_ignores_false_positives():
     assert _rich_exploitation({"findings": mixed}) is False
 
 
-def test_low_coverage_blocker_waived_when_rich_exploitation():
-    cov = {"matrix": [{"id": "c1", "status": "pending"}]}
-    # Low coverage (0%), floor enforced — but rich exploitation waives it.
-    assert _low_coverage_blocker(
-        cov, coverage_enforced=True, total=100, addressed=0, pct=0.0,
-        rich_exploitation=True,
-    ) is None
-
-
-def test_low_coverage_blocker_fires_when_not_rich_and_below_floor():
+def test_low_coverage_blocker_fires_below_floor_even_when_findings_rich():
+    # The whole point of the re-tune: a findings-rich scan no longer skips the
+    # matrix. Below the floor → blocks regardless of how many bugs were found.
     cov = {"matrix": [{"id": "c1", "status": "pending"}, {"id": "c2", "status": "pending"}]}
-    blocker = _low_coverage_blocker(
-        cov, coverage_enforced=True, total=100, addressed=10, pct=10.0,
-        rich_exploitation=False,
-    )
+    blocker = _low_coverage_blocker(cov, total=100, addressed=10, pct=10.0)
     assert blocker is not None
-    assert "COVERAGE FLOOR" in blocker
+    assert "SCAN NOT COMPLETE" in blocker
 
 
-def test_low_coverage_blocker_waived_above_floor_pct():
+def test_low_coverage_blocker_passes_above_floor():
     cov = {"matrix": []}
-    # At/above the 40% floor, no blocker even without rich exploitation.
-    assert _low_coverage_blocker(
-        cov, coverage_enforced=True, total=100, addressed=50, pct=50.0,
-        rich_exploitation=False,
-    ) is None
-
-
-def test_low_coverage_blocker_waived_when_not_enforced():
-    cov = {"matrix": [{"id": "c1", "status": "pending"}]}
-    assert _low_coverage_blocker(
-        cov, coverage_enforced=False, total=100, addressed=0, pct=0.0,
-        rich_exploitation=False,
-    ) is None
+    assert _low_coverage_blocker(cov, total=100, addressed=50, pct=50.0) is None
 
 
 # ---------------------------------------------------------------------------

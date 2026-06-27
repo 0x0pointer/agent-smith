@@ -525,37 +525,38 @@ def _do_start(opts):
 _COVERAGE_FLOOR_PCT = 40
 
 
-def _low_coverage_blocker(
-    cov: dict, coverage_enforced: bool, total: int, addressed: int, pct: float,
-    rich_exploitation: bool = False,
-) -> str | None:
-    # A findings-rich scan is NOT "trivially incomplete" even at low cell
-    # coverage — waive the floor so it can complete with documented gaps instead
-    # of being trapped (it won't grind low-value cells, correctly, to avoid
-    # false-negative tested_clean closures; see the coverage-grind regression).
-    if not coverage_enforced or rich_exploitation or pct >= _COVERAGE_FLOOR_PCT:
+def _low_coverage_blocker(cov: dict, total: int, addressed: int, pct: float) -> str | None:
+    """Block completion while the coverage matrix is substantially unworked.
+
+    The matrix IS the deliverable — testing every endpoint/param is the job, and
+    finding bugs happens *while* working it. So a scan does NOT 'complete' just
+    because it found vulnerabilities; it completes when the matrix is worked (or a
+    human approves the remaining gaps via the stuck-completion HIR). Fires below
+    _COVERAGE_FLOOR_PCT; the caller skips it for CTF runs.
+
+    This deliberately fires even for findings-rich scans (the old waiver let a scan
+    'finish' at 5/840) and for every model profile (the floor was dormant for all).
+    Anti-grind: it fires at COMPLETION — after the exploitation passes — so the
+    model exploits first, then covers the rest with REAL probes; the honesty guards
+    reject artifact-less / auth-blocked / mass-reused closures, and the message
+    drives the next batch instead of inviting bulk not_applicable. The
+    stuck-completion HIR (_MAX_COMPLETE_ATTEMPTS) is the safety valve when the model
+    genuinely can't reach the floor, so this can't hard-stall.
+    """
+    if pct >= _COVERAGE_FLOOR_PCT:
         return None
-    all_cells = cov.get("matrix", [])
-    pending = [c["id"] for c in all_cells if c.get("status", "pending") == "pending"]
-    hint = (
-        "For each pending cell: either test it (set status=tested_clean/vulnerable with "
-        "an artifact_id from the tool response) or mark it not_applicable if the injection "
-        "type is inherently irrelevant to the param/endpoint type (with a specific reason in "
-        "notes). Do NOT bulk-skip — skipped cells are excluded from coverage. Sample pending cells:\n"
-        '  report(action="coverage", data={"type": "bulk_tested", "updates": ['
-    )
-    hint += ", ".join(
-        f'{{"cell_id": "{cid}", "status": "not_applicable", "notes": "<specific reason>"}}'
-        for cid in pending[:10]
-    )
-    if len(pending) > 10:
-        hint += f", ... ({len(pending) - 10} more)"
-    hint += "]})"
+    pending = sum(1 for c in cov.get("matrix", []) if c.get("status", "pending") == "pending")
     return (
-        f"COVERAGE FLOOR: only {addressed}/{total} matrix cells tested or marked N/A ({pct:.0f}%). "
-        f"{len(pending)} pending cell(s). Pick the high-value endpoints (auth, file upload, search, "
-        f"admin) and test those properly — do not grind the matrix with canned payloads. "
-        + hint
+        f"SCAN NOT COMPLETE — the coverage matrix is the deliverable and it is only {pct:.0f}% worked "
+        f"({addressed}/{total} cells; {pending} still untested). Working the matrix IS the remaining "
+        f"job, not optional bookkeeping — you do NOT finish by finding some bugs while most cells are "
+        f"untested. Get the next cells + their exact requests with report(action='coverage', "
+        f"data={{type:'next_batch'}}), test them with REAL probes (sqlmap / nuclei / targeted "
+        f"payloads — never canned filler), then close each with its artifact via "
+        f"report(action='coverage', data={{type:'bulk_tested', updates:[...]}}). Mark a cell "
+        f"not_applicable ONLY when the injection type is genuinely irrelevant to that param (with a "
+        f"specific reason) — do NOT bulk-N/A to clear the count. Keep working the matrix; if you are "
+        f"genuinely blocked the scan will pause for a human to approve the gaps."
     )
 
 
@@ -675,22 +676,19 @@ def _coverage_blockers(cov: dict, data: dict | None = None, ctf_mode: bool = Fal
     addressed = meta.get("addressed", meta.get("tested", 0) + meta.get("not_applicable", 0))
     pct = (addressed / total) * 100
 
-    # Model-profile-aware: only enforce the coverage floor for "full" profile.
-    # Medium/small models can't invoke /web-exploit and end up with dozens of
-    # auto-generated cells they can't address, causing completion loops.
-    from mcp_server.scan_engine.budget import get_profile
-    profile = get_profile()
-    coverage_enforced = not profile.get("enforce_budget", True)
+    # Completion is COVERAGE-GATED: the matrix is the deliverable, so a scan does
+    # not complete while it is substantially unworked — enforced for EVERY profile
+    # and even when findings-rich (the old waiver + per-profile dormancy is exactly
+    # why a scan with 11 findings could 'finish' at 5/840). CTF runs (single-flag
+    # goal) bypass. The stuck-completion HIR is the safety valve if the model
+    # genuinely can't reach the floor, so this can't hard-stall.
+    if not ctf_mode:
+        low_cov = _low_coverage_blocker(cov, total, addressed, pct)
+        if low_cov:
+            blockers.append(low_cov)
 
-    low_cov = _low_coverage_blocker(
-        cov, coverage_enforced, total, addressed, pct, rich_exploitation=_rich_exploitation(data),
-    )
-    if low_cov:
-        blockers.append(low_cov)
-
-    # Item 1 re-tune: the % floor is waived for findings-rich scans, but they must
-    # still REFLECT their injection findings in the matrix (the matrix is the audit
-    # trail of what was exploited). Achievable + non-stalling — see the helper.
+    # Complementary backstop: even below the floor, findings must be REFLECTED in
+    # the matrix (the audit trail of what was exploited).
     mapped = _findings_mapped_blocker(cov, data)
     if mapped:
         blockers.append(mapped)
@@ -721,7 +719,7 @@ def _coverage_blockers(cov: dict, data: dict | None = None, ctf_mode: bool = Fal
     if na_blocker:
         blockers.append(na_blocker)
 
-    breadth_blocker = _injection_breadth_blocker(all_cells, coverage_enforced)
+    breadth_blocker = _injection_breadth_blocker(all_cells, not ctf_mode)
     if breadth_blocker:
         blockers.append(breadth_blocker)
 

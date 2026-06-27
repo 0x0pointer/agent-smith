@@ -635,28 +635,29 @@ def _cell(ep_id, param, param_type, inj_type, status="pending", tested_by="", ar
 
 
 def test_low_coverage_floor_blocks_below_40():
-    """Below the 40% hard floor → blocks (regardless of profile when enforced)."""
+    """Below the 40% hard floor → blocks completion (matrix is the deliverable)."""
     from mcp_server.session_tools import _low_coverage_blocker
     cov = {"matrix": [{"id": "c1", "status": "pending"}]}
-    out = _low_coverage_blocker(cov, coverage_enforced=True, total=10, addressed=2, pct=20.0)
-    assert out is not None and "COVERAGE FLOOR" in out
+    out = _low_coverage_blocker(cov, total=10, addressed=2, pct=20.0)
+    assert out is not None and "SCAN NOT COMPLETE" in out
 
 
-def test_low_coverage_at_or_above_floor_is_advisory():
-    """At or above the 40% floor → no block. The previous 80% target drove the
-    model into a canned-payload treadmill (coverage-grind regression)."""
+def test_low_coverage_at_or_above_floor_passes():
+    """At or above the 40% floor → no block."""
     from mcp_server.session_tools import _low_coverage_blocker
     cov = {"matrix": [{"id": "c1", "status": "pending"}]}
-    assert _low_coverage_blocker(cov, coverage_enforced=True, total=10, addressed=4, pct=40.0) is None
-    assert _low_coverage_blocker(cov, coverage_enforced=True, total=10, addressed=6, pct=60.0) is None
+    assert _low_coverage_blocker(cov, total=10, addressed=4, pct=40.0) is None
+    assert _low_coverage_blocker(cov, total=10, addressed=6, pct=60.0) is None
 
 
-def test_low_coverage_skipped_when_not_enforced():
-    """Medium/small profiles don't enforce the floor — they have tighter budgets
-    and can't realistically grind hundreds of cells."""
+def test_low_coverage_floor_enforced_for_all_profiles():
+    """The floor is no longer dormant per-profile / waived for findings-rich scans —
+    that's exactly what let an 11-finding scan 'finish' at 5/840. The
+    stuck-completion HIR is the safety valve, not silent dormancy."""
     from mcp_server.session_tools import _low_coverage_blocker
     cov = {"matrix": [{"id": "c1", "status": "pending"}]}
-    assert _low_coverage_blocker(cov, coverage_enforced=False, total=10, addressed=0, pct=0.0) is None
+    out = _low_coverage_blocker(cov, total=840, addressed=5, pct=0.6)
+    assert out is not None and "SCAN NOT COMPLETE" in out
 
 
 def test_set_last_artifact_stashes_on_running_session(monkeypatch):
