@@ -46,6 +46,28 @@ RUN apt-get update && apt-get install -y --no-install-recommends --fix-missing \
     ffuf gobuster feroxbuster dirb dirsearch wfuzz \
     && rm -rf /var/lib/apt/lists/*
 
+# Layer 4b: Phase-1 injection specialists — raise detector CLEAN-trust for the
+# injection cells from Partial to Automatable (see docs/phase1-detector-trust.md).
+#   dalfox   — context-aware XSS scanner (reflected/stored/DOM) → high-trust xss
+#   nosqli   — NoSQL injection scanner (Charlie-belmer, Go) → high-trust nosqli
+#   SSTImap  — multi-engine SSTI detect+exploit (maintained tplmap fork) → ssti
+#   arjun    — HTTP parameter discovery (finds params worth testing)
+#   graphql-cop + graphw00f — GraphQL fingerprint / introspection / batching tests
+# Go tools build in a self-contained install-then-purge layer (golang is purged so
+# it doesn't bloat the image). `|| true` keeps a single failed tool from aborting
+# the whole image — the sweep falls back to nuclei -dast / wapiti for that type.
+RUN apt-get update && apt-get install -y --no-install-recommends --fix-missing golang-go git \
+    && rm -rf /var/lib/apt/lists/* \
+    && (GOBIN=/usr/local/bin GOFLAGS=-buildvcs=false go install github.com/hahwul/dalfox/v2@latest || true) \
+    && (GOBIN=/usr/local/bin GOFLAGS=-buildvcs=false go install github.com/Charlie-belmer/nosqli@latest || true) \
+    && apt-get purge -y golang-go && apt-get autoremove -y \
+    && rm -rf /root/go /root/.cache/go-build \
+    && (git clone --depth=1 https://github.com/vladko312/SSTImap /opt/SSTImap \
+        && pip3 install --no-cache-dir -r /opt/SSTImap/requirements.txt --break-system-packages \
+        && printf '#!/bin/sh\nexec python3 /opt/SSTImap/sstimap.py "$@"\n' > /usr/local/bin/sstimap \
+        && chmod +x /usr/local/bin/sstimap) || true \
+    && pip3 install --no-cache-dir arjun graphql-cop graphw00f --break-system-packages || true
+
 # jwt_tool — JWT attack toolkit (none alg, alg confusion, kid injection, key brute)
 # KOAuth   — automated OAuth 2.0 security scanner (22 checks)
 # interactsh-client — out-of-band callback listener for blind SSRF / DNS exfil
