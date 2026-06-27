@@ -109,13 +109,20 @@ def _check_scan_gate(tool: str) -> str | None:
     return None
 
 
-def wrap(tool: str, raw_output: str, context: dict | None = None) -> str:
+def wrap(tool: str, raw_output: str, context: dict | None = None,
+         artifact_raw: str | None = None) -> str:
     """Central entry point: raw tool output in, canonical envelope JSON out.
 
     Args:
         tool: tool name (e.g. "httpx", "http_request", "kali_sqlmap")
-        raw_output: the raw string output from the tool
+        raw_output: the raw string output from the tool — drives the inline
+            summary AND the cost meter, so it must stay bounded.
         context: tool-specific context (url, method, params, etc.)
+        artifact_raw: when given, the content STORED as the on-disk artifact
+            instead of raw_output. Lets a tool keep a large full body (e.g. a
+            50 KB OpenAPI spec) retrievable via session(action='artifact')
+            without that body inflating context or the cost estimate — the
+            inline envelope and cost still come from the bounded raw_output.
 
     Returns:
         JSON string of the canonical envelope
@@ -128,8 +135,9 @@ def wrap(tool: str, raw_output: str, context: dict | None = None) -> str:
 
     # 1. Store raw output as artifact + remember it as the session's most-recent
     #    proof, so a finding filed right after auto-links it (adjudication can
-    #    then reuse it instead of forcing a re-run).
-    artifact_id = store_artifact(tool, raw_output)
+    #    then reuse it instead of forcing a re-run). artifact_raw (when set) is
+    #    the full, un-clipped body — stored but never sent inline / costed.
+    artifact_id = store_artifact(tool, artifact_raw if artifact_raw is not None else raw_output)
     try:
         from core import session as _sess
         _sess.set_last_artifact(tool, artifact_id)

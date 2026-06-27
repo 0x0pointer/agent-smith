@@ -37,6 +37,7 @@ _MAX_JS_FILES = 6       # JS bundles to mine
 _MAX_HTML_PAGES = 15    # HTML pages to read forms from
 _MAX_FETCH_BYTES = 5 * 1024 * 1024
 _FETCH_TIMEOUT = 8      # per-fetch seconds
+_MAX_VERIFY = 80        # cap liveness probes before registration
 
 _STATIC_EXTS = {
     ".js", ".css", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico",
@@ -326,6 +327,40 @@ async def _discover_forms(spider_urls: list[str]) -> list[dict]:
     return eps
 
 
+async def _verify_live(base: str, inventory: list[dict]) -> tuple[list[dict], int]:
+    """Drop inventory entries whose CONCRETE path returns 404 — phantom spec ops.
+
+    An OpenAPI spec is frequently aspirational: it documents routes that aren't
+    actually wired (observed: a 54-operation spec where /api/v1/accounts,
+    /api/v1/transfer, … all 404'd). Registering those fans ~15 dead coverage
+    cells each, inflates the matrix, and sends the model chasing 404s. So before
+    registration we probe each concrete path once (GET, concurrent, bounded) and
+    drop the ones that 404 — a route that merely needs a different method/auth
+    answers 405/401/403/5xx (not 404), so it survives.
+
+    Templated paths ({id}/{version}) are KEPT — they can't be probed literally and
+    need a value to test anyway. Fail-soft: a probe error/timeout keeps the entry
+    (never drop on doubt). Returns ``(kept_inventory, dropped_count)``.
+    """
+    concrete: dict[str, str] = {}
+    for ep in inventory:
+        p = ep.get("path", "")
+        if p and "{" not in p and "}" not in p:
+            concrete.setdefault(p, urljoin(base, p))
+    if not concrete:
+        return inventory, 0
+    paths = list(concrete)[:_MAX_VERIFY]
+    results = await asyncio.gather(*(_fetch(concrete[p]) for p in paths), return_exceptions=True)
+    dead = {
+        p for p, res in zip(paths, results)
+        if isinstance(res, tuple) and res[0] == 404
+    }
+    if not dead:
+        return inventory, 0
+    kept = [ep for ep in inventory if ep.get("path", "") not in dead]
+    return kept, len(inventory) - len(kept)
+
+
 async def _register_inventory(inventory: list[dict], auth_context: str) -> dict:
     """Register every endpoint (add_endpoint dedups); tally new registrations/cells."""
     from core.coverage import add_endpoint
@@ -361,7 +396,10 @@ async def discover_and_register(target: str, spider_urls: list[str], auth_contex
     inventory += await _discover_js(spider_urls)
     inventory += await _discover_forms(spider_urls)
 
+    inventory, dropped = await _verify_live(base, inventory)
+
     result = await _register_inventory(inventory, auth_context)
     result["spec_found"] = spec_ops is not None
     result["inventory"] = len(inventory)
+    result["unverified_dropped"] = dropped
     return result
