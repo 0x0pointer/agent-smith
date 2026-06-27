@@ -48,25 +48,39 @@ RUN apt-get update && apt-get install -y --no-install-recommends --fix-missing \
 
 # Layer 4b: Phase-1 injection specialists — raise detector CLEAN-trust for the
 # injection cells from Partial to Automatable (see docs/phase1-detector-trust.md).
-#   dalfox   — context-aware XSS scanner (reflected/stored/DOM) → high-trust xss
-#   nosqli   — NoSQL injection scanner (Charlie-belmer, Go) → high-trust nosqli
-#   SSTImap  — multi-engine SSTI detect+exploit (maintained tplmap fork) → ssti
-#   arjun    — HTTP parameter discovery (finds params worth testing)
-#   graphql-cop + graphw00f — GraphQL fingerprint / introspection / batching tests
-# Go tools build in a self-contained install-then-purge layer (golang is purged so
-# it doesn't bloat the image). `|| true` keeps a single failed tool from aborting
-# the whole image — the sweep falls back to nuclei -dast / wapiti for that type.
-RUN apt-get update && apt-get install -y --no-install-recommends --fix-missing golang-go git \
-    && rm -rf /var/lib/apt/lists/* \
-    && (GOBIN=/usr/local/bin GOFLAGS=-buildvcs=false go install github.com/hahwul/dalfox/v2@latest || true) \
-    && (GOBIN=/usr/local/bin GOFLAGS=-buildvcs=false go install github.com/Charlie-belmer/nosqli@latest || true) \
-    && apt-get purge -y golang-go && apt-get autoremove -y \
-    && rm -rf /root/go /root/.cache/go-build \
-    && (git clone --depth=1 https://github.com/vladko312/SSTImap /opt/SSTImap \
+# Installed from PREBUILT release binaries (like katana/interactsh) — NOT built
+# from source — so this layer stays small and never pulls a 240 MB golang
+# toolchain + huge module trees onto the build disk. Split into independent
+# layers so one failure can't poison the others; `|| true` degrades gracefully
+# (the sweep falls back to nuclei -dast / wapiti for any missing tool).
+#
+# dalfox — context-aware XSS scanner (reflected/stored/DOM). Asset names use the
+# raw `uname -m` arch (aarch64 / x86_64). Pinned — bump explicitly.
+RUN ARCH=$(uname -m) \
+    && DALFOX_VERSION=3.1.2 \
+    && curl -fsSL "https://github.com/hahwul/dalfox/releases/download/v${DALFOX_VERSION}/dalfox-v${DALFOX_VERSION}-linux-${ARCH}.tar.gz" -o /tmp/dalfox.tar.gz \
+    && tar -xzf /tmp/dalfox.tar.gz -C /tmp/ \
+    && find /tmp -type f -name dalfox -exec mv {} /usr/local/bin/dalfox \; \
+    && chmod +x /usr/local/bin/dalfox \
+    && rm -rf /tmp/dalfox.tar.gz /tmp/dalfox-* || true
+
+# nosqli — NoSQL injection scanner (Charlie-belmer). Only x86_64 prebuilt exists;
+# on arm64 it's skipped and the sweep falls back to nuclei -dast for nosqli.
+RUN ARCH=$(uname -m) \
+    && if [ "$ARCH" = "x86_64" ]; then \
+         curl -fsSL "https://github.com/Charlie-belmer/nosqli/releases/download/v0.5.4/nosqli_linux_x64_v0.5.4" -o /usr/local/bin/nosqli \
+         && chmod +x /usr/local/bin/nosqli; \
+       else echo "nosqli: no ${ARCH} prebuilt — skipped (sweep uses nuclei -dast for nosqli)"; fi || true
+
+# SSTImap — multi-engine SSTI detect+exploit (maintained Python3 fork of tplmap).
+RUN (git clone --depth=1 https://github.com/vladko312/SSTImap /opt/SSTImap \
         && pip3 install --no-cache-dir -r /opt/SSTImap/requirements.txt --break-system-packages \
         && printf '#!/bin/sh\nexec python3 /opt/SSTImap/sstimap.py "$@"\n' > /usr/local/bin/sstimap \
-        && chmod +x /usr/local/bin/sstimap) || true \
-    && pip3 install --no-cache-dir arjun graphql-cop graphw00f --break-system-packages || true
+        && chmod +x /usr/local/bin/sstimap) || true
+
+# arjun (HTTP param discovery) + graphql-cop / graphw00f (GraphQL fingerprint,
+# introspection, batching tests).
+RUN pip3 install --no-cache-dir arjun graphql-cop graphw00f --break-system-packages || true
 
 # jwt_tool — JWT attack toolkit (none alg, alg confusion, kid injection, key brute)
 # KOAuth   — automated OAuth 2.0 security scanner (22 checks)
