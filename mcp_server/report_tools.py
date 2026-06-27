@@ -820,11 +820,86 @@ async def _do_coverage(data):
         return await _do_coverage_list(data, cov)
     if cov_type == "next_batch":
         return await _do_coverage_next_batch(data, cov)
+    if cov_type == "auto_crosscutting":
+        return await _do_coverage_auto_crosscutting(data, cov)
     return (
-        f"Unknown coverage type '{cov_type}'. Use: endpoint, tested, bulk_tested, list, next_batch, reset. "
+        f"Unknown coverage type '{cov_type}'. Use: endpoint, tested, bulk_tested, list, next_batch, "
+        f"auto_crosscutting, reset. "
         f"Example: report(action='coverage', data={{type:'endpoint', path:'/login', method:'GET', "
         f"params:[{{name:'user', type:'query', value_hint:'string'}}]}})"
     )
+
+
+async def _do_coverage_auto_crosscutting(data, cov):
+    """Propagate app-wide cross-cutting verdicts to their per-endpoint cells.
+
+    The matrix fans every endpoint across response-property checks (cors,
+    security_headers, csrf) whose verdict is app-wide. The model files the
+    app-wide finding ("Wildcard CORS on all endpoints") but rarely marks the 50+
+    per-endpoint cells, so coverage reads near-zero while the work is done. This
+    propagates the established verdict to the cells HONESTLY: every `vulnerable`
+    close links the existing finding and cites a real response artifact; CSRF on
+    a safe-method (GET/HEAD/OPTIONS) endpoint is marked not_applicable. Injection
+    cells are never touched (those need real per-cell detectors).
+
+    Optional data: `artifact_id` to override the auto-picked evidence response.
+    """
+    import collections
+
+    from core import paths as _paths
+
+    matrix = cov.get_matrix()
+    cells = matrix.get("matrix", [])
+    endpoints = matrix.get("endpoints", [])
+
+    findings = []
+    try:
+        ff = _paths.FINDINGS_FILE
+        if ff.exists():
+            findings = json.loads(ff.read_text()).get("findings", [])
+    except Exception:
+        pass
+
+    artifact_id = (data.get("artifact_id") or "").strip()
+    headers: dict = {}
+    if artifact_id:
+        art_file = _paths.ARTIFACTS_DIR / f"{artifact_id}.txt"
+        if art_file.exists():
+            _, headers = cov.parse_artifact_headers(art_file.read_text())
+    if not artifact_id or not headers:
+        artifact_id, headers = cov.pick_representative_artifact(str(_paths.ARTIFACTS_DIR))
+
+    if not artifact_id:
+        return (
+            "No representative response artifact found (need an http_request 200 with headers). "
+            "Send a plain GET to the target first, then retry — that response is the app-wide evidence."
+        )
+
+    closures = cov.plan_crosscutting_closures(cells, endpoints, findings, headers, artifact_id)
+    if not closures:
+        return (
+            "No pending cross-cutting cells to auto-close. Either cors/security_headers/csrf are already "
+            "addressed, or there is no app-wide finding to link a vulnerable verdict to (file the finding first)."
+        )
+
+    # Strip the diagnostic 'basis' key before applying through the honesty gates.
+    updates = [{k: v for k, v in c.items() if k != "basis"} for c in closures]
+    result = await cov.bulk_update(updates)
+    by_status = collections.Counter(c["status"] for c in closures)
+    return json.dumps({
+        "auto_crosscutting": True,
+        "evidence_artifact": artifact_id,
+        "planned": len(closures),
+        "applied": result.get("updated"),
+        "rejected": result.get("rejected"),
+        "by_status": dict(by_status),
+        "note": (
+            "Propagated app-wide cors/security_headers/csrf verdicts to their per-endpoint cells "
+            "(vulnerable cells link the existing finding; GET-endpoint CSRF marked not_applicable). "
+            "Injection cells untouched."
+        ),
+        "warnings": result.get("warnings", [])[:5],
+    }, indent=2)
 
 
 async def _do_coverage_next_batch(data, cov):

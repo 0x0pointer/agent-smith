@@ -875,3 +875,145 @@ async def test_list_cells_empty_matrix_returns_empty(coverage_file):
     """Fresh scan, no endpoints registered yet — must not crash."""
     result = await core.coverage.list_cells()
     assert result == {"cells": [], "total": 0, "filtered": 0}
+
+
+# ---------------------------------------------------------------------------
+# Phase 0 — cross-cutting auto-close (propagate app-wide verdicts to cells)
+# ---------------------------------------------------------------------------
+
+from core.coverage.autoclose import plan_crosscutting_closures, parse_artifact_headers
+
+
+def _cell(cid, inj, ep="e1", status="pending"):
+    return {"id": cid, "injection_type": inj, "endpoint_id": ep, "status": status}
+
+
+def test_plan_cors_wildcard_links_finding():
+    out = plan_crosscutting_closures(
+        [_cell("c1", "cors")], [{"id": "e1", "method": "GET"}],
+        [{"id": "F-cors", "title": "Wildcard CORS on all endpoints"}],
+        {"Access-Control-Allow-Origin": "*"}, "art1",
+    )
+    assert len(out) == 1
+    assert out[0]["status"] == "vulnerable"
+    assert out[0]["finding_id"] == "F-cors"
+    assert out[0]["artifact_id"] == "art1"
+    assert out[0]["basis"] == "artifact"
+
+
+def test_plan_cors_safe_marks_clean():
+    out = plan_crosscutting_closures(
+        [_cell("c1", "cors")], [{"id": "e1", "method": "GET"}], [],
+        {"Access-Control-Allow-Origin": "https://app.example"}, "art1",
+    )
+    assert out[0]["status"] == "tested_clean"
+    assert "finding_id" not in out[0]
+
+
+def test_plan_security_headers_missing_links_finding():
+    out = plan_crosscutting_closures(
+        [_cell("c1", "security_headers")], [{"id": "e1", "method": "GET"}],
+        [{"id": "F-h", "title": "Missing Security Headers"}],
+        {"Content-Type": "text/html"}, "art1",
+    )
+    assert out[0]["status"] == "vulnerable"
+    assert out[0]["finding_id"] == "F-h"
+
+
+def test_plan_security_headers_present_marks_clean():
+    headers = {h: "x" for h in (
+        "X-Frame-Options", "Content-Security-Policy",
+        "Strict-Transport-Security", "X-Content-Type-Options")}
+    out = plan_crosscutting_closures(
+        [_cell("c1", "security_headers")], [{"id": "e1", "method": "GET"}], [],
+        headers, "art1",
+    )
+    assert out[0]["status"] == "tested_clean"
+
+
+def test_plan_csrf_get_is_not_applicable():
+    out = plan_crosscutting_closures(
+        [_cell("c1", "csrf")], [{"id": "e1", "method": "GET"}],
+        [{"id": "F-csrf", "title": "Missing CSRF Protection"}], {}, "art1",
+    )
+    assert out[0]["status"] == "not_applicable"
+    assert out[0]["basis"] == "method"
+    assert "finding_id" not in out[0]   # N/A links no finding
+
+
+def test_plan_csrf_post_links_finding():
+    out = plan_crosscutting_closures(
+        [_cell("c1", "csrf")], [{"id": "e1", "method": "POST"}],
+        [{"id": "F-csrf", "title": "Missing CSRF Protection"}], {}, "art1",
+    )
+    assert out[0]["status"] == "vulnerable"
+    assert out[0]["finding_id"] == "F-csrf"
+    assert out[0]["basis"] == "finding"
+
+
+def test_plan_no_finding_leaves_vuln_class_pending():
+    # Wildcard CORS observed but no finding to link — must NOT fabricate a close.
+    out = plan_crosscutting_closures(
+        [_cell("c1", "cors")], [{"id": "e1", "method": "GET"}], [],
+        {"Access-Control-Allow-Origin": "*"}, "art1",
+    )
+    assert out == []
+
+
+def test_plan_ignores_injection_and_nonpending_cells():
+    matrix = [_cell("c1", "sqli"), _cell("c2", "cors", status="tested_clean"), _cell("c3", "xss")]
+    out = plan_crosscutting_closures(
+        matrix, [{"id": "e1", "method": "GET"}],
+        [{"id": "F", "title": "Wildcard CORS"}],
+        {"Access-Control-Allow-Origin": "*"}, "art1",
+    )
+    assert out == []   # injection cells untouched; already-closed cors skipped
+
+
+def test_plan_skips_false_positive_finding():
+    out = plan_crosscutting_closures(
+        [_cell("c1", "cors")], [{"id": "e1", "method": "GET"}],
+        [{"id": "F", "title": "Wildcard CORS", "status": "false_positive"}],
+        {"Access-Control-Allow-Origin": "*"}, "art1",
+    )
+    assert out == []   # FP finding not linked → cell left pending
+
+
+def test_plan_no_artifact_returns_empty():
+    out = plan_crosscutting_closures(
+        [_cell("c1", "cors")], [{"id": "e1", "method": "GET"}], [],
+        {"Access-Control-Allow-Origin": "*"}, "",
+    )
+    assert out == []
+
+
+def test_parse_artifact_headers():
+    txt = '{"status":200,"headers":{"Access-Control-Allow-Origin":"*"},"body":"x"}'
+    status, h = parse_artifact_headers(txt)
+    assert status == 200 and h["Access-Control-Allow-Origin"] == "*"
+    assert parse_artifact_headers("not json") == (None, {})
+
+
+@pytest.mark.asyncio
+async def test_bulk_update_allows_appwide_csrf_share_one_artifact(coverage_file):
+    """csrf is now a response-property type exempt from the reuse cap — one
+    app-wide artifact may close many csrf cells (the cap still blocks injection
+    types). Without the exemption the 3rd csrf cell would be rejected."""
+    for p in ("/a", "/b", "/c"):
+        await core.coverage.add_endpoint(
+            path=p, method="POST",
+            params=[{"name": "x", "type": "body_json", "value_hint": "string"}],
+            discovered_by="test",
+        )
+    data = json.loads(coverage_file.read_text())
+    csrf = [c for c in data["matrix"] if c["injection_type"] == "csrf"]
+    assert len(csrf) >= 3
+    art = _make_artifact("http_request")
+    updates = [
+        {"cell_id": c["id"], "status": "vulnerable", "finding_id": "F1",
+         "artifact_id": art, "notes": "no csrf protection app-wide"}
+        for c in csrf[:3]
+    ]
+    res = await core.coverage.bulk_update(updates)
+    assert res["updated"] == 3
+    assert res["rejected"] == 0

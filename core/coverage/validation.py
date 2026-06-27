@@ -79,11 +79,14 @@ def _validate_artifact(artifact_id: str, status: str) -> str:
     return ""
 
 
-# Cells whose evidence legitimately comes from inspecting a single response
-# (no payload required). These types may share one artifact across many cells
-# because a plain GET legitimately surfaces the missing security headers / the
-# CORS reflection behavior for that whole endpoint.
-_RESPONSE_HEADER_CELL_TYPES = {"security_headers", "cors"}
+# Cells whose verdict legitimately comes from inspecting a single response and
+# is app-wide (no per-cell payload required). These "response-property" types may
+# share one artifact across many cells because a single response truthfully
+# surfaces the answer for the whole app: the CORS policy, the security-header set,
+# the absence of CSRF protection, and the cache-control posture are all set by
+# app-wide middleware, not per-endpoint. Injection types are NOT here — each
+# needs its own discriminating payload, so the reuse cap still catches them.
+_RESPONSE_HEADER_CELL_TYPES = {"security_headers", "cors", "csrf", "cache"}
 
 
 def _validate_artifact_reuse(artifact_id: str, status: str, target_cell: dict, matrix: list[dict]) -> str:
