@@ -228,6 +228,11 @@ async def _dispatch_async_action(action: str, opts: dict) -> str | None:
         return await _do_oob_start()
     if action == "oob_poll":
         return await _do_oob_poll(opts)
+    if action == "complete":
+        # Async so we can propagate app-wide cross-cutting verdicts to their cells
+        # (best-effort) before the completion gate evaluates coverage.
+        await _autoclose_crosscutting_best_effort()
+        return _do_complete()
     return None
 
 
@@ -235,8 +240,6 @@ def _dispatch_sync_action(action: str, opts: dict) -> str:
     """Handle sync session actions."""
     if action == "start":
         return _do_start(opts)
-    if action == "complete":
-        return _do_complete()
     if action == "status":
         return _do_status()
     if action == "set_skill":
@@ -1409,6 +1412,27 @@ def _build_blocker_response(blockers: list) -> str:
         f"blockers={total}, shown={len(shown)}): {'; '.join(b[:80] for b in blockers)}"
     )
     return msg
+
+
+async def _autoclose_crosscutting_best_effort() -> None:
+    """Propagate app-wide cross-cutting verdicts to their cells before completion.
+
+    The matrix fans cors/csrf/security_headers across every endpoint, but their
+    verdict is app-wide — the model files the finding ("Wildcard CORS on all
+    endpoints") yet rarely marks the 50+ per-endpoint cells, so the coverage gate
+    sees an empty matrix and the scan wedges (the overnight no-progress loop).
+    Running the honest propagator here (links the finding, cites a real response,
+    marks GET-endpoint CSRF N/A) means a completion attempt automatically reflects
+    the work already done. Best-effort + idempotent — only touches pending
+    cross-cutting cells and never blocks completion.
+    """
+    try:
+        from core import coverage as _cov
+        from mcp_server.report_tools import _do_coverage_auto_crosscutting
+        res = await _do_coverage_auto_crosscutting({"type": "auto_crosscutting"}, _cov)
+        log.note(f"auto_crosscutting (pre-complete): {str(res)[:200]}")
+    except Exception:
+        log.note("auto_crosscutting (pre-complete) failed — non-fatal")
 
 
 def _do_complete():
