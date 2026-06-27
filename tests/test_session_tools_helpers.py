@@ -1419,3 +1419,39 @@ def test_next_pending_probe_picks_highest_priority(monkeypatch):
     out = _next_pending_probe("http://t")
     # sqli outranks xss in the priority list → its cell id is the one cited.
     assert "s1" in out
+
+
+# ── Item 1 re-tune: findings-rich scans must reflect injection findings in matrix ──
+
+from mcp_server.session_tools import _findings_mapped_blocker
+
+
+def test_findings_mapped_blocker_fires_when_unmapped():
+    cov = {"matrix": []}
+    data = {"findings": [{"severity": "critical", "title": "SQL Injection auth bypass"},
+                         {"severity": "high", "title": "Stored XSS in profile"}]}
+    b = _findings_mapped_blocker(cov, data)
+    assert b is not None and "FINDINGS NOT MAPPED" in b
+
+
+def test_findings_mapped_blocker_clears_when_mapped():
+    cov = {"matrix": [{"status": "vulnerable", "injection_type": "sqli"},
+                      {"status": "vulnerable", "injection_type": "xss"}]}
+    data = {"findings": [{"severity": "critical", "title": "SQL Injection"},
+                         {"severity": "high", "title": "XSS"}]}
+    assert _findings_mapped_blocker(cov, data) is None
+
+
+def test_findings_mapped_blocker_ignores_crosscutting_vuln_cells():
+    # The exact run: 40 security_headers vulnerable cells (Phase 0) must NOT satisfy
+    # an unmapped SQLi finding — those are cross-cutting, not the injection exploit.
+    cov = {"matrix": [{"status": "vulnerable", "injection_type": "security_headers"} for _ in range(40)]}
+    data = {"findings": [{"severity": "critical", "title": "SQL Injection in /login"}]}
+    assert _findings_mapped_blocker(cov, data) is not None
+
+
+def test_findings_mapped_blocker_none_without_injection_findings():
+    cov = {"matrix": []}
+    data = {"findings": [{"severity": "low", "title": "Missing Security Headers"},
+                         {"severity": "medium", "title": "Verbose error message"}]}
+    assert _findings_mapped_blocker(cov, data) is None

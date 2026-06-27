@@ -1017,3 +1017,18 @@ async def test_bulk_update_allows_appwide_csrf_share_one_artifact(coverage_file)
     res = await core.coverage.bulk_update(updates)
     assert res["updated"] == 3
     assert res["rejected"] == 0
+
+
+def test_plan_cache_clean_when_no_store():
+    out = plan_crosscutting_closures(
+        [_cell("c1", "cache")], [{"id": "e1", "method": "GET"}], [],
+        {"Cache-Control": "no-store"}, "art1")
+    assert out[0]["status"] == "tested_clean"
+
+
+def test_plan_cache_pending_when_no_cache_header():
+    # No Cache-Control directive → app-wide verdict can't be judged honestly → pending
+    out = plan_crosscutting_closures(
+        [_cell("c1", "cache")], [{"id": "e1", "method": "GET"}], [],
+        {"Content-Type": "text/html"}, "art1")
+    assert out == []

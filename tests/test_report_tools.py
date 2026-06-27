@@ -502,3 +502,44 @@ def test_chain_mermaid_edge_label_has_no_raw_parens():
     assert "(" not in mm and ")" not in mm
     # entity codes preserve the visible parentheses
     assert "#40;" in mm and "#41;" in mm
+
+
+# ── Phase 0.1: auto-file app-wide cross-cutting findings from response evidence ──
+
+@pytest.mark.asyncio
+async def test_autofile_files_cors_and_headers_when_evidenced(monkeypatch):
+    import mcp_server.report_tools as rt
+    titles = []
+    async def fake_add(**kw):
+        titles.append(kw["title"]); return {"id": f"f{len(titles)}"}
+    monkeypatch.setattr("core.findings.add_finding", fake_add)
+    n = await rt._autofile_crosscutting_findings(
+        {"Access-Control-Allow-Origin": "*"}, "art1", "http://t", [])
+    assert n == 2   # wildcard CORS + all security headers missing
+    assert any("CORS" in t for t in titles)
+    assert any("Security Headers" in t for t in titles)
+
+
+@pytest.mark.asyncio
+async def test_autofile_idempotent_skips_existing(monkeypatch):
+    import mcp_server.report_tools as rt
+    async def fake_add(**kw):
+        raise AssertionError("must not file when a matching finding already exists")
+    monkeypatch.setattr("core.findings.add_finding", fake_add)
+    existing = [{"id": "f-cors", "title": "Wildcard CORS misconfig"},
+                {"id": "f-hdr", "title": "Missing Security Headers"}]
+    n = await rt._autofile_crosscutting_findings(
+        {"Access-Control-Allow-Origin": "*"}, "art1", "http://t", existing)
+    assert n == 0
+
+
+@pytest.mark.asyncio
+async def test_autofile_skips_when_no_evidence(monkeypatch):
+    import mcp_server.report_tools as rt
+    async def fake_add(**kw):
+        raise AssertionError("nothing to file when CORS safe + headers present")
+    monkeypatch.setattr("core.findings.add_finding", fake_add)
+    hdrs = {"Access-Control-Allow-Origin": "https://app", "X-Frame-Options": "DENY",
+            "Content-Security-Policy": "default-src 'self'", "Strict-Transport-Security": "max-age=1",
+            "X-Content-Type-Options": "nosniff"}
+    assert await rt._autofile_crosscutting_findings(hdrs, "art1", "http://t", []) == 0

@@ -846,6 +846,43 @@ async def _do_coverage(data):
     )
 
 
+async def _autofile_crosscutting_findings(headers: dict, artifact_id: str,
+                                          target: str, existing: list) -> int:
+    """File the app-wide cross-cutting findings the response evidences (wildcard
+    CORS, missing security headers) when the model hasn't already — so Phase 0
+    can close those cells `vulnerable` (it links a finding for every vulnerable
+    verdict, never fabricates). Idempotent: skips a type that already has a
+    matching finding, so re-running on each complete attempt can't duplicate.
+    Returns the number filed.
+    """
+    from core import findings as _fs
+    from core.coverage.autoclose import _REQUIRED_SECURITY_HEADERS, _match_finding_id
+
+    hdrs = {(k or "").lower(): (v or "") for k, v in (headers or {}).items()}
+    acao = hdrs.get("access-control-allow-origin", "").strip()
+    missing = [h for h in _REQUIRED_SECURITY_HEADERS if h not in hdrs]
+    tgt = target or "application"
+    filed = 0
+    if acao == "*" and not _match_finding_id(existing, "cors"):
+        await _fs.add_finding(
+            title="Wildcard CORS — Access-Control-Allow-Origin: * on all responses",
+            severity="medium", target=tgt,
+            description=("The application returns Access-Control-Allow-Origin: * on its responses, "
+                         "letting any origin read responses cross-origin."),
+            evidence=f"Observed response header Access-Control-Allow-Origin: {acao} (artifact {artifact_id}).",
+            tool_used="auto_crosscutting", evidence_artifact_id=artifact_id)
+        filed += 1
+    if missing and not _match_finding_id(existing, "security_headers"):
+        await _fs.add_finding(
+            title="Missing Security Headers on all responses",
+            severity="low", target=tgt,
+            description="Responses lack standard security headers: " + ", ".join(missing) + ".",
+            evidence=f"Required headers absent (artifact {artifact_id}): {', '.join(missing)}.",
+            tool_used="auto_crosscutting", evidence_artifact_id=artifact_id)
+        filed += 1
+    return filed
+
+
 async def _do_coverage_auto_crosscutting(data, cov):
     """Propagate app-wide cross-cutting verdicts to their per-endpoint cells.
 
@@ -890,6 +927,22 @@ async def _do_coverage_auto_crosscutting(data, cov):
             "No representative response artifact found (need an http_request 200 with headers). "
             "Send a plain GET to the target first, then retry — that response is the app-wide evidence."
         )
+
+    # Phase 0.1: file the app-wide cross-cutting findings the response evidences
+    # when the model hasn't — so the cors/security_headers cells can close
+    # `vulnerable` (the planner links a finding for every vulnerable verdict and
+    # never fabricates one). Idempotent: a type that already has a matching
+    # finding is skipped, so re-running on each complete attempt won't duplicate.
+    try:
+        from core import session as _sess
+        target = (_sess.get() or {}).get("target", "") or ""
+    except Exception:
+        target = ""
+    if await _autofile_crosscutting_findings(headers, artifact_id, target, findings):
+        try:
+            findings = json.loads(_paths.FINDINGS_FILE.read_text()).get("findings", [])
+        except Exception:
+            pass
 
     closures = cov.plan_crosscutting_closures(cells, endpoints, findings, headers, artifact_id)
     if not closures:

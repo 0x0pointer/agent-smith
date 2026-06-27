@@ -587,6 +587,60 @@ def _rich_exploitation(data: dict | None) -> bool:
     return len(live) >= 8 or hi_crit >= 3
 
 
+# Endpoint-default / cross-cutting cell types — closed by Phase 0 auto-close, NOT
+# by the model mapping its exploitation findings. Excluded when checking that
+# injection findings are reflected in the matrix.
+_CROSSCUTTING_CELL_TYPES = {
+    "cors", "csrf", "security_headers", "cache",
+    "rate_limit", "method_tampering", "jwt", "race", "bfla",
+}
+# Keywords that mark a finding as an injection-class exploit — one that SHOULD be
+# reflected as a vulnerable injection cell in the matrix.
+_INJECTION_FINDING_KEYWORDS = (
+    "sql inject", "sqli", "xss", "cross-site script", "ssti", "template inject",
+    "command inject", "cmdi", "os command", "ssrf", "server-side request",
+    "traversal", "path travers", "lfi", "rfi", "idor", "insecure direct object",
+    "mass assign", "prototype pollut", "xxe", "nosql", "injection",
+)
+
+
+def _findings_mapped_blocker(cov: dict, data: dict | None) -> str | None:
+    """Require a findings-rich scan to REFLECT its injection findings in the matrix.
+
+    The % coverage floor is intentionally not enforced for a findings-rich scan
+    (we don't grind every cell), but a scan that confirmed SQLi/XSS/… and filed
+    findings yet marked ZERO injection cells leaves the matrix not reflecting what
+    it actually exploited. This requirement is achievable (close one cell per
+    finding) and does NOT re-create the grind stall — it asks only that the
+    findings be mapped, not that every cell be tested.
+    """
+    findings = [f for f in (data or {}).get("findings", []) if f.get("status") != "false_positive"]
+    inj_findings = [
+        f for f in findings
+        if f.get("severity") in ("high", "critical")
+        and any(k in (f.get("title", "") + " " + f.get("description", "")).lower()
+                for k in _INJECTION_FINDING_KEYWORDS)
+    ]
+    if not inj_findings:
+        return None
+    vuln_inj_cells = [
+        c for c in cov.get("matrix", [])
+        if c.get("status") == "vulnerable"
+        and c.get("injection_type") not in _CROSSCUTTING_CELL_TYPES
+    ]
+    if len(vuln_inj_cells) >= len(inj_findings):
+        return None
+    return (
+        f"FINDINGS NOT MAPPED TO MATRIX: {len(inj_findings)} confirmed injection finding(s) "
+        f"(SQLi/XSS/SSTI/…) but only {len(vuln_inj_cells)} injection cell(s) marked vulnerable. "
+        "The matrix must reflect what you exploited. For each injection finding, close its cell — "
+        "find it with report(action='coverage', data={type:'list', injection_type:'sqli'}), then "
+        "report(action='coverage', data={type:'tested', cell_id:'<id>', status:'vulnerable', "
+        "finding_id:'<finding id>', artifact_id:'<proof>'}). Required even for a findings-rich "
+        "scan — don't complete with your exploits unrecorded in the matrix."
+    )
+
+
 def _coverage_blockers(cov: dict, data: dict | None = None, ctf_mode: bool = False) -> list[str]:
     """Return coverage-related completion blockers for the given matrix state.
 
@@ -633,6 +687,13 @@ def _coverage_blockers(cov: dict, data: dict | None = None, ctf_mode: bool = Fal
     )
     if low_cov:
         blockers.append(low_cov)
+
+    # Item 1 re-tune: the % floor is waived for findings-rich scans, but they must
+    # still REFLECT their injection findings in the matrix (the matrix is the audit
+    # trail of what was exploited). Achievable + non-stalling — see the helper.
+    mapped = _findings_mapped_blocker(cov, data)
+    if mapped:
+        blockers.append(mapped)
 
     all_cells = cov.get("matrix", [])
     from core.coverage import cell_has_test_evidence

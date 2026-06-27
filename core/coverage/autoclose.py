@@ -39,7 +39,13 @@ _SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 
 # The cross-cutting types this propagator is allowed to close. Injection types
 # are intentionally excluded — see module docstring.
-CROSSCUTTING_TYPES = ("cors", "security_headers", "csrf")
+CROSSCUTTING_TYPES = ("cors", "security_headers", "csrf", "cache")
+
+# Cache-Control directives that mean the app deliberately controls caching — a
+# response carrying one is honestly tested_clean for the cache check. Absence is
+# NOT auto-marked vulnerable: whether missing Cache-Control is a real exposure
+# depends on per-endpoint data sensitivity, which one app-wide response can't judge.
+_SAFE_CACHE_DIRECTIVES = ("no-store", "no-cache", "private")
 
 
 def _match_finding_id(findings: list | None, inj_type: str) -> str | None:
@@ -63,6 +69,73 @@ def _match_finding_id(findings: list | None, inj_type: str) -> str | None:
     return None
 
 
+def _crosscutting_context(findings: list | None, response_headers: dict | None) -> dict:
+    """Precompute the app-wide verdicts from one representative response."""
+    hdrs = {(k or "").lower(): (v or "") for k, v in (response_headers or {}).items()}
+    acao = hdrs.get("access-control-allow-origin", "").strip()
+    cache_control = hdrs.get("cache-control", "").strip()
+    return {
+        "acao": acao,
+        "cors_wildcard": acao == "*",
+        "missing_headers": [h for h in _REQUIRED_SECURITY_HEADERS if h not in hdrs],
+        "cache_control": cache_control,
+        "cache_safe": any(d in cache_control.lower() for d in _SAFE_CACHE_DIRECTIVES),
+        "fid": {t: _match_finding_id(findings, t) for t in CROSSCUTTING_TYPES},
+    }
+
+
+def _close_cors(cell, ctx, ep, artifact_id):
+    cid = cell.get("id")
+    if ctx["cors_wildcard"]:
+        if not ctx["fid"]["cors"]:
+            return None  # wildcard but no finding to link → leave pending
+        return {"cell_id": cid, "status": "vulnerable", "finding_id": ctx["fid"]["cors"],
+                "artifact_id": artifact_id, "basis": "artifact",
+                "notes": f"Wildcard CORS app-wide (Access-Control-Allow-Origin: {ctx['acao']})"}
+    return {"cell_id": cid, "status": "tested_clean", "artifact_id": artifact_id, "basis": "artifact",
+            "notes": f"No wildcard CORS (ACAO: {ctx['acao'] or 'absent'})"}
+
+
+def _close_security_headers(cell, ctx, ep, artifact_id):
+    cid = cell.get("id")
+    if ctx["missing_headers"]:
+        if not ctx["fid"]["security_headers"]:
+            return None
+        return {"cell_id": cid, "status": "vulnerable", "finding_id": ctx["fid"]["security_headers"],
+                "artifact_id": artifact_id, "basis": "artifact",
+                "notes": "Missing security headers app-wide: " + ", ".join(ctx["missing_headers"])}
+    return {"cell_id": cid, "status": "tested_clean", "artifact_id": artifact_id, "basis": "artifact",
+            "notes": "All required security headers present"}
+
+
+def _close_csrf(cell, ctx, ep, artifact_id):
+    cid = cell.get("id")
+    method = (ep.get("method") or "GET").upper()
+    if method in _SAFE_METHODS:
+        return {"cell_id": cid, "status": "not_applicable", "basis": "method",
+                "notes": f"CSRF not applicable to non-state-changing {method} request"}
+    if not ctx["fid"]["csrf"]:
+        return None  # state-changing but no csrf finding → leave pending
+    return {"cell_id": cid, "status": "vulnerable", "finding_id": ctx["fid"]["csrf"],
+            "artifact_id": artifact_id, "basis": "finding",
+            "notes": "No CSRF protection on state-changing endpoint (app-wide finding)"}
+
+
+def _close_cache(cell, ctx, ep, artifact_id):
+    if not ctx["cache_safe"]:
+        return None  # no safe cache directive → can't judge app-wide honestly → leave pending
+    return {"cell_id": cell.get("id"), "status": "tested_clean", "artifact_id": artifact_id,
+            "basis": "artifact", "notes": f"Cache-Control present: {ctx['cache_control']}"}
+
+
+_CLOSURE_HANDLERS = {
+    "cors": _close_cors,
+    "security_headers": _close_security_headers,
+    "csrf": _close_csrf,
+    "cache": _close_cache,
+}
+
+
 def plan_crosscutting_closures(
     matrix: list | None,
     endpoints: list | None,
@@ -81,57 +154,19 @@ def plan_crosscutting_closures(
     """
     if not artifact_id:
         return []
-    hdrs = {(k or "").lower(): (v or "") for k, v in (response_headers or {}).items()}
+    ctx = _crosscutting_context(findings, response_headers)
     ep_by_id = {e.get("id"): e for e in (endpoints or [])}
-
-    acao = hdrs.get("access-control-allow-origin", "").strip()
-    cors_wildcard = acao == "*"
-    missing_headers = [h for h in _REQUIRED_SECURITY_HEADERS if h not in hdrs]
-    sh_missing = bool(missing_headers)
-    fid = {t: _match_finding_id(findings, t) for t in CROSSCUTTING_TYPES}
 
     closures: list[dict] = []
     for cell in matrix or []:
         if cell.get("status") != "pending":
             continue
-        inj = cell.get("injection_type")
-        cid = cell.get("id")
-        if inj == "cors":
-            if cors_wildcard and fid["cors"]:
-                closures.append({"cell_id": cid, "status": "vulnerable",
-                                 "finding_id": fid["cors"], "artifact_id": artifact_id,
-                                 "notes": f"Wildcard CORS app-wide (Access-Control-Allow-Origin: {acao})",
-                                 "basis": "artifact"})
-            elif not cors_wildcard:
-                closures.append({"cell_id": cid, "status": "tested_clean",
-                                 "artifact_id": artifact_id,
-                                 "notes": f"No wildcard CORS (ACAO: {acao or 'absent'})",
-                                 "basis": "artifact"})
-            # wildcard but no finding to link → leave pending (don't fabricate a vuln close)
-        elif inj == "security_headers":
-            if sh_missing and fid["security_headers"]:
-                closures.append({"cell_id": cid, "status": "vulnerable",
-                                 "finding_id": fid["security_headers"], "artifact_id": artifact_id,
-                                 "notes": f"Missing security headers app-wide: {', '.join(missing_headers)}",
-                                 "basis": "artifact"})
-            elif not sh_missing:
-                closures.append({"cell_id": cid, "status": "tested_clean",
-                                 "artifact_id": artifact_id,
-                                 "notes": "All required security headers present",
-                                 "basis": "artifact"})
-        elif inj == "csrf":
-            ep = ep_by_id.get(cell.get("endpoint_id"), {})
-            method = (ep.get("method") or "GET").upper()
-            if method in _SAFE_METHODS:
-                closures.append({"cell_id": cid, "status": "not_applicable",
-                                 "notes": f"CSRF not applicable to non-state-changing {method} request",
-                                 "basis": "method"})
-            elif fid["csrf"]:
-                closures.append({"cell_id": cid, "status": "vulnerable",
-                                 "finding_id": fid["csrf"], "artifact_id": artifact_id,
-                                 "notes": "No CSRF protection on state-changing endpoint (app-wide finding)",
-                                 "basis": "finding"})
-            # state-changing but no csrf finding → leave pending
+        handler = _CLOSURE_HANDLERS.get(cell.get("injection_type"))
+        if handler is None:
+            continue
+        result = handler(cell, ctx, ep_by_id.get(cell.get("endpoint_id"), {}), artifact_id)
+        if result is not None:
+            closures.append(result)
     return closures
 
 
