@@ -250,6 +250,80 @@ def _dedup_message(existing: dict) -> str:
     )
 
 
+# Map a finding's title/description to the coverage injection_type it evidences.
+# Ordered specific-first so e.g. "SSTI" wins over a stray "script" match.
+_FINDING_INJECTION_PATTERNS = (
+    ("sqli", ("sql inject", "sqli", "union select", "union-based", "boolean-based", "error-based sql")),
+    ("ssti", ("template inject", "ssti", "{{7*7}}")),
+    ("cmdi", ("command inject", "os command", "shell inject")),
+    ("ssrf", ("ssrf", "server-side request forg")),
+    ("traversal", ("path travers", "directory travers", "local file inclusion", "lfi")),
+    ("xxe", ("xxe", "xml external entit")),
+    ("nosqli", ("nosql inject", "nosqli")),
+    ("mass_assignment", ("mass assign",)),
+    ("prototype", ("prototype pollut",)),
+    ("idor", ("idor", "insecure direct object", "broken object level", "bola")),
+    ("redirect", ("open redirect",)),
+    ("crlf", ("crlf inject", "http response splitt")),
+    ("xss", ("cross-site script", "xss")),
+)
+
+
+def _infer_injection_type(title: str, description: str) -> str | None:
+    text = f"{title} {description}".lower()
+    for inj, pats in _FINDING_INJECTION_PATTERNS:
+        if any(p in text for p in pats):
+            return inj
+    return None
+
+
+async def _autolink_finding_to_cell(finding_id: str, title: str, description: str,
+                                    target: str, artifact_id: str) -> str | None:
+    """Reflect a freshly-filed finding in the coverage matrix immediately.
+
+    Filing a finding and marking its cell were two decoupled calls — the model
+    reliably did the first and skipped the second, so the matrix never reflected
+    what was exploited. This closes that gap structurally: when a finding is filed
+    we mark its matching cell vulnerable. Conservative + honest — needs the
+    finding's real proof artifact, a clear injection type, and an endpoint match;
+    marks exactly ONE best-match cell (preferring the param named in the finding).
+    Best-effort: never raises, never blocks the finding.
+    """
+    if not artifact_id:
+        return None
+    inj = _infer_injection_type(title, description)
+    if not inj:
+        return None
+    try:
+        from urllib.parse import urlparse
+
+        from core import coverage as cov
+        matrix = cov.get_matrix()
+        norm = cov._normalize_path(urlparse(target).path or "/")
+        ep_ids = {e["id"] for e in matrix.get("endpoints", []) if e.get("_normalized") == norm}
+        if not ep_ids:
+            return None
+        cells = [c for c in matrix.get("matrix", [])
+                 if c.get("endpoint_id") in ep_ids
+                 and c.get("injection_type") == inj
+                 and c.get("status") == "pending"]
+        if not cells:
+            return None
+        ftext = f"{title} {description}".lower()
+        cell = next((c for c in cells
+                     if c.get("param") and c.get("param") != "_endpoint"
+                     and c["param"].lower() in ftext), cells[0])
+        res = await cov.update_cell(
+            cell["id"], "vulnerable",
+            notes=f"Auto-linked from finding: {title[:80]}",
+            finding_id=finding_id, artifact_id=artifact_id,
+        )
+        updated = res is True or (isinstance(res, str) and not res.startswith("REJECTED"))
+        return cell["id"] if updated else None
+    except Exception:
+        return None
+
+
 async def _do_finding(data):
     severity = data.get("severity", "").lower()
     if severity not in ("critical", "high", "medium", "low", "info"):
@@ -276,7 +350,7 @@ async def _do_finding(data):
     if not evidence_artifact_id:
         evidence_artifact_id = (scan_session.get() or {}).get("last_artifact_id", "") or ""
 
-    await findings_store.add_finding(
+    entry = await findings_store.add_finding(
         title=title, severity=severity, target=target,
         description=data.get("description", ""),
         evidence=data.get("evidence", ""),
@@ -289,6 +363,15 @@ async def _do_finding(data):
         evidence_artifact_id=evidence_artifact_id,
     )
     log.finding(severity, title, target)
+
+    # Structural: reflect the exploit in the coverage matrix NOW — mark the
+    # finding's matching cell vulnerable instead of relying on the model to
+    # remember a separate report(action='coverage') call (which it skips).
+    linked_cell = None
+    if severity in ("critical", "high", "medium", "low"):
+        linked_cell = await _autolink_finding_to_cell(
+            entry.get("id", ""), title, data.get("description", ""), target, evidence_artifact_id,
+        )
 
     # Append FINDING entry to quick_log
     try:
@@ -307,6 +390,8 @@ async def _do_finding(data):
     # ── Auto-trigger gates based on finding content ──────────────────────────
     gates_triggered = _auto_trigger_finding_gates(title, severity, data.get("description", ""))
     msg = f"Finding logged: [{severity.upper()}] {title}"
+    if linked_cell:
+        msg += f"\n\nMATRIX UPDATED: cell {linked_cell} auto-marked vulnerable (linked to this finding)."
     if gates_triggered:
         msg += f"\n\nGATE(S) TRIGGERED: {', '.join(gates_triggered)}. These skills are now mandatory before completion."
     return msg

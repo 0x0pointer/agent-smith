@@ -543,3 +543,56 @@ async def test_autofile_skips_when_no_evidence(monkeypatch):
             "Content-Security-Policy": "default-src 'self'", "Strict-Transport-Security": "max-age=1",
             "X-Content-Type-Options": "nosniff"}
     assert await rt._autofile_crosscutting_findings(hdrs, "art1", "http://t", []) == 0
+
+
+# ── Structural fix: filing a finding auto-marks its matching matrix cell ──────
+
+def test_infer_injection_type():
+    import mcp_server.report_tools as rt
+    assert rt._infer_injection_type("SQL Injection in /login", "union select") == "sqli"
+    assert rt._infer_injection_type("Stored XSS in profile", "") == "xss"
+    assert rt._infer_injection_type("SSTI via name field", "{{7*7}}") == "ssti"
+    assert rt._infer_injection_type("Mass Assignment privesc", "is_admin") == "mass_assignment"
+    assert rt._infer_injection_type("Missing Security Headers", "no CSP") is None
+    assert rt._infer_injection_type("Zero-amount transfer", "logic flaw") is None
+
+
+@pytest.mark.asyncio
+async def test_autolink_marks_matching_cell_vulnerable(coverage_file):
+    import core.coverage as cov
+    import mcp_server.report_tools as rt
+    await cov.add_endpoint(
+        "/login", "POST",
+        params=[{"name": "username", "type": "body_json", "value_hint": "string"},
+                {"name": "password", "type": "body_json", "value_hint": "string"}],
+        discovered_by="test")
+    art = "http_request-autolink01"
+    (cov._ARTIFACTS_DIR / f"{art}.txt").write_text('{"status":200,"headers":{},"body":"x"}')
+
+    cell_id = await rt._autolink_finding_to_cell(
+        "F-sqli", "SQL Injection in /login username parameter",
+        "auth bypass via ' OR '1'='1'", "http://t/login", art)
+    assert cell_id is not None
+    closed = next(c for c in cov.get_matrix()["matrix"] if c["id"] == cell_id)
+    assert closed["status"] == "vulnerable"
+    assert closed["finding_id"] == "F-sqli"
+    assert closed["injection_type"] == "sqli"
+    assert closed["param"] == "username"   # prefers the param named in the finding
+
+
+@pytest.mark.asyncio
+async def test_autolink_skips_without_artifact_or_injection(coverage_file):
+    import core.coverage as cov
+    import mcp_server.report_tools as rt
+    await cov.add_endpoint(
+        "/login", "POST",
+        params=[{"name": "username", "type": "body_json", "value_hint": "string"}],
+        discovered_by="test")
+    # no artifact → no close
+    assert await rt._autolink_finding_to_cell(
+        "F", "SQL Injection", "x", "http://t/login", "") is None
+    # not an injection finding → no close
+    art = "http_request-autolink02"
+    (cov._ARTIFACTS_DIR / f"{art}.txt").write_text('{"status":200,"headers":{},"body":"x"}')
+    assert await rt._autolink_finding_to_cell(
+        "F", "Missing Security Headers", "no CSP", "http://t/login", art) is None
