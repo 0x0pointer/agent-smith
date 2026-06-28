@@ -2018,3 +2018,111 @@ async def test_watchdog_tick_respawns_on_stall(tmp_path, monkeypatch):
     await smith._watchdog_tick(10_000.0)
     assert killed == [4242]          # the stalled pid was killed
     assert spawned and spawned[0][0] == "opencode"  # and a fresh client respawned
+
+
+# ── _smith_exited: the clean-exit (process gone, no pid) fast path ──────────
+# Counterpart to _smith_stalled_pid (alive-but-idle). `opencode run` is one-shot,
+# so its commonest death is a CLEAN EXIT with no process left — invisible to the
+# hung/stalled detectors (they need a live pid) and masked by a fresh quick_log
+# for the full 30-min idle timer. This path catches it at the 5-min stall mark.
+
+def _stub_exited(monkeypatch, *, age, pending, recently_started=False,
+                 pid_file=None, proc_scan=None):
+    monkeypatch.setattr(smith, "_signal_session_recently_started", lambda: recently_started)
+    monkeypatch.setattr(smith, "_quick_log_age_seconds", lambda: age)
+    monkeypatch.setattr(api, "_live_pid_from_pid_file", lambda: pid_file)
+    monkeypatch.setattr(api, "_live_pid_from_process_scan", lambda: proc_scan)
+    monkeypatch.setattr(smith, "_scan_has_pending_cells", lambda: pending)
+
+
+def test_smith_exited_fires_when_process_gone_and_idle(monkeypatch):
+    # idle 10 min, NO live pid (process gone), cells pending → cleanly exited.
+    _stub_exited(monkeypatch, age=600.0, pending=True)
+    assert smith._smith_exited() is True
+
+
+def test_smith_exited_false_when_live_pid_exists(monkeypatch):
+    # a live pid means alive-but-idle — the stalled path owns that, not this one.
+    _stub_exited(monkeypatch, age=600.0, pending=True, pid_file=4242)
+    assert smith._smith_exited() is False
+
+
+def test_smith_exited_false_when_process_scan_matches(monkeypatch):
+    # operator relaunched opencode in a terminal — a live process exists, not gone.
+    _stub_exited(monkeypatch, age=600.0, pending=True, proc_scan=7777)
+    assert smith._smith_exited() is False
+
+
+def test_smith_exited_false_when_fresh(monkeypatch):
+    # idle 1 min < 5 min stall threshold — could be a brief between-turn gap.
+    _stub_exited(monkeypatch, age=60.0, pending=True)
+    assert smith._smith_exited() is False
+
+
+def test_smith_exited_false_when_no_pending(monkeypatch):
+    _stub_exited(monkeypatch, age=600.0, pending=False)
+    assert smith._smith_exited() is False  # scan effectively done — don't respawn
+
+
+def test_smith_exited_false_when_recently_started(monkeypatch):
+    _stub_exited(monkeypatch, age=600.0, pending=True, recently_started=True)
+    assert smith._smith_exited() is False  # startup grace window
+
+
+def test_smith_exited_false_when_quick_log_absent(monkeypatch):
+    # no heartbeat ever (age None) and not in startup grace — nothing to judge.
+    _stub_exited(monkeypatch, age=None, pending=True)
+    assert smith._smith_exited() is False
+
+
+@pytest.mark.asyncio
+async def test_watchdog_tick_respawns_on_clean_exit_despite_fresh_quicklog(tmp_path, monkeypatch):
+    # Bug-1 regression: opencode cleanly EXITED (no pid), but within the 30-min
+    # window _smith_running() still reports True off the stale quick_log. The
+    # clean-exit branch must intercept BEFORE the _smith_running() early-return
+    # and respawn — not wait out the full idle timer (observed: 34-min dead gap).
+    session_file = tmp_path / "session.json"
+    session_file.write_text(json.dumps({"status": "running"}))
+    monkeypatch.setattr(api, "_SESSION_FILE", session_file)
+    monkeypatch.setattr(api, "_smith_hung_pid", lambda: None)
+    monkeypatch.setattr(api, "_smith_stalled_pid", lambda: None)   # no live pid to be stalled
+    monkeypatch.setattr(api, "_smith_exited", lambda: True)        # process gone, idle, pending
+    monkeypatch.setattr(api, "_smith_running", lambda: True)       # stale quick_log STILL says "alive"
+    monkeypatch.setattr(api, "_mcp_sse_alive", lambda: True)
+    killed = []
+    monkeypatch.setattr(api, "_kill_hung_smith", lambda pid: killed.append(pid) or True)
+    spawned = []
+
+    async def _fake_spawn(client, source="api"):
+        spawned.append((client, source)); return True, 5555
+    monkeypatch.setattr(api, "_spawn_smith", _fake_spawn)
+    monkeypatch.setattr(api, "_detect_active_client", lambda: "opencode")
+    monkeypatch.setattr(api, "_watchdog_last_restart_ts", 0.0)
+    monkeypatch.setattr(api, "_watchdog_restart_count_window", [])
+    monkeypatch.setattr(api.smith, "_watchdog_no_progress_count", 0)
+    monkeypatch.setattr(api.smith, "_watchdog_last_progress", None)
+
+    await smith._watchdog_tick(10_000.0)
+    assert killed == []                              # nothing to kill — process already gone
+    assert spawned and spawned[0][0] == "opencode"   # respawned despite _smith_running()=True
+
+
+@pytest.mark.asyncio
+async def test_watchdog_tick_no_respawn_when_running_and_not_exited(tmp_path, monkeypatch):
+    # Guard against over-firing: a healthy in-flight run (running, not hung/
+    # stalled/exited) must still early-return — no respawn.
+    session_file = tmp_path / "session.json"
+    session_file.write_text(json.dumps({"status": "running"}))
+    monkeypatch.setattr(api, "_SESSION_FILE", session_file)
+    monkeypatch.setattr(api, "_smith_hung_pid", lambda: None)
+    monkeypatch.setattr(api, "_smith_stalled_pid", lambda: None)
+    monkeypatch.setattr(api, "_smith_exited", lambda: False)
+    monkeypatch.setattr(api, "_smith_running", lambda: True)
+    monkeypatch.setattr(api, "_mcp_sse_alive", lambda: True)
+    spawned = []
+
+    async def _fake_spawn(client, source="api"):
+        spawned.append(client); return True, 1
+    monkeypatch.setattr(api, "_spawn_smith", _fake_spawn)
+    await smith._watchdog_tick(10_000.0)
+    assert spawned == []   # healthy run left alone

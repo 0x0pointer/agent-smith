@@ -277,6 +277,7 @@ from .smith import (  # noqa: E402
     _signal_process_scan_finds_client,
     _signal_quick_log_fresh,
     _signal_session_recently_started,
+    _smith_exited,
     _smith_generating,
     _smith_hung_pid,
     _smith_running,

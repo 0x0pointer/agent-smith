@@ -375,6 +375,35 @@ def _smith_stalled_pid() -> int | None:
     return pid
 
 
+def _smith_exited() -> bool:
+    """True if the Smith agent process has cleanly EXITED mid-scan — gone, no pid.
+
+    The counterpart to _smith_stalled_pid (alive-but-idle). ``opencode run`` is
+    one-shot, so its most common death is a clean exit that leaves NO process —
+    and both _smith_hung_pid and _smith_stalled_pid require a *live* pid, so they
+    are blind to it. Without this path a gone process is masked by
+    _signal_quick_log_fresh() for the full _SMITH_IDLE_SECONDS (30 min) before the
+    watchdog respawns, leaving the scan dead for half an hour (observed: opencode
+    exited 23:07, watchdog only respawned ~23:41).
+
+    Fires only when ALL hold (mirrors the stall detector, inverted on pid):
+      • not within the startup grace window,
+      • no MCP heartbeat for > _SMITH_STALL_SECONDS (not a brief between-turn gap),
+      • NO live Smith pid exists — pid file dead AND no matching process (truly gone),
+      • the coverage matrix still has pending cells (scan isn't done).
+    Returns a bool, not a pid: there is nothing to kill, so the watchdog falls
+    straight through to the respawn flow.
+    """
+    if _signal_session_recently_started():
+        return False
+    age = _quick_log_age_seconds()
+    if age is None or age < _SMITH_STALL_SECONDS:
+        return False
+    if _api._live_pid_from_pid_file() is not None or _api._live_pid_from_process_scan() is not None:
+        return False  # a live process exists — the hung/stalled paths own that case
+    return _scan_has_pending_cells()
+
+
 def _scan_progress_snapshot() -> tuple:
     """(findings, addressed cells, quick_log mtime) — the watchdog's fingerprint
     for 'did the last respawn actually accomplish anything?'."""
@@ -1037,6 +1066,19 @@ async def _watchdog_tick(now: float) -> None:
         )
         _api._kill_hung_smith(kill_pid)
         # Fall through into the spawn flow — do NOT return early.
+    elif _api._smith_exited():
+        # Cleanly EXITED mid-scan: process gone, no pid to kill. This branch MUST
+        # precede the _smith_running() early-return, because in the 5-30 min window
+        # after a clean exit _signal_quick_log_fresh() still reports "alive" off the
+        # stale heartbeat — _smith_running() would return True and mask the gone
+        # process for the full 30-min idle timer. Logged (the absence of any
+        # watchdog log is what made this hard to diagnose) then fall through to the
+        # respawn flow, which fires WATCHDOG_SMITH_STOPPED. No kill needed.
+        _log.warning(
+            "watchdog: Smith cleanly exited mid-scan (process gone, idle > %d min, "
+            "cells pending) — respawning instead of waiting out the 30-min idle timer",
+            _SMITH_STALL_SECONDS // 60,
+        )
     elif _api._smith_running():
         return
     # Smith is stopped (or just killed) while the scan is still running — hand
