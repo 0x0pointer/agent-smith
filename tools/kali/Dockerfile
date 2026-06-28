@@ -73,19 +73,31 @@ RUN ARCH=$(uname -m) \
        else echo "nosqli: no ${ARCH} prebuilt — skipped (sweep uses nuclei -dast for nosqli)"; fi || true
 
 # SSTImap — multi-engine SSTI detect+exploit (maintained Python3 fork of tplmap).
-RUN (git clone --depth=1 https://github.com/vladko312/SSTImap /opt/SSTImap \
-        && pip3 install --no-cache-dir -r /opt/SSTImap/requirements.txt --break-system-packages \
-        && printf '#!/bin/sh\nexec python3 /opt/SSTImap/sstimap.py "$@"\n' > /usr/local/bin/sstimap \
-        && chmod +x /usr/local/bin/sstimap) || true
+# Create the PATH wrapper right after clone (independent of the requirements
+# install) so `sstimap` is runnable even if a single dep fails — the old `&&`
+# chain under `|| true` left /opt/SSTImap cloned but no wrapper on PATH.
+RUN git clone --depth=1 https://github.com/vladko312/SSTImap /opt/SSTImap || true; \
+    if [ -d /opt/SSTImap ]; then \
+        printf '#!/bin/sh\nexec python3 /opt/SSTImap/sstimap.py "$@"\n' > /usr/local/bin/sstimap \
+        && chmod +x /usr/local/bin/sstimap; \
+        pip3 install --no-cache-dir -r /opt/SSTImap/requirements.txt --break-system-packages || true; \
+    fi
 
 # arjun (HTTP param discovery) + graphql-cop / graphw00f (GraphQL fingerprint,
-# introspection, batching tests).
-RUN pip3 install --no-cache-dir arjun graphql-cop graphw00f --break-system-packages || true
+# introspection, batching tests). Installed SEPARATELY — pip resolves a single
+# invocation atomically, so batching them meant one unresolvable dep on arm64
+# silently took down all three (the prior build shipped none of them).
+RUN for pkg in arjun graphql-cop graphw00f; do \
+        pip3 install --no-cache-dir "$pkg" --break-system-packages || echo "WARN: pip install $pkg failed (continuing)"; \
+    done
 
 # jwt_tool — JWT attack toolkit (none alg, alg confusion, kid injection, key brute)
 # KOAuth   — automated OAuth 2.0 security scanner (22 checks)
 # interactsh-client — out-of-band callback listener for blind SSRF / DNS exfil
-RUN pip3 install --no-cache-dir jwt_tool --break-system-packages || true \
+RUN (git clone --depth=1 https://github.com/ticarpi/jwt_tool /opt/jwt_tool \
+        && pip3 install --no-cache-dir pycryptodomex termcolor cprint requests --break-system-packages \
+        && printf '#!/bin/sh\nexec python3 /opt/jwt_tool/jwt_tool.py "$@"\n' > /usr/local/bin/jwt_tool \
+        && chmod +x /usr/local/bin/jwt_tool) || true \
     && apt-get update && apt-get install -y --no-install-recommends ca-certificates golang-go unzip \
     && rm -rf /var/lib/apt/lists/* \
     && git clone --depth=1 https://github.com/morganc3/KOAuth /opt/KOAuth \
