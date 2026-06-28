@@ -649,6 +649,23 @@ def _findings_mapped_blocker(cov: dict, data: dict | None) -> str | None:
     )
 
 
+def _completeness_blockers(
+    cov: dict, data: dict | None, total: int, addressed: int, pct: float,
+) -> list[str]:
+    """The two coverage-COMPLETENESS gates (low-coverage floor + findings-mapped) —
+    they demand the model work MORE of the matrix. The caller applies the
+    enforce_coverage profile guard + CTF bypass; for local (medium/small) profiles
+    these never run, so the scan completes on findings like V1.0.2."""
+    out: list[str] = []
+    low_cov = _low_coverage_blocker(cov, total, addressed, pct)
+    if low_cov:
+        out.append(low_cov)
+    mapped = _findings_mapped_blocker(cov, data)
+    if mapped:
+        out.append(mapped)
+    return out
+
+
 def _coverage_blockers(cov: dict, data: dict | None = None, ctf_mode: bool = False) -> list[str]:
     """Return coverage-related completion blockers for the given matrix state.
 
@@ -683,22 +700,22 @@ def _coverage_blockers(cov: dict, data: dict | None = None, ctf_mode: bool = Fal
     addressed = meta.get("addressed", meta.get("tested", 0) + meta.get("not_applicable", 0))
     pct = (addressed / total) * 100
 
-    # Completion is COVERAGE-GATED: the matrix is the deliverable, so a scan does
-    # not complete while it is substantially unworked — enforced for EVERY profile
-    # and even when findings-rich (the old waiver + per-profile dormancy is exactly
-    # why a scan with 11 findings could 'finish' at 5/840). CTF runs (single-flag
-    # goal) bypass. The stuck-completion HIR is the safety valve if the model
-    # genuinely can't reach the floor, so this can't hard-stall.
-    if not ctf_mode:
-        low_cov = _low_coverage_blocker(cov, total, addressed, pct)
-        if low_cov:
-            blockers.append(low_cov)
+    # Coverage-COMPLETENESS gates (low-coverage floor + findings-mapped) demand the
+    # model work MORE of the matrix. They are profile-gated via enforce_coverage:
+    # ON for full (a capable cloud model can work a 700-cell matrix), OFF for
+    # medium/small. A local model has no in-loop injection-sweep tooling to honestly
+    # close hundreds of cells, so a hard floor against an auto-fanned 700-cell matrix
+    # just forces gaming (false tested_clean on 500s) and then a HIR_NO_PROGRESS
+    # stall — V1.0.2 ran the local model coverage-dormant and it completed cleanly on
+    # findings. Flip medium→enforce_coverage once the automated endpoint_sweep lands.
+    # The current coverage % stays visible in session(status)/recovery, so the gap is
+    # still surfaced as an advisory. The closure-INTEGRITY guards below
+    # (artifact-backed, suspect-N/A, skipped-no-evidence) stay on for EVERY profile.
+    from mcp_server.scan_engine.budget import get_profile
+    enforce_cov = bool(get_profile().get("enforce_coverage", True))
 
-    # Complementary backstop: even below the floor, findings must be REFLECTED in
-    # the matrix (the audit trail of what was exploited).
-    mapped = _findings_mapped_blocker(cov, data)
-    if mapped:
-        blockers.append(mapped)
+    if enforce_cov and not ctf_mode:
+        blockers.extend(_completeness_blockers(cov, data, total, addressed, pct))
 
     all_cells = cov.get("matrix", [])
     from core.coverage import cell_has_test_evidence
@@ -726,7 +743,9 @@ def _coverage_blockers(cov: dict, data: dict | None = None, ctf_mode: bool = Fal
     if na_blocker:
         blockers.append(na_blocker)
 
-    breadth_blocker = _injection_breadth_blocker(all_cells, not ctf_mode)
+    # Injection-breadth is also a completeness gate (it demands MORE cells be
+    # registered/tested), so it follows enforce_coverage too — advisory for local.
+    breadth_blocker = _injection_breadth_blocker(all_cells, enforce_cov and not ctf_mode)
     if breadth_blocker:
         blockers.append(breadth_blocker)
 

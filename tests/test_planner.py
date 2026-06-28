@@ -34,6 +34,24 @@ def test_add_testing_actions_drives_focused_batch():
     assert "sqlmap" in msg.lower() or "/login" in msg
 
 
+def test_add_testing_actions_local_profile_is_advisory():
+    """Local profile (enforce_coverage=False): the next batch is surfaced as OPTIONAL
+    guidance in `recommended`, NOT a required 'WORK THE MATRIX … scan finishes when
+    the matrix is worked' directive. That per-turn pressure on an unservable 700-cell
+    matrix is what made a small local model spin and stall — restored to advisory."""
+    import mcp_server.scan_engine.budget as budget
+    required: list = []
+    recommended: list = []
+    with patch.object(planner, "get_matrix", return_value=_matrix()), \
+         patch.object(budget, "get_profile",
+                      return_value={"next_batch_size": 3, "enforce_coverage": False}):
+        planner._add_testing_actions(required, recommended, "http://t")
+    assert required == []                       # no hard "WORK THE MATRIX" directive
+    assert any("Optional coverage" in r and "advisory" in r for r in recommended)
+    # cells are still surfaced so the model CAN pursue them if useful
+    assert any("cell c1" in r for r in recommended)
+
+
 def test_add_testing_actions_done_when_all_addressed():
     required: list = []
     recommended: list = []

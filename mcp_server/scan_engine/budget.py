@@ -22,6 +22,17 @@ if TYPE_CHECKING:
 MODEL_PROFILES: dict[str, dict] = {
     "full": {
         "enforce_budget": True,
+        # enforce_coverage: hard-gate completion on the coverage matrix (the matrix
+        # is the deliverable). ON for full — a capable cloud model can actually work
+        # a 700-cell matrix. OFF for medium/small: a local model has no in-loop
+        # injection-sweep tooling to honestly close hundreds of cells, so a hard
+        # floor just forces gaming (false tested_clean on 500s) and then stalls at
+        # HIR_NO_PROGRESS — restoring the V1.0.2 "exploit → findings → complete"
+        # behavior. Flip medium→True once the automated endpoint_sweep lands and
+        # cells become honestly closeable on local. The closure-INTEGRITY guards
+        # (artifact-backed, auth-block, suspect-N/A) stay on for every profile —
+        # this knob only governs the completeness gates that demand MORE work.
+        "enforce_coverage": True,
         "budget_multiplier": 2.0,      # generous but bounded — facts/evidence won't explode
         "context_budget_chars": 400_000,  # ~100K tokens; warn at 80% (320K) before compaction fires
         "recovery_cells_shown": None,  # show all cells in recovery
@@ -41,6 +52,7 @@ MODEL_PROFILES: dict[str, dict] = {
     },
     "medium": {
         "enforce_budget": True,
+        "enforce_coverage": False,   # local model — coverage advisory, not a completion gate (see "full")
         "budget_multiplier": 1.0,    # base budgets as-is
         "context_budget_chars": 160_000,  # ~40K tokens
         "recovery_cells_shown": 10,
@@ -51,6 +63,7 @@ MODEL_PROFILES: dict[str, dict] = {
     },
     "small": {
         "enforce_budget": True,
+        "enforce_coverage": False,   # local model — coverage advisory, not a completion gate (see "full")
         "budget_multiplier": 0.5,    # half budgets
         "context_budget_chars": 64_000,  # ~16K tokens
         "recovery_cells_shown": 3,

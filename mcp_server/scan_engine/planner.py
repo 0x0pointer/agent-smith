@@ -165,7 +165,15 @@ def _add_testing_actions(required: list[str], recommended: list[str], target: st
         return
 
     from mcp_server.scan_engine.budget import get_profile
-    count = get_profile().get("next_batch_size", 5)
+    profile = get_profile()
+    count = profile.get("next_batch_size", 5)
+    # enforce_coverage gates the FRAMING of this drive. ON (full): the matrix is the
+    # deliverable, so the batch is a REQUIRED action with "the scan finishes when the
+    # matrix is worked". OFF (local medium/small): coverage is advisory — surface the
+    # same cells as OPTIONAL guidance the model can pursue alongside its exploit leads.
+    # The hard "you're not done until the matrix is worked" framing is exactly what
+    # made a small local model spin on an unservable 700-cell matrix and stall.
+    enforce_cov = bool(profile.get("enforce_coverage", True))
     sel = select_next_batch(cov, count=count)
     batch = sel.get("batch", [])
     if not batch:
@@ -182,20 +190,32 @@ def _add_testing_actions(required: list[str], recommended: list[str], target: st
         )
         lines.append(f"  • {cmd} (cell {c.get('cell_id')})")
 
-    required.append(
-        f"WORK THE MATRIX (it's the deliverable) — next {len(batch)} cell(s) on "
-        f"{foc.get('method', '?')} {foc.get('path', '?')} [this endpoint {prog.get('endpoint', '?')} · "
-        f"overall {prog.get('overall', '?')}]. Test each with a REAL probe (commands below — never "
-        f"canned filler; one benign response is NOT proof a cell is clean), then close it with its "
-        f"artifact_id via report(action='coverage', data={{type:'bulk_tested', updates:[...]}}). The "
-        f"scan finishes when the matrix is worked, not when you've found a few bugs:\n" + "\n".join(lines)
-    )
     rem = sel.get("remaining", 0)
-    if rem > len(batch):
-        recommended.append(
-            f"{rem} cells pending overall — call report(action='coverage', data={{type:'next_batch'}}) "
-            "any time for the next focused batch."
+    if enforce_cov:
+        required.append(
+            f"WORK THE MATRIX (it's the deliverable) — next {len(batch)} cell(s) on "
+            f"{foc.get('method', '?')} {foc.get('path', '?')} [this endpoint {prog.get('endpoint', '?')} · "
+            f"overall {prog.get('overall', '?')}]. Test each with a REAL probe (commands below — never "
+            f"canned filler; one benign response is NOT proof a cell is clean), then close it with its "
+            f"artifact_id via report(action='coverage', data={{type:'bulk_tested', updates:[...]}}). The "
+            f"scan finishes when the matrix is worked, not when you've found a few bugs:\n" + "\n".join(lines)
         )
+        if rem > len(batch):
+            recommended.append(
+                f"{rem} cells pending overall — call report(action='coverage', data={{type:'next_batch'}}) "
+                "any time for the next focused batch."
+            )
+        return
+
+    # Local profile — advisory guidance, never a completion gate.
+    recommended.append(
+        f"Optional coverage — {len(batch)} pending cell(s) on {foc.get('method', '?')} "
+        f"{foc.get('path', '?')} [overall {prog.get('overall', '?')}] you can probe alongside your "
+        f"exploit leads. Test with a REAL probe, then close with its artifact_id via "
+        f"report(action='coverage', data={{type:'bulk_tested', updates:[...]}}). Coverage is advisory "
+        f"for this profile — follow the strongest leads and complete on findings; the matrix is "
+        f"recorded, not a gate:\n" + "\n".join(lines)
+    )
 
 
 def _resolve_url(target: str, path: str, param: str, param_type: str, payload: str) -> str:
