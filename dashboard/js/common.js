@@ -688,6 +688,21 @@
         }
       } catch { /* ignore */ }
 
+      // Self-heal the completion latch. scanDone is one-way — set true on
+      // 'complete' (below) and otherwise only cleared by the manual Clear
+      // button — so after ANY completion or force-stop, every scanDone-gated
+      // poller (logs, skills, threat-model, the findings re-render) stayed
+      // frozen until a hard refresh, even once a new or watchdog-resumed scan
+      // was running again. Clear it whenever the scan is active so the dashboard
+      // recovers on its own instead of needing a manual reload.
+      if (scanDone && s.status !== 'complete') {
+        scanDone = false;
+        if (s.status === 'running') {
+          document.getElementById('status').innerHTML =
+            '<span class="dot"></span>Live · refreshes every 5 s';
+        }
+      }
+
       if (s.status === 'complete' && !scanDone) {
         scanDone = true;
         _showAdjudicationBanner(false);
