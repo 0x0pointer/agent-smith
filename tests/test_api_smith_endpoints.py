@@ -1187,6 +1187,58 @@ class TestSpawnSmith:
         expected = getattr(_sp, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
         assert spawn_calls[0].get("creationflags") == expected
 
+    def test_cold_starts_after_no_progress_respawns(self, spawn_env, monkeypatch):
+        """After _WATCHDOG_COLD_START_AFTER no-progress respawns, _spawn_smith drops
+        the --session resume and cold-starts a fresh context — the fix for the
+        resume→hang→respawn loop on a session that has bloated past what the model
+        can re-load."""
+        env = spawn_env
+        monkeypatch.setattr(api, "_latest_opencode_session", lambda *a, **k: "ses_BLOATED")
+        monkeypatch.setattr(api.smith, "_watchdog_no_progress_count",
+                            api.smith._WATCHDOG_COLD_START_AFTER)
+        captured: list = []
+
+        async def _capture(*args, **kw):
+            captured.append(list(args)); m = MagicMock(); m.pid = 222; return m
+
+        with patch.dict("sys.modules", {"core.steering": env["steering_module"]}), \
+             patch("core.session.load_from_disk"), \
+             patch("core.session.get", return_value={}), \
+             patch("shutil.which", return_value="/usr/local/bin/opencode"), \
+             patch("asyncio.create_subprocess_exec", side_effect=_capture):
+            ok, _ = asyncio.get_event_loop().run_until_complete(
+                api._spawn_smith("opencode", source="test")
+            )
+
+        assert ok is True
+        cmd = captured[0]
+        assert "--session" not in cmd       # cold start — does NOT resume the bloated session
+        assert "ses_BLOATED" not in cmd
+
+    def test_resumes_when_progress_is_fresh(self, spawn_env, monkeypatch):
+        """Below the cold-start threshold, _spawn_smith resumes the opencode session
+        so the agent keeps its in-context memory."""
+        env = spawn_env
+        monkeypatch.setattr(api, "_latest_opencode_session", lambda *a, **k: "ses_GOOD")
+        monkeypatch.setattr(api.smith, "_watchdog_no_progress_count", 0)
+        captured: list = []
+
+        async def _capture(*args, **kw):
+            captured.append(list(args)); m = MagicMock(); m.pid = 333; return m
+
+        with patch.dict("sys.modules", {"core.steering": env["steering_module"]}), \
+             patch("core.session.load_from_disk"), \
+             patch("core.session.get", return_value={}), \
+             patch("shutil.which", return_value="/usr/local/bin/opencode"), \
+             patch("asyncio.create_subprocess_exec", side_effect=_capture):
+            ok, _ = asyncio.get_event_loop().run_until_complete(
+                api._spawn_smith("opencode", source="test")
+            )
+
+        assert ok is True
+        cmd = captured[0]
+        assert "--session" in cmd and "ses_GOOD" in cmd   # resumed
+
     def test_opencode_spawn_uses_dangerously_skip_permissions(self, spawn_env):
         """Background-spawned opencode has no controlling TTY, so any permission
         prompt either hangs forever or exits the process. The auto-restart
@@ -1871,6 +1923,22 @@ class TestForceStop:
         assert r.status_code == 200
         assert r.json()["killed"] is False
         kill.assert_not_called()
+        assert json.loads(sandbox_session.read_text())["status"] == "complete"
+
+    def test_force_stops_scan_wedged_in_intervention_required(self, sandbox_session, sandbox_smith_files):
+        """An open HIR must not block force-stop. complete() only transitions from
+        'running', so force-stop now resolves the HIR first — otherwise a scan
+        wedged in intervention_required (a respawn-loop HIR) couldn't be stopped at
+        all, which is exactly when the operator needs the kill switch."""
+        _write_session(sandbox_session, status="intervention_required")
+        with patch.object(api, "_live_pid_from_pid_file", return_value=None), \
+             patch.object(api, "_live_pid_from_process_scan", return_value=None), \
+             patch.object(api, "_kill_hung_smith"), \
+             patch("core.steering.steering_queue.cancel_by_trigger", return_value=0):
+            r = client.post("/api/force-stop")
+        assert r.status_code == 200
+        assert r.json()["ok"] is True
+        # The HIR was cleared and the scan finalized — not left wedged.
         assert json.loads(sandbox_session.read_text())["status"] == "complete"
 
 

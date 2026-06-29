@@ -43,6 +43,14 @@ _SMITH_STALL_SECONDS = 300
 # (recovery → list → exit). After this many consecutive futile respawns the
 # watchdog pauses for a human (HIR_NO_PROGRESS) instead of looping the model.
 _WATCHDOG_MAX_NO_PROGRESS = 3
+# Cold-start fallback: after this many no-progress respawns, stop RESUMING the
+# opencode session and cold-start a fresh one instead. A long scan's session
+# bloats until the model hangs just re-loading it on resume (resume → hang → kill
+# → resume … the observed loop), so a resume can never recover it. A cold start
+# gives the model a small, clean context and it recovers its position from disk
+# (session(action='recovery')). Set one rung below MAX_NO_PROGRESS so the fresh
+# context gets a real shot before the run escalates to HIR_NO_PROGRESS.
+_WATCHDOG_COLD_START_AFTER = 2
 _watchdog_last_progress: tuple | None = None
 _watchdog_no_progress_count = 0
 
@@ -743,6 +751,20 @@ async def _spawn_smith(client: str, source: str = "api") -> tuple[bool, int | st
             resume_sid = await loop.run_in_executor(
                 None, lambda: _api._latest_opencode_session(str(_api._REPO_ROOT))
             )
+            # Cold-start fallback: when recent respawns have made NO progress, the
+            # session has usually bloated to where the model hangs just re-loading
+            # it on resume — so resuming can only re-enter the hang loop. Drop the
+            # resume and cold-start a fresh, small context; the agent recovers its
+            # position from disk via session(action='recovery'). Breaks the loop
+            # one rung before HIR_NO_PROGRESS. Applies to the "Restart Smith" button
+            # too, so a manual restart on a wedged scan finally helps.
+            if resume_sid and _watchdog_no_progress_count >= _WATCHDOG_COLD_START_AFTER:
+                _log.warning(
+                    "watchdog: %d no-progress respawn(s) — COLD-STARTING a fresh session "
+                    "instead of resuming the bloated one (agent recovers from disk)",
+                    _watchdog_no_progress_count,
+                )
+                resume_sid = None
 
         prompt = _resume_prompt(directive_text) if resume_sid else _cold_recovery_prompt(directive_text)
 

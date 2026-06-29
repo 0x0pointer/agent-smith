@@ -667,6 +667,12 @@ async def api_force_stop() -> JSONResponse:
         scan_session.load_from_disk(force=True)
         # Capture a live Smith PID BEFORE the kill + pointer-wipe below.
         pid = _api._live_pid_from_pid_file() or _api._live_pid_from_process_scan()
+        # Force-stop is the operator override — it must finalize from ANY non-terminal
+        # state. complete() only transitions from 'running', so a scan wedged in
+        # intervention_required (an open HIR — exactly when you most need to kill it)
+        # couldn't be stopped at all. Clear the HIR first so complete() flips it terminal.
+        if (scan_session.get() or {}).get("status") == "intervention_required":
+            scan_session.resolve_intervention("FORCE_STOP", _reason)
         # Terminal status first so the watchdog won't respawn after the kill.
         cfg = scan_session.complete(_reason)
         scan_session.set_triage_requested(False)
