@@ -65,7 +65,8 @@ def run(verb: str, args: list, timeout: int = 30) -> dict:
         return result
 
     try:
-        proc = subprocess.run(  # noqa: S603 — argv is allow-listed + arg-validated, shell=False
+        # argv is an allow-listed verb + per-arg-validated args, run with shell=False.
+        proc = subprocess.run(  # noqa: S603
             [binary, *args],
             shell=False,
             capture_output=True,

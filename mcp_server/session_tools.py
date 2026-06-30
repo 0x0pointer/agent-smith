@@ -2494,7 +2494,8 @@ def _enqueue_setup_gates(skill_name: str) -> str:
         if preelected:
             parts.append(f"Pre-elected from known assets (still run check to verify): {', '.join(preelected)}.")
         return "\n\n" + " ".join(parts)
-    except Exception as exc:  # noqa: BLE001 — capabilities is opt-in; never break set_skill
+    # capabilities is opt-in; a load failure must never break set_skill
+    except Exception as exc:  # noqa: BLE001
         log.note(f"capabilities load failed for {skill_name}: {exc}")
         return ""
 
@@ -2744,6 +2745,39 @@ async def _setup_gate_check(gid: str) -> str:
     }, indent=2, default=str)
 
 
+def _setup_gate_open(opts: dict) -> str:
+    cap = opts.get("capability")
+    if not isinstance(cap, dict) or not cap.get("id"):
+        return ("setup_gate open needs options.capability={id,...}. Gates are usually opened "
+                "automatically from a skill's capabilities.yaml on set_skill — manual open is rarely needed.")
+    gate = scan_session.open_setup_gate(cap, skill=str(opts.get("skill", "")))
+    if gate is None:
+        return "No active running session — cannot open a setup gate."
+    return _setup_gate_describe(gate, opened=True)
+
+
+_SETUP_ELECT_MSG = {
+    "now": ("Gate '{gid}' elected NOW. Run the runbook steps, then verify with "
+            "session(action='setup_gate', options={{'action':'check','id':'{gid}'}})."),
+    "defer": ("Gate '{gid}' DEFERRED (non-blocking) — surfaced on the dashboard for the operator. "
+              "Keep testing other coverage; re-check later or let the operator fulfill it."),
+    "skip": ("Gate '{gid}' SKIPPED — mark its dependent cells skipped with reason "
+             "'operator declined manual setup'. Recorded so the gap is explicit in the report."),
+}
+
+
+def _setup_gate_elect(opts: dict) -> str:
+    gid = str(opts.get("id", "")).strip()
+    choice = str(opts.get("choice", "")).strip()
+    if not gid or choice not in _SETUP_ELECT_MSG:
+        return "setup_gate elect requires options.id and options.choice ∈ now|defer|skip."
+    gate = scan_session.record_election(gid, choice)
+    if gate is None:
+        return f"No setup gate '{gid}' found (or no running session)."
+    log.note(f"setup_gate {gid} elected: {choice}")
+    return _SETUP_ELECT_MSG[choice].format(gid=gid)
+
+
 async def _do_setup_gate(opts: dict) -> str:
     """Manual-setup prerequisite lifecycle. options.action ∈ open|list|elect|check.
 
@@ -2754,31 +2788,9 @@ async def _do_setup_gate(opts: dict) -> str:
     if sub == "list":
         return _setup_gate_list_response()
     if sub == "open":
-        cap = opts.get("capability")
-        if not isinstance(cap, dict) or not cap.get("id"):
-            return ("setup_gate open needs options.capability={id,...}. Gates are usually opened "
-                    "automatically from a skill's capabilities.yaml on set_skill — manual open is rarely needed.")
-        gate = scan_session.open_setup_gate(cap, skill=str(opts.get("skill", "")))
-        if gate is None:
-            return "No active running session — cannot open a setup gate."
-        return _setup_gate_describe(gate, opened=True)
+        return _setup_gate_open(opts)
     if sub == "elect":
-        gid = str(opts.get("id", "")).strip()
-        choice = str(opts.get("choice", "")).strip()
-        if not gid or choice not in ("now", "defer", "skip"):
-            return "setup_gate elect requires options.id and options.choice ∈ now|defer|skip."
-        gate = scan_session.record_election(gid, choice)
-        if gate is None:
-            return f"No setup gate '{gid}' found (or no running session)."
-        log.note(f"setup_gate {gid} elected: {choice}")
-        if choice == "now":
-            return (f"Gate '{gid}' elected NOW. Run the runbook steps, then verify with "
-                    f"session(action='setup_gate', options={{'action':'check','id':'{gid}'}}).")
-        if choice == "defer":
-            return (f"Gate '{gid}' DEFERRED (non-blocking) — surfaced on the dashboard for the operator. "
-                    "Keep testing other coverage; re-check later or let the operator fulfill it.")
-        return (f"Gate '{gid}' SKIPPED — mark its dependent cells skipped with reason "
-                "'operator declined manual setup'. Recorded so the gap is explicit in the report.")
+        return _setup_gate_elect(opts)
     if sub == "check":
         gid = str(opts.get("id", "")).strip()
         if not gid:

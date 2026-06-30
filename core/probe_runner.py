@@ -18,6 +18,10 @@ import shlex
 
 from core import host_lane, probe_verbs
 
+# A readiness probe is a short, fixed check — bound its wall-clock here rather
+# than threading a timeout through the async API.
+_PROBE_TIMEOUT_S = 30
+
 
 def evaluate_success(success: str, exit_code, stdout: str) -> bool:
     """Judge a probe result against its success criterion.
@@ -73,11 +77,13 @@ def parse_device(verb: str, args: list, stdout: str) -> dict | None:
     return {"kind": kind, "serial": f"{verb}-confirmed", "transport": verb}
 
 
-async def run_probe(probe: dict, timeout: int = 30) -> dict:
+async def run_probe(probe: dict) -> dict:
     """Run a readiness probe and return:
     {ran, ok, exit_code, stdout, stderr, success_criterion, device, error}.
 
-    ``ran`` = the probe executed; ``ok`` = the success criterion was met.
+    ``ran`` = the probe executed; ``ok`` = the success criterion was met. A probe
+    is a short fixed check; its wall-clock bound is the module-level
+    ``_PROBE_TIMEOUT_S``, applied by the underlying host/kali runner.
     """
     verb = (probe or {}).get("verb", "")
     args = list((probe or {}).get("args", []) or [])
@@ -91,7 +97,7 @@ async def run_probe(probe: dict, timeout: int = 30) -> dict:
                 "error": f"rejected: {reason}"}
 
     if run_on == "host":
-        res = host_lane.run(verb, args, timeout=timeout)
+        res = host_lane.run(verb, args, timeout=_PROBE_TIMEOUT_S)
         exit_code, stdout, stderr = res["exit_code"], res["stdout"], res["stderr"]
         ran, err = res["ok"], res.get("error", "")
     elif run_on == "kali":
@@ -99,9 +105,10 @@ async def run_probe(probe: dict, timeout: int = 30) -> dict:
         binary = probe_verbs.binary_for(verb)
         cmd = shlex.join([binary, *args])
         try:
-            stdout = await kali_runner.exec_command(cmd, timeout=timeout)
+            stdout = await kali_runner.exec_command(cmd, timeout=_PROBE_TIMEOUT_S)
             stderr, exit_code, ran, err = "", None, True, ""
-        except Exception as exc:  # noqa: BLE001 — surface any kali transport error as a non-ran probe
+        # surface any kali transport error as a non-ran probe (don't crash the check)
+        except Exception as exc:  # noqa: BLE001
             stdout, stderr, exit_code, ran = "", "", None, False
             err = f"{type(exc).__name__}: {exc}"
     else:
@@ -116,7 +123,7 @@ async def run_probe(probe: dict, timeout: int = 30) -> dict:
             "error": err}
 
 
-async def check_gate(gid: str, artifact_store=None, timeout: int = 30) -> dict:
+async def check_gate(gid: str, artifact_store=None) -> dict:
     """Run a setup gate's readiness probe, record the result, and on a pass write
     the connected device into known_assets. Single source of truth shared by the
     MCP ``setup_gate check`` action and the dashboard recheck route.
@@ -136,12 +143,13 @@ async def check_gate(gid: str, artifact_store=None, timeout: int = 30) -> dict:
     if not probe:
         return {"status": "no_probe", "gate": gate, "result": None, "artifact_id": ""}
 
-    res = await run_probe(probe, timeout=timeout)
+    res = await run_probe(probe)
     artifact_id = ""
     if artifact_store is not None:
         try:
             artifact_id = artifact_store(res) or ""
-        except Exception:  # noqa: BLE001 — artifact storage is best-effort evidence
+        # artifact storage is best-effort evidence; never fail the probe on it
+        except Exception:  # noqa: BLE001
             artifact_id = ""
     updated = _sess.record_probe_result(
         gid, res["ok"], artifact_id=artifact_id, stdout_excerpt=res.get("stdout", "")
