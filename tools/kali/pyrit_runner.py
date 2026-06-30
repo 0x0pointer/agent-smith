@@ -67,6 +67,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="(reserved) JSONPath of the assistant text in the response. Not yet "
                         "wired to HTTPTarget response extraction in 0.11.0; the scorer reads "
                         "the raw response body.")
+    p.add_argument("--payloads-file", default="",
+                   help="Path to a JSON file holding a list of prompt strings. When set "
+                        "(prompt_injection attack only), each payload is sent single-turn and "
+                        "scored independently; per-payload results are printed under "
+                        "'=== PAYLOAD i/N ===' markers so a batch (e.g. role-confusion variant "
+                        "family) closes one coverage cell from one artifact.")
     return p
 
 
@@ -245,16 +251,45 @@ def _target_kwargs(args: argparse.Namespace) -> dict:
 # Attack runners (PyRIT 0.11.0 executor.attack API)
 # ---------------------------------------------------------------------------
 
+def _load_payloads(args: argparse.Namespace) -> list[str]:
+    """Read the optional --payloads-file (a JSON list of prompt strings). Returns
+    [] when unset/unreadable/not-a-list so the caller falls back to --objective."""
+    if not args.payloads_file:
+        return []
+    try:
+        import json
+        with open(args.payloads_file, encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            return [str(p) for p in data if str(p).strip()]
+        print(f"[!] payloads-file {args.payloads_file} is not a JSON list — ignoring",
+              file=sys.stderr)
+    except Exception as exc:
+        print(f"[!] could not read payloads-file {args.payloads_file}: {exc}", file=sys.stderr)
+    return []
+
+
 async def run_prompt_injection(args: argparse.Namespace) -> None:
     from pyrit.executor.attack import PromptSendingAttack, AttackScoringConfig
     target = make_target(args.target_url, args.model, **_target_kwargs(args))
-    scorer = make_scorer(args.scorer, args.model, args.provider, args.objective)
-    attack = PromptSendingAttack(
-        objective_target=target,
-        attack_scoring_config=AttackScoringConfig(objective_scorer=scorer),
-    )
-    result = await attack.execute_async(objective=args.objective)
-    await _print_result(result)
+
+    # Batch mode: a --payloads-file fans the same single-turn attack over a whole
+    # variant family (e.g. role-prefix spoofing's delimiter set). The HTTPTarget is
+    # stateless, so reusing it across payloads is correct. The scorer is rebuilt per
+    # payload because the self_ask scorer embeds the objective in its question.
+    payloads = _load_payloads(args) or [args.objective]
+    n = len(payloads)
+    for i, payload in enumerate(payloads, 1):
+        if n > 1:
+            print(f"\n=== PAYLOAD {i}/{n} ===")
+            print(payload)
+        scorer = make_scorer(args.scorer, args.model, args.provider, payload)
+        attack = PromptSendingAttack(
+            objective_target=target,
+            attack_scoring_config=AttackScoringConfig(objective_scorer=scorer),
+        )
+        result = await attack.execute_async(objective=payload)
+        await _print_result(result)
 
 
 async def run_jailbreak(args: argparse.Namespace) -> None:

@@ -37,6 +37,12 @@ APPLICABILITY: dict[str, list[str]] = {
         "sensitive_info_disclosure", "improper_output_handling",
         "excessive_agency", "misinformation", "unbounded_consumption",
         "model_extraction", "content_bias", "membership_inference",
+        # Role-confusion prompt injection (Ye/Cui/Hadfield-Menell, ICML 2026):
+        # the model infers role from writing style, not from role tags, so
+        # style-/delimiter-spoofed text is treated as a higher-privilege role.
+        # Distinct cells from prompt_injection because the mechanism (and the
+        # bypass to test) differs — see BYPASS_REQUIRED_TYPES below.
+        "cot_forgery", "role_prefix_spoofing",
     ],
     # An MCP tool argument fans out to the OWASP MCP Top 10 runtime categories.
     # Register each MCP tool's string args with type="mcp_tool_arg".
@@ -83,6 +89,8 @@ BYPASS_REQUIRED_TYPES: dict[str, str] = {
     # bypass doesn't apply (techniques documented in the ai-redteam skill).
     "prompt_injection": "encoding (base64/ROT13/homoglyph/Unicode-tag), multi-language, authority-marker rotation, or multi-objective payloads",
     "jailbreak":        "crescendo multi-turn, DAN/role-play framing, refusal-suppression, or many-shot",
+    "cot_forgery":      "forged <think> reasoning block styled in the target's OWN reasoning voice (captured in recon); a generic block is not equivalent and is heavily under-effective",
+    "role_prefix_spoofing": "forged turn delimiters (User:/Assistant:/System:/tool-output) tested in user input AND in tool-returned/RAG content, across delimiter variants",
 }
 
 # ── Injection cell types where 401/403 is meaningless evidence of cleanliness
@@ -96,5 +104,6 @@ AUTH_GATED_TYPES = {
     # auth-state testing, so these must be re-tested under auth before closing.
     "prompt_injection", "jailbreak", "system_prompt_leak",
     "sensitive_info_disclosure", "improper_output_handling", "excessive_agency",
+    "cot_forgery", "role_prefix_spoofing",
     "mcp_command_injection", "mcp_intent_subversion", "mcp_context_oversharing",
 }

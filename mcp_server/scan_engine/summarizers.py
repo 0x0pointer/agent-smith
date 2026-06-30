@@ -663,30 +663,68 @@ def _summarize_promptfoo(raw: str, ctx: dict) -> SummaryResult:
     return result
 
 
+_PYRIT_SUCCESS_KEYS = (
+    "score: true", "objective achieved", "true_false: true", "result: true", "achieved: true",
+)
+
+
 def _summarize_pyrit(raw: str, ctx: dict) -> SummaryResult:
-    """Surface PyRIT's attack-result line, scorer verdict, and any degradation."""
+    """Surface PyRIT's attack-result line, scorer verdict, and any degradation.
+
+    Handles both single-objective runs and batch runs (a --payloads-file fans the
+    same single-turn attack over a variant family, e.g. role-confusion). Batch
+    output is delimited by '=== PAYLOAD i/N ===' markers; we attribute success per
+    payload and report the hit count for one-cell-from-one-artifact closure.
+    """
+    import re
     result = SummaryResult()
     lines = raw.strip().splitlines()
     attack = ctx.get("attack", "?")
-    low = raw.lower()
 
-    result_lines = [l.strip() for l in lines if "attack result:" in l.lower()]
     degraded = [
         l.strip() for l in lines
         if "falling back" in l.lower() or "attacker llm unavailable" in l.lower()
         or "no attacker-llm" in l.lower() or "substringscorer fallback" in l.lower()
     ]
-    success = any(k in low for k in (
-        "score: true", "objective achieved", "true_false: true", "result: true", "achieved: true",
-    ))
+    if degraded:
+        result.anomalies.append(
+            "PyRIT degraded to a fallback (no attacker-LLM key or orchestrator API mismatch) — see artifact"
+        )
+
+    # ── Batch mode (role-confusion variant family etc.) ──────────────────────
+    blocks = re.split(r"=== PAYLOAD \d+/\d+ ===", raw)
+    if len(blocks) > 1:
+        bodies = blocks[1:]  # blocks[0] is the runner preamble
+        total = len(bodies)
+        hit_idx = [i for i, b in enumerate(bodies, 1)
+                   if any(k in b.lower() for k in _PYRIT_SUCCESS_KEYS)]
+        hits = len(hit_idx)
+        success = hits > 0
+        pset = ctx.get("payload_set") or attack
+        result.summary = f"pyrit {pset} batch: {hits}/{total} payload(s) achieved the objective"
+        result.facts.append(f"payloads_hit={hit_idx}" if hit_idx else f"0/{total} payloads scored a success")
+        result.facts += degraded[:2]
+        if success:
+            result.anomalies.append(
+                f"PyRIT {pset} batch: {hits}/{total} payloads bypassed — likely role-confusion injection"
+            )
+            result.recommended.append(
+                "File a finding and close the cot_forgery / role_prefix_spoofing cell vulnerable with this artifact_id"
+            )
+        result.evidence = {"attack": attack, "payload_set": ctx.get("payload_set", ""),
+                           "batch": True, "payloads": total, "hits": hits,
+                           "degraded": bool(degraded), "objective_achieved": success, "lines": len(lines)}
+        return result
+
+    # ── Single-objective mode ────────────────────────────────────────────────
+    low = raw.lower()
+    result_lines = [l.strip() for l in lines if "attack result:" in l.lower()]
+    success = any(k in low for k in _PYRIT_SUCCESS_KEYS)
 
     result.summary = f"pyrit {attack}: " + (result_lines[0] if result_lines else "attack ran")
     if result_lines:
         result.facts += result_lines[:3]
     if degraded:
-        result.anomalies.append(
-            "PyRIT degraded to a fallback (no attacker-LLM key or orchestrator API mismatch) — see artifact"
-        )
         result.facts += degraded[:2]
     if success:
         result.anomalies.append("PyRIT scorer indicated the objective was achieved — likely injection/jailbreak success")
