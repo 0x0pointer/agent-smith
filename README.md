@@ -249,7 +249,79 @@ poetry run python -m mcp_server</code></pre>
 
 > ⚠️ **After install, fully restart your client.** The MCP server connects at startup.
 
-### Running on Windows
+### Self-hosted local model (DGX Spark + vLLM)
+
+Run Smith **fully local** — no API bills, nothing leaving your network — by serving an open model on your own GPU host with [vLLM](https://docs.vllm.ai) and pointing opencode at it. This is the exact setup we run on an **NVIDIA DGX Spark (GB10, 128 GB unified memory)**; any vLLM-capable box works.
+
+**Model — `Qwen/Qwen3.6-27B-FP8`.** A dense 27B at FP8: strong tool-calling + reasoning, a **native 256K context** (no rope-scaling needed), and small enough that weights (~29 GB) + a large KV cache fit the GB10's unified memory. The big window matters — a *thorough* scan accumulates a lot of context (endpoints, coverage matrix, artifacts), and a cramped 16–32K window forces constant compaction.
+
+**1. Serve it with vLLM (Docker)** — on the GPU host (this is our `model-agent.sh`; `HF_HOME` points at the HF cache, `HF_TOKEN` only needed to download):
+
+```bash
+docker run -d --name vllm-agent-smith --gpus all \
+  --ipc=host --ulimit memlock=-1 --ulimit stack=67108864 \
+  -p 8000:8000 \
+  -e HF_TOKEN="$HF_TOKEN" \
+  -v "$HF_HOME":/root/.cache/huggingface \
+  --restart unless-stopped \
+  vllm/vllm-openai:latest \
+    --model Qwen/Qwen3.6-27B-FP8 \
+    --served-model-name agent-smith \
+    --host 0.0.0.0 --port 8000 \
+    --tensor-parallel-size 1 \
+    --max-model-len 262144 \
+    --max-num-seqs 2 \
+    --gpu-memory-utilization 0.92 \
+    --kv-cache-dtype fp8 \
+    --enable-prefix-caching --enable-chunked-prefill \
+    --enable-auto-tool-choice \
+    --tool-call-parser qwen3_coder \
+    --reasoning-parser qwen3 \
+    --language-model-only \
+    --speculative-config '{"method":"qwen3_next_mtp","num_speculative_tokens":2}'
+```
+
+Flags that matter: `--max-model-len 262144` serves the full **256K** window (native — no rope-scaling); `--kv-cache-dtype fp8` roughly halves KV-cache memory; `--tool-call-parser qwen3_coder` + `--enable-auto-tool-choice` make the model emit real tool calls (agent-smith is all tool use); `--reasoning-parser qwen3` keeps thinking tokens out of the output; `--served-model-name agent-smith` is the id opencode targets. The KV cache is the gate, not the weights — at 256K with fp8 KV and `--gpu-memory-utilization 0.92`, vLLM reserves ~79 GB of KV pool (~2.2M tokens, ~8× concurrency), plenty for one Smith. On a smaller host, lower `--max-model-len` (e.g. `131072`) or `--gpu-memory-utilization`.
+
+**2. Point opencode at it** — add the `provider` + `model` to `~/.config/opencode/opencode.json` (`install_opencode.sh` writes the `mcp` / `compaction` / `permission` / `agent` blocks for you and sizes them from the model's reported window):
+
+```json
+{
+  "provider": {
+    "agent-smith-vllm": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": { "baseURL": "http://YOUR-GPU-HOST:8000/v1", "apiKey": "dummy" },
+      "models": {
+        "agent-smith": {
+          "name": "Agent Smith (Qwen3.6-27B-FP8 @256k)",
+          "tool_call": true,
+          "reasoning": true,
+          "limit": { "context": 262144, "output": 16384 },
+          "options": { "temperature": 0.7, "top_p": 0.8, "top_k": 20, "repetition_penalty": 1.05 }
+        }
+      }
+    }
+  },
+  "model": "agent-smith-vllm/agent-smith",
+  "mcp": {
+    "pentest-agent": { "type": "remote", "url": "http://127.0.0.1:7778/sse", "enabled": true, "timeout": 9000000 }
+  },
+  "compaction": { "auto": true, "prune": true, "reserved": 24384 },
+  "permission": { "doom_loop": "allow", "bash": "allow", "edit": "allow", "webfetch": "allow", "external_directory": "allow" },
+  "agent": { "build": { "steps": 10000 } }
+}
+```
+
+Things that bite on a slow local model:
+
+- **`compaction.reserved` must stay greater than `limit.output`.** opencode compacts when `input > context − reserved`, but the server rejects when `input + output > context`. If `reserved ≤ output`, the server rejects *before* opencode compacts and the session dies with `maximum context length…`. `prune: true` evicts already-read file bodies from context.
+- **`mcp.timeout` is huge (2.5 h)** because spider / sqlmap / kali runs are long; the 5 s default would cut them off.
+- **`external_directory: allow`** lets `/codebase` review paths outside opencode's cwd without an unanswerable permission prompt.
+- opencode reads the **served** `max_model_len` from `/v1/models` at runtime, so the effective window follows whatever you launch vLLM with. Local reasoning models are slow on a full window, so the dashboard watchdog tolerates up to **30 min** between tool calls before treating Smith as hung.
+
+### Running on Windows 
+
+> ⚠️ **Experimental — not fully tested.** The native Windows / PowerShell path (the `.ps1` installers) is provided as-is and has not been thoroughly validated. For the most reliable setup, run under **WSL2** with the bash installers above. Bug reports and PRs for the Windows path are welcome.
 
 The installers above are bash-only (macOS / Linux / WSL). For native Windows
 PowerShell, use the `.ps1` siblings:

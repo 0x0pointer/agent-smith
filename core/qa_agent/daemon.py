@@ -27,6 +27,9 @@ from .checks_depth import (
     _check_tool_inactivity,
     _check_whitebox_passes,
 )
+from .checks_coverage import (
+    _check_unregistered_findings,
+)
 from .checks_health import (
     _check_auth_failure,
     _check_budget_limit,
@@ -65,14 +68,15 @@ _CHECKS: list[tuple] = [
     # Blocking anti-shortcuts (complete gate)
     (_check_bulk_marking,          ("entries",)),
     (_check_coverage_integrity,    ("entries",)),
+    (_check_unregistered_findings, ("findings_data", "coverage_data")),
     (_check_premature_complete,    ("entries", "session_data")),
     # HIR conditions — Smith cannot self-resolve these (suppressed in benchmark mode)
-    (_check_auth_failure,          ("entries",)),
+    (_check_auth_failure,          ("entries", "session_data", "previous_alerts")),
     (_check_budget_limit,          ("session_data", "coverage_data")),
     (_check_zero_endpoints,        ("entries", "coverage_data")),
     (_check_target_unreachable,    ("entries",)),
     (_check_repeated_tool_failure, ("entries",)),
-    (_check_stuck_on_target,       ("entries", "findings_data", "previous_alerts")),
+    (_check_stuck_on_target,       ("entries", "findings_data", "session_data", "previous_alerts")),
     # Benchmark-only: push exploitation instead of pausing
     (_check_exploit_escalation,    ("entries", "findings_data", "session_data")),
     # Active shortcut detection
@@ -87,7 +91,7 @@ _CHECKS: list[tuple] = [
     (_check_tool_inactivity,       ("entries",)),
     # Mandatory tool / skill chain (core_skill_chain + missing_skill return lists)
     (_check_no_spider_after_httpx, ("entries",)),
-    (_check_core_skill_chain,      ("entries", "session_data")),
+    (_check_core_skill_chain,      ("entries", "session_data", "coverage_data")),
     (_check_missing_skill,         ("coverage_data", "session_data")),
 ]
 

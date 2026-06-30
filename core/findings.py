@@ -82,6 +82,7 @@ async def add_finding(
     escalation_leads: list[dict] | None = None,
     business_impact: str = "",
     trace: list[dict] | None = None,
+    evidence_artifact_id: str = "",
 ) -> dict:
     """Append a vulnerability finding. Returns the stored entry.
 
@@ -109,6 +110,11 @@ async def add_finding(
         entry["escalation_leads"] = escalation_leads
     if trace:
         entry["trace"] = trace
+    if evidence_artifact_id:
+        # The proof artifact from the tool call that produced this finding.
+        # Adjudication reuses it so the model never re-runs the attack just to
+        # regenerate an artifact_id it forgot across context compaction.
+        entry["evidence_artifact_id"] = evidence_artifact_id
     async with _lock:
         data = _load()
         data["findings"].append(entry)
@@ -119,7 +125,7 @@ async def add_finding(
 _UPDATABLE_FIELDS = {
     "severity", "title", "description", "evidence", "status",
     "gh_issue", "remediation", "reproduction", "escalation_leads", "business_impact",
-    "poc_files", "adjudication", "trace",
+    "poc_files", "adjudication", "trace", "evidence_artifact_id",
 }
 
 

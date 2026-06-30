@@ -927,8 +927,7 @@ class TestDoComplete:
              patch("mcp_server.session_tools._collect_completion_blockers",
                    return_value=["NO DIAGRAM: call report(action='diagram')"]):
             result = _do_complete()
-        assert "complete BLOCKED" in result
-        assert "NO DIAGRAM" in result
+        assert "BLOCKED" in result and "NO DIAGRAM" in result
 
     def test_blocked_increments_attempt_counter(self, tmp_path, monkeypatch):
         import mcp_server.session_tools as st
@@ -946,7 +945,14 @@ class TestDoComplete:
              patch("mcp_server.session_tools._collect_completion_blockers", return_value=[]), \
              patch("mcp_server.session_tools._record_metrics"):
             result = _do_complete()
-        assert "complete" in result.lower() or "Scan marked" in result
+        # With no blockers the scan passes all quality gates and is HELD for
+        # human sign-off via the dashboard (finding-adjudication flow), rather
+        # than being auto-marked complete.
+        assert (
+            "completion held" in result.lower()
+            or "sign-off" in result.lower()
+            or "complete" in result.lower()
+        )
 
     def test_thorough_depth_no_blockers_adds_iteration_gate(self, tmp_path, monkeypatch):
         import mcp_server.session_tools as st
@@ -959,14 +965,36 @@ class TestDoComplete:
             result = _do_complete()
         assert "ITERATION GATE" in result or "complete BLOCKED" in result
 
-    def test_multiple_blockers_listed(self, tmp_path, monkeypatch):
+    def test_multiple_blockers_full_profile_shows_all(self, tmp_path, monkeypatch):
+        """Full profile (large context, ``condensed_directives=False``) gets the
+        whole wall — capable models absorb it in one pass and a batched fix is
+        fewer round-trips for them. Serialization is only for condensed
+        profiles."""
+        import mcp_server.session_tools as st
         self._setup_session(tmp_path, monkeypatch)
         with patch("mcp_server.session_tools._effective_tools", return_value=set()), \
              patch("mcp_server.session_tools._collect_completion_blockers",
-                   return_value=["NO DIAGRAM", "NO SPIDER", "NO POC"]):
+                   return_value=["NO DIAGRAM", "NO SPIDER", "NO POC"]), \
+             patch.object(st, "_condensed_directives", return_value=False):
             result = _do_complete()
-        assert "NO DIAGRAM" in result
-        assert "NO SPIDER" in result
+        # all three shown
+        for b in ("NO DIAGRAM", "NO SPIDER", "NO POC"):
+            assert b in result
+
+
+    def test_multiple_blockers_condensed_profile_serializes(self, tmp_path, monkeypatch):
+        """Condensed profiles (medium/small) get one blocker at a time — keeps
+        the message in a small context window."""
+        import mcp_server.session_tools as st
+        self._setup_session(tmp_path, monkeypatch)
+        with patch("mcp_server.session_tools._effective_tools", return_value=set()), \
+             patch("mcp_server.session_tools._collect_completion_blockers",
+                   return_value=["NO DIAGRAM", "NO SPIDER", "NO POC"]), \
+             patch.object(st, "_condensed_directives", return_value=True):
+            result = _do_complete()
+        assert "ONE AT A TIME" in result
+        shown = [b for b in ("NO DIAGRAM", "NO SPIDER", "NO POC") if b in result]
+        assert len(shown) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -1254,3 +1282,154 @@ class TestResolveResetsCompleteAttempts:
         st._complete_attempts = 5
         scan_session.resolve_intervention("X", "")  # no active intervention
         assert st._complete_attempts == 5
+
+
+# ---------------------------------------------------------------------------
+# Item 1 — findings-aware coverage floor: a findings-rich scan isn't "trivially
+# incomplete" at low cell coverage, so the floor is waived (it correctly won't
+# grind low-value cells with canned payloads → false-negative tested_clean).
+# ---------------------------------------------------------------------------
+
+from mcp_server.session_tools import _rich_exploitation, _low_coverage_blocker
+
+
+def test_rich_exploitation_false_on_empty():
+    assert _rich_exploitation(None) is False
+    assert _rich_exploitation({}) is False
+    assert _rich_exploitation({"findings": []}) is False
+
+
+def test_rich_exploitation_true_on_eight_live_findings():
+    findings = [{"severity": "low"} for _ in range(8)]
+    assert _rich_exploitation({"findings": findings}) is True
+
+
+def test_rich_exploitation_true_on_three_high_crit():
+    findings = [{"severity": "high"}, {"severity": "critical"}, {"severity": "high"}]
+    assert _rich_exploitation({"findings": findings}) is True
+
+
+def test_rich_exploitation_ignores_false_positives():
+    # 8 findings but all false_positive → not rich; 2 high + 1 FP high → not 3
+    fps = [{"severity": "high", "status": "false_positive"} for _ in range(8)]
+    assert _rich_exploitation({"findings": fps}) is False
+    mixed = [
+        {"severity": "high"}, {"severity": "critical"},
+        {"severity": "high", "status": "false_positive"},
+    ]
+    assert _rich_exploitation({"findings": mixed}) is False
+
+
+def test_low_coverage_blocker_fires_below_floor_even_when_findings_rich():
+    # The whole point of the re-tune: a findings-rich scan no longer skips the
+    # matrix. Below the floor → blocks regardless of how many bugs were found.
+    cov = {"matrix": [{"id": "c1", "status": "pending"}, {"id": "c2", "status": "pending"}]}
+    blocker = _low_coverage_blocker(cov, total=100, addressed=10, pct=10.0)
+    assert blocker is not None
+    assert "SCAN NOT COMPLETE" in blocker
+
+
+def test_low_coverage_blocker_passes_above_floor():
+    cov = {"matrix": []}
+    assert _low_coverage_blocker(cov, total=100, addressed=50, pct=50.0) is None
+
+
+# ---------------------------------------------------------------------------
+# Item 3 — recovery hands the model a CONCRETE next move (a high-value probe
+# AND the finish path) instead of a vague nudge that made it idle/loop.
+# ---------------------------------------------------------------------------
+
+from mcp_server.session_tools import _concrete_next_call, _next_pending_probe
+
+
+def test_concrete_next_call_continues_in_progress_cell():
+    out = _concrete_next_call(
+        "http://t", tools_run={"httpx", "naabu", "spider", "nuclei"},
+        in_progress=[{"injection": "sqli", "endpoint": "/login",
+                      "param": "user", "cell_id": "c9"}],
+        pending_count=5,
+    )
+    assert "c9" in out and "sqli" in out
+
+
+def test_concrete_next_call_runs_missing_recon_first():
+    assert _concrete_next_call("http://t", set(), [], 0).startswith("scan(tool='httpx'")
+
+
+def test_concrete_next_call_pending_offers_probe_and_finish():
+    out = _concrete_next_call(
+        "http://t", tools_run={"httpx", "naabu", "spider", "nuclei"},
+        in_progress=[], pending_count=12,
+    )
+    # Must be actionable: a concrete probe (A) AND the finish path (B), never idle.
+    assert "12 cells still pending" in out
+    assert "do NOT idle" in out
+    assert "session(action='complete')" in out
+
+
+def test_concrete_next_call_all_done_completes():
+    out = _concrete_next_call(
+        "http://t", tools_run={"httpx", "naabu", "spider", "nuclei"},
+        in_progress=[], pending_count=0,
+    )
+    assert "session(action='complete'" in out
+
+
+def test_next_pending_probe_is_best_effort_string(monkeypatch):
+    # Empty/exploding matrix must never raise — recovery still gets a usable hint.
+    import mcp_server.session_tools as st
+    monkeypatch.setattr("core.coverage.get_matrix", lambda: {"matrix": [], "endpoints": []})
+    out = _next_pending_probe("http://t")
+    assert isinstance(out, str) and "coverage" in out
+
+
+def test_next_pending_probe_picks_highest_priority(monkeypatch):
+    cov = {
+        "endpoints": [{"id": "e1", "path": "/search", "method": "GET"}],
+        "matrix": [
+            {"id": "x1", "status": "pending", "injection_type": "xss",
+             "endpoint_id": "e1", "param": "q", "param_type": "query"},
+            {"id": "s1", "status": "pending", "injection_type": "sqli",
+             "endpoint_id": "e1", "param": "q", "param_type": "query"},
+        ],
+    }
+    monkeypatch.setattr("core.coverage.get_matrix", lambda: cov)
+    out = _next_pending_probe("http://t")
+    # sqli outranks xss in the priority list → its cell id is the one cited.
+    assert "s1" in out
+
+
+# ── Item 1 re-tune: findings-rich scans must reflect injection findings in matrix ──
+
+from mcp_server.session_tools import _findings_mapped_blocker
+
+
+def test_findings_mapped_blocker_fires_when_unmapped():
+    cov = {"matrix": []}
+    data = {"findings": [{"severity": "critical", "title": "SQL Injection auth bypass"},
+                         {"severity": "high", "title": "Stored XSS in profile"}]}
+    b = _findings_mapped_blocker(cov, data)
+    assert b is not None and "FINDINGS NOT MAPPED" in b
+
+
+def test_findings_mapped_blocker_clears_when_mapped():
+    cov = {"matrix": [{"status": "vulnerable", "injection_type": "sqli"},
+                      {"status": "vulnerable", "injection_type": "xss"}]}
+    data = {"findings": [{"severity": "critical", "title": "SQL Injection"},
+                         {"severity": "high", "title": "XSS"}]}
+    assert _findings_mapped_blocker(cov, data) is None
+
+
+def test_findings_mapped_blocker_ignores_crosscutting_vuln_cells():
+    # The exact run: 40 security_headers vulnerable cells (Phase 0) must NOT satisfy
+    # an unmapped SQLi finding — those are cross-cutting, not the injection exploit.
+    cov = {"matrix": [{"status": "vulnerable", "injection_type": "security_headers"} for _ in range(40)]}
+    data = {"findings": [{"severity": "critical", "title": "SQL Injection in /login"}]}
+    assert _findings_mapped_blocker(cov, data) is not None
+
+
+def test_findings_mapped_blocker_none_without_injection_findings():
+    cov = {"matrix": []}
+    data = {"findings": [{"severity": "low", "title": "Missing Security Headers"},
+                         {"severity": "medium", "title": "Verbose error message"}]}
+    assert _findings_mapped_blocker(cov, data) is None

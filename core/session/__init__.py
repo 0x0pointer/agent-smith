@@ -109,6 +109,7 @@ _TRIGGER_MAP: dict[str, dict] = {
     "api":        {"gate_id": "api_coverage",        "required_skills": ["api-security"]},
     "financial":  {"gate_id": "financial_coverage",  "required_skills": ["business-logic"]},
     "websocket":  {"gate_id": "websocket_coverage",  "required_skills": ["web-exploit"]},
+    "ai-redteam": {"gate_id": "ai_redteam_coverage", "required_skills": ["ai-redteam"]},
 }
 
 
@@ -797,6 +798,7 @@ from .assets import (  # noqa: E402
     get_spider_failures,
     has_spider_failure,
     record_spider_failure,
+    set_last_artifact,
     spider_max_retries,
     update_known_assets,
 )

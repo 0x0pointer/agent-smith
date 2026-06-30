@@ -285,8 +285,15 @@ class TestSmithRunning:
             r = client.get("/api/smith-status")
         # Endpoint now also reports the activity heartbeat (heartbeat_age_s/idle)
         # the triage banner relies on. With no quick_log in the sandbox, the
-        # heartbeat is unknown (None) and Smith is not flagged idle.
-        assert r.json() == {"running": True, "heartbeat_age_s": None, "idle": False}
+        # heartbeat is unknown (None) and Smith is not flagged idle. The
+        # "adjudicating" flag (running AND triage_requested) is False with no
+        # triage pending.
+        assert r.json() == {
+            "running": True,
+            "heartbeat_age_s": None,
+            "idle": False,
+            "adjudicating": False,
+        }
 
     def test_running_true_via_session_fallback_when_quick_log_missing(
         self, sandbox_smith_files, tmp_path
@@ -633,9 +640,15 @@ class TestWatchdogHungIntegration:
         watchdog ticks. Tests that successfully drive _spawn_smith mutate
         those globals and bleed into the next test in test_spawns_when_*
         (the min-gap suppression then kicks in and asserts fail). Snapshot
-        + restore both globals per-test so each starts from a clean slate."""
+        + restore both globals per-test so each starts from a clean slate.
+
+        Also resets the no-progress backoff globals (tracked on the smith
+        module) so a prior test that drove the counter up can't trip the
+        HIR_NO_PROGRESS escalation in an unrelated spawn test."""
         monkeypatch.setattr(api, "_watchdog_last_restart_ts", 0.0)
         monkeypatch.setattr(api, "_watchdog_restart_count_window", [])
+        monkeypatch.setattr(api.smith, "_watchdog_no_progress_count", 0)
+        monkeypatch.setattr(api.smith, "_watchdog_last_progress", None)
 
     def _stale_log(self, tmp_path, age_seconds: int) -> None:
         import os as _os
@@ -696,6 +709,112 @@ class TestWatchdogHungIntegration:
 
         mock_spawn.assert_not_called()
         mock_notify.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# No-progress backoff — escalate to a human instead of respawning forever
+# (the recovery→list→exit loop that re-spawned every 2 min for >1h, burning
+# the model with zero MCP progress). _scan_progress_snapshot fingerprints the
+# scan; N identical fingerprints across respawns → HIR_NO_PROGRESS.
+# ---------------------------------------------------------------------------
+
+class TestWatchdogNoProgressBackoff:
+
+    @pytest.fixture(autouse=True)
+    def _reset_no_progress_globals(self, monkeypatch):
+        monkeypatch.setattr(api.smith, "_watchdog_no_progress_count", 0)
+        monkeypatch.setattr(api.smith, "_watchdog_last_progress", None)
+
+    def test_snapshot_reads_findings_cells_and_mtime(self, tmp_path, monkeypatch):
+        findings = tmp_path / "findings.json"
+        coverage = tmp_path / "coverage.json"
+        quick = tmp_path / "quick_log.json"
+        findings.write_text(json.dumps({"findings": [{"id": "a"}, {"id": "b"}]}))
+        coverage.write_text(json.dumps({"matrix": [
+            {"status": "tested_clean"}, {"status": "vulnerable"},
+            {"status": "not_applicable"}, {"status": "pending"},  # pending not counted
+        ]}))
+        quick.write_text("{}\n")
+        monkeypatch.setattr(api, "_FINDINGS_FILE", findings)
+        monkeypatch.setattr(api, "_COVERAGE_FILE", coverage)
+        monkeypatch.setattr(api, "_QUICK_LOG_FILE", quick)
+
+        findings_n, addressed, qmtime = api._scan_progress_snapshot()
+        assert findings_n == 2
+        assert addressed == 3          # tested_clean + vulnerable + not_applicable
+        assert qmtime == round(quick.stat().st_mtime, 1)
+
+    def test_snapshot_is_all_zero_when_files_missing(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(api, "_FINDINGS_FILE", tmp_path / "nope.json")
+        monkeypatch.setattr(api, "_COVERAGE_FILE", tmp_path / "nope2.json")
+        monkeypatch.setattr(api, "_QUICK_LOG_FILE", tmp_path / "nope3.json")
+        assert api._scan_progress_snapshot() == (0, 0, 0.0)
+
+    def test_first_call_never_escalates(self, monkeypatch):
+        """Reset globals → last_progress is None → the very first observation
+        can't escalate (we have nothing to compare against yet)."""
+        monkeypatch.setattr(api.smith, "_scan_progress_snapshot", lambda: (1, 5, 123.0))
+        assert api._watchdog_should_escalate_no_progress() is False
+
+    def test_escalates_after_max_unchanged_snapshots(self, monkeypatch):
+        monkeypatch.setattr(api.smith, "_scan_progress_snapshot", lambda: (1, 5, 123.0))
+        # First call seeds last_progress (False); each subsequent identical call
+        # increments; escalation fires once the counter hits the cap.
+        results = [api._watchdog_should_escalate_no_progress()
+                   for _ in range(api._WATCHDOG_MAX_NO_PROGRESS + 1)]
+        assert results[0] is False
+        assert results[-1] is True
+        assert any(results)  # cap reached within the window
+
+    def test_progress_resets_the_counter(self, monkeypatch):
+        snaps = [(1, 5, 1.0), (1, 5, 1.0), (2, 6, 2.0), (2, 6, 2.0)]
+        it = iter(snaps)
+        monkeypatch.setattr(api.smith, "_scan_progress_snapshot", lambda: next(it))
+        api._watchdog_should_escalate_no_progress()      # seed (1,5,1.0)
+        api._watchdog_should_escalate_no_progress()      # unchanged → count 1
+        # Snapshot changes (new finding + cell) → counter must reset to 0
+        api._watchdog_should_escalate_no_progress()      # changed → count 0
+        assert api.smith._watchdog_no_progress_count == 0
+
+    def test_escalate_triggers_hir_and_notifies_and_resets(self, monkeypatch):
+        monkeypatch.setattr(api.smith, "_watchdog_no_progress_count", 3)
+        monkeypatch.setattr(api.smith, "_watchdog_last_progress", (1, 5, 1.0))
+        with patch("core.session.trigger_intervention") as mock_hir, \
+             patch("core.notifiers.notify") as mock_notify:
+            api._escalate_no_progress_hir()
+        assert mock_hir.call_args.kwargs["code"] == "HIR_NO_PROGRESS"
+        assert mock_notify.call_args.kwargs["code"] == "WATCHDOG_NO_PROGRESS"
+        # Globals reset so a resolved HIR starts the backoff clean.
+        assert api.smith._watchdog_no_progress_count == 0
+        assert api.smith._watchdog_last_progress is None
+
+    @pytest.mark.asyncio
+    async def test_respawn_flow_escalates_instead_of_spawning_at_cap(self, monkeypatch):
+        monkeypatch.setattr(api, "_watchdog_last_restart_ts", 0.0)
+        monkeypatch.setattr(api, "_watchdog_restart_count_window", [])
+        with patch.object(api, "_mcp_sse_alive", return_value=True), \
+             patch.object(api, "_watchdog_should_escalate_no_progress", return_value=True), \
+             patch.object(api, "_escalate_no_progress_hir") as mock_escalate, \
+             patch.object(api, "_spawn_smith", new_callable=AsyncMock) as mock_spawn, \
+             patch("core.notifiers.notify"):
+            await api.smith._watchdog_respawn_flow(time.time())
+        mock_escalate.assert_called_once()
+        mock_spawn.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_respawn_flow_spawns_when_progress_present(self, monkeypatch):
+        monkeypatch.setattr(api, "_watchdog_last_restart_ts", 0.0)
+        monkeypatch.setattr(api, "_watchdog_restart_count_window", [])
+        with patch.object(api, "_mcp_sse_alive", return_value=True), \
+             patch.object(api, "_watchdog_should_escalate_no_progress", return_value=False), \
+             patch.object(api, "_detect_active_client", return_value="opencode"), \
+             patch.object(api, "_escalate_no_progress_hir") as mock_escalate, \
+             patch.object(api, "_spawn_smith", new_callable=AsyncMock,
+                          return_value=(True, 4242)) as mock_spawn, \
+             patch("core.notifiers.notify"):
+            await api.smith._watchdog_respawn_flow(time.time())
+        mock_escalate.assert_not_called()
+        mock_spawn.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -934,6 +1053,10 @@ class TestSpawnSmith:
         monkeypatch.setattr(api, "_SMITH_PID_FILE", logs_dir / "smith.pid")
         monkeypatch.setattr(api, "_SMITH_CLIENT_FILE", logs_dir / "smith.client")
         monkeypatch.setattr(api, "_REPO_ROOT", tmp_path)
+        # Default: no resumable opencode session → cold start (keeps the existing
+        # spawn tests on the cold path and stops them shelling out to real opencode).
+        # Resume tests override this.
+        monkeypatch.setattr(api, "_latest_opencode_session", lambda *a, **k: None)
 
         # Steering queue — return no active directives
         steering_mock = MagicMock()
@@ -1064,6 +1187,58 @@ class TestSpawnSmith:
         expected = getattr(_sp, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
         assert spawn_calls[0].get("creationflags") == expected
 
+    def test_cold_starts_after_no_progress_respawns(self, spawn_env, monkeypatch):
+        """After _WATCHDOG_COLD_START_AFTER no-progress respawns, _spawn_smith drops
+        the --session resume and cold-starts a fresh context — the fix for the
+        resume→hang→respawn loop on a session that has bloated past what the model
+        can re-load."""
+        env = spawn_env
+        monkeypatch.setattr(api, "_latest_opencode_session", lambda *a, **k: "ses_BLOATED")
+        monkeypatch.setattr(api.smith, "_watchdog_no_progress_count",
+                            api.smith._WATCHDOG_COLD_START_AFTER)
+        captured: list = []
+
+        async def _capture(*args, **kw):
+            captured.append(list(args)); m = MagicMock(); m.pid = 222; return m
+
+        with patch.dict("sys.modules", {"core.steering": env["steering_module"]}), \
+             patch("core.session.load_from_disk"), \
+             patch("core.session.get", return_value={}), \
+             patch("shutil.which", return_value="/usr/local/bin/opencode"), \
+             patch("asyncio.create_subprocess_exec", side_effect=_capture):
+            ok, _ = asyncio.get_event_loop().run_until_complete(
+                api._spawn_smith("opencode", source="test")
+            )
+
+        assert ok is True
+        cmd = captured[0]
+        assert "--session" not in cmd       # cold start — does NOT resume the bloated session
+        assert "ses_BLOATED" not in cmd
+
+    def test_resumes_when_progress_is_fresh(self, spawn_env, monkeypatch):
+        """Below the cold-start threshold, _spawn_smith resumes the opencode session
+        so the agent keeps its in-context memory."""
+        env = spawn_env
+        monkeypatch.setattr(api, "_latest_opencode_session", lambda *a, **k: "ses_GOOD")
+        monkeypatch.setattr(api.smith, "_watchdog_no_progress_count", 0)
+        captured: list = []
+
+        async def _capture(*args, **kw):
+            captured.append(list(args)); m = MagicMock(); m.pid = 333; return m
+
+        with patch.dict("sys.modules", {"core.steering": env["steering_module"]}), \
+             patch("core.session.load_from_disk"), \
+             patch("core.session.get", return_value={}), \
+             patch("shutil.which", return_value="/usr/local/bin/opencode"), \
+             patch("asyncio.create_subprocess_exec", side_effect=_capture):
+            ok, _ = asyncio.get_event_loop().run_until_complete(
+                api._spawn_smith("opencode", source="test")
+            )
+
+        assert ok is True
+        cmd = captured[0]
+        assert "--session" in cmd and "ses_GOOD" in cmd   # resumed
+
     def test_opencode_spawn_uses_dangerously_skip_permissions(self, spawn_env):
         """Background-spawned opencode has no controlling TTY, so any permission
         prompt either hangs forever or exits the process. The auto-restart
@@ -1178,6 +1353,129 @@ class TestSpawnSmith:
 
         assert ok is True
         assert pid == 66666
+
+    # ── Session-resume on respawn ────────────────────────────────────────────
+    # A bare `opencode run` cold-starts a fresh session every respawn, wiping the
+    # agent's memory of what it tested + which tools fail → it re-walks the same
+    # dead ends. When the scan's own session is resolvable, the respawn must
+    # `--session <id>` resume it (keeping context) with a continue/steer prompt.
+
+    def _capture_opencode_argv(self, env, resolver):
+        """Run _spawn_smith('opencode') with `resolver` patched in; return argv."""
+        fake_proc = MagicMock(); fake_proc.pid = 77777
+        captured: list = []
+
+        async def _record_spawn(*args, **kw):
+            captured.append(list(args))
+            return fake_proc
+
+        with patch.dict("sys.modules", {"core.steering": env["steering_module"]}), \
+             patch("core.session.load_from_disk"), \
+             patch("core.session.get", return_value={}), \
+             patch.object(api, "_latest_opencode_session", resolver), \
+             patch("shutil.which", return_value="/usr/local/bin/opencode"), \
+             patch("asyncio.create_subprocess_exec", side_effect=_record_spawn):
+            ok, _ = asyncio.get_event_loop().run_until_complete(
+                api._spawn_smith("opencode", source="watchdog")
+            )
+        assert ok is True
+        return captured[0]
+
+    def test_opencode_respawn_resumes_session_when_resolved(self, spawn_env):
+        argv = self._capture_opencode_argv(spawn_env, lambda *_a, **_k: "ses_RESUMEME123")
+        # --session <id> present, in order, before the prompt
+        assert "--session" in argv
+        assert argv[argv.index("--session") + 1] == "ses_RESUMEME123"
+        assert "run" in argv and "--dangerously-skip-permissions" in argv
+        # Resume prompt (memory intact), NOT the cold recovery prompt
+        prompt = argv[-1]
+        assert "resuming your OWN pentest session" in prompt
+        assert "Recover the active pentest scan" not in prompt
+
+    def test_opencode_respawn_cold_starts_when_no_session(self, spawn_env):
+        argv = self._capture_opencode_argv(spawn_env, lambda *_a, **_k: None)
+        # No --session → bare cold `run` with the full recovery prompt
+        assert "--session" not in argv
+        assert "run" in argv and "--dangerously-skip-permissions" in argv
+        prompt = argv[-1]
+        assert "Recover the active pentest scan" in prompt
+        assert "resuming your OWN pentest session" not in prompt
+
+    def test_claude_respawn_never_uses_session_flag(self, spawn_env):
+        """Resume is opencode-only; claude must never get --session even if a
+        resolver would return one (it isn't consulted for claude)."""
+        fake_proc = MagicMock(); fake_proc.pid = 88888
+        captured: list = []
+
+        async def _record_spawn(*args, **kw):
+            captured.append(list(args))
+            return fake_proc
+
+        # Resolver returns an id, but claude branch must ignore it entirely.
+        with patch.dict("sys.modules", {"core.steering": spawn_env["steering_module"]}), \
+             patch("core.session.load_from_disk"), \
+             patch("core.session.get", return_value={}), \
+             patch.object(api, "_latest_opencode_session", lambda *_a, **_k: "ses_x"), \
+             patch("shutil.which", return_value="/opt/homebrew/bin/claude"), \
+             patch("asyncio.create_subprocess_exec", side_effect=_record_spawn):
+            ok, _ = asyncio.get_event_loop().run_until_complete(
+                api._spawn_smith("claude", source="watchdog")
+            )
+        assert ok is True
+        assert "--session" not in captured[0]
+
+
+# ---------------------------------------------------------------------------
+# _latest_opencode_session — resolve the scan's resumable session id
+# ---------------------------------------------------------------------------
+
+class TestLatestOpencodeSession:
+    """Resolves the newest opencode session matching the repo dir (via the
+    opencode CLI), so a respawn can --session resume it. Best-effort: any
+    failure must return None so the caller cold-starts."""
+
+    def _run(self, monkeypatch, *, which="/usr/local/bin/opencode",
+             returncode=0, stdout="[]"):
+        import subprocess
+        monkeypatch.setattr("shutil.which", lambda _n: which)
+        result = MagicMock(); result.returncode = returncode; result.stdout = stdout
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: result)
+        return api._latest_opencode_session("/Users/gibson/agent-smith")
+
+    def test_returns_newest_matching_dir(self, monkeypatch):
+        stdout = json.dumps([
+            {"id": "ses_new", "directory": "/Users/gibson/agent-smith", "title": "scan"},
+            {"id": "ses_old", "directory": "/Users/gibson/agent-smith", "title": "scan"},
+        ])
+        assert self._run(monkeypatch, stdout=stdout) == "ses_new"
+
+    def test_skips_other_directories(self, monkeypatch):
+        stdout = json.dumps([
+            {"id": "ses_other", "directory": "/some/other/proj", "title": "x"},
+            {"id": "ses_mine", "directory": "/Users/gibson/agent-smith", "title": "scan"},
+        ])
+        assert self._run(monkeypatch, stdout=stdout) == "ses_mine"
+
+    def test_none_when_no_match(self, monkeypatch):
+        stdout = json.dumps([{"id": "ses_other", "directory": "/elsewhere", "title": "x"}])
+        assert self._run(monkeypatch, stdout=stdout) is None
+
+    def test_none_when_opencode_missing(self, monkeypatch):
+        assert self._run(monkeypatch, which=None) is None
+
+    def test_none_on_nonzero_exit(self, monkeypatch):
+        assert self._run(monkeypatch, returncode=1, stdout="boom") is None
+
+    def test_none_on_bad_json(self, monkeypatch):
+        assert self._run(monkeypatch, stdout="not json") is None
+
+    def test_none_on_subprocess_exception(self, monkeypatch):
+        import subprocess
+        monkeypatch.setattr("shutil.which", lambda _n: "/usr/local/bin/opencode")
+        def _boom(*a, **k):
+            raise subprocess.TimeoutExpired(cmd="opencode", timeout=10)
+        monkeypatch.setattr(subprocess, "run", _boom)
+        assert api._latest_opencode_session("/Users/gibson/agent-smith") is None
 
 
 # ---------------------------------------------------------------------------
@@ -1593,3 +1891,306 @@ class TestWatchdogNotifies:
 
         # And the restart still happened despite the notify explosion.
         spawn.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# POST /api/force-stop  — terminal status + cancel triage + KILL Smith
+# ---------------------------------------------------------------------------
+
+class TestForceStop:
+
+    def test_marks_complete_and_kills_live_smith(self, sandbox_session, sandbox_smith_files):
+        _write_session(sandbox_session, status="running", triage_requested=True)
+        with patch.object(api, "_live_pid_from_pid_file", return_value=4242), \
+             patch.object(api, "_live_pid_from_process_scan", return_value=None), \
+             patch.object(api, "_kill_hung_smith", return_value=True) as kill, \
+             patch("core.steering.steering_queue.cancel_by_trigger", return_value=0):
+            r = client.post("/api/force-stop")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["ok"] is True and body["killed"] is True and body["pid"] == 4242
+        kill.assert_called_once_with(4242)
+        # session is terminal on disk so the watchdog won't respawn
+        assert json.loads(sandbox_session.read_text())["status"] == "complete"
+
+    def test_completes_even_with_no_live_smith(self, sandbox_session, sandbox_smith_files):
+        _write_session(sandbox_session, status="running")
+        with patch.object(api, "_live_pid_from_pid_file", return_value=None), \
+             patch.object(api, "_live_pid_from_process_scan", return_value=None), \
+             patch.object(api, "_kill_hung_smith") as kill, \
+             patch("core.steering.steering_queue.cancel_by_trigger", return_value=0):
+            r = client.post("/api/force-stop")
+        assert r.status_code == 200
+        assert r.json()["killed"] is False
+        kill.assert_not_called()
+        assert json.loads(sandbox_session.read_text())["status"] == "complete"
+
+    def test_force_stops_scan_wedged_in_intervention_required(self, sandbox_session, sandbox_smith_files):
+        """An open HIR must not block force-stop. complete() only transitions from
+        'running', so force-stop now resolves the HIR first — otherwise a scan
+        wedged in intervention_required (a respawn-loop HIR) couldn't be stopped at
+        all, which is exactly when the operator needs the kill switch."""
+        _write_session(sandbox_session, status="intervention_required")
+        with patch.object(api, "_live_pid_from_pid_file", return_value=None), \
+             patch.object(api, "_live_pid_from_process_scan", return_value=None), \
+             patch.object(api, "_kill_hung_smith"), \
+             patch("core.steering.steering_queue.cancel_by_trigger", return_value=0):
+            r = client.post("/api/force-stop")
+        assert r.status_code == 200
+        assert r.json()["ok"] is True
+        # The HIR was cleared and the scan finalized — not left wedged.
+        assert json.loads(sandbox_session.read_text())["status"] == "complete"
+
+
+# ---------------------------------------------------------------------------
+# GET /api/smith-status  — `adjudicating` flag
+# ---------------------------------------------------------------------------
+
+class TestSmithStatusAdjudicating:
+
+    def test_running_plus_triage_is_adjudicating(self, sandbox_session):
+        _write_session(sandbox_session, status="running", triage_requested=True)
+        with patch.object(api, "_smith_running", return_value=True):
+            r = client.get("/api/smith-status")
+        assert r.status_code == 200
+        assert r.json()["adjudicating"] is True
+
+    def test_running_without_triage_not_adjudicating(self, sandbox_session):
+        _write_session(sandbox_session, status="running")
+        with patch.object(api, "_smith_running", return_value=True):
+            r = client.get("/api/smith-status")
+        assert r.json()["adjudicating"] is False
+
+    def test_not_running_is_never_adjudicating(self, sandbox_session):
+        _write_session(sandbox_session, status="running", triage_requested=True)
+        with patch.object(api, "_smith_running", return_value=False):
+            r = client.get("/api/smith-status")
+        assert r.json()["adjudicating"] is False
+
+
+# ---------------------------------------------------------------------------
+# Fast loop-exit stall detection (connection-aware): _smith_generating,
+# _scan_has_pending_cells, _smith_stalled_pid, and the watchdog-tick wiring.
+# ---------------------------------------------------------------------------
+
+import psutil  # noqa: E402
+from core.api_server import smith  # noqa: E402
+
+
+def _conn(status, ip):
+    raddr = type("R", (), {"ip": ip})() if ip else None
+    return type("C", (), {"status": status, "raddr": raddr})()
+
+
+class _FakeProc:
+    def __init__(self, conns):
+        self._conns = conns
+
+    def net_connections(self, kind="inet"):
+        return self._conns
+
+
+def test_smith_generating_true_on_remote_connection(monkeypatch):
+    monkeypatch.setattr(psutil, "Process",
+                        lambda pid: _FakeProc([_conn("ESTABLISHED", "127.0.0.1"),
+                                               _conn("ESTABLISHED", "100.106.191.8")]))
+    assert smith._smith_generating(123) is True
+
+
+def test_smith_generating_false_when_only_loopback(monkeypatch):
+    monkeypatch.setattr(psutil, "Process",
+                        lambda pid: _FakeProc([_conn("ESTABLISHED", "127.0.0.1"),
+                                               _conn("CLOSE_WAIT", "100.106.191.8")]))
+    assert smith._smith_generating(123) is False
+
+
+def test_smith_generating_failsafe_true_on_error(monkeypatch):
+    def boom(pid):
+        raise psutil.AccessDenied(pid)
+    monkeypatch.setattr(psutil, "Process", boom)
+    assert smith._smith_generating(123) is True  # can't tell → never stall-kill
+
+
+def test_scan_has_pending_cells(tmp_path, monkeypatch):
+    cov = tmp_path / "coverage.json"
+    monkeypatch.setattr(api, "_COVERAGE_FILE", cov)
+    cov.write_text(json.dumps({"matrix": [{"status": "pending"}, {"status": "tested_clean"}]}))
+    assert smith._scan_has_pending_cells() is True
+    cov.write_text(json.dumps({"matrix": [{"status": "tested_clean"}, {"status": "not_applicable"}]}))
+    assert smith._scan_has_pending_cells() is False
+    monkeypatch.setattr(api, "_COVERAGE_FILE", tmp_path / "missing.json")
+    assert smith._scan_has_pending_cells() is False
+
+
+def _stub_stalled(monkeypatch, *, age, generating, pending, recently_started=False, pid=4242):
+    monkeypatch.setattr(smith, "_signal_session_recently_started", lambda: recently_started)
+    monkeypatch.setattr(smith, "_quick_log_age_seconds", lambda: age)
+    monkeypatch.setattr(api, "_live_pid_from_pid_file", lambda: pid)
+    monkeypatch.setattr(api, "_live_pid_from_process_scan", lambda: None)
+    monkeypatch.setattr(smith, "_smith_generating", lambda p: generating)
+    monkeypatch.setattr(smith, "_scan_has_pending_cells", lambda: pending)
+
+
+def test_smith_stalled_pid_fires_on_exited_loop(monkeypatch):
+    # idle 10 min, not generating, cells pending → stalled.
+    _stub_stalled(monkeypatch, age=600.0, generating=False, pending=True)
+    assert smith._smith_stalled_pid() == 4242
+
+
+def test_smith_stalled_pid_none_when_generating(monkeypatch):
+    _stub_stalled(monkeypatch, age=600.0, generating=True, pending=True)
+    assert smith._smith_stalled_pid() is None  # mid-generation — leave it alone
+
+
+def test_smith_stalled_pid_none_when_no_pending(monkeypatch):
+    _stub_stalled(monkeypatch, age=600.0, generating=False, pending=False)
+    assert smith._smith_stalled_pid() is None  # scan effectively done
+
+
+def test_smith_stalled_pid_none_when_fresh(monkeypatch):
+    _stub_stalled(monkeypatch, age=60.0, generating=False, pending=True)  # 1 min < 5 min
+    assert smith._smith_stalled_pid() is None
+
+
+def test_smith_stalled_pid_none_when_recently_started(monkeypatch):
+    _stub_stalled(monkeypatch, age=600.0, generating=False, pending=True, recently_started=True)
+    assert smith._smith_stalled_pid() is None
+
+
+@pytest.mark.asyncio
+async def test_watchdog_tick_respawns_on_stall(tmp_path, monkeypatch):
+    # session running, NOT hung (within 30 min), but loop exited → stalled pid.
+    session_file = tmp_path / "session.json"
+    session_file.write_text(json.dumps({"status": "running"}))
+    monkeypatch.setattr(api, "_SESSION_FILE", session_file)
+    monkeypatch.setattr(api, "_smith_hung_pid", lambda: None)
+    monkeypatch.setattr(api, "_smith_stalled_pid", lambda: 4242)
+    monkeypatch.setattr(api, "_smith_running", lambda: True)   # would early-return without the stall path
+    monkeypatch.setattr(api, "_mcp_sse_alive", lambda: True)
+    killed = []
+    monkeypatch.setattr(api, "_kill_hung_smith", lambda pid: killed.append(pid) or True)
+    spawned = []
+
+    async def _fake_spawn(client, source="api"):
+        spawned.append((client, source)); return True, 5555
+    monkeypatch.setattr(api, "_spawn_smith", _fake_spawn)
+    monkeypatch.setattr(api, "_detect_active_client", lambda: "opencode")
+    # neutralize rate-limit gates so the spawn path is reached
+    monkeypatch.setattr(api, "_watchdog_last_restart_ts", 0.0)
+    monkeypatch.setattr(api, "_watchdog_restart_count_window", [])
+    # reset no-progress backoff so a single fresh tick spawns (first observation
+    # never escalates) rather than tripping HIR_NO_PROGRESS from leaked globals
+    monkeypatch.setattr(api.smith, "_watchdog_no_progress_count", 0)
+    monkeypatch.setattr(api.smith, "_watchdog_last_progress", None)
+
+    await smith._watchdog_tick(10_000.0)
+    assert killed == [4242]          # the stalled pid was killed
+    assert spawned and spawned[0][0] == "opencode"  # and a fresh client respawned
+
+
+# ── _smith_exited: the clean-exit (process gone, no pid) fast path ──────────
+# Counterpart to _smith_stalled_pid (alive-but-idle). `opencode run` is one-shot,
+# so its commonest death is a CLEAN EXIT with no process left — invisible to the
+# hung/stalled detectors (they need a live pid) and masked by a fresh quick_log
+# for the full 30-min idle timer. This path catches it at the 5-min stall mark.
+
+def _stub_exited(monkeypatch, *, age, pending, recently_started=False,
+                 pid_file=None, proc_scan=None):
+    monkeypatch.setattr(smith, "_signal_session_recently_started", lambda: recently_started)
+    monkeypatch.setattr(smith, "_quick_log_age_seconds", lambda: age)
+    monkeypatch.setattr(api, "_live_pid_from_pid_file", lambda: pid_file)
+    monkeypatch.setattr(api, "_live_pid_from_process_scan", lambda: proc_scan)
+    monkeypatch.setattr(smith, "_scan_has_pending_cells", lambda: pending)
+
+
+def test_smith_exited_fires_when_process_gone_and_idle(monkeypatch):
+    # idle 10 min, NO live pid (process gone), cells pending → cleanly exited.
+    _stub_exited(monkeypatch, age=600.0, pending=True)
+    assert smith._smith_exited() is True
+
+
+def test_smith_exited_false_when_live_pid_exists(monkeypatch):
+    # a live pid means alive-but-idle — the stalled path owns that, not this one.
+    _stub_exited(monkeypatch, age=600.0, pending=True, pid_file=4242)
+    assert smith._smith_exited() is False
+
+
+def test_smith_exited_false_when_process_scan_matches(monkeypatch):
+    # operator relaunched opencode in a terminal — a live process exists, not gone.
+    _stub_exited(monkeypatch, age=600.0, pending=True, proc_scan=7777)
+    assert smith._smith_exited() is False
+
+
+def test_smith_exited_false_when_fresh(monkeypatch):
+    # idle 1 min < 5 min stall threshold — could be a brief between-turn gap.
+    _stub_exited(monkeypatch, age=60.0, pending=True)
+    assert smith._smith_exited() is False
+
+
+def test_smith_exited_false_when_no_pending(monkeypatch):
+    _stub_exited(monkeypatch, age=600.0, pending=False)
+    assert smith._smith_exited() is False  # scan effectively done — don't respawn
+
+
+def test_smith_exited_false_when_recently_started(monkeypatch):
+    _stub_exited(monkeypatch, age=600.0, pending=True, recently_started=True)
+    assert smith._smith_exited() is False  # startup grace window
+
+
+def test_smith_exited_false_when_quick_log_absent(monkeypatch):
+    # no heartbeat ever (age None) and not in startup grace — nothing to judge.
+    _stub_exited(monkeypatch, age=None, pending=True)
+    assert smith._smith_exited() is False
+
+
+@pytest.mark.asyncio
+async def test_watchdog_tick_respawns_on_clean_exit_despite_fresh_quicklog(tmp_path, monkeypatch):
+    # Bug-1 regression: opencode cleanly EXITED (no pid), but within the 30-min
+    # window _smith_running() still reports True off the stale quick_log. The
+    # clean-exit branch must intercept BEFORE the _smith_running() early-return
+    # and respawn — not wait out the full idle timer (observed: 34-min dead gap).
+    session_file = tmp_path / "session.json"
+    session_file.write_text(json.dumps({"status": "running"}))
+    monkeypatch.setattr(api, "_SESSION_FILE", session_file)
+    monkeypatch.setattr(api, "_smith_hung_pid", lambda: None)
+    monkeypatch.setattr(api, "_smith_stalled_pid", lambda: None)   # no live pid to be stalled
+    monkeypatch.setattr(api, "_smith_exited", lambda: True)        # process gone, idle, pending
+    monkeypatch.setattr(api, "_smith_running", lambda: True)       # stale quick_log STILL says "alive"
+    monkeypatch.setattr(api, "_mcp_sse_alive", lambda: True)
+    killed = []
+    monkeypatch.setattr(api, "_kill_hung_smith", lambda pid: killed.append(pid) or True)
+    spawned = []
+
+    async def _fake_spawn(client, source="api"):
+        spawned.append((client, source)); return True, 5555
+    monkeypatch.setattr(api, "_spawn_smith", _fake_spawn)
+    monkeypatch.setattr(api, "_detect_active_client", lambda: "opencode")
+    monkeypatch.setattr(api, "_watchdog_last_restart_ts", 0.0)
+    monkeypatch.setattr(api, "_watchdog_restart_count_window", [])
+    monkeypatch.setattr(api.smith, "_watchdog_no_progress_count", 0)
+    monkeypatch.setattr(api.smith, "_watchdog_last_progress", None)
+
+    await smith._watchdog_tick(10_000.0)
+    assert killed == []                              # nothing to kill — process already gone
+    assert spawned and spawned[0][0] == "opencode"   # respawned despite _smith_running()=True
+
+
+@pytest.mark.asyncio
+async def test_watchdog_tick_no_respawn_when_running_and_not_exited(tmp_path, monkeypatch):
+    # Guard against over-firing: a healthy in-flight run (running, not hung/
+    # stalled/exited) must still early-return — no respawn.
+    session_file = tmp_path / "session.json"
+    session_file.write_text(json.dumps({"status": "running"}))
+    monkeypatch.setattr(api, "_SESSION_FILE", session_file)
+    monkeypatch.setattr(api, "_smith_hung_pid", lambda: None)
+    monkeypatch.setattr(api, "_smith_stalled_pid", lambda: None)
+    monkeypatch.setattr(api, "_smith_exited", lambda: False)
+    monkeypatch.setattr(api, "_smith_running", lambda: True)
+    monkeypatch.setattr(api, "_mcp_sse_alive", lambda: True)
+    spawned = []
+
+    async def _fake_spawn(client, source="api"):
+        spawned.append(client); return True, 1
+    monkeypatch.setattr(api, "_spawn_smith", _fake_spawn)
+    await smith._watchdog_tick(10_000.0)
+    assert spawned == []   # healthy run left alone

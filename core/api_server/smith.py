@@ -20,13 +20,39 @@ import core.api_server as _api
 
 _log = logging.getLogger(__name__)
 
-# >5 min with no scan activity → Smith is considered stopped.
-# Was 60s previously, but Qwen3.6-A3B thinking-mode reasoning regularly runs
-# 2–3 min between tool calls. 60s caused steady false positives during
-# normal thinking pauses, sending bogus WATCHDOG_SMITH_STOPPED alerts to
-# Telegram/Slack/Discord. 300s catches real Smith deaths within 5 min while
-# tolerating long internal reasoning blocks.
-_SMITH_IDLE_SECONDS = 300
+# No scan activity for this long → Smith is considered stopped/hung.
+# History: 60s → 300s (Qwen3.6-A3B thinking-mode runs 2–3 min between tool
+# calls) → 1800s. On a large/near-full context window a single turn (slow
+# prefill + compaction on the local model) can exceed 5 min with no tool call,
+# so 300s false-killed a healthy-but-slow Smith and triggered a kill→respawn
+# death spiral (the watchdog killed every respawn before it could call a tool).
+# 30 min tolerates the slowest realistic turn while still catching real deaths.
+_SMITH_IDLE_SECONDS = 1800
+
+# Fast "loop exited mid-scan" stall threshold. The 30-min idle window above is a
+# blunt timer that can't tell a slow generation from a finished agent loop, so a
+# Smith whose loop EXITED (model ended its turn with no tool call) sits idle for
+# up to 30 min before respawn. _smith_stalled_pid() catches that in minutes by
+# also checking the process is NOT generating (no live connection to the model
+# endpoint) and the scan still has pending cells — so we never false-kill a slow
+# generation, only a genuinely-exited loop.
+_SMITH_STALL_SECONDS = 300
+
+# No-progress backoff: a respawn that produces no new finding, no newly-closed
+# cell, and no fresh MCP activity is futile — it just re-enters the same dead end
+# (recovery → list → exit). After this many consecutive futile respawns the
+# watchdog pauses for a human (HIR_NO_PROGRESS) instead of looping the model.
+_WATCHDOG_MAX_NO_PROGRESS = 3
+# Cold-start fallback: after this many no-progress respawns, stop RESUMING the
+# opencode session and cold-start a fresh one instead. A long scan's session
+# bloats until the model hangs just re-loading it on resume (resume → hang → kill
+# → resume … the observed loop), so a resume can never recover it. A cold start
+# gives the model a small, clean context and it recovers its position from disk
+# (session(action='recovery')). Set one rung below MAX_NO_PROGRESS so the fresh
+# context gets a real shot before the run escalates to HIR_NO_PROGRESS.
+_WATCHDOG_COLD_START_AFTER = 2
+_watchdog_last_progress: tuple | None = None
+_watchdog_no_progress_count = 0
 
 # Process patterns a psutil-based fallback considers "Smith is alive".
 # Used by _smith_running() as a last-resort signal after the PID-file and
@@ -276,6 +302,189 @@ def _kill_hung_smith(pid: int) -> bool:
     return True
 
 
+def _quick_log_age_seconds() -> float | None:
+    """Seconds since the last MCP heartbeat (quick_log mtime), or None if absent."""
+    import time
+    try:
+        if not _api._QUICK_LOG_FILE.exists():
+            return None
+        return time.time() - _api._QUICK_LOG_FILE.stat().st_mtime
+    except OSError as e:
+        _log.debug("quick_log age check failed: %s", e)
+        return None
+
+
+def _is_loopback(ip: str) -> bool:
+    return ip.startswith("127.") or ip in ("::1", "localhost", "0.0.0.0")
+
+
+def _smith_generating(pid: int) -> bool:
+    """True if the Smith process holds a live connection to a REMOTE endpoint —
+    i.e. it's actively talking to the model (mid-generation), not stalled.
+
+    Smith's only non-loopback connection is to the LLM endpoint (the MCP server
+    it talks to is loopback; the scan target is reached by the MCP server, not
+    by Smith). So a live remote connection means "generating, leave it alone".
+    A loop that has exited has closed that connection. On any error we cannot
+    rule out generation, so we return True (fail-safe: never stall-kill what
+    might be a slow generation).
+    """
+    try:
+        import psutil
+        proc = psutil.Process(pid)
+        for c in proc.net_connections(kind="inet"):
+            if c.status == "ESTABLISHED" and c.raddr and not _is_loopback(c.raddr.ip):
+                return True
+        return False
+    except Exception as e:  # psutil missing / AccessDenied / NoSuchProcess / OSError
+        _log.debug("smith_generating check for pid=%d inconclusive (%s) — assuming generating", pid, e)
+        return True
+
+
+def _scan_has_pending_cells() -> bool:
+    """True if the coverage matrix still has untested (pending/in_progress) cells.
+
+    Gates the fast stall-respawn to scans with real testing work left — a scan
+    whose cells are all addressed but isn't formally completed is left for the
+    operator / the 30-min fallback, not auto-respawned in a loop.
+    """
+    import json as _json
+    try:
+        cov = _json.loads(_api._COVERAGE_FILE.read_text())
+    except (OSError, ValueError):
+        return False
+    return any(c.get("status") in ("pending", "in_progress") for c in cov.get("matrix", []))
+
+
+def _smith_stalled_pid() -> int | None:
+    """Return the live Smith pid if its agent loop has clearly EXITED mid-scan.
+
+    Distinct from _smith_hung_pid (the blunt 30-min timer): a clean loop-exit
+    leaves the process alive but idle and NOT generating, so we catch it in
+    minutes without false-killing a slow generation. Fires only when ALL hold:
+      • not within the startup grace window,
+      • no MCP heartbeat for > _SMITH_STALL_SECONDS,
+      • a live Smith pid exists,
+      • that process is NOT generating (no live model connection), and
+      • the coverage matrix still has pending cells (scan isn't done).
+    """
+    if _signal_session_recently_started():
+        return None
+    age = _quick_log_age_seconds()
+    if age is None or age < _SMITH_STALL_SECONDS:
+        return None
+    pid = _api._live_pid_from_pid_file() or _api._live_pid_from_process_scan()
+    if pid is None:
+        return None
+    if _smith_generating(pid):
+        return None
+    if not _scan_has_pending_cells():
+        return None
+    return pid
+
+
+def _smith_exited() -> bool:
+    """True if the Smith agent process has cleanly EXITED mid-scan — gone, no pid.
+
+    The counterpart to _smith_stalled_pid (alive-but-idle). ``opencode run`` is
+    one-shot, so its most common death is a clean exit that leaves NO process —
+    and both _smith_hung_pid and _smith_stalled_pid require a *live* pid, so they
+    are blind to it. Without this path a gone process is masked by
+    _signal_quick_log_fresh() for the full _SMITH_IDLE_SECONDS (30 min) before the
+    watchdog respawns, leaving the scan dead for half an hour (observed: opencode
+    exited 23:07, watchdog only respawned ~23:41).
+
+    Fires only when ALL hold (mirrors the stall detector, inverted on pid):
+      • not within the startup grace window,
+      • no MCP heartbeat for > _SMITH_STALL_SECONDS (not a brief between-turn gap),
+      • NO live Smith pid exists — pid file dead AND no matching process (truly gone),
+      • the coverage matrix still has pending cells (scan isn't done).
+    Returns a bool, not a pid: there is nothing to kill, so the watchdog falls
+    straight through to the respawn flow.
+    """
+    if _signal_session_recently_started():
+        return False
+    age = _quick_log_age_seconds()
+    if age is None or age < _SMITH_STALL_SECONDS:
+        return False
+    if _api._live_pid_from_pid_file() is not None or _api._live_pid_from_process_scan() is not None:
+        return False  # a live process exists — the hung/stalled paths own that case
+    return _scan_has_pending_cells()
+
+
+def _scan_progress_snapshot() -> tuple:
+    """(findings, addressed cells, quick_log mtime) — the watchdog's fingerprint
+    for 'did the last respawn actually accomplish anything?'."""
+    import json
+    findings = addressed = 0
+    qmtime = 0.0
+    try:
+        findings = len(json.loads(_api._FINDINGS_FILE.read_text()).get("findings", []))
+    except Exception:
+        pass
+    try:
+        cov = json.loads(_api._COVERAGE_FILE.read_text())
+        addressed = sum(1 for c in cov.get("matrix", [])
+                        if c.get("status") in ("tested_clean", "vulnerable", "not_applicable"))
+    except Exception:
+        pass
+    try:
+        qmtime = round(_api._QUICK_LOG_FILE.stat().st_mtime, 1)
+    except Exception:
+        pass
+    return (findings, addressed, qmtime)
+
+
+def _watchdog_should_escalate_no_progress() -> bool:
+    """Track consecutive futile respawns; True once the cap is hit. A respawn
+    that advances findings/cells/heartbeat resets the counter."""
+    global _watchdog_last_progress, _watchdog_no_progress_count
+    cur = _scan_progress_snapshot()
+    if _watchdog_last_progress is not None and cur == _watchdog_last_progress:
+        _watchdog_no_progress_count += 1
+    else:
+        _watchdog_no_progress_count = 0
+    _watchdog_last_progress = cur
+    return _watchdog_no_progress_count >= _WATCHDOG_MAX_NO_PROGRESS
+
+
+def _escalate_no_progress_hir() -> None:
+    """Pause the scan for a human instead of respawning into the same dead end."""
+    global _watchdog_last_progress, _watchdog_no_progress_count
+    n = _watchdog_no_progress_count
+    try:
+        from core import session as scan_session
+        scan_session.trigger_intervention(
+            code="HIR_NO_PROGRESS",
+            situation=(
+                f"The scan respawned {n}× with no new findings, no newly-closed cells, and no MCP "
+                "activity — the agent loop keeps exiting without testing. Pausing instead of "
+                "respawning into the same dead end."
+            ),
+            tried=[f"{n} consecutive respawns with zero progress"],
+            options=[
+                "COMPLETE: accept the current findings + documented coverage gaps and finish",
+                "GUIDE: give specific next steps (endpoints/findings to focus on) and resume",
+                "EXTEND: raise limits / provide credentials, then resume",
+                "ABORT: stop the scan",
+            ],
+        )
+    except Exception:
+        _log.exception("no-progress HIR escalation failed")
+    try:
+        from core import notifiers as _nfr
+        _nfr.notify(
+            title="Smith stuck — respawns making no progress",
+            body=("The watchdog paused the scan after repeated respawns produced no new findings or "
+                  "coverage. Decide on the dashboard: complete, guide, extend, or abort."),
+            urgency="high", code="WATCHDOG_NO_PROGRESS",
+        )
+    except Exception:
+        pass
+    _watchdog_no_progress_count = 0
+    _watchdog_last_progress = None
+
+
 _KNOWN_CLIENTS = ("claude", "opencode", "codex")
 
 
@@ -410,10 +619,87 @@ def _spawn_source_tag(source: str) -> str:
     return _SPAWN_SOURCE_TAGS.get(source, f"spawn_{source}")
 
 
+def _latest_opencode_session(directory: str) -> str | None:
+    """Newest opencode session whose directory matches `directory` — i.e. the
+    scan's own session, so a watchdog respawn can ``--session <id>`` resume it
+    (keeping the agent's in-context memory of what it already tested and which
+    tools fail here) instead of cold-starting from the recovery brief and
+    re-walking the same dead ends.
+
+    Read-only and best-effort: shells out to opencode's own ``session list``
+    rather than coupling to its SQLite schema, and returns None on ANY problem
+    so the caller cleanly falls back to a cold start (first launch, opencode
+    missing, mismatched dir, parse error, timeout).
+    """
+    import json
+    import os
+    import shutil
+    import subprocess
+    try:
+        binary = shutil.which("opencode")
+        if not binary:
+            return None
+        target = os.path.realpath(directory)
+        out = subprocess.run(
+            [binary, "session", "list", "--format", "json", "-n", "20"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if out.returncode != 0 or not out.stdout.strip():
+            return None
+        sessions = json.loads(out.stdout)
+        if not isinstance(sessions, list):
+            return None
+        for s in sessions:  # session list returns newest-first
+            d = s.get("directory")
+            if d and s.get("id") and os.path.realpath(d) == target:
+                return s["id"]
+        return None
+    except Exception:
+        return None
+
+
+def _cold_recovery_prompt(directive_text: str) -> str:
+    """Prompt for a COLD spawn (no resumable session): the agent has no prior
+    context, so it must reconstruct its position from session(action='recovery')."""
+    return (
+        "Recover the active pentest scan. "
+        "Call session(action='recovery') to get your current position, "
+        "then immediately execute the EXECUTE_NOW field — do NOT ask for confirmation, "
+        "do NOT summarise what you plan to do, just start tool calls. "
+        "If session(action='status') returns qa_alerts, answer them with "
+        "session(action='qa_reply') before continuing. "
+        "Keep working autonomously until you are genuinely blocked and cannot "
+        "proceed without new human input. Do NOT stop to ask questions."
+        + directive_text
+    )
+
+
+def _resume_prompt(directive_text: str) -> str:
+    """Prompt for a RESUMED spawn (--session <id>): the agent's full prior
+    conversation is rehydrated, so it must NOT re-run recovery from scratch —
+    just continue, and explicitly break out of any failing-tool loop it was
+    stuck in (the wedge that cold recovery kept resurrecting)."""
+    return (
+        "You are resuming your OWN pentest session after an automatic restart — your full "
+        "prior context is intact. Do NOT call session(action='recovery') or re-read everything "
+        "from scratch; pick up exactly where you left off and continue testing the next pending "
+        "coverage cells. If you were stuck repeating a tool that kept FAILING, STOP using it and "
+        "switch approaches (e.g. use kali with curl instead of http_request). You may call "
+        "session(action='status') once to re-sync coverage and answer any qa_alerts with "
+        "session(action='qa_reply'). Keep working autonomously until you are genuinely blocked. "
+        "Do NOT stop to ask questions, do NOT summarise — just resume tool calls."
+        + directive_text
+    )
+
+
 async def _spawn_smith(client: str, source: str = "api") -> tuple[bool, int | str]:
     """Core spawn logic shared by the /api/restart-smith endpoint and the
     watchdog. Returns (ok, pid_or_error_message). source is logged so the
     audit trail distinguishes manual restarts from auto-restarts.
+
+    For opencode, a respawn RESUMES the scan's own session (``--session <id>``)
+    when one is found, so the agent keeps its memory instead of cold-starting;
+    it falls back to a cold ``run`` + full recovery prompt otherwise.
     """
     try:
         from core.steering import steering_queue
@@ -451,22 +737,39 @@ async def _spawn_smith(client: str, source: str = "api") -> tuple[bool, int | st
         except Exception as _e:
             _log.debug("spawn_smith: qa_state clear failed: %s", _e)
 
-        prompt = (
-            "Recover the active pentest scan. "
-            "Call session(action='recovery') to get your current position, "
-            "then immediately execute the EXECUTE_NOW field — do NOT ask for confirmation, "
-            "do NOT summarise what you plan to do, just start tool calls. "
-            "If session(action='status') returns qa_alerts, answer them with "
-            "session(action='qa_reply') before continuing. "
-            "Keep working autonomously until you are genuinely blocked and cannot "
-            "proceed without new human input. Do NOT stop to ask questions."
-            + directive_text
-        )
-
         log_path = _api._REPO_ROOT / "logs" / "smith_restart.log"
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, lambda: log_path.parent.mkdir(parents=True, exist_ok=True))
-        audit_line = f"\n=== [{source}] spawning {client} at {loop.time()} ===\n"
+
+        # Resume the agent's own opencode session when one exists for this scan,
+        # so the respawn keeps its in-context memory (what it already tested,
+        # which tools fail here) instead of cold-starting from the recovery brief
+        # and re-walking the same dead ends. None → cold start (first launch /
+        # mismatch / opencode not resolvable).
+        resume_sid = None
+        if client == "opencode":
+            resume_sid = await loop.run_in_executor(
+                None, lambda: _api._latest_opencode_session(str(_api._REPO_ROOT))
+            )
+            # Cold-start fallback: when recent respawns have made NO progress, the
+            # session has usually bloated to where the model hangs just re-loading
+            # it on resume — so resuming can only re-enter the hang loop. Drop the
+            # resume and cold-start a fresh, small context; the agent recovers its
+            # position from disk via session(action='recovery'). Breaks the loop
+            # one rung before HIR_NO_PROGRESS. Applies to the "Restart Smith" button
+            # too, so a manual restart on a wedged scan finally helps.
+            if resume_sid and _watchdog_no_progress_count >= _WATCHDOG_COLD_START_AFTER:
+                _log.warning(
+                    "watchdog: %d no-progress respawn(s) — COLD-STARTING a fresh session "
+                    "instead of resuming the bloated one (agent recovers from disk)",
+                    _watchdog_no_progress_count,
+                )
+                resume_sid = None
+
+        prompt = _resume_prompt(directive_text) if resume_sid else _cold_recovery_prompt(directive_text)
+
+        audit_kind = f"resume session={resume_sid}" if resume_sid else "cold-start"
+        audit_line = f"\n=== [{source}] spawning {client} ({audit_kind}) at {loop.time()} ===\n"
         await loop.run_in_executor(None, lambda: log_path.open("a").write(audit_line))
 
         import shutil
@@ -475,8 +778,13 @@ async def _spawn_smith(client: str, source: str = "api") -> tuple[bool, int | st
             return False, f"{client} binary not found on PATH"
         if client == "claude":
             args = [binary, "--dangerously-skip-permissions", "-p", prompt]
+        elif resume_sid:
+            # opencode resume: --session <id> rehydrates the scan's prior
+            # conversation so the agent continues with full memory. Linear
+            # continue (not --fork) so all work accrues to one chain.
+            args = [binary, "run", "--session", resume_sid, "--dangerously-skip-permissions", prompt]
         else:
-            # opencode: detached background spawn has no controlling TTY, so any
+            # opencode cold: detached background spawn has no controlling TTY, so any
             # permission prompt either hangs forever (waiting on closed stdin)
             # or exits because no TTY is available. --dangerously-skip-permissions
             # auto-approves prompts that aren't explicitly denied in opencode.json's
@@ -667,6 +975,68 @@ async def _ensure_mcp_sse_alive(now: float) -> None:
             pass
 
 
+def _watchdog_notify(title: str, body: str, code: str) -> None:
+    """Best-effort out-of-band notification — never breaks the watchdog loop."""
+    try:
+        from core import notifiers as _nfr
+        _nfr.notify(title=title, body=body, urgency="high", code=code)
+    except Exception:
+        pass
+
+
+async def _watchdog_respawn_flow(now: float) -> None:
+    """Respawn Smith (or escalate) after it stopped while the scan is running.
+
+    Runs the guard gauntlet — MCP alive, min-gap, per-hour cap, no-progress
+    backoff — then spawns a fresh client. Each guard that blocks notifies the
+    operator and returns. Extracted from _watchdog_tick to keep both readable.
+    """
+    _watchdog_notify(
+        "Smith stopped while scan running",
+        "Watchdog detected Smith exited with the scan still marked running. Auto-restart will "
+        "fire if MCP is alive and the per-hour cap allows. Check the dashboard if it stays stuck.",
+        "WATCHDOG_SMITH_STOPPED",
+    )
+    if not _api._mcp_sse_alive():
+        _log.warning("watchdog suppressed: MCP SSE server unreachable on 127.0.0.1:7778")
+        _watchdog_notify(
+            "MCP SSE server unreachable",
+            "Watchdog can't restart Smith because the MCP server on 127.0.0.1:7778 isn't "
+            "responding. Restart it with `./installers/start-mcp-server.sh start`.",
+            "WATCHDOG_MCP_DOWN",
+        )
+        return
+    if now - _api._watchdog_last_restart_ts < _api._WATCHDOG_MIN_GAP_SECONDS:
+        return
+    _api._watchdog_restart_count_window[:] = [
+        t for t in _api._watchdog_restart_count_window if now - t < 3600
+    ]
+    if len(_api._watchdog_restart_count_window) >= _api._WATCHDOG_MAX_PER_HOUR:
+        _log.warning("watchdog suppressed: %d restarts in last hour exceeds cap %d",
+                     len(_api._watchdog_restart_count_window), _api._WATCHDOG_MAX_PER_HOUR)
+        _watchdog_notify(
+            "Smith respawn cap reached",
+            f"Watchdog gave up after {len(_api._watchdog_restart_count_window)} restarts in the "
+            f"last hour (cap {_api._WATCHDOG_MAX_PER_HOUR}). Scan is stuck — intervene from the dashboard.",
+            "WATCHDOG_RESPAWN_CAP",
+        )
+        return
+    # No-progress backoff — escalate to a human instead of respawning into the
+    # same dead end (the recovery→list→exit loop that burned the model every 2 min).
+    if _api._watchdog_should_escalate_no_progress():
+        _log.warning("watchdog: %d respawns with no progress — pausing for human (HIR_NO_PROGRESS)",
+                     _watchdog_no_progress_count)
+        _api._escalate_no_progress_hir()
+        return
+    client = _api._detect_active_client()
+    _log.info("watchdog: smith stopped while scan running — auto-restart")
+    ok, result = await _api._spawn_smith(client, source="watchdog")
+    if ok:
+        _api._watchdog_last_restart_ts = now
+        _api._watchdog_restart_count_window.append(now)
+        _log.info("watchdog: spawned pid=%d", int(result) if isinstance(result, int) else 0)
+
+
 async def _watchdog_tick(now: float) -> None:
     """Single watchdog tick: restart Smith if all guard conditions pass.
 
@@ -691,107 +1061,55 @@ async def _watchdog_tick(now: float) -> None:
     # checking hang FIRST, we kill the zombie + let the rest of the tick
     # respawn via the normal _spawn_smith() path.
     hung_pid = _api._smith_hung_pid()
-    if hung_pid is not None:
-        _log.warning(
-            "watchdog: detected hung Smith pid=%d (no MCP heartbeat in %ds) — killing",
-            hung_pid, _SMITH_IDLE_SECONDS,
+    # When not hung (within the 30-min window), also catch a loop that has
+    # EXITED mid-scan: alive but idle > _SMITH_STALL_SECONDS, NOT generating, and
+    # cells still pending. This respawns in minutes instead of waiting out the
+    # blunt 30-min timer, without false-killing a slow generation.
+    stalled_pid = _api._smith_stalled_pid() if hung_pid is None else None
+    kill_pid = hung_pid or stalled_pid
+    if kill_pid is not None:
+        is_stall = hung_pid is None
+        idle_desc = (
+            f"agent loop exited mid-scan (idle > {_SMITH_STALL_SECONDS // 60} min, "
+            "not generating, cells still pending)"
+            if is_stall else
+            f"no MCP heartbeat in {_SMITH_IDLE_SECONDS // 60} min"
         )
-        try:
-            from core import notifiers as _nfr
-            _nfr.notify(
-                title="Smith hung — process alive but no progress",
-                body=(
-                    f"Watchdog detected pid {hung_pid} is still alive but "
-                    f"hasn't made an MCP tool call in "
-                    f"{_SMITH_IDLE_SECONDS // 60} min. Killing it and "
-                    "attempting respawn. Check the dashboard if the scan "
-                    "stays stuck after respawn."
-                ),
-                urgency="high",
-                code="WATCHDOG_SMITH_HUNG",
-            )
-        except Exception:
-            pass
-        _api._kill_hung_smith(hung_pid)
+        _log.warning(
+            "watchdog: %s Smith pid=%d — killing + respawning (%s)",
+            "stalled" if is_stall else "hung", kill_pid, idle_desc,
+        )
+        _watchdog_notify(
+            ("Smith stalled — agent loop exited mid-scan" if is_stall
+             else "Smith hung — process alive but no progress"),
+            f"Watchdog detected pid {kill_pid}: {idle_desc}. Killing it and respawning to "
+            "resume the scan. Check the dashboard if it stays stuck.",
+            ("WATCHDOG_SMITH_STALLED" if is_stall else "WATCHDOG_SMITH_HUNG"),
+        )
+        _api._kill_hung_smith(kill_pid)
         # Fall through into the spawn flow — do NOT return early.
+    elif _api._smith_exited():
+        # Cleanly EXITED mid-scan: process gone, no pid to kill. This branch MUST
+        # precede the _smith_running() early-return, because in the 5-30 min window
+        # after a clean exit _signal_quick_log_fresh() still reports "alive" off the
+        # stale heartbeat — _smith_running() would return True and mask the gone
+        # process for the full 30-min idle timer. Logged (the absence of any
+        # watchdog log is what made this hard to diagnose) then fall through to the
+        # respawn flow, which fires WATCHDOG_SMITH_STOPPED. No kill needed.
+        _log.warning(
+            "watchdog: Smith cleanly exited mid-scan (process gone, idle > %d min, "
+            "cells pending) — respawning instead of waiting out the 30-min idle timer",
+            _SMITH_STALL_SECONDS // 60,
+        )
     elif _api._smith_running():
         return
-    # Smith is stopped (or just killed) while the scan is still running — that's
-    # the condition the operator wants to know about. Fire BEFORE the MCP /
-    # cap / gap guards so we don't go silent on the most actionable case.
-    # Note: for hung→killed, the dedup key WATCHDOG_SMITH_STOPPED is
-    # distinct from WATCHDOG_SMITH_HUNG (fired above), so both alerts land
-    # for a hang event — operator sees "hung, killing" then "stopped,
-    # restarting" within the same tick.
-    try:
-        from core import notifiers as _nfr
-        _nfr.notify(
-            title="Smith stopped while scan running",
-            body=(
-                "Watchdog detected Smith exited with the scan still "
-                "marked running. Auto-restart will fire if MCP is alive "
-                "and the per-hour cap allows. Check the dashboard if "
-                "the scan stays stuck."
-            ),
-            urgency="high",
-            code="WATCHDOG_SMITH_STOPPED",
-        )
-    except Exception:
-        # Notifier failures must never break the watchdog loop.
-        pass
-    if not _api._mcp_sse_alive():
-        _log.warning("watchdog suppressed: MCP SSE server unreachable on 127.0.0.1:7778")
-        try:
-            from core import notifiers as _nfr
-            _nfr.notify(
-                title="MCP SSE server unreachable",
-                body=(
-                    "Watchdog can't restart Smith because the MCP server "
-                    "on 127.0.0.1:7778 isn't responding. Restart it with "
-                    "`./installers/start-mcp-server.sh start`."
-                ),
-                urgency="high",
-                code="WATCHDOG_MCP_DOWN",
-            )
-        except Exception:
-            pass
-        return
-    if now - _api._watchdog_last_restart_ts < _api._WATCHDOG_MIN_GAP_SECONDS:
-        return
-    _api._watchdog_restart_count_window[:] = [
-        t for t in _api._watchdog_restart_count_window if now - t < 3600
-    ]
-    if len(_api._watchdog_restart_count_window) >= _api._WATCHDOG_MAX_PER_HOUR:
-        _log.warning(
-            "watchdog suppressed: %d restarts in last hour exceeds cap %d",
-            len(_api._watchdog_restart_count_window), _api._WATCHDOG_MAX_PER_HOUR,
-        )
-        try:
-            from core import notifiers as _nfr
-            _nfr.notify(
-                title="Smith respawn cap reached",
-                body=(
-                    f"Watchdog gave up after {len(_api._watchdog_restart_count_window)} "
-                    f"restarts in the last hour (cap {_api._WATCHDOG_MAX_PER_HOUR}). "
-                    "Scan is stuck — please intervene from the dashboard."
-                ),
-                urgency="high",
-                code="WATCHDOG_RESPAWN_CAP",
-            )
-        except Exception:
-            pass
-        return
-    client = _api._detect_active_client()
-    _log.info("watchdog: smith stopped while scan running — auto-restart")
-    ok, result = await _api._spawn_smith(client, source="watchdog")
-    if ok:
-        _api._watchdog_last_restart_ts = now
-        _api._watchdog_restart_count_window.append(now)
-        # S5145 defense: result on success is a kernel-assigned PID (int).
-        # Force %d formatting so a malformed string return path can't reach
-        # the log line — int() would raise, and the resulting LogRecord
-        # carries only a sanitized integer, never user-controlled bytes.
-        _log.info("watchdog: spawned pid=%d", int(result) if isinstance(result, int) else 0)
+    # Smith is stopped (or just killed) while the scan is still running — hand
+    # off to the respawn flow (notify → MCP/gap/cap/no-progress guards →
+    # spawn-or-escalate). Extracted from this tick so each stays readable and
+    # under the cognitive-complexity budget; the WATCHDOG_SMITH_STOPPED dedup
+    # key is distinct from the HUNG/STALLED key fired above, so both alerts
+    # land for a hang event (operator sees "hung, killing" then "restarting").
+    await _watchdog_respawn_flow(now)
 
 
 async def _smith_watchdog_loop() -> None:

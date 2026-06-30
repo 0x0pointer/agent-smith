@@ -662,8 +662,21 @@ async def api_smith_status() -> JSONResponse:
     # _SMITH_IDLE_SECONDS respawn grace so the UI can warn before a respawn.
     _HEARTBEAT_IDLE_S = 120
     idle = heartbeat_age is not None and heartbeat_age >= _HEARTBEAT_IDLE_S
+    running = _api._smith_running()
+    # `adjudicating` lets the UI label a post-complete triage relaunch as
+    # "adjudicating" instead of a plain "running" — so a Smith spun back up to
+    # re-verify findings isn't mistaken for a hung/stuck scan.
+    adjudicating = False
+    if running:
+        try:
+            from core import session as scan_session
+            scan_session.load_from_disk(force=True)
+            adjudicating = bool((scan_session.get() or {}).get("triage_requested"))
+        except Exception:
+            pass
     return JSONResponse({
-        "running": _api._smith_running(),
+        "running": running,
+        "adjudicating": adjudicating,
         "heartbeat_age_s": heartbeat_age,
         "idle": idle,
     })
@@ -698,6 +711,54 @@ async def api_triage_cancel() -> JSONResponse:
         return JSONResponse({"ok": True, "removed_directives": removed})
     except Exception:
         _log.exception("api_triage_cancel failed")
+        return JSONResponse({"ok": False, "error": _api._ERR_REQUEST_FAILED}, status_code=500)
+
+
+@router.post("/api/force-stop")
+async def api_force_stop() -> JSONResponse:
+    """Hard stop — the "just stop it now" control.
+
+    Unlike /api/complete (which finalizes the session but leaves a
+    mid-adjudication Smith still running) and /api/triage-cancel (which only
+    drops the triage flag), this flips the session terminal, cancels any triage
+    pass, AND kills the running Smith process so it can neither keep working nor
+    be respawned by the watchdog. Deliverables (findings, coverage, PoCs) are
+    preserved — only the live process + operational pointers are torn down."""
+    _reason = "force-stopped by operator"
+    try:
+        from core import session as scan_session
+        scan_session.load_from_disk(force=True)
+        # Capture a live Smith PID BEFORE the kill + pointer-wipe below.
+        pid = _api._live_pid_from_pid_file() or _api._live_pid_from_process_scan()
+        # Force-stop is the operator override — it must finalize from ANY non-terminal
+        # state. complete() only transitions from 'running', so a scan wedged in
+        # intervention_required (an open HIR — exactly when you most need to kill it)
+        # couldn't be stopped at all. Clear the HIR first so complete() flips it terminal.
+        if (scan_session.get() or {}).get("status") == "intervention_required":
+            scan_session.resolve_intervention("FORCE_STOP", _reason)
+        # Terminal status first so the watchdog won't respawn after the kill.
+        cfg = scan_session.complete(_reason)
+        scan_session.set_triage_requested(False)
+        removed = 0
+        try:
+            from core.steering import steering_queue
+            removed = steering_queue.cancel_by_trigger("TRIAGE_ADJUDICATION", _reason)
+            removed += steering_queue.cancel_by_trigger("FORCE_COMPLETE_ADJUDICATION", _reason)
+        except Exception:
+            _log.exception("api_force_stop: directive cleanup failed")
+        killed = bool(pid) and _api._kill_hung_smith(pid)
+        # _kill_hung_smith clears smith.pid/client on success; wipe the rest too.
+        for path in (_api._SMITH_PID_FILE, _api._SMITH_CLIENT_FILE, _api._QUICK_LOG_FILE):
+            _api._safe_unlink(path)
+        return JSONResponse({
+            "ok": True,
+            "status": cfg.get("status", "complete"),
+            "killed": killed,
+            "pid": pid,
+            "removed_directives": removed,
+        })
+    except Exception:
+        _log.exception("api_force_stop failed")
         return JSONResponse({"ok": False, "error": _api._ERR_REQUEST_FAILED}, status_code=500)
 
 

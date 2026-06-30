@@ -27,13 +27,18 @@
         const svgEl = zoomInner.querySelector('svg');
         if (svgEl) { svgEl.style.maxWidth = '100%'; svgEl.style.height = 'auto'; }
       } else {
-        // Fallback to client-side rendering
+        // Client-side fallback. Use mermaid.render() (returns an SVG string),
+        // NOT mermaid.run({nodes:[el]}): run() measures the node via the live
+        // DOM, but this card isn't appended to the document until the end of
+        // the loop, so run() on the still-detached element threw "Cannot read
+        // properties of null (reading 'appendChild'/'getBoundingClientRect')".
+        // render() has no attachment dependency.
         const mermaidEl = document.createElement('div');
         mermaidEl.className = 'mermaid';
-        mermaidEl.textContent = d.mermaid;
-        zoomInner.appendChild(mermaidEl);
         try {
-          await mermaid.run({ nodes: [mermaidEl] });
+          const renderId = 'diagram-' + String(d.id).replace(/[^a-zA-Z0-9_-]/g, '');
+          const { svg } = await mermaid.render(renderId, d.mermaid);
+          mermaidEl.innerHTML = svg;
         } catch (err) {
           mermaidEl.innerHTML = `<div style="color:#ff4d4f;font-size:.8rem;margin-bottom:.5rem">
             ⚠ Mermaid render error: ${esc(String(err?.message||err))}</div>
@@ -41,6 +46,7 @@
                         font-size:.75rem;white-space:pre-wrap;word-break:break-all;
                         border:1px solid #21262d;max-height:400px;overflow-y:auto">${esc(d.mermaid)}</pre>`;
         }
+        zoomInner.appendChild(mermaidEl);
       }
 
       zoomWrap.appendChild(zoomInner);

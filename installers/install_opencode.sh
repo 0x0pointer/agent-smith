@@ -82,12 +82,18 @@ echo ""
 echo "Registering pentest-agent MCP server (SSE) in opencode config..."
 mkdir -p "$OPENCODE_CONFIG_DIR"
 
-python3 - <<PYEOF
+# NOTE: the heredoc delimiter is QUOTED ('PYEOF') so bash does NOT expand the
+# body. An UNQUOTED <<PYEOF ran command-substitution on the backticks in the
+# Python comments below (e.g. `opencode run`, `bash`), which executed
+# `opencode run` ("Error: You must provide a message or a command") and dropped
+# the installer into an interactive `bash`. Paths are passed via env instead.
+OPENCODE_CONFIG="$OPENCODE_CONFIG" REPO_DIR="$REPO_DIR" python3 - <<'PYEOF'
 import json
+import os
 from pathlib import Path
 
-config_path = Path("$OPENCODE_CONFIG")
-repo_dir    = Path("$REPO_DIR")
+config_path = Path(os.environ["OPENCODE_CONFIG"])
+repo_dir    = Path(os.environ["REPO_DIR"])
 
 try:
     data = json.loads(config_path.read_text()) if config_path.exists() else {}

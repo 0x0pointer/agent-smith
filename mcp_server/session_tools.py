@@ -131,7 +131,7 @@ def _record_handshake_client(ctx) -> None:
 
 
 @mcp.tool()
-async def session(action: str, options: dict | None = None, ctx: Context | None = None) -> str:
+async def session(action: str, options: dict | str | None = None, ctx: Context | None = None) -> str:
     """Scan lifecycle and infrastructure management.
 
     action  : start | complete | status | recovery | artifact | qa_reply | set_skill | set_step | wishlist_add | wishlist_list | start_kali | stop_kali | start_metasploit | stop_metasploit | pull_images | set_codebase
@@ -230,6 +230,11 @@ async def _dispatch_async_action(action: str, opts: dict) -> str | None:
         return await _do_oob_poll(opts)
     if action == "setup_gate":
         return await _do_setup_gate(opts)
+    if action == "complete":
+        # Async so we can propagate app-wide cross-cutting verdicts to their cells
+        # (best-effort) before the completion gate evaluates coverage.
+        await _autoclose_crosscutting_best_effort()
+        return _do_complete()
     return None
 
 
@@ -237,8 +242,6 @@ def _dispatch_sync_action(action: str, opts: dict) -> str:
     """Handle sync session actions."""
     if action == "start":
         return _do_start(opts)
-    if action == "complete":
-        return _do_complete()
     if action == "status":
         return _do_status()
     if action == "set_skill":
@@ -438,6 +441,13 @@ def _start_response(cfg: dict, classification: dict, target: str, scan_mode: str
         "  /metasploit /reverse-shell /analyze-cve /threat-modeling /aikido-triage",
         "  /gh-export /remediate /request-cves",
         "  See CLAUDE.md for full skill descriptions and trigger conditions.",
+        "",
+        "DEFINITION OF DONE: this scan is complete when the COVERAGE MATRIX is worked —",
+        "every endpoint/param tested or justified not_applicable — NOT when you've found",
+        "some bugs. Finding vulnerabilities happens WHILE you work the matrix; it is not a",
+        "substitute for it. After each tool call you'll be handed the next cells to test;",
+        "keep working them. Completion is coverage-gated and will be refused while the",
+        "matrix is mostly untested.",
     ]
     return "\n".join(lines)
 
@@ -509,35 +519,76 @@ def _do_start(opts):
         from core.steering import steering_queue
         steering_queue.cancel_by_trigger("TRIAGE_ADJUDICATION", "cleared on new scan start")
         steering_queue.cancel_by_trigger("FORCE_COMPLETE_ADJUDICATION", "cleared on new scan start")
+        # Also clear stale SKILL-CHAIN directives so a prior run's mandate (e.g.
+        # MISSING_WEB_EXPLOIT) can't replay into — and hijack — this fresh scan.
+        for _trig in ("MISSING_WEB_EXPLOIT", "MISSING_PARAM_FUZZ", "MISSING_BUSINESS_LOGIC"):
+            steering_queue.cancel_by_trigger(_trig, "cleared on new scan start")
     except Exception:
         pass
+    # On a NON-resume start, reset the QA daemon's input log + alert state so a
+    # prior scan's SPIDER/SKILL/TOOL entries don't re-derive stale skill-chain
+    # alerts against this run (the cross-session bleed that hijacked a fresh
+    # ai-redteam scan into /web-exploit). Archive rather than delete.
+    if not is_resume:
+        try:
+            import shutil
+            from datetime import datetime as _dt, timezone as _tz
+            from core.coverage import COVERAGE_FILE
+            base = COVERAGE_FILE.parent
+            arch = base / "logs"; arch.mkdir(exist_ok=True)
+            _ts = _dt.now(_tz.utc).strftime("%Y%m%d_%H%M%S")
+            for stale in ("quick_log.json", _QA_STATE_FILENAME):
+                p = base / stale
+                if p.exists():
+                    shutil.copy2(p, arch / f"{p.stem}_{_ts}.json")
+                    p.unlink()
+        except Exception:
+            pass
     return _start_response(cfg, classification, target, scan_mode, depth, is_resume)
 
 
-def _low_coverage_blocker(
-    cov: dict, coverage_enforced: bool, total: int, addressed: int, pct: float
-) -> str | None:
-    if not coverage_enforced or pct >= 80:
+# Coverage gating threshold (percent of cells addressed). With auto-discovery
+# producing matrices of 700-900 cells per OpenAPI spec, this is a HARD FLOOR
+# only — exceeding it means the scan did real testing, not a wall demanding
+# every cell be ground through. Pushing the model past the floor used to drive
+# it into a canned-payload treadmill that produced false-negative tested_clean
+# closures (see the coverage-grind regression analysis: one HTTP request was
+# being reused to "close" 36 different injection cells).
+_COVERAGE_FLOOR_PCT = 40
+
+
+def _low_coverage_blocker(cov: dict, total: int, addressed: int, pct: float) -> str | None:
+    """Block completion while the coverage matrix is substantially unworked.
+
+    The matrix IS the deliverable — testing every endpoint/param is the job, and
+    finding bugs happens *while* working it. So a scan does NOT 'complete' just
+    because it found vulnerabilities; it completes when the matrix is worked (or a
+    human approves the remaining gaps via the stuck-completion HIR). Fires below
+    _COVERAGE_FLOOR_PCT; the caller skips it for CTF runs.
+
+    This deliberately fires even for findings-rich scans (the old waiver let a scan
+    'finish' at 5/840) and for every model profile (the floor was dormant for all).
+    Anti-grind: it fires at COMPLETION — after the exploitation passes — so the
+    model exploits first, then covers the rest with REAL probes; the honesty guards
+    reject artifact-less / auth-blocked / mass-reused closures, and the message
+    drives the next batch instead of inviting bulk not_applicable. The
+    stuck-completion HIR (_MAX_COMPLETE_ATTEMPTS) is the safety valve when the model
+    genuinely can't reach the floor, so this can't hard-stall.
+    """
+    if pct >= _COVERAGE_FLOOR_PCT:
         return None
-    all_cells = cov.get("matrix", [])
-    pending = [c["id"] for c in all_cells if c.get("status", "pending") == "pending"]
-    hint = (
-        "For each pending cell: either test it (set status=tested_clean/vulnerable with "
-        "tested_by=<tool>) or mark it not_applicable if the injection type is inherently "
-        "irrelevant to the param/endpoint type (with a specific reason in notes). "
-        "Do NOT bulk-skip — skipped cells are excluded from coverage. Sample pending cells:\n"
-        '  report(action="coverage", data={"type": "bulk_tested", "updates": ['
-    )
-    hint += ", ".join(
-        f'{{"cell_id": "{cid}", "status": "not_applicable", "notes": "<specific reason>"}}'
-        for cid in pending[:10]
-    )
-    if len(pending) > 10:
-        hint += f", ... ({len(pending) - 10} more)"
-    hint += "]})"
+    pending = sum(1 for c in cov.get("matrix", []) if c.get("status", "pending") == "pending")
     return (
-        f"LOW COVERAGE: only {addressed}/{total} matrix cells tested or marked N/A ({pct:.0f}%). "
-        f"{len(pending)} pending cell(s). {hint}"
+        f"SCAN NOT COMPLETE — the coverage matrix is the deliverable and it is only {pct:.0f}% worked "
+        f"({addressed}/{total} cells; {pending} still untested). Working the matrix IS the remaining "
+        f"job, not optional bookkeeping — you do NOT finish by finding some bugs while most cells are "
+        f"untested. Get the next cells + their exact requests with report(action='coverage', "
+        f"data={{type:'next_batch'}}), test them with REAL probes (sqlmap / nuclei / targeted "
+        f"payloads — never canned filler), then close each with its artifact via "
+        f"report(action='coverage', data={{type:'bulk_tested', updates:[...]}}). Mark a cell "
+        f"not_applicable ONLY when the injection type is genuinely irrelevant to that param (with a "
+        f"specific reason) — do NOT bulk-N/A to clear the count. Keep working the matrix; if you are "
+        f"genuinely blocked the scan will pause for a human to approve the gaps."
     )
 
 
@@ -560,7 +611,87 @@ def _skipped_no_evidence_blocker(all_cells: list[dict]) -> str | None:
     )
 
 
-def _coverage_blockers(cov: dict, ctf_mode: bool = False) -> list[str]:
+def _rich_exploitation(data: dict | None) -> bool:
+    """True when the scan has found substantial real issues — used to waive the
+    coverage floor (a findings-rich scan isn't 'trivially incomplete')."""
+    findings = (data or {}).get("findings", []) if isinstance(data, dict) else []
+    live = [f for f in findings if f.get("status") != "false_positive"]
+    hi_crit = sum(1 for f in live if f.get("severity") in ("high", "critical"))
+    return len(live) >= 8 or hi_crit >= 3
+
+
+# Endpoint-default / cross-cutting cell types — closed by Phase 0 auto-close, NOT
+# by the model mapping its exploitation findings. Excluded when checking that
+# injection findings are reflected in the matrix.
+_CROSSCUTTING_CELL_TYPES = {
+    "cors", "csrf", "security_headers", "cache",
+    "rate_limit", "method_tampering", "jwt", "race", "bfla",
+}
+# Keywords that mark a finding as an injection-class exploit — one that SHOULD be
+# reflected as a vulnerable injection cell in the matrix.
+_INJECTION_FINDING_KEYWORDS = (
+    "sql inject", "sqli", "xss", "cross-site script", "ssti", "template inject",
+    "command inject", "cmdi", "os command", "ssrf", "server-side request",
+    "traversal", "path travers", "lfi", "rfi", "idor", "insecure direct object",
+    "mass assign", "prototype pollut", "xxe", "nosql", "injection",
+)
+
+
+def _findings_mapped_blocker(cov: dict, data: dict | None) -> str | None:
+    """Require a findings-rich scan to REFLECT its injection findings in the matrix.
+
+    The % coverage floor is intentionally not enforced for a findings-rich scan
+    (we don't grind every cell), but a scan that confirmed SQLi/XSS/… and filed
+    findings yet marked ZERO injection cells leaves the matrix not reflecting what
+    it actually exploited. This requirement is achievable (close one cell per
+    finding) and does NOT re-create the grind stall — it asks only that the
+    findings be mapped, not that every cell be tested.
+    """
+    findings = [f for f in (data or {}).get("findings", []) if f.get("status") != "false_positive"]
+    inj_findings = [
+        f for f in findings
+        if f.get("severity") in ("high", "critical")
+        and any(k in (f.get("title", "") + " " + f.get("description", "")).lower()
+                for k in _INJECTION_FINDING_KEYWORDS)
+    ]
+    if not inj_findings:
+        return None
+    vuln_inj_cells = [
+        c for c in cov.get("matrix", [])
+        if c.get("status") == "vulnerable"
+        and c.get("injection_type") not in _CROSSCUTTING_CELL_TYPES
+    ]
+    if len(vuln_inj_cells) >= len(inj_findings):
+        return None
+    return (
+        f"FINDINGS NOT MAPPED TO MATRIX: {len(inj_findings)} confirmed injection finding(s) "
+        f"(SQLi/XSS/SSTI/…) but only {len(vuln_inj_cells)} injection cell(s) marked vulnerable. "
+        "The matrix must reflect what you exploited. For each injection finding, close its cell — "
+        "find it with report(action='coverage', data={type:'list', injection_type:'sqli'}), then "
+        "report(action='coverage', data={type:'tested', cell_id:'<id>', status:'vulnerable', "
+        "finding_id:'<finding id>', artifact_id:'<proof>'}). Required even for a findings-rich "
+        "scan — don't complete with your exploits unrecorded in the matrix."
+    )
+
+
+def _completeness_blockers(
+    cov: dict, data: dict | None, total: int, addressed: int, pct: float,
+) -> list[str]:
+    """The two coverage-COMPLETENESS gates (low-coverage floor + findings-mapped) —
+    they demand the model work MORE of the matrix. The caller applies the
+    enforce_coverage profile guard + CTF bypass; for local (medium/small) profiles
+    these never run, so the scan completes on findings like V1.0.2."""
+    out: list[str] = []
+    low_cov = _low_coverage_blocker(cov, total, addressed, pct)
+    if low_cov:
+        out.append(low_cov)
+    mapped = _findings_mapped_blocker(cov, data)
+    if mapped:
+        out.append(mapped)
+    return out
+
+
+def _coverage_blockers(cov: dict, data: dict | None = None, ctf_mode: bool = False) -> list[str]:
     """Return coverage-related completion blockers for the given matrix state.
 
     For non-CTF runs, an empty matrix is a hard blocker if web testing happened —
@@ -572,8 +703,9 @@ def _coverage_blockers(cov: dict, ctf_mode: bool = False) -> list[str]:
     meta = cov.get("meta", {})
     total = meta.get("total_cells", 0)
 
-    # Empty matrix gate — only enforced for non-CTF runs where web work happened.
+    # Empty matrix gate — only enforced for non-CTF runs where web OR AI work happened.
     web_work_done = any(t in _effective_tools() for t in ("httpx", "spider", "ffuf", "nuclei"))
+    ai_work_done = any(t in _effective_tools() for t in ("fuzzyai", "garak", "pyrit", "promptfoo"))
     if total == 0:
         if not ctf_mode and web_work_done:
             blockers.append(
@@ -585,6 +717,16 @@ def _coverage_blockers(cov: dict, ctf_mode: bool = False) -> list[str]:
                 "are invisible and re-spider can't deduplicate. See /web-exploit Phase 1 for the "
                 "full registration pattern."
             )
+        elif not ctf_mode and ai_work_done:
+            blockers.append(
+                "EMPTY AI COVERAGE MATRIX: AI red-team tools were run "
+                "(fuzzyai/garak/pyrit/promptfoo) but no LLM/MCP endpoint was registered. "
+                "Register the chat/LLM (or MCP) endpoint so each OWASP LLM/MCP category becomes a "
+                "closable cell: report(action='coverage', data={'type':'endpoint', 'path':'/...', "
+                "'method':'POST', 'params':[{'name':'message','type':'llm_prompt'}], "
+                "'discovered_by':'ai-redteam'}). For MCP tools add params with type 'mcp_tool_arg'. "
+                "Then close each category cell with the scan's artifact_id. See /ai-redteam Phase 0."
+            )
         return blockers
 
     # skipped cells do NOT count toward coverage — they are deferrals, not evidence.
@@ -594,55 +736,70 @@ def _coverage_blockers(cov: dict, ctf_mode: bool = False) -> list[str]:
     addressed = meta.get("addressed", meta.get("tested", 0) + meta.get("not_applicable", 0))
     pct = (addressed / total) * 100
 
-    # Model-profile-aware: only enforce 80% coverage threshold for "full" profile.
-    # Medium/small models can't invoke /web-exploit and end up with dozens of
-    # auto-generated cells they can't address, causing completion loops.
+    # Coverage-COMPLETENESS gates (low-coverage floor + findings-mapped) demand the
+    # model work MORE of the matrix. They are profile-gated via enforce_coverage:
+    # ON for full (a capable cloud model can work a 700-cell matrix), OFF for
+    # medium/small. A local model has no in-loop injection-sweep tooling to honestly
+    # close hundreds of cells, so a hard floor against an auto-fanned 700-cell matrix
+    # just forces gaming (false tested_clean on 500s) and then a HIR_NO_PROGRESS
+    # stall — V1.0.2 ran the local model coverage-dormant and it completed cleanly on
+    # findings. Flip medium→enforce_coverage once the automated endpoint_sweep lands.
+    # The current coverage % stays visible in session(status)/recovery, so the gap is
+    # still surfaced as an advisory. The closure-INTEGRITY guards below
+    # (artifact-backed, suspect-N/A, skipped-no-evidence) stay on for EVERY profile.
     from mcp_server.scan_engine.budget import get_profile
-    profile = get_profile()
-    coverage_enforced = not profile.get("enforce_budget", True)  # full profile enforces; medium/small profiles skip
+    enforce_cov = bool(get_profile().get("enforce_coverage", True))
 
-    low_cov = _low_coverage_blocker(cov, coverage_enforced, total, addressed, pct)
-    if low_cov:
-        blockers.append(low_cov)
+    if enforce_cov and not ctf_mode:
+        blockers.extend(_completeness_blockers(cov, data, total, addressed, pct))
 
-    all_cells = cov.get("matrix", [])
-    untooled = [c for c in all_cells
-                if c["status"] in ("tested_clean", "vulnerable") and not c.get("tested_by")]
-    if untooled:
-        blockers.append(
-            f"INTEGRITY: {len(untooled)} cell(s) marked tested/vulnerable but have no "
-            f"tested_by tool. Re-test these cells or add the tested_by field."
-        )
-
-    suspect_na = _suspect_na_cells(all_cells, _BYPASS_REQUIRED_TYPES)
-    if suspect_na:
-        sample = ", ".join(suspect_na[:5]) + ("..." if len(suspect_na) > 5 else "")
-        blockers.append(
-            f"INTEGRITY: {len(suspect_na)} cell(s) marked N/A without testing bypass "
-            f"techniques: {sample}. Test the bypass before marking N/A."
-        )
-
-    skipped_blocker = _skipped_no_evidence_blocker(all_cells)
-    if skipped_blocker:
-        blockers.append(skipped_blocker)
-
-    na_blocker = _na_untooled_blocker(all_cells, _BYPASS_REQUIRED_TYPES)
-    if na_blocker:
-        blockers.append(na_blocker)
-
-    breadth_blocker = _injection_breadth_blocker(all_cells, coverage_enforced)
-    if breadth_blocker:
-        blockers.append(breadth_blocker)
-
+    blockers.extend(_integrity_blockers(cov.get("matrix", []), enforce_cov, ctf_mode))
     return blockers
 
 
+def _integrity_blockers(all_cells: list[dict], enforce_cov: bool, ctf_mode: bool) -> list[str]:
+    """Closure-INTEGRITY gates — reject cells that LIE about being tested (no
+    artifact, suspect-N/A, skipped-without-evidence, N/A-without-bypass). These run
+    for EVERY profile (they prevent false data, they don't demand more work).
+    Injection-breadth follows enforce_coverage (it demands MORE cells). Extracted
+    from _coverage_blockers to keep that function under the cognitive-complexity cap."""
+    out: list[str] = []
+    from core.coverage import cell_has_test_evidence
+    untooled = [c for c in all_cells
+                if c["status"] in ("tested_clean", "vulnerable") and not cell_has_test_evidence(c)]
+    if untooled:
+        out.append(
+            f"INTEGRITY: {len(untooled)} cell(s) marked tested/vulnerable but cite no "
+            f"artifact_id. Re-test these cells and pass the artifact_id from the tool response."
+        )
+    suspect_na = _suspect_na_cells(all_cells, _BYPASS_REQUIRED_TYPES)
+    if suspect_na:
+        sample = ", ".join(suspect_na[:5]) + ("..." if len(suspect_na) > 5 else "")
+        out.append(
+            f"INTEGRITY: {len(suspect_na)} cell(s) marked N/A without testing bypass "
+            f"techniques: {sample}. Test the bypass before marking N/A."
+        )
+    skipped_blocker = _skipped_no_evidence_blocker(all_cells)
+    if skipped_blocker:
+        out.append(skipped_blocker)
+    na_blocker = _na_untooled_blocker(all_cells, _BYPASS_REQUIRED_TYPES)
+    if na_blocker:
+        out.append(na_blocker)
+    # Injection-breadth is also a completeness gate (demands MORE cells registered/
+    # tested), so it follows enforce_coverage too — advisory for local.
+    breadth_blocker = _injection_breadth_blocker(all_cells, enforce_cov and not ctf_mode)
+    if breadth_blocker:
+        out.append(breadth_blocker)
+    return out
+
+
 def _na_untooled_blocker(cells: list[dict], bypass_types: dict) -> str | None:
-    """Return a blocker string if any bypass-type N/A cells lack a tested_by tool."""
+    """Return a blocker string if any bypass-type N/A cells cite no test evidence."""
+    from core.coverage import cell_has_test_evidence
     na_untooled = [
         c for c in cells
         if c["status"] == "not_applicable"
-        and not c.get("tested_by")
+        and not cell_has_test_evidence(c)
         and c.get("injection_type") in bypass_types
     ]
     if not na_untooled:
@@ -651,8 +808,8 @@ def _na_untooled_blocker(cells: list[dict], bypass_types: dict) -> str | None:
     if len(na_untooled) > 5:
         sample += f" ... ({len(na_untooled) - 5} more)"
     return (
-        f"INTEGRITY: {len(na_untooled)} injection-type N/A cell(s) have no tested_by tool "
-        f"recorded: {sample}. Run the bypass technique and record tested_by before marking N/A."
+        f"INTEGRITY: {len(na_untooled)} injection-type N/A cell(s) cite no artifact_id "
+        f"of a bypass attempt: {sample}. Run the bypass technique and pass its artifact_id before marking N/A."
     )
 
 
@@ -992,10 +1149,16 @@ def _deepen_steps_pass1(
     )
     if has_ai_ep or "ai-redteam" in skills_run:
         steps.append(
-            "Re-invoke /ai-redteam (SECOND PASS) — run PyRIT crescendo (10 turns), "
-            "Garak with full probe set (dan,encoding,promptinject,leakreplay,gcg,glitch,"
-            "grandma,goodside,snowball,misleading,packagehallucination,malwaregen), "
-            "and manual multi-objective authority-marker payloads on all AI endpoints."
+            "Re-invoke /ai-redteam (SECOND PASS) — run PyRIT crescendo (10 turns); "
+            "Garak with the full probe set (dan,encoding,promptinject,leakreplay,xss,"
+            "latentinjection,snowball,misleading,packagehallucination,malwaregen,gcg,"
+            "glitch,grandma,goodside); promptfoo redteam (plugins prompt-injection,"
+            "excessive-agency,pii,rag-poisoning,prompt-extraction; strategies jailbreak,"
+            "crescendo); plus manual multi-objective authority-marker payloads on all AI "
+            "endpoints. Close each OWASP LLM/MCP coverage cell with the run's artifact_id, "
+            "and re-run every confirmed jailbreak/injection N times to record a k/N "
+            "reproducibility rate (report(action='update_finding', adjudication=...)) before "
+            "filing — LLM outputs are non-deterministic."
         )
     steps.append(
         "Re-run nuclei with ALL template categories: "
@@ -1090,7 +1253,28 @@ def _deepen_brief(iteration: int) -> str:
 
     skills_run = {s["skill"] for s in current.get("skill_history", [])}
     endpoints  = current.get("known_assets", {}).get("endpoints", [])
-    has_ai_ep  = any("ai" in ep or "chat" in ep or "llm" in ep for ep in endpoints)
+    # Robust AI-surface detection: an AI scan rarely populates known_assets.endpoints
+    # (the URL is passed straight to the scan tool, no spider). The old spider-only
+    # substring check (`"ai" in ep`) was both a false-negative for that case and a
+    # false-positive on paths like /detail, /email, /maintenance. Detect AI work by
+    # the AI tools actually run, the ai-redteam skill, or any AI/MCP coverage cell.
+    from core.coverage.classify import classify_endpoint
+    _AI_TOOLS = {"fuzzyai", "garak", "pyrit", "promptfoo"}
+    _AI_CELL_PREFIXES = (
+        "prompt_injection", "jailbreak", "system_prompt_leak", "sensitive_info_disclosure",
+        "improper_output_handling", "excessive_agency", "misinformation",
+        "unbounded_consumption", "model_extraction", "content_bias",
+        "membership_inference", "rag_poisoning", "embedding_manipulation", "mcp_",
+    )
+    has_ai_ep = (
+        bool(_AI_TOOLS & _effective_tools())
+        or "ai-redteam" in skills_run
+        # Precise path classifier (chat/completions/mcp/...) — not the old naive
+        # `"ai" in ep` substring that false-matched /detail, /email, /maintenance.
+        or any(classify_endpoint(ep) == "ai-redteam" for ep in endpoints)
+        or any(str(c.get("injection_type", "")).startswith(_AI_CELL_PREFIXES)
+               for c in cov.get("matrix", []))
+    )
 
     unchained  = [f for f in criticals if not f.get("escalation_leads")]
     finding_summary = (
@@ -1192,7 +1376,7 @@ def _collect_completion_blockers(data: dict, effective: set) -> list[str]:
     blockers.extend(adjudication_blockers(data, digest=_condensed_directives()))
 
     from core.coverage import get_matrix
-    blockers.extend(_coverage_blockers(get_matrix(), ctf_mode=_has_ctf_flag(data)))
+    blockers.extend(_coverage_blockers(get_matrix(), data=data, ctf_mode=_has_ctf_flag(data)))
 
     return blockers
 
@@ -1381,6 +1565,27 @@ def _build_blocker_response(blockers: list) -> str:
         f"blockers={total}, shown={len(shown)}): {'; '.join(b[:80] for b in blockers)}"
     )
     return msg
+
+
+async def _autoclose_crosscutting_best_effort() -> None:
+    """Propagate app-wide cross-cutting verdicts to their cells before completion.
+
+    The matrix fans cors/csrf/security_headers across every endpoint, but their
+    verdict is app-wide — the model files the finding ("Wildcard CORS on all
+    endpoints") yet rarely marks the 50+ per-endpoint cells, so the coverage gate
+    sees an empty matrix and the scan wedges (the overnight no-progress loop).
+    Running the honest propagator here (links the finding, cites a real response,
+    marks GET-endpoint CSRF N/A) means a completion attempt automatically reflects
+    the work already done. Best-effort + idempotent — only touches pending
+    cross-cutting cells and never blocks completion.
+    """
+    try:
+        from core import coverage as _cov
+        from mcp_server.report_tools import _do_coverage_auto_crosscutting
+        res = await _do_coverage_auto_crosscutting({"type": "auto_crosscutting"}, _cov)
+        log.note(f"auto_crosscutting (pre-complete): {str(res)[:200]}")
+    except Exception:
+        log.note("auto_crosscutting (pre-complete) failed — non-fatal")
 
 
 def _do_complete():
@@ -1788,6 +1993,7 @@ def _build_status_base(
         },
     }
     web_work_done = any(t in _effective_tools() for t in ("httpx", "spider", "ffuf", "nuclei"))
+    ai_work_done = any(t in _effective_tools() for t in ("fuzzyai", "garak", "pyrit", "promptfoo"))
     if meta.get("total_cells", 0) == 0 and web_work_done and not _has_ctf_flag(data):
         result["coverage_warning"] = (
             "MATRIX EMPTY: web tools have run but no endpoints are registered. "
@@ -1795,6 +2001,14 @@ def _build_status_base(
             "data={'type': 'endpoint', 'path': ..., 'method': ..., 'params': [...], "
             "'discovered_by': 'spider'}). The matrix drives Phase 2's systematic "
             "per-cell testing and prevents you from forgetting which params you tested. "
+            "complete_scan will be blocked until at least one endpoint is registered."
+        )
+    elif meta.get("total_cells", 0) == 0 and ai_work_done and not _has_ctf_flag(data):
+        result["coverage_warning"] = (
+            "MATRIX EMPTY: AI red-team tools have run but no LLM/MCP endpoint is registered. "
+            "Register the chat/LLM endpoint with report(action='coverage', data={'type':'endpoint', "
+            "'path': ..., 'method':'POST', 'params':[{'name':'message','type':'llm_prompt'}], "
+            "'discovered_by':'ai-redteam'}) so every OWASP LLM/MCP category becomes a closable cell. "
             "complete_scan will be blocked until at least one endpoint is registered."
         )
     if remaining:
@@ -1945,14 +2159,15 @@ def _check_coverage_integrity(matrix: list[dict], tools_run: set[str]) -> list[s
     """Cross-check coverage cell statuses against tools actually run."""
     warnings: list[str] = []
 
-    # Cells marked tested/vulnerable without a tested_by field
+    # Cells marked tested/vulnerable that cite no test evidence (artifact_id)
+    from core.coverage import cell_has_test_evidence
     by_type: dict[str, list[str]] = {}
     for c in matrix:
-        if c["status"] in ("tested_clean", "vulnerable") and not c.get("tested_by"):
+        if c["status"] in ("tested_clean", "vulnerable") and not cell_has_test_evidence(c):
             by_type.setdefault(c["injection_type"], []).append(c["id"])
     for inj, ids in by_type.items():
         warnings.append(
-            f"SUSPECT: {len(ids)} {inj} cell(s) marked tested but have no tested_by tool. "
+            f"SUSPECT: {len(ids)} {inj} cell(s) marked tested but cite no artifact_id. "
             f"Re-verify these cells with actual tool execution."
         )
 
@@ -2075,12 +2290,13 @@ def _do_recovery():
     data = findings_store._load()
     pending_escalations = []
     for f in data.get("findings", []):
-        leads = [l for l in f.get("escalation_leads", []) if l.get("status") == "pending"]
+        leads = [l for l in f.get("escalation_leads", [])
+                 if isinstance(l, dict) and l.get("status") == "pending"]
         if leads:
             pending_escalations.append({
                 "finding_id": f["id"],
                 "title": f["title"],
-                "pending_leads": [l["lead"] for l in leads],
+                "pending_leads": [l.get("lead") for l in leads],
             })
 
     tools_run = _effective_tools()
@@ -2279,8 +2495,40 @@ def _concrete_next_call(target: str, tools_run: set, in_progress: list, pending_
     if "nuclei" not in tools_run:
         return f"scan(tool='nuclei', target='{target}')"
     if pending_count > 0:
-        return f"Test the next pending coverage cell — {pending_count} cells remaining"
+        # Concrete next action so a respawned/recovered model doesn't flounder
+        # (it kept looking for in_progress work, found none, and idled). Give a
+        # specific high-value probe AND the finish-up path — never a vague nudge.
+        return (
+            f"{pending_count} cells still pending. Do ONE of these now — do NOT idle: "
+            f"(A) test a high-value endpoint: {_next_pending_probe(target)}; or "
+            "(B) if exploitation is done, FINISH — adjudicate each high/critical finding "
+            "(report(action='update_finding', data={id, adjudication:{reproducible, rationale, "
+            "artifact_id}})), then session(action='complete')."
+        )
     return "session(action='complete', options={\"notes\": \"all testing complete\"})"
+
+
+def _next_pending_probe(target: str) -> str:
+    """One concrete test request for the highest-priority pending cell (best
+    effort) — so recovery hands the model an exact next move, not a vague hint."""
+    try:
+        from core.coverage import get_matrix
+        from mcp_server.scan_engine.planner import _concrete_test_command
+        cov = get_matrix()
+        eps = {e["id"]: e for e in cov.get("endpoints", [])}
+        pending = [c for c in cov.get("matrix", []) if c.get("status") == "pending"]
+        if not pending:
+            return "report(action='coverage', data={type:'list', status:'pending', limit:20})"
+        prio = ["sqli", "xss", "ssti", "cmdi", "ssrf", "xxe", "nosqli", "idor"]
+        best = next((c for it in prio for c in pending if c.get("injection_type") == it), pending[0])
+        ep = eps.get(best.get("endpoint_id"), {})
+        cmd = _concrete_test_command(
+            best.get("injection_type", ""), target, ep.get("path", "/"),
+            ep.get("method", "GET"), best.get("param", "_endpoint"), best.get("param_type", "query"),
+        )
+        return f"{cmd} (cell {best.get('id')})"
+    except Exception:
+        return "report(action='coverage', data={type:'list', status:'pending', limit:20})"
 
 
 def _do_artifact(opts):

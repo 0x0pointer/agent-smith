@@ -79,6 +79,128 @@ def _validate_artifact(artifact_id: str, status: str) -> str:
     return ""
 
 
+# Cells whose verdict legitimately comes from inspecting a single response and
+# is app-wide (no per-cell payload required). These "response-property" types may
+# share one artifact across many cells because a single response truthfully
+# surfaces the answer for the whole app: the CORS policy, the security-header set,
+# the absence of CSRF protection, and the cache-control posture are all set by
+# app-wide middleware, not per-endpoint. Injection types are NOT here — each
+# needs its own discriminating payload, so the reuse cap still catches them.
+_RESPONSE_HEADER_CELL_TYPES = {"security_headers", "cors", "csrf", "cache"}
+
+
+def _validate_artifact_reuse(artifact_id: str, status: str, target_cell: dict, matrix: list[dict]) -> str:
+    """Reject single-artifact mass-closure across unrelated cells.
+
+    One HTTP request was being used to close 36 different injection cells
+    (sqli, xss, ssti, ssrf, cmdi, traversal, redirect, nosqli, crlf, ...) on a
+    single endpoint with three params. That's mathematically impossible — each
+    injection type needs its own discriminating payload. The artifact-existence
+    check alone (``_validate_artifact``) doesn't catch this.
+
+    Rule: per-artifact reuse cap = 2 cells, with two exceptions:
+      a. Cells whose injection_type is response-header-derived
+         (security_headers, cors) may share an artifact across the endpoint —
+         a single response truthfully surfaces both.
+      b. Cells on the SAME endpoint + SAME param + SAME injection_type may
+         share (e.g. a re-confirmation of an already-closed cell).
+    """
+    if status not in ("tested_clean", "vulnerable") or not artifact_id:
+        return ""
+
+    target_id = target_cell.get("id")
+    inj = target_cell.get("injection_type", "")
+    if inj in _RESPONSE_HEADER_CELL_TYPES:
+        return ""
+
+    # Existing cells already closed against this artifact (excluding the target)
+    siblings = [
+        c for c in matrix
+        if c.get("artifact_id") == artifact_id
+        and c.get("id") != target_id
+        and c.get("status") in ("tested_clean", "vulnerable")
+    ]
+    if not siblings:
+        return ""
+
+    # Allow the response-header-only siblings to not count against the budget —
+    # they're plausibly evidenced by the same response.
+    counted = [s for s in siblings if s.get("injection_type") not in _RESPONSE_HEADER_CELL_TYPES]
+    if len(counted) < 2:
+        return ""
+
+    sample = ", ".join(s.get("id", "?") for s in counted[:3])
+    return (
+        f"REJECTED: artifact_id '{artifact_id}' is already cited by {len(counted)} other "
+        f"injection-type cell(s) ({sample}{', ...' if len(counted) > 3 else ''}). "
+        "A single HTTP request cannot legitimately test multiple distinct injection types "
+        "(sqli/xss/ssti/cmdi/ssrf/...) — each needs its own discriminating payload. "
+        "Re-run the test with a payload SPECIFIC to this cell's injection_type and pass the "
+        "fresh artifact_id from that response. (Response-header-only cells like "
+        "security_headers/cors are exempt and don't count toward this cap.)"
+    )
+
+
+def cell_has_test_evidence(cell: dict) -> bool:
+    """True if a closed cell carries real test evidence.
+
+    ``artifact_id`` is THE enforcement mechanism — ``_validate_artifact``
+    rejects any tested_clean/vulnerable closure whose artifact doesn't exist
+    on disk, so a closed cell with an ``artifact_id`` provably ran a tool.
+    ``tested_by`` is retained only as human-readable context ("Free-text
+    tested_by is no longer accepted" — see ``_validate_artifact``).
+
+    A cell is evidenced if it has EITHER. The completion gates used to key on
+    ``tested_by`` alone, which made a cell closed with a real artifact but an
+    empty ``tested_by`` permanently un-completable: the proof was on disk, yet
+    the gate demanded the deprecated field. After a context compaction Smith
+    loses the cell IDs and can't backfill that field, so the whole scan
+    deadlocks short of completion. Gate on the artifact, with ``tested_by`` as
+    a back-compat fallback for older matrices.
+    """
+    return bool(cell.get("artifact_id") or cell.get("tested_by"))
+
+
+def _finding_norm_path(finding) -> str | None:
+    """Normalized URL path of a non-false-positive finding, or None to skip it."""
+    if not isinstance(finding, dict) or finding.get("status") == "false_positive":
+        return None
+    from urllib.parse import urlparse
+
+    from core.coverage.classify import _normalize_path
+    try:
+        path = urlparse(finding.get("target", "")).path or "/"
+    except Exception:
+        return None
+    return _normalize_path(path) or None
+
+
+def unregistered_finding_paths(findings_data, coverage_data) -> list[str]:
+    """Normalized endpoint paths that have findings but are NOT in the matrix.
+
+    A non-empty result means testing outran discovery — the agent filed findings
+    against endpoints it never registered, so the coverage matrix doesn't reflect
+    the real attack surface (the recon-before-testing discipline was skipped).
+    Drives the QA ``DISCOVERY_GAP`` check (early steer + completion block).
+
+    Returns ``[]`` when no endpoints are registered at all — that "zero endpoints"
+    state is a different signal handled by its own check, and treating every
+    finding as unregistered there would just be noise.
+    """
+    from core.coverage.classify import _normalize_path
+
+    endpoints = (coverage_data or {}).get("endpoints", []) if isinstance(coverage_data, dict) else []
+    if not endpoints:
+        return []
+    registered = {
+        ep.get("_normalized") or _normalize_path(ep.get("path", ""))
+        for ep in endpoints if isinstance(ep, dict)
+    }
+    findings = findings_data if isinstance(findings_data, list) else (findings_data or {}).get("findings", [])
+    unregistered = {p for f in findings if (p := _finding_norm_path(f)) and p not in registered}
+    return sorted(unregistered)
+
+
 # Injection cell types where 401/403 is meaningless evidence of cleanliness —
 # the test payload was never evaluated because auth blocked the request first.
 # Excluded: auth/access-control cell types where 401/403 IS the finding signal.

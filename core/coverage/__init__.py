@@ -131,16 +131,26 @@ from .validation import (  # noqa: E402
     _validate_artifact,
     _validate_auth_response,
     _validate_finding_link,
+    cell_has_test_evidence,
+    unregistered_finding_paths,
 )
 from .operations import (  # noqa: E402
     _apply_bulk_cell,
     add_endpoint,
     bulk_update,
     get_matrix,
+    get_next_batch,
     get_pending,
     list_cells,
     reset,
+    select_next_batch,
     update_cell,
+)
+from .autoclose import (  # noqa: E402
+    CROSSCUTTING_TYPES,
+    parse_artifact_headers,
+    pick_representative_artifact,
+    plan_crosscutting_closures,
 )
 
 __all__ = [
@@ -151,7 +161,11 @@ __all__ = [
     "update_cell",
     "bulk_update",
     "get_matrix",
+    "get_next_batch",
     "get_pending",
     "list_cells",
     "reset",
+    "select_next_batch",
+    "cell_has_test_evidence",
+    "unregistered_finding_paths",
 ]

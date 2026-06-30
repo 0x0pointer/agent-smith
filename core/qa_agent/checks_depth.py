@@ -8,11 +8,29 @@ consecutive cycle).
 """
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 
 import core.qa_agent as _qa
 from ._util import _ts_age_secs
 from .hir import _hir
+
+
+def _is_whitebox_scan(entries: list[dict], session_data: dict) -> bool:
+    """True when the scan is a white-box code review (semgrep can actually run).
+
+    Mirrors session_tools._is_whitebox_scan but computed from session_data +
+    entries, since core can't import mcp_server. The 3-semgrep-pass gates assume
+    a codebase; on a black-box remote target there's nothing for semgrep to scan,
+    so those gates must NOT fire (they'd deadlock the scan forever).
+    """
+    if os.environ.get("PENTEST_TARGET_PATH"):
+        return True
+    tools = {e.get("name") for e in entries if e.get("type") == "TOOL"}
+    if tools & {"semgrep", "trufflehog"}:
+        return True
+    skills = [s.get("skill", "") for s in (session_data.get("skill_history") or [])]
+    return "codebase" in skills
 
 
 def _check_depth_after_finding(entries: list[dict], findings_data: dict) -> dict | None:
@@ -145,9 +163,11 @@ def _check_oob_unpolled(session_data: dict) -> dict | None:
 
 
 def _check_whitebox_passes(entries: list[dict], session_data: dict) -> dict | None:
-    """Enforce 3 analysis passes on thorough-depth scans."""
+    """Enforce 3 semgrep passes on thorough WHITE-BOX scans (needs a codebase)."""
     if session_data.get("depth") != "thorough":
         return None
+    if not _is_whitebox_scan(entries, session_data):
+        return None  # black-box remote scan: no codebase for semgrep to scan
     semgrep_runs = [e for e in entries if e.get("type") == "TOOL" and e.get("name") == "semgrep"]
     pass_count = len(semgrep_runs)
     if pass_count >= 3:
@@ -175,9 +195,11 @@ def _check_whitebox_passes(entries: list[dict], session_data: dict) -> dict | No
 
 
 def _check_premature_complete(entries: list[dict], session_data: dict) -> dict | None:
-    """Block scan completion when called before 3-pass requirement is met on thorough scans."""
+    """Block completion before the 3 semgrep passes on thorough WHITE-BOX scans."""
     if session_data.get("depth") != "thorough":
         return None
+    if not _is_whitebox_scan(entries, session_data):
+        return None  # black-box remote scan: the semgrep-pass gate can't apply
     complete_events = [e for e in entries if e.get("type") == "COMPLETE"]
     if not complete_events:
         return None
@@ -220,7 +242,30 @@ def _check_tool_inactivity(entries: list[dict]) -> dict | None:
     }
 
 
-def _check_stuck_on_target(entries: list[dict], findings_data: dict, previous_alerts: list[dict]) -> dict | None:
+def _last_resolved_stuck_age(session_data: dict, target: str, now) -> float | None:
+    """Age (seconds) of the most recent RESOLVED STUCK-on-target HIR for ``target``,
+    or None if none has been resolved. Used to keep a resolved target from
+    re-firing off its own stale tool calls still inside the lookback window."""
+    best = None
+    history = list(session_data.get("intervention_history", []) or [])
+    cur = session_data.get("intervention")
+    if isinstance(cur, dict):
+        history.append(cur)
+    for h in history:
+        if h.get("code") != "HIR_STUCK_ON_TARGET":
+            continue
+        if target not in (h.get("situation") or ""):
+            continue
+        resolved_at = h.get("resolved_at")
+        if not resolved_at:
+            continue
+        age = _ts_age_secs(resolved_at, now)
+        if best is None or age < best:
+            best = age
+    return best
+
+
+def _check_stuck_on_target(entries: list[dict], findings_data: dict, session_data: dict, previous_alerts: list[dict]) -> dict | None:
     """Detect when Smith is spinning on a target with no progress — escalates to HIR on second cycle.
 
     Pattern: 5+ tool calls against the same target in the last 30 min, no new finding logged
@@ -251,7 +296,22 @@ def _check_stuck_on_target(entries: list[dict], findings_data: dict, previous_al
     if not stuck_target:
         return None
 
-    hit_count = target_counts[stuck_target]
+    # Don't re-escalate a target whose STUCK HIR the operator already resolved,
+    # unless Smith has spun 5+ MORE times against it SINCE that resolution. Without
+    # this, the original calls stay inside the 30-min lookback and re-fire the HIR
+    # every QA cycle even after it was resolved — an HIR storm against one target.
+    resolved_age = _last_resolved_stuck_age(session_data, stuck_target, now)
+    if resolved_age is not None:
+        new_calls = sum(
+            1 for e in tool_entries
+            if e.get("target") == stuck_target
+            and _ts_age_secs(e.get("ts", ""), now) < resolved_age  # newer than the resolution
+        )
+        if new_calls < 5:
+            return None
+        hit_count = new_calls
+    else:
+        hit_count = target_counts[stuck_target]
 
     # Check if a new finding was logged for this target in the same window
     recent_findings = [
@@ -284,8 +344,9 @@ def _check_stuck_on_target(entries: list[dict], findings_data: dict, previous_al
             code="HIR_STUCK_ON_TARGET",
             situation=(
                 f"Smith has made {hit_count} tool calls against '{stuck_target}' "
-                f"in the last 30 min with no finding logged and no coverage progress. "
-                "It appears to be stuck investigating something it cannot confirm or rule out."
+                f"with no finding logged and no coverage cell closed for it (flagged across "
+                f"two QA cycles). It appears to be stuck investigating something it cannot "
+                f"confirm or rule out."
             ),
             tried=[
                 f"Ran {hit_count} tool calls against {stuck_target} without result"
@@ -301,7 +362,7 @@ def _check_stuck_on_target(entries: list[dict], findings_data: dict, previous_al
             "code": "STUCK_ON_TARGET", "urgency": "high", "blocking": False,
             "message": (
                 f"HIR triggered: Smith made {hit_count} tool calls against '{stuck_target}' "
-                "over 30 min with no finding — human guidance required"
+                "with no finding or coverage progress — human guidance required"
             ),
         }
 
@@ -311,8 +372,8 @@ def _check_stuck_on_target(entries: list[dict], findings_data: dict, previous_al
         steering_queue.add_directive(
             code=RESUME_TESTING,
             message=(
-                f"You have run {hit_count} tools against '{stuck_target}' in the last 30 min "
-                "with no finding logged. You may be stuck. "
+                f"You have run {hit_count} tools against '{stuck_target}' "
+                "with no finding logged and no coverage cell closed. You may be stuck. "
                 "Choose one: (1) Log what you observed as an informational finding and move on. "
                 "(2) Run one final targeted attempt with a specific technique — then move on regardless. "
                 "(3) Call session(action='intervene') if you genuinely cannot proceed without human input."
@@ -322,7 +383,7 @@ def _check_stuck_on_target(entries: list[dict], findings_data: dict, previous_al
     return {
         "code": "STUCK_ON_TARGET", "urgency": "high", "blocking": False,
         "message": (
-            f"Stuck on target: {hit_count} tool calls against '{stuck_target}' "
-            "in 30 min, no finding logged — directive sent, HIR queued if unresolved"
+            f"Stuck on target: {hit_count} tool calls against '{stuck_target}', "
+            "no finding/coverage progress — directive sent, HIR queued if unresolved"
         ),
     }

@@ -58,6 +58,35 @@ _AUTH_KEYWORDS = (
     "mysql", "postgres", "mssql", "mongodb", "redis", "ldap",
 )
 
+# Negative markers — a finding that is mitigated / not exploitable / working as
+# intended must NOT trigger a mandatory skill gate. The keyword gates were firing
+# on benign findings ("login CSRF protection works", "mysql not reachable",
+# "SSTI marked not_applicable", "deserialization uses a safe parser").
+_GATE_BENIGN_MARKERS = (
+    "not reachable", "not exploitable", "not vulnerable", "working correctly",
+    "properly configured", "correctly configured", "is enforced", "protection works",
+    "mitigated", "false positive", "not applicable", "no impact", "safe parser",
+    "no user input", "out of scope", "out-of-scope",
+)
+
+# Speculation markers — an UNCONFIRMED finding ("the username appears to support
+# SSTI; ${7*7} was reflected") must not impose the mandatory post-exploit gate.
+# RCE/post-exploit is expensive and only makes sense once code execution is
+# actually confirmed, so a speculative RCE/SSTI keyword fires nothing.
+_SPECULATION_MARKERS = (
+    "appears to", "appear to", "may be", "might be", "possibly", "suspected",
+    "potential", "unconfirmed", "not confirmed", "could be", "seems to",
+    "may allow", "might allow", "may indicate", "if exploitable",
+)
+
+# Stronger auth-weakness signal so credential-audit fires on a real weakness,
+# not on the mere mention of an auth service in passing.
+_AUTH_WEAKNESS_KEYWORDS = (
+    "bypass", "weak", "default cred", "default password", "brute", "guessable",
+    "credential", "password leak", "token leak", "exposed", "reuse",
+    "predictable", "no lockout", "no rate limit", "enumerat",
+)
+
 
 @mcp.tool()
 async def report(action: str, data: Any) -> str:
@@ -68,6 +97,10 @@ async def report(action: str, data: Any) -> str:
     finding data:
       title, severity (critical|high|medium|low|info), target,
       description, evidence, tool_used=, cve=, business_impact=,
+      artifact_id= (optional) the artifact_id of the tool call that proves this
+        finding — links the proof so adjudication can REUSE it instead of making
+        you re-run the attack. If omitted, the session's most-recent tool
+        artifact is auto-linked.
       reproduction= {type: http|command|script|manual, command: "...", expected: "..."},
       trace= (optional, WHITE-BOX findings) source data flow as an ordered list
         [{kind: entrypoint|propagation|sink, file, line, scope, description}] —
@@ -217,6 +250,80 @@ def _dedup_message(existing: dict) -> str:
     )
 
 
+# Map a finding's title/description to the coverage injection_type it evidences.
+# Ordered specific-first so e.g. "SSTI" wins over a stray "script" match.
+_FINDING_INJECTION_PATTERNS = (
+    ("sqli", ("sql inject", "sqli", "union select", "union-based", "boolean-based", "error-based sql")),
+    ("ssti", ("template inject", "ssti", "{{7*7}}")),
+    ("cmdi", ("command inject", "os command", "shell inject")),
+    ("ssrf", ("ssrf", "server-side request forg")),
+    ("traversal", ("path travers", "directory travers", "local file inclusion", "lfi")),
+    ("xxe", ("xxe", "xml external entit")),
+    ("nosqli", ("nosql inject", "nosqli")),
+    ("mass_assignment", ("mass assign",)),
+    ("prototype", ("prototype pollut",)),
+    ("idor", ("idor", "insecure direct object", "broken object level", "bola")),
+    ("redirect", ("open redirect",)),
+    ("crlf", ("crlf inject", "http response splitt")),
+    ("xss", ("cross-site script", "xss")),
+)
+
+
+def _infer_injection_type(title: str, description: str) -> str | None:
+    text = f"{title} {description}".lower()
+    for inj, pats in _FINDING_INJECTION_PATTERNS:
+        if any(p in text for p in pats):
+            return inj
+    return None
+
+
+async def _autolink_finding_to_cell(finding_id: str, title: str, description: str,
+                                    target: str, artifact_id: str) -> str | None:
+    """Reflect a freshly-filed finding in the coverage matrix immediately.
+
+    Filing a finding and marking its cell were two decoupled calls — the model
+    reliably did the first and skipped the second, so the matrix never reflected
+    what was exploited. This closes that gap structurally: when a finding is filed
+    we mark its matching cell vulnerable. Conservative + honest — needs the
+    finding's real proof artifact, a clear injection type, and an endpoint match;
+    marks exactly ONE best-match cell (preferring the param named in the finding).
+    Best-effort: never raises, never blocks the finding.
+    """
+    if not artifact_id:
+        return None
+    inj = _infer_injection_type(title, description)
+    if not inj:
+        return None
+    try:
+        from urllib.parse import urlparse
+
+        from core import coverage as cov
+        matrix = cov.get_matrix()
+        norm = cov._normalize_path(urlparse(target).path or "/")
+        ep_ids = {e["id"] for e in matrix.get("endpoints", []) if e.get("_normalized") == norm}
+        if not ep_ids:
+            return None
+        cells = [c for c in matrix.get("matrix", [])
+                 if c.get("endpoint_id") in ep_ids
+                 and c.get("injection_type") == inj
+                 and c.get("status") == "pending"]
+        if not cells:
+            return None
+        ftext = f"{title} {description}".lower()
+        cell = next((c for c in cells
+                     if c.get("param") and c.get("param") != "_endpoint"
+                     and c["param"].lower() in ftext), cells[0])
+        res = await cov.update_cell(
+            cell["id"], "vulnerable",
+            notes=f"Auto-linked from finding: {title[:80]}",
+            finding_id=finding_id, artifact_id=artifact_id,
+        )
+        updated = res is True or (isinstance(res, str) and not res.startswith("REJECTED"))
+        return cell["id"] if updated else None
+    except Exception:
+        return None
+
+
 async def _do_finding(data):
     severity = data.get("severity", "").lower()
     if severity not in ("critical", "high", "medium", "low", "info"):
@@ -236,7 +343,14 @@ async def _do_finding(data):
         log.note(f"finding deduplicated against {dup.get('id')} — {title}")
         return _dedup_message(dup)
 
-    await findings_store.add_finding(
+    # Link the proof artifact: explicit artifact_id if the model passed one,
+    # else the session's most-recent tool artifact (the call that produced this
+    # finding). Adjudication reuses it so the attack never has to be re-run.
+    evidence_artifact_id = (data.get("artifact_id") or "").strip()
+    if not evidence_artifact_id:
+        evidence_artifact_id = (scan_session.get() or {}).get("last_artifact_id", "") or ""
+
+    entry = await findings_store.add_finding(
         title=title, severity=severity, target=target,
         description=data.get("description", ""),
         evidence=data.get("evidence", ""),
@@ -246,8 +360,18 @@ async def _do_finding(data):
         reproduction=data.get("reproduction"),
         escalation_leads=data.get("escalation_leads"),
         trace=data.get("trace"),
+        evidence_artifact_id=evidence_artifact_id,
     )
     log.finding(severity, title, target)
+
+    # Structural: reflect the exploit in the coverage matrix NOW — mark the
+    # finding's matching cell vulnerable instead of relying on the model to
+    # remember a separate report(action='coverage') call (which it skips).
+    linked_cell = None
+    if severity in ("critical", "high", "medium", "low"):
+        linked_cell = await _autolink_finding_to_cell(
+            entry.get("id", ""), title, data.get("description", ""), target, evidence_artifact_id,
+        )
 
     # Append FINDING entry to quick_log
     try:
@@ -266,18 +390,35 @@ async def _do_finding(data):
     # ── Auto-trigger gates based on finding content ──────────────────────────
     gates_triggered = _auto_trigger_finding_gates(title, severity, data.get("description", ""))
     msg = f"Finding logged: [{severity.upper()}] {title}"
+    if linked_cell:
+        msg += f"\n\nMATRIX UPDATED: cell {linked_cell} auto-marked vulnerable (linked to this finding)."
     if gates_triggered:
         msg += f"\n\nGATE(S) TRIGGERED: {', '.join(gates_triggered)}. These skills are now mandatory before completion."
     return msg
 
 
 def _auto_trigger_finding_gates(title: str, severity: str, description: str) -> list[str]:
-    """Check finding content and trigger appropriate gates. Returns list of triggered gate IDs."""
+    """Check finding content and trigger appropriate gates. Returns list of triggered gate IDs.
+
+    Guarded against false triggers: a mitigated / non-exploitable / working-as-
+    intended finding triggers nothing, and credential-audit needs a real auth
+    WEAKNESS signal — not just the name of an auth service.
+    """
     triggered: list[str] = []
     text = f"{title} {description}".lower()
 
-    # RCE-class finding → post-exploit is mandatory
-    if severity in ("critical", "high") and any(kw in text for kw in _RCE_KEYWORDS):
+    # Mitigated / not-exploitable findings must not impose a mandatory skill gate.
+    if any(marker in text for marker in _GATE_BENIGN_MARKERS):
+        return triggered
+
+    # RCE-class finding → post-exploit is mandatory — but ONLY when code execution
+    # is actually confirmed. A speculative mention ("appears to support SSTI",
+    # ${7*7} merely reflected) is not RCE, so it must not impose the post-exploit
+    # gate (the false-fire seen on a SQLi-auth-bypass finding that name-dropped SSTI).
+    speculative = any(m in text for m in _SPECULATION_MARKERS)
+    if (severity in ("critical", "high")
+            and any(kw in text for kw in _RCE_KEYWORDS)
+            and not speculative):
         scan_session.trigger_gate(
             "post_exploit_rce",
             f"RCE confirmed: {title}",
@@ -285,8 +426,10 @@ def _auto_trigger_finding_gates(title: str, severity: str, description: str) -> 
         )
         triggered.append("post_exploit_rce")
 
-    # Auth service finding → credential-audit is mandatory
-    if any(kw in text for kw in _AUTH_KEYWORDS):
+    # Auth weakness → credential-audit is mandatory. Require a real weakness
+    # (high/critical severity OR a weakness keyword), not just an auth-service name.
+    auth_weakness = severity in ("critical", "high") or any(k in text for k in _AUTH_WEAKNESS_KEYWORDS)
+    if auth_weakness and any(kw in text for kw in _AUTH_KEYWORDS):
         current = scan_session.get()
         depth = current.get("depth", "standard") if current else "standard"
         if depth in ("standard", "thorough"):
@@ -347,18 +490,26 @@ def _coerce_finding_adjudication(finding_id: str, fields: dict) -> tuple[bool, s
             "rationale} for it to count toward completion."
         )
     if coerced.get("reproducible") and not artifact_exists(coerced.get("artifact_id", "")):
-        # A reproducible verdict must be backed by an artifact that actually
-        # exists on disk — mirrors the coverage layer's artifact-existence rule.
-        fields.pop("adjudication", None)
-        _aid = coerced.get("artifact_id", "")
-        _why = "no artifact_id was provided" if not _aid else f"artifact_id '{_aid}' does not exist on disk"
-        return True, (
-            f"\n\nREJECTED: adjudication claims reproducible=true but {_why}. Re-run the "
-            "attack that proves the finding reproduces, capture the artifact_id from that "
-            "tool response, and re-send the adjudication with it. (A self-attested 'it "
-            "reproduces' with no proving artifact is not accepted; set reproducible=false "
-            "to mark it a false positive instead.)"
-        )
+        # The supplied artifact is missing/absent — but the proof was already
+        # captured when the finding was filed. Reuse that linked evidence
+        # artifact so the model doesn't re-run the attack just to regenerate an
+        # artifact_id it lost to context compaction.
+        linked = (current or {}).get("evidence_artifact_id", "")
+        if linked and artifact_exists(linked):
+            coerced["artifact_id"] = linked
+        else:
+            # A reproducible verdict must be backed by an artifact that exists on
+            # disk — mirrors the coverage layer's artifact-existence rule.
+            fields.pop("adjudication", None)
+            _aid = coerced.get("artifact_id", "")
+            _why = "no artifact_id was provided" if not _aid else f"artifact_id '{_aid}' does not exist on disk"
+            return True, (
+                f"\n\nREJECTED: adjudication claims reproducible=true but {_why}, and the finding "
+                "has no linked evidence artifact to fall back on. Re-run the attack that proves "
+                "the finding reproduces, capture the artifact_id from that tool response, and "
+                "re-send the adjudication with it. (Set reproducible=false to mark it a false "
+                "positive instead.)"
+            )
     fields["adjudication"] = coerced
     return False, ""
 
@@ -422,7 +573,7 @@ def _chain_mermaid(steps: list, titles: dict) -> str:
     lines = ["graph LR"]
 
     def _node(fid: str) -> str:
-        label = (titles.get(fid) or fid)[:48].replace('"', "'")
+        label = _mermaid_label((titles.get(fid) or fid)[:48])
         return f'  F_{_safe(fid)}["{label}"]'
 
     seen: set[str] = set()
@@ -434,7 +585,7 @@ def _chain_mermaid(steps: list, titles: dict) -> str:
     for s in steps:
         a = _safe(s.get("from_finding_id", ""))
         b = _safe(s.get("to_finding_id", ""))
-        tech = (s.get("mitre_technique", "") or "enables").replace('"', "'")
+        tech = _mermaid_label(s.get("mitre_technique", "") or "enables")
         if a and b:
             lines.append(f"  F_{a} -->|{tech}| F_{b}")
     return "\n".join(lines)
@@ -443,6 +594,25 @@ def _chain_mermaid(steps: list, titles: dict) -> str:
 def _safe(fid: str) -> str:
     """Make a finding id safe for a Mermaid node identifier."""
     return "".join(c if c.isalnum() else "_" for c in str(fid))
+
+
+# Characters that break a Mermaid label. Unquoted edge labels (-->|...|) are the
+# worst offenders: '(' is parsed as a node-shape opener (the "got 'PS'" error)
+# and '|' closes the label early — both occur in MITRE technique names like
+# "T1078 - Valid Accounts (Privileged Account Creation…)". HTML entity codes
+# render as the literal character in every Mermaid theme, so the text is unchanged.
+_MERMAID_ESCAPES = {
+    '"': "#34;", "(": "#40;", ")": "#41;", "|": "#124;",
+    "[": "#91;", "]": "#93;", "{": "#123;", "}": "#125;",
+}
+
+
+def _mermaid_label(text: str) -> str:
+    """Escape characters that break a Mermaid node/edge label."""
+    out = str(text)
+    for ch, ent in _MERMAID_ESCAPES.items():
+        out = out.replace(ch, ent)
+    return out
 
 
 async def _do_chain(data):
@@ -749,11 +919,188 @@ async def _do_coverage(data):
         return await _do_coverage_reset(cov)
     if cov_type == "list":
         return await _do_coverage_list(data, cov)
+    if cov_type == "next_batch":
+        return await _do_coverage_next_batch(data, cov)
+    if cov_type == "auto_crosscutting":
+        return await _do_coverage_auto_crosscutting(data, cov)
     return (
-        f"Unknown coverage type '{cov_type}'. Use: endpoint, tested, bulk_tested, list, reset. "
+        f"Unknown coverage type '{cov_type}'. Use: endpoint, tested, bulk_tested, list, next_batch, "
+        f"auto_crosscutting, reset. "
         f"Example: report(action='coverage', data={{type:'endpoint', path:'/login', method:'GET', "
         f"params:[{{name:'user', type:'query', value_hint:'string'}}]}})"
     )
+
+
+async def _autofile_crosscutting_findings(headers: dict, artifact_id: str,
+                                          target: str, existing: list) -> int:
+    """File the app-wide cross-cutting findings the response evidences (wildcard
+    CORS, missing security headers) when the model hasn't already — so Phase 0
+    can close those cells `vulnerable` (it links a finding for every vulnerable
+    verdict, never fabricates). Idempotent: skips a type that already has a
+    matching finding, so re-running on each complete attempt can't duplicate.
+    Returns the number filed.
+    """
+    from core import findings as _fs
+    from core.coverage.autoclose import _REQUIRED_SECURITY_HEADERS, _match_finding_id
+
+    hdrs = {(k or "").lower(): (v or "") for k, v in (headers or {}).items()}
+    acao = hdrs.get("access-control-allow-origin", "").strip()
+    missing = [h for h in _REQUIRED_SECURITY_HEADERS if h not in hdrs]
+    tgt = target or "application"
+    filed = 0
+    if acao == "*" and not _match_finding_id(existing, "cors"):
+        await _fs.add_finding(
+            title="Wildcard CORS — Access-Control-Allow-Origin: * on all responses",
+            severity="medium", target=tgt,
+            description=("The application returns Access-Control-Allow-Origin: * on its responses, "
+                         "letting any origin read responses cross-origin."),
+            evidence=f"Observed response header Access-Control-Allow-Origin: {acao} (artifact {artifact_id}).",
+            tool_used="auto_crosscutting", evidence_artifact_id=artifact_id)
+        filed += 1
+    if missing and not _match_finding_id(existing, "security_headers"):
+        await _fs.add_finding(
+            title="Missing Security Headers on all responses",
+            severity="low", target=tgt,
+            description="Responses lack standard security headers: " + ", ".join(missing) + ".",
+            evidence=f"Required headers absent (artifact {artifact_id}): {', '.join(missing)}.",
+            tool_used="auto_crosscutting", evidence_artifact_id=artifact_id)
+        filed += 1
+    return filed
+
+
+async def _do_coverage_auto_crosscutting(data, cov):
+    """Propagate app-wide cross-cutting verdicts to their per-endpoint cells.
+
+    The matrix fans every endpoint across response-property checks (cors,
+    security_headers, csrf) whose verdict is app-wide. The model files the
+    app-wide finding ("Wildcard CORS on all endpoints") but rarely marks the 50+
+    per-endpoint cells, so coverage reads near-zero while the work is done. This
+    propagates the established verdict to the cells HONESTLY: every `vulnerable`
+    close links the existing finding and cites a real response artifact; CSRF on
+    a safe-method (GET/HEAD/OPTIONS) endpoint is marked not_applicable. Injection
+    cells are never touched (those need real per-cell detectors).
+
+    Optional data: `artifact_id` to override the auto-picked evidence response.
+    """
+    import collections
+
+    from core import paths as _paths
+
+    matrix = cov.get_matrix()
+    cells = matrix.get("matrix", [])
+    endpoints = matrix.get("endpoints", [])
+
+    findings = []
+    try:
+        ff = _paths.FINDINGS_FILE
+        if ff.exists():
+            findings = json.loads(ff.read_text()).get("findings", [])
+    except Exception:
+        pass
+
+    artifact_id = (data.get("artifact_id") or "").strip()
+    headers: dict = {}
+    if artifact_id:
+        art_file = _paths.ARTIFACTS_DIR / f"{artifact_id}.txt"
+        if art_file.exists():
+            _, headers = cov.parse_artifact_headers(art_file.read_text())
+    if not artifact_id or not headers:
+        artifact_id, headers = cov.pick_representative_artifact(str(_paths.ARTIFACTS_DIR))
+
+    if not artifact_id:
+        return (
+            "No representative response artifact found (need an http_request 200 with headers). "
+            "Send a plain GET to the target first, then retry — that response is the app-wide evidence."
+        )
+
+    # Phase 0.1: file the app-wide cross-cutting findings the response evidences
+    # when the model hasn't — so the cors/security_headers cells can close
+    # `vulnerable` (the planner links a finding for every vulnerable verdict and
+    # never fabricates one). Idempotent: a type that already has a matching
+    # finding is skipped, so re-running on each complete attempt won't duplicate.
+    try:
+        from core import session as _sess
+        target = (_sess.get() or {}).get("target", "") or ""
+    except Exception:
+        target = ""
+    if await _autofile_crosscutting_findings(headers, artifact_id, target, findings):
+        try:
+            findings = json.loads(_paths.FINDINGS_FILE.read_text()).get("findings", [])
+        except Exception:
+            pass
+
+    closures = cov.plan_crosscutting_closures(cells, endpoints, findings, headers, artifact_id)
+    if not closures:
+        return (
+            "No pending cross-cutting cells to auto-close. Either cors/security_headers/csrf are already "
+            "addressed, or there is no app-wide finding to link a vulnerable verdict to (file the finding first)."
+        )
+
+    # Strip the diagnostic 'basis' key before applying through the honesty gates.
+    updates = [{k: v for k, v in c.items() if k != "basis"} for c in closures]
+    result = await cov.bulk_update(updates)
+    by_status = collections.Counter(c["status"] for c in closures)
+    return json.dumps({
+        "auto_crosscutting": True,
+        "evidence_artifact": artifact_id,
+        "planned": len(closures),
+        "applied": result.get("updated"),
+        "rejected": result.get("rejected"),
+        "by_status": dict(by_status),
+        "note": (
+            "Propagated app-wide cors/security_headers/csrf verdicts to their per-endpoint cells "
+            "(vulnerable cells link the existing finding; GET-endpoint CSRF marked not_applicable). "
+            "Injection cells untouched."
+        ),
+        "warnings": result.get("warnings", [])[:5],
+    }, indent=2)
+
+
+async def _do_coverage_next_batch(data, cov):
+    """Hand the agent a FOCUSED, concrete batch of the next cells to test.
+
+    Returns a small batch (profile-capped) of the next pending cells on one
+    endpoint, each enriched with the exact test request to send, plus progress
+    (this endpoint X/Y · overall X/Y). The agent runs each request, then closes
+    the whole batch in one bulk_tested call citing each artifact_id — a tight
+    test→close loop instead of navigating 700+ cells solo.
+    """
+    from mcp_server.scan_engine.budget import get_profile
+    from mcp_server.scan_engine.planner import _concrete_test_command
+
+    cap = get_profile().get("next_batch_size", 10)
+    try:
+        count = min(int(data.get("count", cap)), cap)
+    except (TypeError, ValueError):
+        count = cap
+    endpoint_id = (data.get("endpoint_id") or "").strip() or None
+
+    current = scan_session.get() or {}
+    target = current.get("target", "")
+
+    result = await cov.get_next_batch(count=max(1, count), endpoint_id=endpoint_id)
+    for cell in result.get("batch", []):
+        cell["test_request"] = _concrete_test_command(
+            cell.get("injection_type", ""), target,
+            cell.get("endpoint_path") or "", cell.get("method") or "GET",
+            cell.get("param") or "_endpoint", cell.get("param_type") or "query",
+        )
+
+    n = len(result.get("batch", []))
+    if n:
+        prog = result.get("progress", {})
+        result["next_step"] = (
+            f"Test these {n} cell(s) on {result['endpoint_focus']['method']} "
+            f"{result['endpoint_focus']['path']} "
+            f"[{prog.get('endpoint','?')} this endpoint · {prog.get('overall','?')} overall]. "
+            "Run each test_request, then CLOSE them in one call: "
+            "report(action='coverage', data={type:'bulk_tested', updates:[{cell_id, status:'tested_clean|vulnerable|not_applicable', "
+            "artifact_id:'<from the http/kali response>', finding_id:'<required if vulnerable>'}, ...]}). "
+            "Then call this again for the next batch."
+        )
+    else:
+        result["next_step"] = "All cells addressed — proceed to validation/reporting."
+    return json.dumps(result, indent=2)
 
 
 async def _do_coverage_list(data, cov):
@@ -798,6 +1145,11 @@ async def _emit_coverage_event() -> None:
         matrix    = _cov.get_matrix()
         meta      = matrix.get("meta", {})
         all_cells = matrix.get("matrix", [])
+        # "Unevidenced" = closed without an artifact_id (the write-enforced proof
+        # a tool ran) AND without legacy tested_by. Keying these counts on
+        # artifact_id keeps the QA completion gates satisfiable: a cell closed
+        # with a real artifact but empty tested_by is evidenced, not orphaned.
+        from core.coverage import cell_has_test_evidence
         await _qlog.append({
             "type":           "COVERAGE",
             "registered":     len(matrix.get("endpoints", [])),
@@ -807,10 +1159,11 @@ async def _emit_coverage_event() -> None:
             "not_applicable": sum(1 for c in all_cells if c["status"] == "not_applicable"),
             "skipped":        sum(1 for c in all_cells if c["status"] == "skipped"),
             "na_untooled":    sum(1 for c in all_cells
-                                  if c["status"] == "not_applicable" and not c.get("tested_by")),
+                                  if c["status"] == "not_applicable"
+                                  and not cell_has_test_evidence(c)),
             "untooled":       sum(1 for c in all_cells
                                   if c["status"] in ("tested_clean", "vulnerable")
-                                  and not c.get("tested_by")),
+                                  and not cell_has_test_evidence(c)),
         })
     except Exception:
         pass
