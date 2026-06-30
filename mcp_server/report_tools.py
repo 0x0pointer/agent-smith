@@ -788,7 +788,9 @@ async def _do_coverage_list(data, cov):
                               not_applicable|skipped
       injection_type — exact: sqli|xss|ssti|cmdi|ssrf|nosqli|xxe|traversal|
                               crlf|prototype|mass_assignment|redirect|
-                              auth|authz|rate_limit|cors|security_headers|csrf
+                              auth|authz|rate_limit|cors|security_headers|csrf|
+                              (LLM) prompt_injection|jailbreak|cot_forgery|
+                              role_prefix_spoofing|system_prompt_leak|… (see core/taxonomy.py)
       param_name     — substring match, case-insensitive
       limit          — int, default 200, hard ceiling 1000 to keep
                        the response payload bounded
