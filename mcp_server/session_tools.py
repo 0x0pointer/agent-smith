@@ -621,37 +621,41 @@ def _coverage_blockers(cov: dict, ctf_mode: bool = False) -> list[str]:
     if low_cov:
         blockers.append(low_cov)
 
-    all_cells = cov.get("matrix", [])
+    blockers.extend(_integrity_blockers(cov.get("matrix", []), coverage_enforced))
+    return blockers
+
+
+def _integrity_blockers(all_cells: list[dict], coverage_enforced: bool) -> list[str]:
+    """Closure-INTEGRITY gates — reject cells that cite no test evidence (untooled
+    tested/vulnerable, suspect-N/A, skipped-without-evidence, N/A-without-bypass)
+    plus injection-breadth. Extracted from _coverage_blockers to keep that function
+    under the cognitive-complexity cap."""
+    out: list[str] = []
     from core.coverage import cell_has_test_evidence
     untooled = [c for c in all_cells
                 if c["status"] in ("tested_clean", "vulnerable") and not cell_has_test_evidence(c)]
     if untooled:
-        blockers.append(
+        out.append(
             f"INTEGRITY: {len(untooled)} cell(s) marked tested/vulnerable but cite no "
             f"artifact_id. Re-test these cells and pass the artifact_id from the tool response."
         )
-
     suspect_na = _suspect_na_cells(all_cells, _BYPASS_REQUIRED_TYPES)
     if suspect_na:
         sample = ", ".join(suspect_na[:5]) + ("..." if len(suspect_na) > 5 else "")
-        blockers.append(
+        out.append(
             f"INTEGRITY: {len(suspect_na)} cell(s) marked N/A without testing bypass "
             f"techniques: {sample}. Test the bypass before marking N/A."
         )
-
     skipped_blocker = _skipped_no_evidence_blocker(all_cells)
     if skipped_blocker:
-        blockers.append(skipped_blocker)
-
+        out.append(skipped_blocker)
     na_blocker = _na_untooled_blocker(all_cells, _BYPASS_REQUIRED_TYPES)
     if na_blocker:
-        blockers.append(na_blocker)
-
+        out.append(na_blocker)
     breadth_blocker = _injection_breadth_blocker(all_cells, coverage_enforced)
     if breadth_blocker:
-        blockers.append(breadth_blocker)
-
-    return blockers
+        out.append(breadth_blocker)
+    return out
 
 
 def _na_untooled_blocker(cells: list[dict], bypass_types: dict) -> str | None:

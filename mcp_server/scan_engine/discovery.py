@@ -248,13 +248,12 @@ def _spider_endpoints(urls: list[str]) -> list[dict]:
 async def _fetch(url: str) -> tuple[int, str]:
     import aiohttp
     try:
-        async with aiohttp.ClientSession() as session:
-            # ssl=False is intentional: a pentest tool must reach targets that
-            # use self-signed / invalid certs. NOSONAR(python:S4830)
-            async with session.get(  # NOSONAR
-                url, timeout=aiohttp.ClientTimeout(total=_FETCH_TIMEOUT),
-                ssl=False, allow_redirects=True,
-            ) as resp:
+        # ssl=False is intentional: a pentest tool must reach targets that use
+        # self-signed / invalid certs, so cert validation is deliberately off.
+        timeout = aiohttp.ClientTimeout(total=_FETCH_TIMEOUT)
+        connector = aiohttp.TCPConnector(ssl=False)  # NOSONAR — see comment above (S4830)
+        async with aiohttp.ClientSession(connector=connector) as session:
+            async with session.get(url, timeout=timeout, allow_redirects=True) as resp:
                 # content.read(n) returns only the first available chunk, which
                 # truncates a streamed/chunked body (a 50 KB spec arrived as a
                 # 1 KB first chunk → JSON parse failed → spec silently skipped).
