@@ -1,7 +1,7 @@
 """Regression tests for the manual-setup gate feature (capabilities.yaml +
 readiness probes + host execution lane). Covers the security boundary, the
-session state model, the loader's $ref jail, the probe runner, and the
-session_tools lifecycle wiring.
+session state model, the (inline, co-located) capabilities loader, the probe
+runner, and the session_tools lifecycle wiring.
 """
 import asyncio
 import os
@@ -111,9 +111,9 @@ def test_check_gate_skipped_short_circuits():
     assert out["status"] == "skipped" and out["result"] is None
 
 
-# ── capabilities loader ($ref jail, bad-verb skip) ──────────────────────────────
+# ── capabilities loader (inline-only, co-located; bad-verb skip) ────────────────
 
-def test_loader_inline_and_ref_and_rejections(monkeypatch):
+def test_loader_inline_and_rejections(monkeypatch):
     tmp = Path(tempfile.mkdtemp())
     monkeypatch.setattr(capabilities, "_SKILLS_DIR", tmp)
     (tmp / "sk").mkdir()
@@ -121,15 +121,13 @@ def test_loader_inline_and_ref_and_rejections(monkeypatch):
         "- id: inline-uart\n"
         "  category: hardware\n"
         "  readiness_probe: {run_on: host, verb: picocom, args: ['-b','115200','/dev/ttyUSB0'], success: 'contains:login'}\n"
-        "- {$ref: android-dynamic}\n"
+        "- id: inline-adb\n"
+        "  category: device\n"
+        "  readiness_probe: {run_on: kali, verb: adb, args: ['devices'], success: exit_zero}\n"
     )
     caps, warns = capabilities.load_capabilities("sk")
-    assert {c["id"] for c in caps} == {"inline-uart", "android-dynamic"}, caps
+    assert {c["id"] for c in caps} == {"inline-uart", "inline-adb"}, caps
     assert not warns, warns
-
-    # $ref traversal rejected
-    cap, w = capabilities._resolve_ref("../../../etc/passwd")
-    assert cap is None and "invalid" in w
 
     # disallowed probe verb skipped with a warning
     (tmp / "bad").mkdir()

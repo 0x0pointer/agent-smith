@@ -4,20 +4,20 @@ Capabilities loader — discover a skill's declared manual-setup prerequisites.
 A skill that needs manual/physical setup ships ``skills/<name>/capabilities.yaml``
 (co-located, owned by the skill author). Its PRESENCE is the exception
 declaration: absent → Smith runs optimistically. When ``set_skill`` fires for a
-skill, this loader reads that file, resolves any ``$ref`` (jailed to
-skills/_shared/capabilities/), validates each capability against the probe-verb
-allow-list, and opens a (non-blocking) setup gate per unsatisfied capability.
+skill, this loader reads that file, validates each capability against the
+probe-verb allow-list, and opens a (non-blocking) setup gate per capability.
+
+Each skill keeps its capabilities co-located in its own folder
+(skills/<name>/capabilities.yaml) — there is no shared/external location, so a
+capability needed by two skills is simply declared in each (they are short).
 
 Security:
   - probe commands are validated against core.probe_verbs (no free-form shell).
-  - ``$ref`` is confined to skills/_shared/capabilities/ via realpath; traversal
-    or symlink-escape is rejected (PLAN_REVIEW_GAPS G21).
   - fail-soft: any parse/validation problem skips that capability with a warning;
     it never raises into the scan loop.
 """
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 from core import paths as _paths
@@ -29,9 +29,6 @@ except ImportError:  # pragma: no cover - feature no-ops without a YAML parser
     yaml = None
 
 _SKILLS_DIR = _paths.REPO_ROOT / "skills"
-_SHARED_DIR = _SKILLS_DIR / "_shared" / "capabilities"
-# A $ref names a shared file by stem only — no slashes, no '..', no absolute path.
-_REF_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 _RUN_ON = {"host", "kali"}
 
 
@@ -42,28 +39,6 @@ def _parse_yaml(path: Path):
         return yaml.safe_load(path.read_text(encoding="utf-8")), ""
     except (OSError, yaml.YAMLError) as exc:  # type: ignore[union-attr]
         return None, f"failed to read/parse {path.name}: {exc}"
-
-
-def _resolve_ref(ref) -> tuple[dict | None, str]:
-    """Resolve a {$ref: name} to a shared capability dict, jailed to _SHARED_DIR."""
-    if not isinstance(ref, str) or not _REF_RE.match(ref):
-        return None, f"invalid $ref {ref!r} (must match {_REF_RE.pattern}; no paths)"
-    target = _SHARED_DIR / f"{ref}.yaml"
-    try:
-        rp = target.resolve()
-        jail = _SHARED_DIR.resolve()
-    except OSError as exc:
-        return None, f"$ref {ref!r} resolve error: {exc}"
-    if jail != rp.parent:
-        return None, f"$ref {ref!r} escapes the shared-capabilities jail"
-    if not rp.is_file():
-        return None, f"$ref {ref!r} target not found: {rp.name}"
-    data, err = _parse_yaml(rp)
-    if err:
-        return None, err
-    if not isinstance(data, dict):
-        return None, f"$ref {ref!r}: shared file must be a single capability mapping"
-    return data, ""
 
 
 def _validate_capability(cap: dict) -> tuple[bool, str]:
@@ -102,22 +77,14 @@ def load_capabilities(skill_name: str) -> tuple[list[dict], list[str]]:
     caps: list[dict] = []
     warns: list[str] = []
     for item in data:
-        if isinstance(item, dict) and "$ref" in item:
-            cap, w = _resolve_ref(item["$ref"])
-            if w:
-                warns.append(w)
-            if cap is None:
-                continue
-        elif isinstance(item, dict):
-            cap = item
-        else:
+        if not isinstance(item, dict):
             warns.append(f"skipping non-mapping capability entry: {item!r}")
             continue
-        ok, why = _validate_capability(cap)
+        ok, why = _validate_capability(item)
         if not ok:
             warns.append(f"skipping invalid capability: {why}")
             continue
-        caps.append(cap)
+        caps.append(item)
     return caps, warns
 
 
