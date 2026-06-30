@@ -354,6 +354,15 @@ def _extract_and_persist_assets(tool: str, result: Any, ctx: dict) -> None:
             scan_session.update_known_assets(
                 "endpoints",
                 [ep.get("path", "") for ep in endpoints if ep.get("path")])
+    elif tool in ("fuzzyai", "garak", "pyrit", "promptfoo"):
+        # AI scans pass the URL straight to the tool (no spider), so without this
+        # the AI endpoint never lands in known_assets — leaving recovery and the
+        # deepen gate blind to the AI surface. Persist the target path.
+        target = ctx.get("target", "")
+        if target:
+            from urllib.parse import urlparse
+            path = urlparse(target).path or target
+            scan_session.update_known_assets("endpoints", [path])
     elif tool == "http_request":
         _persist_http_auth_assets(scan_session, evidence, ctx)
 

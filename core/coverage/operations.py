@@ -22,6 +22,17 @@ from .validation import (
 )
 
 
+def _tested_by_from_artifact(artifact_id: str) -> str:
+    """Derive the tool name from a tool-prefixed artifact_id so artifact-backed
+    closures aren't falsely flagged 'untooled' (artifact_id is the real evidence
+    gate). Format: <tool>_<digits>_<hex> — e.g. 'http_request_134016_d4fd92c3'
+    -> 'http_request', 'garak_134016_730a2dab' -> 'garak'."""
+    if not artifact_id:
+        return ""
+    parts = artifact_id.rsplit("_", 2)
+    return parts[0] if len(parts) == 3 else artifact_id
+
+
 async def add_endpoint(
     path: str,
     method: str,
@@ -83,8 +94,13 @@ async def add_endpoint(
                 data["matrix"].append(cell)
                 new_cells += 1
 
-        # Endpoint-level cells (CORS, CSRF, headers, etc.)
-        for inj_type in _APPLICABILITY["endpoint/default"]:
+        # Endpoint-level cells (CORS, CSRF, headers, etc.). AI endpoints also
+        # get the endpoint-level LLM weakness cells (RAG poisoning, embedding
+        # manipulation) which apply per-endpoint rather than per-param.
+        endpoint_level_types = list(_APPLICABILITY["endpoint/default"])
+        if classify_endpoint(path) == "ai-redteam":
+            endpoint_level_types += _APPLICABILITY.get("llm_endpoint/default", [])
+        for inj_type in endpoint_level_types:
             cell = {
                 "id": f"cell-{uuid.uuid4().hex[:12]}",
                 "endpoint_id": ep_id,
@@ -163,7 +179,7 @@ async def update_cell(
                 )
                 cell["status"]      = status
                 cell["notes"]       = notes
-                cell["tested_by"]   = tested_by
+                cell["tested_by"]   = tested_by or _tested_by_from_artifact(artifact_id)
                 cell["artifact_id"] = artifact_id
                 if finding_id:
                     cell["finding_id"] = finding_id
@@ -190,7 +206,7 @@ def _apply_bulk_cell(cell: dict, upd: dict, warnings: list[str]) -> None:
         warnings.append(warning)
     cell["status"]      = st
     cell["notes"]       = notes_text
-    cell["tested_by"]   = upd.get("tested_by", "")
+    cell["tested_by"]   = upd.get("tested_by") or _tested_by_from_artifact(upd.get("artifact_id", ""))
     cell["artifact_id"] = upd.get("artifact_id", "")
     if upd.get("finding_id"):
         cell["finding_id"] = upd["finding_id"]
