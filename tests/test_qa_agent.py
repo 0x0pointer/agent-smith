@@ -28,7 +28,7 @@ from core.qa_agent import (
     _maybe_inject_business_logic_directive, _check_core_skill_chain,
     _hir, _check_auth_failure, _check_budget_limit, _check_zero_endpoints,
     _check_target_unreachable, _check_exploit_escalation, _check_repeated_tool_failure,
-    _ts_age_secs,
+    _ts_age_secs, _check_unregistered_findings,
 )
 from core.quick_log import QuickLog
 
@@ -240,6 +240,48 @@ def test_coverage_integrity_fires():
     assert alert["code"] == "COVERAGE_INTEGRITY"
     assert alert["blocking"] is True
     assert "5" in alert["message"]
+
+
+# ---------------------------------------------------------------------------
+# _check_unregistered_findings — discovery-before-testing gap
+# ---------------------------------------------------------------------------
+
+def test_unregistered_findings_none_when_all_registered():
+    cov = {"endpoints": [{"path": "/login", "_normalized": "/login"}]}
+    fnd = {"findings": [{"target": "http://t/login", "status": "confirmed"}]}
+    assert _check_unregistered_findings(fnd, cov) is None
+
+
+def test_unregistered_findings_none_when_matrix_empty():
+    # zero registered endpoints is a different signal (handled by _check_zero_endpoints)
+    fnd = {"findings": [{"target": "http://t/anything"}]}
+    assert _check_unregistered_findings(fnd, {"endpoints": []}) is None
+
+
+def test_unregistered_findings_blocks_with_alert():
+    cov = {"endpoints": [{"path": "/login", "_normalized": "/login"}]}
+    fnd = {"findings": [{"target": "http://t/transfer"}]}
+    alert = _check_unregistered_findings(fnd, cov)
+    assert alert is not None
+    assert alert["code"] == "DISCOVERY_GAP"
+    assert alert["blocking"] is True and alert["urgency"] == "high"
+    assert "/transfer" in alert["message"]
+
+
+def test_unregistered_findings_steers_when_three_or_more(monkeypatch):
+    import core.qa_agent as _qa
+    import core.steering as steering
+    monkeypatch.setattr(_qa, "_has_pending_directives", lambda: False)
+    calls = []
+    monkeypatch.setattr(steering.steering_queue, "add_directive",
+                        lambda **kw: calls.append(kw))
+    cov = {"endpoints": [{"path": "/login", "_normalized": "/login"}]}
+    fnd = {"findings": [{"target": f"http://t/u{i}"} for i in range(3)]}
+    alert = _check_unregistered_findings(fnd, cov)
+    assert alert["code"] == "DISCOVERY_GAP"
+    assert len(calls) == 1
+    assert calls[0]["trigger"] == "DISCOVERY_GAP"
+    assert calls[0]["priority"] == "high"
 
 
 # ---------------------------------------------------------------------------
@@ -947,10 +989,17 @@ def test_whitebox_passes_fires_at_zero(tmp_path, monkeypatch):
     monkeypatch.setattr(st_mod, "_STEERING_FILE", steering_file)
     monkeypatch.setattr(qa_mod, "_STEERING_FILE", steering_file)
 
-    alert = _check_whitebox_passes([], {"depth": "thorough"})
+    wb = {"depth": "thorough", "skill_history": [{"skill": "codebase"}]}
+    alert = _check_whitebox_passes([], wb)
     assert alert is not None
     assert alert["code"] == "WHITEBOX_PASSES"
     assert "0/3" in alert["message"]
+
+
+def test_whitebox_passes_skipped_on_blackbox():
+    # No codebase / semgrep / trufflehog → black-box scan → gate must NOT fire.
+    assert _check_whitebox_passes([], {"depth": "thorough"}) is None
+    assert _check_whitebox_passes([], {"depth": "thorough", "skill_history": [{"skill": "web-exploit"}]}) is None
 
 
 def test_whitebox_passes_fires_at_one(tmp_path, monkeypatch):
@@ -974,7 +1023,7 @@ def test_whitebox_passes_directive_injected(tmp_path, monkeypatch):
     monkeypatch.setattr(st_mod, "_STEERING_FILE", steering_file)
     monkeypatch.setattr(qa_mod, "_STEERING_FILE", steering_file)
 
-    _check_whitebox_passes([], {"depth": "thorough"})
+    _check_whitebox_passes([], {"depth": "thorough", "skill_history": [{"skill": "codebase"}]})
     q = st_mod.SteeringQueue()
     assert any(d.get("trigger") == "WHITEBOX_PASSES" for d in q._load())
 
@@ -999,11 +1048,19 @@ def test_premature_complete_enough_passes():
 
 def test_premature_complete_fires():
     entries = [{"type": "COMPLETE", "ts": _ts(1)}]
-    alert = _check_premature_complete(entries, {"depth": "thorough"})
+    wb = {"depth": "thorough", "skill_history": [{"skill": "codebase"}]}
+    alert = _check_premature_complete(entries, wb)
     assert alert is not None
     assert alert["code"] == "PREMATURE_COMPLETE"
     assert alert["blocking"] is True
     assert "0 done" in alert["message"]
+
+
+def test_premature_complete_skipped_on_blackbox():
+    # Black-box thorough scan (no codebase): the semgrep-pass gate must NOT block
+    # completion (it would deadlock — semgrep has nothing to scan).
+    entries = [{"type": "COMPLETE", "ts": _ts(1)}]
+    assert _check_premature_complete(entries, {"depth": "thorough"}) is None
 
 
 # ---------------------------------------------------------------------------

@@ -40,6 +40,22 @@ def add_tool_invocation(tool: str, target: str, summary: str, options_hash: str 
     _sess._flush()
 
 
+def set_last_artifact(tool: str, artifact_id: str) -> None:
+    """Stash the most-recent tool artifact id so a finding filed right after a
+    proving tool call can auto-link its evidence artifact.
+
+    This is what lets adjudication REUSE the testing-phase proof instead of
+    forcing the model to re-run the attack (it has lost the exact artifact_id to
+    context compaction). Only scan/http/kali tools reach wrap(), so this never
+    points at a report/coverage call.
+    """
+    if not _sess._current or _sess._current.get("status") != "running" or not artifact_id:
+        return
+    _sess._current["last_artifact_id"] = artifact_id
+    _sess._current.setdefault("last_artifacts_by_tool", {})[tool] = artifact_id
+    _sess._flush()
+
+
 def _update_ports_assets(assets: dict, items: list) -> None:
     """Deduplicate and append port entries to known_assets['ports']."""
     existing = {(p.get("host", ""), p.get("port", 0)) for p in assets.get("ports", [])}

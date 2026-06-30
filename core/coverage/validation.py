@@ -99,6 +99,46 @@ def cell_has_test_evidence(cell: dict) -> bool:
     return bool(cell.get("artifact_id") or cell.get("tested_by"))
 
 
+def _finding_norm_path(finding) -> str | None:
+    """Normalized URL path of a non-false-positive finding, or None to skip it."""
+    if not isinstance(finding, dict) or finding.get("status") == "false_positive":
+        return None
+    from urllib.parse import urlparse
+
+    from core.coverage.classify import _normalize_path
+    try:
+        path = urlparse(finding.get("target", "")).path or "/"
+    except Exception:
+        return None
+    return _normalize_path(path) or None
+
+
+def unregistered_finding_paths(findings_data, coverage_data) -> list[str]:
+    """Normalized endpoint paths that have findings but are NOT in the matrix.
+
+    A non-empty result means testing outran discovery — the agent filed findings
+    against endpoints it never registered, so the coverage matrix doesn't reflect
+    the real attack surface (the recon-before-testing discipline was skipped).
+    Drives the QA ``DISCOVERY_GAP`` check (early steer + completion block).
+
+    Returns ``[]`` when no endpoints are registered at all — that "zero endpoints"
+    state is a different signal handled by its own check, and treating every
+    finding as unregistered there would just be noise.
+    """
+    from core.coverage.classify import _normalize_path
+
+    endpoints = (coverage_data or {}).get("endpoints", []) if isinstance(coverage_data, dict) else []
+    if not endpoints:
+        return []
+    registered = {
+        ep.get("_normalized") or _normalize_path(ep.get("path", ""))
+        for ep in endpoints if isinstance(ep, dict)
+    }
+    findings = findings_data if isinstance(findings_data, list) else (findings_data or {}).get("findings", [])
+    unregistered = {p for f in findings if (p := _finding_norm_path(f)) and p not in registered}
+    return sorted(unregistered)
+
+
 # Injection cell types where 401/403 is meaningless evidence of cleanliness —
 # the test payload was never evaluated because auth blocked the request first.
 # Excluded: auth/access-control cell types where 401/403 IS the finding signal.

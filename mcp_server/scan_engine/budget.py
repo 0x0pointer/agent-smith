@@ -35,6 +35,9 @@ MODEL_PROFILES: dict[str, dict] = {
         # scan must complete. Capable models do the full 3; small local models
         # cannot hold 3 deep passes in a 16-32K window, so they do fewer.
         "thorough_min_passes": 3,
+        # next_batch_size: how many cells the focused step-by-step testing loop
+        # hands the agent at once (report(action='coverage', type='next_batch')).
+        "next_batch_size": 10,
     },
     "medium": {
         "enforce_budget": True,
@@ -44,6 +47,7 @@ MODEL_PROFILES: dict[str, dict] = {
         "execute_next_in_summary": True,
         "condensed_directives": True,
         "thorough_min_passes": 2,
+        "next_batch_size": 5,
     },
     "small": {
         "enforce_budget": True,
@@ -53,6 +57,7 @@ MODEL_PROFILES: dict[str, dict] = {
         "execute_next_in_summary": True,
         "condensed_directives": True,
         "thorough_min_passes": 1,
+        "next_batch_size": 3,
     },
 }
 

@@ -430,6 +430,130 @@ def test_cell_evidence_neither_is_unevidenced():
 
 
 # ---------------------------------------------------------------------------
+# unregistered_finding_paths — discovery-before-testing predicate
+# ---------------------------------------------------------------------------
+
+def test_unregistered_finding_paths_flags_untested_endpoints():
+    from core.coverage import unregistered_finding_paths
+    cov = {"endpoints": [{"path": "/login", "_normalized": "/login"}]}
+    fnd = {"findings": [
+        {"target": "http://t/login", "status": "confirmed"},      # registered → ok
+        {"target": "http://t/transfer", "status": "confirmed"},   # not registered
+        {"target": "http://t/admin/delete/42"},                   # not registered, normalized
+    ]}
+    assert unregistered_finding_paths(fnd, cov) == ["/admin/delete/{id}", "/transfer"]
+
+
+def test_unregistered_finding_paths_registered_ok():
+    from core.coverage import unregistered_finding_paths
+    cov = {"endpoints": [{"path": "/transfer", "_normalized": "/transfer"}]}
+    assert unregistered_finding_paths({"findings": [{"target": "http://t/transfer"}]}, cov) == []
+
+
+def test_unregistered_finding_paths_empty_matrix_returns_empty():
+    from core.coverage import unregistered_finding_paths
+    fnd = {"findings": [{"target": "http://t/x"}]}
+    assert unregistered_finding_paths(fnd, {"endpoints": []}) == []
+
+
+def test_unregistered_finding_paths_ignores_false_positive():
+    from core.coverage import unregistered_finding_paths
+    cov = {"endpoints": [{"path": "/login", "_normalized": "/login"}]}
+    fnd = {"findings": [{"target": "http://t/ghost", "status": "false_positive"}]}
+    assert unregistered_finding_paths(fnd, cov) == []
+
+
+# ---------------------------------------------------------------------------
+# select_next_batch / get_next_batch — focused step-by-step testing loop
+# ---------------------------------------------------------------------------
+
+def _batch_data(extra_cells=None):
+    return {
+        "endpoints": [
+            {"id": "ep1", "path": "/login", "method": "POST", "auth_context": "none"},
+            {"id": "ep2", "path": "/blog", "method": "GET", "auth_context": "none"},
+        ],
+        "matrix": [
+            {"id": "c1", "endpoint_id": "ep1", "param": "u", "param_type": "body_json", "injection_type": "xss", "status": "pending"},
+            {"id": "c2", "endpoint_id": "ep1", "param": "u", "param_type": "body_json", "injection_type": "sqli", "status": "pending"},
+            {"id": "c3", "endpoint_id": "ep2", "param": "_endpoint", "param_type": "endpoint", "injection_type": "cors", "status": "pending"},
+            *(extra_cells or []),
+        ],
+    }
+
+
+def test_select_next_batch_groups_by_endpoint_and_prioritizes():
+    from core.coverage import select_next_batch
+    out = select_next_batch(_batch_data(), count=10)
+    # ep1 (first registered) is the focus; sqli is prioritized over xss within it
+    assert out["endpoint_focus"]["path"] == "/login"
+    assert [c["injection_type"] for c in out["batch"]] == ["sqli", "xss"]
+    assert all(c["endpoint_id"] == "ep1" for c in out["batch"])
+    assert out["progress"] == {"endpoint": "0/2", "overall": "0/3"}
+    assert out["remaining"] == 3
+
+
+def test_select_next_batch_count_cap():
+    from core.coverage import select_next_batch
+    out = select_next_batch(_batch_data(), count=1)
+    assert len(out["batch"]) == 1
+    assert out["batch"][0]["injection_type"] == "sqli"  # highest priority first
+
+
+def test_select_next_batch_focuses_started_endpoint():
+    # ep2 already has a closed cell → "started" → focus it before opening ep1.
+    from core.coverage import select_next_batch
+    data = _batch_data(extra_cells=[
+        {"id": "c4", "endpoint_id": "ep2", "param": "_endpoint", "param_type": "endpoint",
+         "injection_type": "csrf", "status": "tested_clean"},
+    ])
+    out = select_next_batch(data, count=10)
+    assert out["endpoint_focus"]["path"] == "/blog"
+    assert out["progress"]["endpoint"] == "1/2"
+    assert out["progress"]["overall"] == "1/4"
+
+
+def test_select_next_batch_empty_when_all_addressed():
+    from core.coverage import select_next_batch
+    data = _batch_data()
+    for c in data["matrix"]:
+        c["status"] = "tested_clean"
+    out = select_next_batch(data, count=10)
+    assert out["batch"] == []
+    assert out["endpoint_focus"] is None
+    assert out["progress"]["overall"] == "3/3"
+
+
+@pytest.mark.asyncio
+async def test_get_next_batch_async_against_real_matrix(coverage_file):
+    await core.coverage.add_endpoint(
+        path="/login", method="POST",
+        params=[{"name": "username", "type": "body_json", "value_hint": "string"}],
+    )
+    out = await core.coverage.get_next_batch(count=3)
+    assert out["batch"], "expected pending cells for the registered endpoint"
+    assert out["endpoint_focus"]["path"] == "/login"
+    assert all(c["endpoint_path"] == "/login" for c in out["batch"])
+
+
+@pytest.mark.asyncio
+async def test_coverage_next_batch_handler_enriches_request(coverage_file, monkeypatch):
+    import core.coverage as cov
+    import core.session as scan_session
+    import mcp_server.report_tools as rt
+    await cov.add_endpoint(
+        path="/login", method="POST",
+        params=[{"name": "username", "type": "body_json", "value_hint": "string"}],
+    )
+    monkeypatch.setattr(scan_session, "get", lambda: {"target": "http://t", "model_profile": "full"})
+    out = json.loads(await rt._do_coverage_next_batch({"type": "next_batch"}, cov))
+    assert out["batch"]
+    assert all(c.get("test_request") for c in out["batch"])  # enriched with a concrete request
+    assert "bulk_tested" in out["next_step"]                 # test→close loop guidance present
+    assert out["endpoint_focus"]["path"] == "/login"
+
+
+# ---------------------------------------------------------------------------
 # Path normalization
 # ---------------------------------------------------------------------------
 

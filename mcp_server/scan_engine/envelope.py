@@ -126,8 +126,15 @@ def wrap(tool: str, raw_output: str, context: dict | None = None) -> str:
 
     ctx = context or {}
 
-    # 1. Store raw output as artifact
+    # 1. Store raw output as artifact + remember it as the session's most-recent
+    #    proof, so a finding filed right after auto-links it (adjudication can
+    #    then reuse it instead of forcing a re-run).
     artifact_id = store_artifact(tool, raw_output)
+    try:
+        from core import session as _sess
+        _sess.set_last_artifact(tool, artifact_id)
+    except Exception:
+        pass
 
     # 2. Run tool-specific summarizer
     result = summarize(tool, raw_output, ctx)

@@ -87,13 +87,16 @@
         const svgEl = zoomInner.querySelector('svg');
         if (svgEl) { svgEl.style.maxWidth = '100%'; svgEl.style.height = 'auto'; }
       } else {
-        // Fall back to client-side rendering
+        // Client-side fallback — use mermaid.render() (SVG string), NOT
+        // mermaid.run({nodes:[el]}): this block's wrapper isn't appended to the
+        // document yet, and run() measures the live DOM, throwing "Cannot read
+        // properties of null" on the detached node. render() has no such need.
         const mermaidEl = document.createElement('div');
         mermaidEl.className = 'mermaid';
-        mermaidEl.textContent = _remapMermaidColors(block.textContent);
-        zoomInner.appendChild(mermaidEl);
         try {
-          await mermaid.run({ nodes: [mermaidEl] });
+          const renderId = `tm-mermaid-${idx}-${Date.now()}`;
+          const { svg } = await mermaid.render(renderId, _remapMermaidColors(block.textContent));
+          mermaidEl.innerHTML = svg;
         } catch (err) {
           mermaidEl.innerHTML = `<div style="color:#ff4d4f;font-size:.8rem;margin-bottom:.5rem">
             ⚠ Mermaid render error: ${esc(String(err?.message||err))}</div>
@@ -101,6 +104,7 @@
                         font-size:.75rem;white-space:pre-wrap;word-break:break-all;
                         border:1px solid #21262d;max-height:400px;overflow-y:auto">${esc(block.textContent)}</pre>`;
         }
+        zoomInner.appendChild(mermaidEl);
       }
 
       div.appendChild(zoomInner);

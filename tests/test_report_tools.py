@@ -7,9 +7,85 @@ from unittest.mock import AsyncMock, patch
 
 from mcp_server.report_tools import (
     _do_update_finding, _do_delete_finding, _do_finding, _do_dashboard, _do_chain, report,
-    _chain_mermaid, _mermaid_label,
+    _chain_mermaid, _mermaid_label, _auto_trigger_finding_gates,
     _DASHBOARD_CANONICAL_PORT, _LEGACY_DASHBOARD_PORTS,
 )
+
+
+# ── _auto_trigger_finding_gates — false-trigger guards ───────────────────────
+
+class _FakeSession:
+    def __init__(self, depth="thorough"):
+        self.depth = depth
+        self.triggered = []
+
+    def trigger_gate(self, gate_id, reason, skills):
+        self.triggered.append(gate_id)
+
+    def get(self):
+        return {"depth": self.depth}
+
+
+def test_finding_gates_skip_benign(monkeypatch):
+    """A mitigated / not-applicable / working-as-intended finding triggers nothing."""
+    import mcp_server.report_tools as rt
+    sess = _FakeSession()
+    monkeypatch.setattr(rt, "scan_session", sess)
+    out = _auto_trigger_finding_gates(
+        "SSTI in admin panel (marked not_applicable, no user input)", "high",
+        "The deserialization endpoint uses a safe parser and works correctly.")
+    assert out == []
+    assert sess.triggered == []
+
+
+def test_finding_gates_credential_audit_needs_weakness(monkeypatch):
+    """Merely naming an auth service must not fire credential-audit; a real weakness does."""
+    import mcp_server.report_tools as rt
+    sess = _FakeSession()
+    monkeypatch.setattr(rt, "scan_session", sess)
+    # auth service named, low severity, no weakness → no gate
+    assert _auto_trigger_finding_gates("MySQL service present", "low", "mysql running on 3306") == []
+    # real auth weakness → credential_audit fires
+    out = _auto_trigger_finding_gates(
+        "Authentication bypass on admin panel", "critical",
+        "login form bypass with a default password grants admin")
+    assert "credential_audit" in out
+
+
+def test_finding_gates_rce_fires_on_real(monkeypatch):
+    import mcp_server.report_tools as rt
+    sess = _FakeSession()
+    monkeypatch.setattr(rt, "scan_session", sess)
+    out = _auto_trigger_finding_gates(
+        "Remote code execution via deserialization", "critical", "achieved shell via os command")
+    assert "post_exploit_rce" in out
+
+
+# ── adjudication reuses the finding's linked proof artifact (no re-run) ───────
+
+def test_adjudication_reuses_linked_evidence_artifact(monkeypatch):
+    import mcp_server.report_tools as rt
+    finding = {"id": "f1", "severity": "high", "evidence_artifact_id": "http_request_1_aaaa"}
+    monkeypatch.setattr(rt.findings_store, "_load", lambda: {"findings": [finding]})
+    # Only the finding's linked artifact exists on disk; the supplied one is stale.
+    monkeypatch.setattr("mcp_server.scan_engine.artifacts.artifact_exists",
+                        lambda aid: aid == "http_request_1_aaaa")
+    fields = {"adjudication": {"reproducible": True, "rationale": "confirmed",
+                               "artifact_id": "stale_missing"}}
+    dropped, _ = rt._coerce_finding_adjudication("f1", fields)
+    assert dropped is False
+    assert fields["adjudication"]["artifact_id"] == "http_request_1_aaaa"  # substituted, not re-run
+
+
+def test_adjudication_rejected_when_no_linked_artifact(monkeypatch):
+    import mcp_server.report_tools as rt
+    finding = {"id": "f1", "severity": "high"}  # no evidence_artifact_id linked
+    monkeypatch.setattr(rt.findings_store, "_load", lambda: {"findings": [finding]})
+    monkeypatch.setattr("mcp_server.scan_engine.artifacts.artifact_exists", lambda aid: False)
+    fields = {"adjudication": {"reproducible": True, "rationale": "confirmed", "artifact_id": "missing"}}
+    dropped, msg = rt._coerce_finding_adjudication("f1", fields)
+    assert dropped is True
+    assert "no linked evidence artifact" in msg
 
 
 # ── _do_update_finding ───────────────────────────────────────────────────────
