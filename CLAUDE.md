@@ -101,6 +101,10 @@ Scan lifecycle and infrastructure.
   - `action="oob_start"` — ensure the OOB backend is ready; returns the minted base collaborator domain (interactsh) or records the logger base URL (http).
   - `action="oob_mint"` — options: `{cell_id}` — returns a unique callback (a subdomain for interactsh, a URL for http) registered in `known_assets` so it survives compaction. Embed it in the blind payload.
   - `action="oob_poll"` — options: `{correlation_id}` — checks for received callbacks; a hit is written as an artifact whose `artifact_id` (+ a `finding_id`) closes the blind injection cell `vulnerable`. No callback after a reasonable wait is evidence the payload did NOT reach an OOB sink.
+- **Manual-setup gates (`setup_gate`)** — for prerequisites you cannot perform via a tool: a jailbroken/hooked device, an emulator on the network, a UART/JTAG hookup. A skill declares these in its `skills/<name>/capabilities.yaml`; when you `set_skill` that skill, a **non-blocking** setup gate opens per declared capability and the set_skill response prints `MANUAL SETUP REQUIRED`. Lifecycle (all via `session(action="setup_gate", options={action: ...})`):
+  - `action="list"` — show all setup gates and their status.
+  - `action="elect"` — options: `{id, choice: now|defer|skip}`. **Mode-aware:** in interactive runs ASK the operator whether to set it up; headless, default to `defer` (the operator fulfills it on the dashboard). `skip` records the gap explicitly (mark dependent cells `skipped`, reason "operator declined manual setup"). A `requires_host` capability needs an explicit `now` at least once.
+  - `action="check"` — options: `{id}` — run the capability's **readiness probe** (an allow-listed command, e.g. `frida-ps -U`) to PROVE the setup is live. A pass writes a proving artifact + a `devices` known-asset and marks the gate satisfied; a fail tells you what to fix. **Probe over trust** — never assume setup is done; verify with `check`. NON-BLOCKING: an unsatisfied gate never blocks `session(complete)` — do all autonomous/static work first, then elect/verify the manual parts.
 
 ## Skill Logging (mandatory)
 

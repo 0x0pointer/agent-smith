@@ -143,6 +143,9 @@ _install_skill_dir() {
 
     rm -rf "$dst"
     mkdir -p "$dst"
+    # Folder copy includes capabilities.yaml (manual-setup prerequisites) when present.
+    # NOTE: the MCP server reads the AUTHORITATIVE capabilities.yaml from the repo's
+    # skills/<name>/ at runtime (core.capabilities); this installed copy is a mirror.
     cp -R "$src"/. "$dst"/
     _SKILL_OK=$((_SKILL_OK + 1))
 }

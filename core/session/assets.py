@@ -83,7 +83,7 @@ def update_known_assets(asset_type: str, items: list) -> None:
         "domains": [], "ips": [], "ports": [],
         "technologies": [], "endpoints": [],
         "credentials": [], "auth_tokens": [], "auth_endpoints": [],
-        "oob_interactions": [],
+        "oob_interactions": [], "devices": [],
     })
     if asset_type == "ports":
         _update_ports_assets(assets, items)
@@ -95,6 +95,10 @@ def update_known_assets(asset_type: str, items: list) -> None:
         _update_dict_assets(assets, asset_type, items, ("path", "method"))
     elif asset_type == "oob_interactions":
         _update_dict_assets(assets, asset_type, items, ("correlation_id",))
+    elif asset_type == "devices":
+        # Connected test devices a readiness probe confirmed live. Dedup on serial
+        # so re-probing the same emulator/device across skills doesn't pile up.
+        _update_dict_assets(assets, asset_type, items, ("serial",))
     else:
         _update_scalar_assets(assets, asset_type, items)
     _sess._flush()

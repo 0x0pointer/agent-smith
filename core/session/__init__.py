@@ -180,6 +180,7 @@ def start(
         "current_step":  None,
         "gates":         [],          # triggered gates that block completion
         "deferred_gates": [],         # gate IDs suppressed while a skill is active
+        "setup_gates":   [],          # manual-setup prerequisites (capabilities.yaml) — NON-blocking, distinct from gates
         "spider_failures": {},        # targets where spider failed; cleared on success
         "model_profile": resolved_profile,
         "model_profile_reason": profile_reason,
@@ -197,6 +198,9 @@ def start(
             # Out-of-band callbacks minted for blind-vuln confirmation. Survives
             # compaction (recovery brief) so a callback fired now can be polled later.
             "oob_interactions": [], # [{subdomain, correlation_id, linked_cell_id, minted_at, polled, hits}]
+            # Connected test devices/emulators a readiness probe confirmed live.
+            # Lets a setup_gate auto-satisfy its re-prompt across skills (never the probe).
+            "devices": [],          # [{kind, serial, transport, source, obtained_at}]
         },
         "context_chars_sent": 0,
         "complete_attempts":  0,        # incremented each time session(complete) is called
@@ -795,4 +799,12 @@ from .assets import (  # noqa: E402
     record_spider_failure,
     spider_max_retries,
     update_known_assets,
+)
+from .setup_gates import (  # noqa: E402
+    list_setup_gates,
+    open_setup_gate,
+    probe_is_fresh,
+    record_election,
+    record_probe_result,
+    setup_gate_by_id,
 )

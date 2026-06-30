@@ -1,0 +1,12 @@
+<div id="tab-setup-gates" class="tab-content">
+  <h2 class="section-title">Manual Setup Gates</h2>
+  <p style="color:var(--text-dim);font-size:0.82rem;margin:0 0 0.9rem;line-height:1.5;">
+    Manual / physical prerequisites a skill declares (a hooked device, an emulator on the network, a
+    UART / JTAG hookup). <strong>Non-blocking</strong> — the scan never waits on these. Choose
+    <em>Now / Defer / Skip</em>, follow the runbook, then <em>Verify setup</em> to run the readiness
+    probe. A passing probe confirms the setup is genuinely live and resumes any deferred work.
+  </p>
+  <div id="setup-gates-wrap">
+    <div class="empty-placeholder">No manual-setup gates. Skills that ship a <code>capabilities.yaml</code> open them here when invoked.</div>
+  </div>
+</div>
