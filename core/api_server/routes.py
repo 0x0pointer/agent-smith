@@ -459,9 +459,20 @@ async def api_setup_gate_recheck(gate_id: str) -> JSONResponse:
         woke = False
         if out["status"] == "ok" and was_deferred:
             woke = await _wake_smith_if_idle()
+
+        # Do not expose raw probe execution output/error details to remote clients.
+        probe_result = out.get("result")
+        safe_probe = None
+        if isinstance(probe_result, dict):
+            safe_probe = dict(probe_result)
+            safe_probe["stdout"] = ""
+            safe_probe["stderr"] = ""
+            if safe_probe.get("error"):
+                safe_probe["error"] = _api._ERR_REQUEST_FAILED
+
         return JSONResponse({
             "ok": True, "status": out["status"], "gate": out["gate"],
-            "probe": out["result"], "smith_woken": woke,
+            "probe": safe_probe, "smith_woken": woke,
         })
     except Exception:
         _log.exception("api_setup_gate_recheck failed")
