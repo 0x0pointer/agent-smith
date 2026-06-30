@@ -256,6 +256,10 @@ async def test_discover_and_register_registers_spec_and_forms(monkeypatch, cover
             return 200, _json.dumps(spec)
         if url.endswith("/login"):
             return 200, '<form action="/login" method="post"><input name="username"><input name="password"></form>'
+        # The two spec ops are POST-only routes — a GET liveness probe gets 405
+        # (route exists), so _verify_live keeps them.
+        if url.endswith("/api/v1/forgot-password") or url.endswith("/transfer"):
+            return 405, ""
         return 404, ""
 
     monkeypatch.setattr(disc, "_fetch", fake_fetch)
@@ -267,6 +271,7 @@ async def test_discover_and_register_registers_spec_and_forms(monkeypatch, cover
     assert out["registered"] >= 3          # 2 spec ops + /login form (+ spider /login GET)
     assert out["cells"] > 0
     assert out["by_source"].get("openapi-spec") == 2
+    assert out["unverified_dropped"] == 0  # all probed paths are live (405/200)
 
     # the spec operations are now in the matrix with their params
     data = _json.loads(coverage_file.read_text())
@@ -275,3 +280,43 @@ async def test_discover_and_register_registers_spec_and_forms(monkeypatch, cover
     assert "/transfer" in reg_paths
     transfer = next(e for e in data["endpoints"] if e["path"] == "/transfer")
     assert any(p["name"] == "amount" for p in transfer["params"])
+
+
+# ── _verify_live: drop phantom (404) spec ops before they fan into dead cells ──
+
+@pytest.mark.asyncio
+async def test_verify_live_drops_404_keeps_live_and_templated(monkeypatch):
+    inventory = [
+        {"path": "/real", "method": "GET", "params": []},                  # 200 → kept
+        {"path": "/phantom", "method": "GET", "params": []},               # 404 → dropped
+        {"path": "/api/v1/forgot-password", "method": "POST", "params": []},  # 405 → kept (route exists)
+        {"path": "/users/{id}", "method": "GET", "params": []},            # templated → never probed, kept
+    ]
+
+    async def fake_fetch(url):
+        if url.endswith("/phantom"):
+            return 404, ""
+        if url.endswith("/forgot-password"):
+            return 405, ""
+        return 200, ""
+
+    monkeypatch.setattr(disc, "_fetch", fake_fetch)
+    kept, dropped = await disc._verify_live("http://t:30081", inventory)
+    paths = {e["path"] for e in kept}
+    assert "/phantom" not in paths            # the only 404 → dropped
+    assert "/real" in paths                   # 200 → kept
+    assert "/api/v1/forgot-password" in paths  # 405 → kept (different method ≠ phantom)
+    assert "/users/{id}" in paths             # templated → kept without probing
+    assert dropped == 1
+
+
+@pytest.mark.asyncio
+async def test_verify_live_failsoft_keeps_on_probe_error(monkeypatch):
+    inventory = [{"path": "/x", "method": "GET", "params": []}]
+
+    async def boom(url):
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr(disc, "_fetch", boom)
+    kept, dropped = await disc._verify_live("http://t", inventory)
+    assert dropped == 0 and len(kept) == 1    # never drop on doubt

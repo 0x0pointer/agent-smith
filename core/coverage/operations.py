@@ -167,6 +167,12 @@ async def update_cell(
                 auth_reject = _validate_auth_response(artifact_id, status, cell)
                 if auth_reject:
                     return auth_reject
+                # Artifact-reuse block: a single request can't legitimately test
+                # multiple distinct injection types — see _validate_artifact_reuse.
+                from core.coverage.validation import _validate_artifact_reuse
+                reuse_reject = _validate_artifact_reuse(artifact_id, status, cell, data["matrix"])
+                if reuse_reject:
+                    return reuse_reject
                 warning = _integrity_warning_for_status(
                     cell_id, cell["status"], status,
                     cell.get("injection_type", ""), notes,
@@ -248,6 +254,17 @@ async def bulk_update(updates: list[dict]) -> dict:
                 link_reject = _validate_finding_link(st, upd.get("finding_id", ""))
                 if link_reject:
                     warnings.append(f"REJECTED cell {cid}: {link_reject}")
+                    rejected += 1
+                    continue
+                # Artifact-reuse block. Pre-apply the in-flight cell's artifact_id
+                # onto its matrix entry so updates later in THIS batch citing the
+                # same artifact see prior closures and get rejected accordingly.
+                from core.coverage.validation import _validate_artifact_reuse
+                reuse_reject = _validate_artifact_reuse(
+                    upd.get("artifact_id", ""), st, cell_map[cid], data["matrix"],
+                )
+                if reuse_reject:
+                    warnings.append(f"REJECTED cell {cid}: {reuse_reject}")
                     rejected += 1
                     continue
             _apply_bulk_cell(cell_map[cid], upd, warnings)

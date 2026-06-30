@@ -146,6 +146,12 @@ from .operations import (  # noqa: E402
     select_next_batch,
     update_cell,
 )
+from .autoclose import (  # noqa: E402
+    CROSSCUTTING_TYPES,
+    parse_artifact_headers,
+    pick_representative_artifact,
+    plan_crosscutting_closures,
+)
 
 __all__ = [
     "ADDRESSED_STATUSES",

@@ -635,25 +635,60 @@ def _cell(ep_id, param, param_type, inj_type, status="pending", tested_by="", ar
 
 
 def test_low_coverage_floor_blocks_below_40():
+    """Below the 40% hard floor → blocks completion (matrix is the deliverable)."""
     from mcp_server.session_tools import _low_coverage_blocker
     cov = {"matrix": [{"id": "c1", "status": "pending"}]}
-    # 20% addressed, passes done → still blocks (below the 40% hard floor)
-    out = _low_coverage_blocker(cov, total=10, addressed=2, pct=20.0, passes_done=True)
-    assert out is not None and "COVERAGE FLOOR" in out
+    out = _low_coverage_blocker(cov, total=10, addressed=2, pct=20.0)
+    assert out is not None and "SCAN NOT COMPLETE" in out
 
 
-def test_low_coverage_advisory_after_passes():
+def test_low_coverage_at_or_above_floor_passes():
+    """At or above the 40% floor → no block."""
     from mcp_server.session_tools import _low_coverage_blocker
     cov = {"matrix": [{"id": "c1", "status": "pending"}]}
-    # 60% addressed: advisory (no block) once the thorough passes are done...
-    assert _low_coverage_blocker(cov, total=10, addressed=6, pct=60.0, passes_done=True) is None
-    # ...but still nudges (blocks) while the passes are NOT yet complete.
-    assert _low_coverage_blocker(cov, total=10, addressed=6, pct=60.0, passes_done=False) is not None
+    assert _low_coverage_blocker(cov, total=10, addressed=4, pct=40.0) is None
+    assert _low_coverage_blocker(cov, total=10, addressed=6, pct=60.0) is None
 
 
-def test_low_coverage_none_at_or_above_target():
+def test_low_coverage_blocker_raw_fires_regardless_of_findings():
+    """The RAW blocker always fires below the floor (it is profile-blind by design).
+    Whether it is APPLIED is decided by its caller _coverage_blockers via the
+    profile's enforce_coverage flag — tested separately below."""
     from mcp_server.session_tools import _low_coverage_blocker
-    assert _low_coverage_blocker({"matrix": []}, total=10, addressed=9, pct=90.0, passes_done=False) is None
+    cov = {"matrix": [{"id": "c1", "status": "pending"}]}
+    out = _low_coverage_blocker(cov, total=840, addressed=5, pct=0.6)
+    assert out is not None and "SCAN NOT COMPLETE" in out
+
+
+def _low_cov_matrix():
+    return {
+        "meta": {"total_cells": 100, "addressed": 2},
+        "matrix": [{"id": "c1", "status": "pending", "injection_type": "sqli"}],
+        "endpoints": [],
+    }
+
+
+def test_coverage_blockers_floor_enforced_for_full_profile(monkeypatch):
+    """enforce_coverage=True (full / capable cloud model): low coverage hard-blocks
+    completion — the matrix is the deliverable and the model can work it."""
+    import mcp_server.scan_engine.budget as budget
+    monkeypatch.setattr(budget, "get_profile", lambda *a, **k: {"enforce_coverage": True})
+    from mcp_server.session_tools import _coverage_blockers
+    blockers = _coverage_blockers(_low_cov_matrix(), data={}, ctf_mode=False)
+    assert any("SCAN NOT COMPLETE" in b for b in blockers)
+
+
+def test_coverage_blockers_floor_advisory_for_local_profile(monkeypatch):
+    """enforce_coverage=False (medium/small / local model): the completeness gates
+    (low-coverage floor + findings-mapped + breadth) do NOT block — coverage is
+    advisory, the scan completes on findings (restores the V1.0.2 local behavior that
+    a forced floor against an unservable 700-cell matrix broke into game-or-stall)."""
+    import mcp_server.scan_engine.budget as budget
+    monkeypatch.setattr(budget, "get_profile", lambda *a, **k: {"enforce_coverage": False})
+    from mcp_server.session_tools import _coverage_blockers
+    blockers = _coverage_blockers(_low_cov_matrix(), data={}, ctf_mode=False)
+    assert not any("SCAN NOT COMPLETE" in b for b in blockers)
+    assert not any("INJECTION BREADTH" in b for b in blockers)
 
 
 def test_set_last_artifact_stashes_on_running_session(monkeypatch):

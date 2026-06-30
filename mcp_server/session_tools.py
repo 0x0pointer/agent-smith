@@ -131,7 +131,7 @@ def _record_handshake_client(ctx) -> None:
 
 
 @mcp.tool()
-async def session(action: str, options: dict | None = None, ctx: Context | None = None) -> str:
+async def session(action: str, options: dict | str | None = None, ctx: Context | None = None) -> str:
     """Scan lifecycle and infrastructure management.
 
     action  : start | complete | status | recovery | artifact | qa_reply | set_skill | set_step | wishlist_add | wishlist_list | start_kali | stop_kali | start_metasploit | stop_metasploit | pull_images | set_codebase
@@ -228,6 +228,11 @@ async def _dispatch_async_action(action: str, opts: dict) -> str | None:
         return await _do_oob_start()
     if action == "oob_poll":
         return await _do_oob_poll(opts)
+    if action == "complete":
+        # Async so we can propagate app-wide cross-cutting verdicts to their cells
+        # (best-effort) before the completion gate evaluates coverage.
+        await _autoclose_crosscutting_best_effort()
+        return _do_complete()
     return None
 
 
@@ -235,8 +240,6 @@ def _dispatch_sync_action(action: str, opts: dict) -> str:
     """Handle sync session actions."""
     if action == "start":
         return _do_start(opts)
-    if action == "complete":
-        return _do_complete()
     if action == "status":
         return _do_status()
     if action == "set_skill":
@@ -436,6 +439,13 @@ def _start_response(cfg: dict, classification: dict, target: str, scan_mode: str
         "  /metasploit /reverse-shell /analyze-cve /threat-modeling /aikido-triage",
         "  /gh-export /remediate /request-cves",
         "  See CLAUDE.md for full skill descriptions and trigger conditions.",
+        "",
+        "DEFINITION OF DONE: this scan is complete when the COVERAGE MATRIX is worked —",
+        "every endpoint/param tested or justified not_applicable — NOT when you've found",
+        "some bugs. Finding vulnerabilities happens WHILE you work the matrix; it is not a",
+        "substitute for it. After each tool call you'll be handed the next cells to test;",
+        "keep working them. Completion is coverage-gated and will be refused while the",
+        "matrix is mostly untested.",
     ]
     return "\n".join(lines)
 
@@ -535,44 +545,48 @@ def _do_start(opts):
     return _start_response(cfg, classification, target, scan_mode, depth, is_resume)
 
 
-# Coverage gating thresholds (percent of cells addressed). The FLOOR is a hard
-# block — a scan that tested almost nothing isn't a real scan. The TARGET only
-# nudges DURING the thorough analysis passes; once the passes are done coverage
-# is advisory (the focused next_batch loop + status progress drive it without
-# walling completion). This is the "progress-based & paced" policy.
+# Coverage gating threshold (percent of cells addressed). With auto-discovery
+# producing matrices of 700-900 cells per OpenAPI spec, this is a HARD FLOOR
+# only — exceeding it means the scan did real testing, not a wall demanding
+# every cell be ground through. Pushing the model past the floor used to drive
+# it into a canned-payload treadmill that produced false-negative tested_clean
+# closures (see the coverage-grind regression analysis: one HTTP request was
+# being reused to "close" 36 different injection cells).
 _COVERAGE_FLOOR_PCT = 40
-_COVERAGE_TARGET_PCT = 80
 
 
-def _low_coverage_blocker(
-    cov: dict, total: int, addressed: int, pct: float, passes_done: bool
-) -> str | None:
-    if pct >= _COVERAGE_TARGET_PCT:
+def _low_coverage_blocker(cov: dict, total: int, addressed: int, pct: float) -> str | None:
+    """Block completion while the coverage matrix is substantially unworked.
+
+    The matrix IS the deliverable — testing every endpoint/param is the job, and
+    finding bugs happens *while* working it. So a scan does NOT 'complete' just
+    because it found vulnerabilities; it completes when the matrix is worked (or a
+    human approves the remaining gaps via the stuck-completion HIR). Fires below
+    _COVERAGE_FLOOR_PCT; the caller skips it for CTF runs.
+
+    This deliberately fires even for findings-rich scans (the old waiver let a scan
+    'finish' at 5/840) and for every model profile (the floor was dormant for all).
+    Anti-grind: it fires at COMPLETION — after the exploitation passes — so the
+    model exploits first, then covers the rest with REAL probes; the honesty guards
+    reject artifact-less / auth-blocked / mass-reused closures, and the message
+    drives the next batch instead of inviting bulk not_applicable. The
+    stuck-completion HIR (_MAX_COMPLETE_ATTEMPTS) is the safety valve when the model
+    genuinely can't reach the floor, so this can't hard-stall.
+    """
+    if pct >= _COVERAGE_FLOOR_PCT:
         return None
-    if pct >= _COVERAGE_FLOOR_PCT and passes_done:
-        return None  # above the floor and passes complete → advisory, not blocking
-    all_cells = cov.get("matrix", [])
-    pending = [c["id"] for c in all_cells if c.get("status", "pending") == "pending"]
-    hint = (
-        "For each pending cell: either test it (set status=tested_clean/vulnerable with "
-        "tested_by=<tool>) or mark it not_applicable if the injection type is inherently "
-        "irrelevant to the param/endpoint type (with a specific reason in notes). "
-        "Do NOT bulk-skip — skipped cells are excluded from coverage. Sample pending cells:\n"
-        '  report(action="coverage", data={"type": "bulk_tested", "updates": ['
-    )
-    hint += ", ".join(
-        f'{{"cell_id": "{cid}", "status": "not_applicable", "notes": "<specific reason>"}}'
-        for cid in pending[:10]
-    )
-    if len(pending) > 10:
-        hint += f", ... ({len(pending) - 10} more)"
-    hint += "]})"
-    label = "COVERAGE FLOOR" if pct < _COVERAGE_FLOOR_PCT else "LOW COVERAGE"
+    pending = sum(1 for c in cov.get("matrix", []) if c.get("status", "pending") == "pending")
     return (
-        f"{label}: only {addressed}/{total} matrix cells tested or marked N/A ({pct:.0f}%). "
-        f"{len(pending)} pending cell(s). Work the focused loop: "
-        "report(action='coverage', data={type:'next_batch'}) → run each test_request → bulk_tested. "
-        + hint
+        f"SCAN NOT COMPLETE — the coverage matrix is the deliverable and it is only {pct:.0f}% worked "
+        f"({addressed}/{total} cells; {pending} still untested). Working the matrix IS the remaining "
+        f"job, not optional bookkeeping — you do NOT finish by finding some bugs while most cells are "
+        f"untested. Get the next cells + their exact requests with report(action='coverage', "
+        f"data={{type:'next_batch'}}), test them with REAL probes (sqlmap / nuclei / targeted "
+        f"payloads — never canned filler), then close each with its artifact via "
+        f"report(action='coverage', data={{type:'bulk_tested', updates:[...]}}). Mark a cell "
+        f"not_applicable ONLY when the injection type is genuinely irrelevant to that param (with a "
+        f"specific reason) — do NOT bulk-N/A to clear the count. Keep working the matrix; if you are "
+        f"genuinely blocked the scan will pause for a human to approve the gaps."
     )
 
 
@@ -595,7 +609,87 @@ def _skipped_no_evidence_blocker(all_cells: list[dict]) -> str | None:
     )
 
 
-def _coverage_blockers(cov: dict, ctf_mode: bool = False) -> list[str]:
+def _rich_exploitation(data: dict | None) -> bool:
+    """True when the scan has found substantial real issues — used to waive the
+    coverage floor (a findings-rich scan isn't 'trivially incomplete')."""
+    findings = (data or {}).get("findings", []) if isinstance(data, dict) else []
+    live = [f for f in findings if f.get("status") != "false_positive"]
+    hi_crit = sum(1 for f in live if f.get("severity") in ("high", "critical"))
+    return len(live) >= 8 or hi_crit >= 3
+
+
+# Endpoint-default / cross-cutting cell types — closed by Phase 0 auto-close, NOT
+# by the model mapping its exploitation findings. Excluded when checking that
+# injection findings are reflected in the matrix.
+_CROSSCUTTING_CELL_TYPES = {
+    "cors", "csrf", "security_headers", "cache",
+    "rate_limit", "method_tampering", "jwt", "race", "bfla",
+}
+# Keywords that mark a finding as an injection-class exploit — one that SHOULD be
+# reflected as a vulnerable injection cell in the matrix.
+_INJECTION_FINDING_KEYWORDS = (
+    "sql inject", "sqli", "xss", "cross-site script", "ssti", "template inject",
+    "command inject", "cmdi", "os command", "ssrf", "server-side request",
+    "traversal", "path travers", "lfi", "rfi", "idor", "insecure direct object",
+    "mass assign", "prototype pollut", "xxe", "nosql", "injection",
+)
+
+
+def _findings_mapped_blocker(cov: dict, data: dict | None) -> str | None:
+    """Require a findings-rich scan to REFLECT its injection findings in the matrix.
+
+    The % coverage floor is intentionally not enforced for a findings-rich scan
+    (we don't grind every cell), but a scan that confirmed SQLi/XSS/… and filed
+    findings yet marked ZERO injection cells leaves the matrix not reflecting what
+    it actually exploited. This requirement is achievable (close one cell per
+    finding) and does NOT re-create the grind stall — it asks only that the
+    findings be mapped, not that every cell be tested.
+    """
+    findings = [f for f in (data or {}).get("findings", []) if f.get("status") != "false_positive"]
+    inj_findings = [
+        f for f in findings
+        if f.get("severity") in ("high", "critical")
+        and any(k in (f.get("title", "") + " " + f.get("description", "")).lower()
+                for k in _INJECTION_FINDING_KEYWORDS)
+    ]
+    if not inj_findings:
+        return None
+    vuln_inj_cells = [
+        c for c in cov.get("matrix", [])
+        if c.get("status") == "vulnerable"
+        and c.get("injection_type") not in _CROSSCUTTING_CELL_TYPES
+    ]
+    if len(vuln_inj_cells) >= len(inj_findings):
+        return None
+    return (
+        f"FINDINGS NOT MAPPED TO MATRIX: {len(inj_findings)} confirmed injection finding(s) "
+        f"(SQLi/XSS/SSTI/…) but only {len(vuln_inj_cells)} injection cell(s) marked vulnerable. "
+        "The matrix must reflect what you exploited. For each injection finding, close its cell — "
+        "find it with report(action='coverage', data={type:'list', injection_type:'sqli'}), then "
+        "report(action='coverage', data={type:'tested', cell_id:'<id>', status:'vulnerable', "
+        "finding_id:'<finding id>', artifact_id:'<proof>'}). Required even for a findings-rich "
+        "scan — don't complete with your exploits unrecorded in the matrix."
+    )
+
+
+def _completeness_blockers(
+    cov: dict, data: dict | None, total: int, addressed: int, pct: float,
+) -> list[str]:
+    """The two coverage-COMPLETENESS gates (low-coverage floor + findings-mapped) —
+    they demand the model work MORE of the matrix. The caller applies the
+    enforce_coverage profile guard + CTF bypass; for local (medium/small) profiles
+    these never run, so the scan completes on findings like V1.0.2."""
+    out: list[str] = []
+    low_cov = _low_coverage_blocker(cov, total, addressed, pct)
+    if low_cov:
+        out.append(low_cov)
+    mapped = _findings_mapped_blocker(cov, data)
+    if mapped:
+        out.append(mapped)
+    return out
+
+
+def _coverage_blockers(cov: dict, data: dict | None = None, ctf_mode: bool = False) -> list[str]:
     """Return coverage-related completion blockers for the given matrix state.
 
     For non-CTF runs, an empty matrix is a hard blocker if web testing happened —
@@ -640,30 +734,33 @@ def _coverage_blockers(cov: dict, ctf_mode: bool = False) -> list[str]:
     addressed = meta.get("addressed", meta.get("tested", 0) + meta.get("not_applicable", 0))
     pct = (addressed / total) * 100
 
-    # Progress-based & paced: the 80% target only blocks while the thorough
-    # analysis passes are still running; once they're done (or the scan isn't
-    # thorough) only the 40% FLOOR blocks. The focused next_batch loop + status
-    # progress drive coverage up without walling completion — so the model isn't
-    # pressured into marking cells N/A just to escape an unreachable threshold.
+    # Coverage-COMPLETENESS gates (low-coverage floor + findings-mapped) demand the
+    # model work MORE of the matrix. They are profile-gated via enforce_coverage:
+    # ON for full (a capable cloud model can work a 700-cell matrix), OFF for
+    # medium/small. A local model has no in-loop injection-sweep tooling to honestly
+    # close hundreds of cells, so a hard floor against an auto-fanned 700-cell matrix
+    # just forces gaming (false tested_clean on 500s) and then a HIR_NO_PROGRESS
+    # stall — V1.0.2 ran the local model coverage-dormant and it completed cleanly on
+    # findings. Flip medium→enforce_coverage once the automated endpoint_sweep lands.
+    # The current coverage % stays visible in session(status)/recovery, so the gap is
+    # still surfaced as an advisory. The closure-INTEGRITY guards below
+    # (artifact-backed, suspect-N/A, skipped-no-evidence) stay on for EVERY profile.
     from mcp_server.scan_engine.budget import get_profile
-    profile = get_profile()
-    coverage_enforced = not profile.get("enforce_budget", True)  # used by injection-breadth blocker below
-    depth = (scan_session.get() or {}).get("depth", "")
-    passes_done = depth != "thorough" or _analysis_passes >= _min_iterations()
+    enforce_cov = bool(get_profile().get("enforce_coverage", True))
 
-    low_cov = _low_coverage_blocker(cov, total, addressed, pct, passes_done)
-    if low_cov:
-        blockers.append(low_cov)
+    if enforce_cov and not ctf_mode:
+        blockers.extend(_completeness_blockers(cov, data, total, addressed, pct))
 
-    blockers.extend(_integrity_blockers(cov.get("matrix", []), coverage_enforced))
+    blockers.extend(_integrity_blockers(cov.get("matrix", []), enforce_cov, ctf_mode))
     return blockers
 
 
-def _integrity_blockers(all_cells: list[dict], coverage_enforced: bool) -> list[str]:
-    """Closure-INTEGRITY gates — reject cells that cite no test evidence (untooled
-    tested/vulnerable, suspect-N/A, skipped-without-evidence, N/A-without-bypass)
-    plus injection-breadth. Extracted from _coverage_blockers to keep that function
-    under the cognitive-complexity cap."""
+def _integrity_blockers(all_cells: list[dict], enforce_cov: bool, ctf_mode: bool) -> list[str]:
+    """Closure-INTEGRITY gates — reject cells that LIE about being tested (no
+    artifact, suspect-N/A, skipped-without-evidence, N/A-without-bypass). These run
+    for EVERY profile (they prevent false data, they don't demand more work).
+    Injection-breadth follows enforce_coverage (it demands MORE cells). Extracted
+    from _coverage_blockers to keep that function under the cognitive-complexity cap."""
     out: list[str] = []
     from core.coverage import cell_has_test_evidence
     untooled = [c for c in all_cells
@@ -686,7 +783,9 @@ def _integrity_blockers(all_cells: list[dict], coverage_enforced: bool) -> list[
     na_blocker = _na_untooled_blocker(all_cells, _BYPASS_REQUIRED_TYPES)
     if na_blocker:
         out.append(na_blocker)
-    breadth_blocker = _injection_breadth_blocker(all_cells, coverage_enforced)
+    # Injection-breadth is also a completeness gate (demands MORE cells registered/
+    # tested), so it follows enforce_coverage too — advisory for local.
+    breadth_blocker = _injection_breadth_blocker(all_cells, enforce_cov and not ctf_mode)
     if breadth_blocker:
         out.append(breadth_blocker)
     return out
@@ -1275,7 +1374,7 @@ def _collect_completion_blockers(data: dict, effective: set) -> list[str]:
     blockers.extend(adjudication_blockers(data, digest=_condensed_directives()))
 
     from core.coverage import get_matrix
-    blockers.extend(_coverage_blockers(get_matrix(), ctf_mode=_has_ctf_flag(data)))
+    blockers.extend(_coverage_blockers(get_matrix(), data=data, ctf_mode=_has_ctf_flag(data)))
 
     return blockers
 
@@ -1436,27 +1535,26 @@ def _build_blocker_response(blockers: list) -> str:
         return result
     depth = (scan_session.get() or {}).get("depth", "")
     total = len(blockers)
-    if total > 1:
-        # Serialize for ALL profiles: surface only the highest-priority blocker so
-        # the model fixes ONE thing at a time instead of facing a wall of blockers
-        # — the wall is what makes it rush and cut corners. The progress-aware
-        # refund in _do_complete resets the attempt budget as the count drops, so
-        # one-per-call fixing won't trip HIR. (Even large-context models rush
-        # under a 10-blocker wall, so this is no longer gated on the profile.)
+    if _condensed_directives() and total > 1:
+        # Serialize: surface only the highest-priority blocker so it fits a small
+        # context window. The progress-aware counter in _do_complete refunds the
+        # attempt budget as the count drops, so one-per-call fixing won't trip HIR.
         shown = [min(blockers, key=_blocker_priority)]
-        pass_note = ""
-        if depth == "thorough" and _analysis_passes < _min_iterations():
-            pass_note = f" · thorough analysis passes {_analysis_passes}/{_min_iterations()}"
         header = (
-            f"Almost there — {total} steps left{pass_note}. Fixing them ONE AT A TIME: "
-            f"do THIS one, then call session(action='complete') again for the next:\n\n"
+            f"complete BLOCKED — {total} blockers remain; fixing them ONE AT A TIME so each "
+            f"fits your context. Fix THIS one, then call session(action='complete') again for "
+            f"the next:\n\n"
+        )
+    elif depth == "thorough" and _analysis_passes < _min_iterations():
+        shown = blockers
+        _mi = _min_iterations()
+        header = (
+            f"complete BLOCKED — thorough scan requires {_mi} analysis passes "
+            f"(quality-clean passes: {_analysis_passes}/{_mi}):\n\n"
         )
     else:
         shown = blockers
-        header = (
-            f"Almost there — 1 step left (attempt {_complete_attempts}/{_MAX_COMPLETE_ATTEMPTS}). "
-            f"Fix this, then complete:\n\n"
-        )
+        header = f"complete BLOCKED (attempt {_complete_attempts}/{_MAX_COMPLETE_ATTEMPTS}) — fix the following first:\n\n"
     msg = header + "\n\n".join(f"  [{i+1}] {b}" for i, b in enumerate(shown))
     if steer_block:
         msg = msg + steer_block
@@ -1465,6 +1563,27 @@ def _build_blocker_response(blockers: list) -> str:
         f"blockers={total}, shown={len(shown)}): {'; '.join(b[:80] for b in blockers)}"
     )
     return msg
+
+
+async def _autoclose_crosscutting_best_effort() -> None:
+    """Propagate app-wide cross-cutting verdicts to their cells before completion.
+
+    The matrix fans cors/csrf/security_headers across every endpoint, but their
+    verdict is app-wide — the model files the finding ("Wildcard CORS on all
+    endpoints") yet rarely marks the 50+ per-endpoint cells, so the coverage gate
+    sees an empty matrix and the scan wedges (the overnight no-progress loop).
+    Running the honest propagator here (links the finding, cites a real response,
+    marks GET-endpoint CSRF N/A) means a completion attempt automatically reflects
+    the work already done. Best-effort + idempotent — only touches pending
+    cross-cutting cells and never blocks completion.
+    """
+    try:
+        from core import coverage as _cov
+        from mcp_server.report_tools import _do_coverage_auto_crosscutting
+        res = await _do_coverage_auto_crosscutting({"type": "auto_crosscutting"}, _cov)
+        log.note(f"auto_crosscutting (pre-complete): {str(res)[:200]}")
+    except Exception:
+        log.note("auto_crosscutting (pre-complete) failed — non-fatal")
 
 
 def _do_complete():
@@ -1478,12 +1597,12 @@ def _do_complete():
     blockers = _collect_completion_blockers(data, effective)
     blockers = _apply_thorough_depth_gate(blockers, current)
 
-    # Progress-aware HIR (all profiles now serialize one-at-a-time): a model
-    # clearing blockers across several complete() calls is making progress, not
-    # stalling. When the count DROPS, refund the attempt budget so serialized
-    # fixing doesn't trip the 8-attempt HIR; HIR still fires when the count is
-    # stuck (genuine inability to progress).
-    if blockers:
+    # Progress-aware HIR (condensed profiles): blockers are surfaced one at a
+    # time, so a model clearing them across several complete() calls is making
+    # progress, not stalling. When the count DROPS, refund the attempt budget so
+    # serialized fixing doesn't trip the 8-attempt HIR; HIR still fires when the
+    # count is stuck (genuine inability to progress).
+    if _condensed_directives() and blockers:
         n = len(blockers)
         if _last_blocker_count is not None and n < _last_blocker_count:
             _complete_attempts = 1
@@ -1869,18 +1988,6 @@ def _build_status_base(
             "not_applicable": meta.get("not_applicable", 0),
             "skipped": meta.get("skipped", 0),
             "endpoints": len(cov.get("endpoints", [])),
-            # Step-by-step progress + the pointer to the focused testing loop, so
-            # the agent sees forward motion and always knows the next concrete move.
-            "progress": (
-                f"{meta.get('addressed', meta.get('tested', 0) + meta.get('not_applicable', 0))}"
-                f"/{meta.get('total_cells', 0)} cells addressed"
-            ),
-            "next": (
-                "report(action='coverage', data={type:'next_batch'}) — next focused batch to test"
-                if meta.get("total_cells", 0) > meta.get("addressed",
-                    meta.get("tested", 0) + meta.get("not_applicable", 0))
-                else "coverage complete"
-            ),
         },
     }
     web_work_done = any(t in _effective_tools() for t in ("httpx", "spider", "ffuf", "nuclei"))
@@ -2297,10 +2404,7 @@ def _build_recovery_result(
         "target": target,
         "phase": resume_step,
         "tools_already_run": sorted(tools_run),
-        "coverage": (
-            f"{meta.get('addressed', meta.get('tested', 0) + meta.get('not_applicable', 0))}"
-            f"/{meta.get('total_cells', 0)} cells addressed"
-        ),
+        "coverage": f"{meta.get('tested', 0)}/{meta.get('total_cells', 0)}",
         "findings": len(data.get("findings", [])),
         "action_required": action_list,
         "TOOLS": (
@@ -2373,11 +2477,40 @@ def _concrete_next_call(target: str, tools_run: set, in_progress: list, pending_
     if "nuclei" not in tools_run:
         return f"scan(tool='nuclei', target='{target}')"
     if pending_count > 0:
+        # Concrete next action so a respawned/recovered model doesn't flounder
+        # (it kept looking for in_progress work, found none, and idled). Give a
+        # specific high-value probe AND the finish-up path — never a vague nudge.
         return (
-            "report(action='coverage', data={type:'next_batch'}) — get the next FOCUSED batch "
-            f"(cells on one endpoint, each with its test request) — {pending_count} cells remaining"
+            f"{pending_count} cells still pending. Do ONE of these now — do NOT idle: "
+            f"(A) test a high-value endpoint: {_next_pending_probe(target)}; or "
+            "(B) if exploitation is done, FINISH — adjudicate each high/critical finding "
+            "(report(action='update_finding', data={id, adjudication:{reproducible, rationale, "
+            "artifact_id}})), then session(action='complete')."
         )
     return "session(action='complete', options={\"notes\": \"all testing complete\"})"
+
+
+def _next_pending_probe(target: str) -> str:
+    """One concrete test request for the highest-priority pending cell (best
+    effort) — so recovery hands the model an exact next move, not a vague hint."""
+    try:
+        from core.coverage import get_matrix
+        from mcp_server.scan_engine.planner import _concrete_test_command
+        cov = get_matrix()
+        eps = {e["id"]: e for e in cov.get("endpoints", [])}
+        pending = [c for c in cov.get("matrix", []) if c.get("status") == "pending"]
+        if not pending:
+            return "report(action='coverage', data={type:'list', status:'pending', limit:20})"
+        prio = ["sqli", "xss", "ssti", "cmdi", "ssrf", "xxe", "nosqli", "idor"]
+        best = next((c for it in prio for c in pending if c.get("injection_type") == it), pending[0])
+        ep = eps.get(best.get("endpoint_id"), {})
+        cmd = _concrete_test_command(
+            best.get("injection_type", ""), target, ep.get("path", "/"),
+            ep.get("method", "GET"), best.get("param", "_endpoint"), best.get("param_type", "query"),
+        )
+        return f"{cmd} (cell {best.get('id')})"
+    except Exception:
+        return "report(action='coverage', data={type:'list', status:'pending', limit:20})"
 
 
 def _do_artifact(opts):

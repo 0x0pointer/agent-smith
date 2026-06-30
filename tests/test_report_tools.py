@@ -61,6 +61,32 @@ def test_finding_gates_rce_fires_on_real(monkeypatch):
     assert "post_exploit_rce" in out
 
 
+def test_finding_gates_rce_skips_speculative_ssti(monkeypatch):
+    """The exact run failure: a SQLi auth-bypass finding that name-drops an
+    UNCONFIRMED SSTI ('appears to support SSTI; ${7*7} reflected') must NOT impose
+    the mandatory post-exploit gate — code execution isn't confirmed."""
+    import mcp_server.report_tools as rt
+    sess = _FakeSession()
+    monkeypatch.setattr(rt, "scan_session", sess)
+    out = _auto_trigger_finding_gates(
+        "SQL injection in login endpoint bypasses authentication", "critical",
+        "admin' OR '1'='1' bypasses auth. The username field appears to support SSTI; "
+        "injected ${7*7} was reflected in the response.")
+    assert "post_exploit_rce" not in out
+    assert "post_exploit_rce" not in sess.triggered
+
+
+def test_finding_gates_rce_still_fires_on_confirmed_ssti(monkeypatch):
+    """Positive control: a CONFIRMED SSTI (no speculation hedging) still gates."""
+    import mcp_server.report_tools as rt
+    sess = _FakeSession()
+    monkeypatch.setattr(rt, "scan_session", sess)
+    out = _auto_trigger_finding_gates(
+        "Server-side template injection in name field", "critical",
+        "Confirmed SSTI: injected ${7*7} evaluated to 49; achieved code execution.")
+    assert "post_exploit_rce" in out
+
+
 # ── adjudication reuses the finding's linked proof artifact (no re-run) ───────
 
 def test_adjudication_reuses_linked_evidence_artifact(monkeypatch):
@@ -476,3 +502,97 @@ def test_chain_mermaid_edge_label_has_no_raw_parens():
     assert "(" not in mm and ")" not in mm
     # entity codes preserve the visible parentheses
     assert "#40;" in mm and "#41;" in mm
+
+
+# ── Phase 0.1: auto-file app-wide cross-cutting findings from response evidence ──
+
+@pytest.mark.asyncio
+async def test_autofile_files_cors_and_headers_when_evidenced(monkeypatch):
+    import mcp_server.report_tools as rt
+    titles = []
+    async def fake_add(**kw):
+        titles.append(kw["title"]); return {"id": f"f{len(titles)}"}
+    monkeypatch.setattr("core.findings.add_finding", fake_add)
+    n = await rt._autofile_crosscutting_findings(
+        {"Access-Control-Allow-Origin": "*"}, "art1", "http://t", [])
+    assert n == 2   # wildcard CORS + all security headers missing
+    assert any("CORS" in t for t in titles)
+    assert any("Security Headers" in t for t in titles)
+
+
+@pytest.mark.asyncio
+async def test_autofile_idempotent_skips_existing(monkeypatch):
+    import mcp_server.report_tools as rt
+    async def fake_add(**kw):
+        raise AssertionError("must not file when a matching finding already exists")
+    monkeypatch.setattr("core.findings.add_finding", fake_add)
+    existing = [{"id": "f-cors", "title": "Wildcard CORS misconfig"},
+                {"id": "f-hdr", "title": "Missing Security Headers"}]
+    n = await rt._autofile_crosscutting_findings(
+        {"Access-Control-Allow-Origin": "*"}, "art1", "http://t", existing)
+    assert n == 0
+
+
+@pytest.mark.asyncio
+async def test_autofile_skips_when_no_evidence(monkeypatch):
+    import mcp_server.report_tools as rt
+    async def fake_add(**kw):
+        raise AssertionError("nothing to file when CORS safe + headers present")
+    monkeypatch.setattr("core.findings.add_finding", fake_add)
+    hdrs = {"Access-Control-Allow-Origin": "https://app", "X-Frame-Options": "DENY",
+            "Content-Security-Policy": "default-src 'self'", "Strict-Transport-Security": "max-age=1",
+            "X-Content-Type-Options": "nosniff"}
+    assert await rt._autofile_crosscutting_findings(hdrs, "art1", "http://t", []) == 0
+
+
+# ── Structural fix: filing a finding auto-marks its matching matrix cell ──────
+
+def test_infer_injection_type():
+    import mcp_server.report_tools as rt
+    assert rt._infer_injection_type("SQL Injection in /login", "union select") == "sqli"
+    assert rt._infer_injection_type("Stored XSS in profile", "") == "xss"
+    assert rt._infer_injection_type("SSTI via name field", "{{7*7}}") == "ssti"
+    assert rt._infer_injection_type("Mass Assignment privesc", "is_admin") == "mass_assignment"
+    assert rt._infer_injection_type("Missing Security Headers", "no CSP") is None
+    assert rt._infer_injection_type("Zero-amount transfer", "logic flaw") is None
+
+
+@pytest.mark.asyncio
+async def test_autolink_marks_matching_cell_vulnerable(coverage_file):
+    import core.coverage as cov
+    import mcp_server.report_tools as rt
+    await cov.add_endpoint(
+        "/login", "POST",
+        params=[{"name": "username", "type": "body_json", "value_hint": "string"},
+                {"name": "password", "type": "body_json", "value_hint": "string"}],
+        discovered_by="test")
+    art = "http_request-autolink01"
+    (cov._ARTIFACTS_DIR / f"{art}.txt").write_text('{"status":200,"headers":{},"body":"x"}')
+
+    cell_id = await rt._autolink_finding_to_cell(
+        "F-sqli", "SQL Injection in /login username parameter",
+        "auth bypass via ' OR '1'='1'", "http://t/login", art)
+    assert cell_id is not None
+    closed = next(c for c in cov.get_matrix()["matrix"] if c["id"] == cell_id)
+    assert closed["status"] == "vulnerable"
+    assert closed["finding_id"] == "F-sqli"
+    assert closed["injection_type"] == "sqli"
+    assert closed["param"] == "username"   # prefers the param named in the finding
+
+
+@pytest.mark.asyncio
+async def test_autolink_skips_without_artifact_or_injection(coverage_file):
+    import core.coverage as cov
+    import mcp_server.report_tools as rt
+    await cov.add_endpoint(
+        "/login", "POST",
+        params=[{"name": "username", "type": "body_json", "value_hint": "string"}],
+        discovered_by="test")
+    # no artifact → no close
+    assert await rt._autolink_finding_to_cell(
+        "F", "SQL Injection", "x", "http://t/login", "") is None
+    # not an injection finding → no close
+    art = "http_request-autolink02"
+    (cov._ARTIFACTS_DIR / f"{art}.txt").write_text('{"status":200,"headers":{},"body":"x"}')
+    assert await rt._autolink_finding_to_cell(
+        "F", "Missing Security Headers", "no CSP", "http://t/login", art) is None

@@ -258,30 +258,32 @@ def test_unregistered_findings_none_when_matrix_empty():
     assert _check_unregistered_findings(fnd, {"endpoints": []}) is None
 
 
-def test_unregistered_findings_blocks_with_alert():
+def test_unregistered_findings_advisory_not_blocking():
+    """The gap-guard now nudges but does NOT block completion or steer the model.
+    The blocking + STOP-opening-new-ground steering suppressed creative
+    exploitation (see the coverage-grind regression analysis)."""
     cov = {"endpoints": [{"path": "/login", "_normalized": "/login"}]}
     fnd = {"findings": [{"target": "http://t/transfer"}]}
     alert = _check_unregistered_findings(fnd, cov)
     assert alert is not None
     assert alert["code"] == "DISCOVERY_GAP"
-    assert alert["blocking"] is True and alert["urgency"] == "high"
+    assert alert["blocking"] is False
+    assert alert["urgency"] == "low"
     assert "/transfer" in alert["message"]
 
 
-def test_unregistered_findings_steers_when_three_or_more(monkeypatch):
-    import core.qa_agent as _qa
+def test_unregistered_findings_no_steer_directive(monkeypatch):
+    """Even with many unregistered findings, no steering directive is emitted —
+    the model should keep exploiting freely, not be told to STOP opening new ground."""
     import core.steering as steering
-    monkeypatch.setattr(_qa, "_has_pending_directives", lambda: False)
     calls = []
     monkeypatch.setattr(steering.steering_queue, "add_directive",
                         lambda **kw: calls.append(kw))
     cov = {"endpoints": [{"path": "/login", "_normalized": "/login"}]}
-    fnd = {"findings": [{"target": f"http://t/u{i}"} for i in range(3)]}
+    fnd = {"findings": [{"target": f"http://t/u{i}"} for i in range(5)]}
     alert = _check_unregistered_findings(fnd, cov)
     assert alert["code"] == "DISCOVERY_GAP"
-    assert len(calls) == 1
-    assert calls[0]["trigger"] == "DISCOVERY_GAP"
-    assert calls[0]["priority"] == "high"
+    assert calls == []  # no steering directive emitted
 
 
 # ---------------------------------------------------------------------------
@@ -1512,12 +1514,12 @@ def test_hir_min_gap_allows_retrigger_after_window(monkeypatch):
 
 def test_auth_failure_too_few_entries():
     entries = [_http_entry(status_code=401)] * 3
-    assert _check_auth_failure(entries) is None
+    assert _check_auth_failure(entries, {}, []) is None
 
 
 def test_auth_failure_never_authed():
     entries = [_http_entry(status_code=401)] * 5
-    assert _check_auth_failure(entries) is None
+    assert _check_auth_failure(entries, {}, []) is None
 
 
 def test_auth_failure_low_failure_rate():
@@ -1525,32 +1527,44 @@ def test_auth_failure_low_failure_rate():
         [_http_entry(status_code=200)] * 5 +
         [_http_entry(status_code=401)] * 2
     )
-    assert _check_auth_failure(entries) is None
+    assert _check_auth_failure(entries, {}, []) is None
 
 
-def test_auth_failure_fires(tmp_path, monkeypatch):
+def test_auth_failure_first_detection_steers_reauth(monkeypatch):
+    # FIRST detection self-heals: steer Smith to re-auth + AUTH_REAUTH advisory,
+    # NOT a human HIR.
+    import core.qa_agent as _qa
+    import core.steering as steering
+    monkeypatch.setattr(_qa, "_has_pending_directives", lambda: False)
+    calls = []
+    monkeypatch.setattr(steering.steering_queue, "add_directive", lambda **kw: calls.append(kw))
+    with patch("core.session.trigger_intervention") as mock_trigger:
+        entries = [_http_entry(status_code=200)] * 5 + [_http_entry(status_code=401)] * 8
+        sess = {"known_assets": {"credentials": [{"username": "u"}],
+                                 "auth_endpoints": [{"path": "/login"}]}}
+        alert = _check_auth_failure(entries, sess, [])
+    assert alert["code"] == "AUTH_REAUTH" and alert["blocking"] is False
+    mock_trigger.assert_not_called()                  # no human pause on first detection
+    assert calls and calls[0]["trigger"] == "AUTH_REAUTH"
+    assert "/login" in calls[0]["message"]            # concrete re-auth hint included
+
+
+def test_auth_failure_escalates_to_hir_after_reauth_attempt():
+    # A prior cycle already steered AUTH_REAUTH and 401/403 still dominates → HIR.
     with patch("core.session.get_intervention", return_value=None), \
          patch("core.session.trigger_intervention") as mock_trigger:
-        entries = (
-            [_http_entry(status_code=200)] * 5 +
-            [_http_entry(status_code=401)] * 8
-        )
-        alert = _check_auth_failure(entries)
-        assert alert is not None
+        entries = [_http_entry(status_code=200)] * 5 + [_http_entry(status_code=401)] * 8
+        alert = _check_auth_failure(entries, {}, [{"code": "AUTH_REAUTH"}])
         assert alert["code"] == "HIR_AUTH_FAILURE"
         mock_trigger.assert_called_once()
 
 
-def test_auth_failure_403_also_counts():
-    with patch("core.session.get_intervention", return_value=None), \
-         patch("core.session.trigger_intervention"):
-        entries = (
-            [_http_entry(status_code=200)] * 5 +
-            [_http_entry(status_code=403)] * 8
-        )
-        alert = _check_auth_failure(entries)
-        assert alert is not None
-        assert alert["code"] == "HIR_AUTH_FAILURE"
+def test_auth_failure_403_first_detection_steers(monkeypatch):
+    import core.qa_agent as _qa
+    monkeypatch.setattr(_qa, "_has_pending_directives", lambda: True)  # skip add_directive side effect
+    entries = [_http_entry(status_code=200)] * 5 + [_http_entry(status_code=403)] * 8
+    alert = _check_auth_failure(entries, {}, [])
+    assert alert["code"] == "AUTH_REAUTH"
 
 
 # ---------------------------------------------------------------------------

@@ -8,7 +8,7 @@ Also detects drift: duplicate tests, phase-inappropriate tools, skipped coverage
 from __future__ import annotations
 
 from core import session as scan_session
-from core.coverage import get_matrix
+from core.coverage import get_matrix, select_next_batch
 
 
 def _add_recon_actions(required: list[str], recommended: list[str], tools_run: set, target: str) -> None:
@@ -62,10 +62,10 @@ def _inject_pending_gates(required: list[str]) -> None:
             trigger = gate.get("trigger", "")
             for skill in missing:
                 required.insert(0, (
-                    f"CHAIN REQUIRED: invoke /{skill} NOW — gate '{gate['id']}' triggered by {trigger}. "
-                    f"Call session(action='set_skill', options={{skill: '{skill}', reason: '{trigger}'}}) "
-                    f"then Skill('{skill}') before any other action. "
-                    "Context is freshest right now — do not defer."
+                    f"CHAIN REQUIRED (before completion): /{skill} — gate '{gate['id']}' triggered by {trigger}. "
+                    f"Finish your current recon/mapping step first if you're mid-task, then chain it: "
+                    f"session(action='set_skill', options={{skill: '{skill}', reason: '{trigger}'}}) then Skill('{skill}'). "
+                    "Don't leave it unaddressed — this gate blocks completion."
                 ))
             # Inject at most one gate per response to avoid context flooding.
             break
@@ -136,38 +136,86 @@ def compute_next(tool: str, state: dict) -> dict:
 
 
 def _add_testing_actions(required: list[str], recommended: list[str], target: str) -> None:
-    """Hand the agent a FOCUSED batch of next cells (concrete requests + per-
-    endpoint/overall progress) instead of one cell at a time, so testing is a
-    paced step-by-step loop. Pairs each batch with a single bulk-close call."""
-    from core.coverage import select_next_batch
-    from mcp_server.scan_engine.budget import get_profile
+    """Continuously drive the model through the coverage matrix.
 
-    cap = get_profile().get("next_batch_size", 10)
-    result = select_next_batch(get_matrix(), count=cap)
-    batch = result.get("batch", [])
-    if not batch:
+    On every tool response, hand the next FOCUSED batch (endpoint-grouped, profile-
+    sized) with the concrete request for each cell, plus progress — so the model is
+    always being pulled toward the matrix and never drifts into "I found some bugs,
+    I'm done". The matrix is the deliverable; finding bugs happens *while* working
+    it. Anti-grind: the commands are REAL probes (sqlmap for sqli, targeted
+    payloads), the framing forbids canned filler, and the honesty guards + the
+    completion coverage-gate reject shallow tested_clean closures — so this drives
+    honest testing rather than the naive single-payload grind that the old forced
+    10-cell batch produced.
+    """
+    cov = get_matrix()
+    matrix = cov.get("matrix", [])
+    in_progress = [c for c in matrix if c["status"] == "in_progress"]
+    if in_progress:
+        cell = in_progress[0]
+        ep = {e["id"]: e for e in cov.get("endpoints", [])}.get(cell["endpoint_id"], {})
+        required.append(
+            f"Continue testing (then close the cell): {cell['injection_type']} on "
+            f"{ep.get('method', '?')} {ep.get('path', '?')} param={cell['param']} (cell {cell['id']})"
+        )
+        return
+
+    if not any(c["status"] == "pending" for c in matrix):
         recommended.append("All cells addressed — proceed to validation/reporting")
         return
 
-    focus = result.get("endpoint_focus") or {}
-    prog = result.get("progress", {})
-    lines = [
-        f"  - [{c.get('injection_type')}] "
-        f"{_concrete_test_command(c.get('injection_type', ''), target, c.get('endpoint_path') or '', c.get('method') or 'GET', c.get('param') or '_endpoint', c.get('param_type') or 'query')} "
-        f"(cell {c.get('cell_id')})"
-        for c in batch
-    ]
-    required.append(
-        f"Test these {len(batch)} cell(s) on {focus.get('method', '?')} {focus.get('path', '?')} "
-        f"[{prog.get('endpoint', '?')} this endpoint · {prog.get('overall', '?')} overall]:\n"
-        + "\n".join(lines)
-        + "\nThen CLOSE them in one call: report(action='coverage', data={type:'bulk_tested', "
-        "updates:[{cell_id, status:'tested_clean|vulnerable|not_applicable', artifact_id:'<from response>', "
-        "finding_id:'<if vulnerable>'}, ...]}). Then fetch the next batch: "
-        "report(action='coverage', data={type:'next_batch'})."
+    from mcp_server.scan_engine.budget import get_profile
+    profile = get_profile()
+    count = profile.get("next_batch_size", 5)
+    # enforce_coverage gates the FRAMING of this drive. ON (full): the matrix is the
+    # deliverable, so the batch is a REQUIRED action with "the scan finishes when the
+    # matrix is worked". OFF (local medium/small): coverage is advisory — surface the
+    # same cells as OPTIONAL guidance the model can pursue alongside its exploit leads.
+    # The hard "you're not done until the matrix is worked" framing is exactly what
+    # made a small local model spin on an unservable 700-cell matrix and stall.
+    enforce_cov = bool(profile.get("enforce_coverage", True))
+    sel = select_next_batch(cov, count=count)
+    batch = sel.get("batch", [])
+    if not batch:
+        return
+
+    prog = sel.get("progress", {})
+    foc = sel.get("endpoint_focus") or {}
+    lines = []
+    for c in batch:
+        cmd = _concrete_test_command(
+            c.get("injection_type", ""), target,
+            c.get("endpoint_path") or "?", c.get("method") or "?",
+            c.get("param") or "_endpoint", c.get("param_type") or "query",
+        )
+        lines.append(f"  • {cmd} (cell {c.get('cell_id')})")
+
+    rem = sel.get("remaining", 0)
+    if enforce_cov:
+        required.append(
+            f"WORK THE MATRIX (it's the deliverable) — next {len(batch)} cell(s) on "
+            f"{foc.get('method', '?')} {foc.get('path', '?')} [this endpoint {prog.get('endpoint', '?')} · "
+            f"overall {prog.get('overall', '?')}]. Test each with a REAL probe (commands below — never "
+            f"canned filler; one benign response is NOT proof a cell is clean), then close it with its "
+            f"artifact_id via report(action='coverage', data={{type:'bulk_tested', updates:[...]}}). The "
+            f"scan finishes when the matrix is worked, not when you've found a few bugs:\n" + "\n".join(lines)
+        )
+        if rem > len(batch):
+            recommended.append(
+                f"{rem} cells pending overall — call report(action='coverage', data={{type:'next_batch'}}) "
+                "any time for the next focused batch."
+            )
+        return
+
+    # Local profile — advisory guidance, never a completion gate.
+    recommended.append(
+        f"Optional coverage — {len(batch)} pending cell(s) on {foc.get('method', '?')} "
+        f"{foc.get('path', '?')} [overall {prog.get('overall', '?')}] you can probe alongside your "
+        f"exploit leads. Test with a REAL probe, then close with its artifact_id via "
+        f"report(action='coverage', data={{type:'bulk_tested', updates:[...]}}). Coverage is advisory "
+        f"for this profile — follow the strongest leads and complete on findings; the matrix is "
+        f"recorded, not a gate:\n" + "\n".join(lines)
     )
-    if result.get("remaining", 0) > len(batch):
-        recommended.append(f"{result['remaining'] - len(batch)} more pending cells after this batch")
 
 
 def _resolve_url(target: str, path: str, param: str, param_type: str, payload: str) -> str:

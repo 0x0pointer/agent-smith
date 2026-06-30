@@ -22,11 +22,34 @@ _PYTHON_NATIVE_TOOLS = {"http_request", "spider"}
 _ABORT_OPTION = "ABORT: Stop the scan"
 
 
-def _check_auth_failure(entries: list[dict]) -> dict | None:
-    """HIR when session auth appears to have expired mid-scan.
+def _reauth_hint(session_data: dict | None) -> str:
+    """Concrete re-auth instruction from whatever auth assets Smith already holds."""
+    ka = (session_data or {}).get("known_assets", {}) or {}
+    creds = ka.get("credentials") or []
+    auth_eps = ka.get("auth_endpoints") or []
+    ep = ""
+    if auth_eps:
+        first = auth_eps[0]
+        ep = (first.get("path") or first.get("url") or "") if isinstance(first, dict) else str(first)
+    if ep and creds:
+        return f"POST known_assets.credentials to the login endpoint (known_assets.auth_endpoints, e.g. {ep})."
+    if ep:
+        return f"Re-login at a known auth endpoint (known_assets.auth_endpoints, e.g. {ep})."
+    if creds:
+        return "Re-login with known_assets.credentials at the app's login endpoint."
+    return ("Re-run whatever produced your token before — re-login, an auth bypass "
+            "(e.g. SQLi on /login), or registering a fresh user.")
 
-    Fires when >60% of the last 10 http_request calls return 401/403
-    AND there were earlier successful (2xx) http calls — meaning auth worked before.
+
+def _check_auth_failure(entries: list[dict], session_data: dict, previous_alerts: list[dict]) -> dict | None:
+    """Recover expired session auth mid-scan — self-heal first, HIR only if that fails.
+
+    Fires when >60% of the last 10 non-auth http_request calls return 401/403 AND
+    there were earlier 2xx calls (auth worked before). On the FIRST detection it
+    steers Smith to re-authenticate itself (it usually holds creds / a login
+    bypass) and returns a non-blocking AUTH_REAUTH advisory — no human pause. Only
+    if a prior cycle already issued that steer and 401/403 still dominates does it
+    escalate to HIR_AUTH_FAILURE.
     """
     http_entries = [
         e for e in entries
@@ -55,14 +78,46 @@ def _check_auth_failure(entries: list[dict]) -> dict | None:
     # signal we actually triggered on, not credential-attempt noise.
     recent = non_auth_recent
     target = recent[-1].get("target", "target")
+    ratio = f"{len(auth_failures)}/{len(recent)}"
+
+    # Self-heal first: on the FIRST detection, steer Smith to re-authenticate
+    # itself instead of pausing for a human. Escalate to HIR only once that steer
+    # was already issued and 401/403 still dominates — i.e. auto-reauth failed.
+    already_steered = any(a.get("code") == "AUTH_REAUTH" for a in (previous_alerts or []))
+    if not already_steered:
+        if not _qa._has_pending_directives():
+            from core.steering import RESUME_TESTING, steering_queue
+            steering_queue.add_directive(
+                code=RESUME_TESTING,
+                message=(
+                    f"SESSION EXPIRED — {ratio} recent requests to {target} returned 401/403 after "
+                    "auth worked earlier. RE-AUTHENTICATE YOURSELF; do NOT wait for a human. "
+                    + _reauth_hint(session_data)
+                    + " Capture the fresh 'Authorization: Bearer <token>' and retry the failed "
+                    "requests with it — this only escalates to a human if re-auth genuinely fails."
+                ),
+                priority="high", skill=None, trigger="AUTH_REAUTH",
+            )
+        return {
+            "code": "AUTH_REAUTH", "urgency": "high", "blocking": False,
+            "message": (
+                f"Session likely expired ({ratio} 401/403 on {target}) — "
+                "re-authenticate and retry before escalating to a human"
+            ),
+        }
+
+    # Auto-reauth was already attempted and 401/403 still dominates → human.
     _hir(
         code="HIR_AUTH_FAILURE",
         situation=(
-            f"{len(auth_failures)}/{len(recent)} recent HTTP requests to {target} "
-            "returned 401/403 after previously authenticated calls succeeded. "
-            "Session credentials appear to have expired or the account was locked."
+            f"{ratio} recent HTTP requests to {target} returned 401/403 after previously "
+            "authenticated calls succeeded, and an automatic re-authentication attempt did not "
+            "recover the session. Credentials appear expired/locked, or there is no usable login."
         ),
-        tried=[f"{len(auth_failures)} consecutive auth failures (401/403)"],
+        tried=[
+            f"{len(auth_failures)} consecutive auth failures (401/403)",
+            "auto re-authentication was steered, but 401/403 persists",
+        ],
         options=[
             "RECREDENTIAL: Provide fresh session cookies or API tokens — I will inject them and resume",
             "REAUTH: Tell me the login endpoint and credentials — I will re-authenticate",
@@ -72,7 +127,7 @@ def _check_auth_failure(entries: list[dict]) -> dict | None:
     )
     return {
         "code": "HIR_AUTH_FAILURE", "urgency": "high", "blocking": False,
-        "message": f"Auth failure: {len(auth_failures)}/{len(recent)} recent requests returned 401/403 — session likely expired",
+        "message": f"Auth still failing after auto-reauth: {ratio} recent requests 401/403 — needs human",
     }
 
 

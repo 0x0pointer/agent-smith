@@ -403,3 +403,47 @@ class TestInjectQaAlerts:
         assert sum(1 for w in env.warnings if "[QA HIGH]" in w) == 2
         assert "Alert one" in env.summary
         assert "Alert two" in env.summary
+
+
+# ---------------------------------------------------------------------------
+# wrap(artifact_raw=...) — decouple the stored artifact from the inline/cost body
+# ---------------------------------------------------------------------------
+
+def test_wrap_stores_artifact_raw_when_provided(monkeypatch):
+    """A large full body passed as artifact_raw is what lands on disk, while the
+    bounded raw_output still drives the inline summary + cost meter."""
+    from mcp_server.scan_engine import envelope
+    captured = {}
+
+    def fake_store(tool, raw):
+        captured["raw"] = raw
+        return "art_test"
+
+    monkeypatch.setattr(envelope, "_check_scan_gate", lambda tool: None)
+    monkeypatch.setattr(envelope, "store_artifact", fake_store)
+    envelope.wrap(
+        "http_request",
+        raw_output='{"status":200,"headers":{},"body":"small preview"}',
+        context={"url": "http://t", "method": "GET", "body": "", "headers": {}},
+        artifact_raw='{"status":200,"headers":{},"body":"FULL-LARGE-50KB-SPEC"}',
+    )
+    assert captured["raw"] == '{"status":200,"headers":{},"body":"FULL-LARGE-50KB-SPEC"}'
+
+
+def test_wrap_defaults_artifact_to_raw_output(monkeypatch):
+    """Without artifact_raw, the artifact is raw_output — unchanged behaviour."""
+    from mcp_server.scan_engine import envelope
+    captured = {}
+
+    def fake_store(tool, raw):
+        captured["raw"] = raw
+        return "art_test"
+
+    monkeypatch.setattr(envelope, "_check_scan_gate", lambda tool: None)
+    monkeypatch.setattr(envelope, "store_artifact", fake_store)
+    envelope.wrap(
+        "http_request",
+        raw_output='{"status":200,"headers":{},"body":"B"}',
+        context={"url": "http://t", "method": "GET", "body": "", "headers": {}},
+    )
+    assert captured["raw"] == '{"status":200,"headers":{},"body":"B"}'
