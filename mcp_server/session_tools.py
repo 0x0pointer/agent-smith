@@ -228,6 +228,8 @@ async def _dispatch_async_action(action: str, opts: dict) -> str | None:
         return await _do_oob_start()
     if action == "oob_poll":
         return await _do_oob_poll(opts)
+    if action == "setup_gate":
+        return await _do_setup_gate(opts)
     if action == "complete":
         # Async so we can propagate app-wide cross-cutting verdicts to their cells
         # (best-effort) before the completion gate evaluates coverage.
@@ -264,7 +266,7 @@ def _dispatch_sync_action(action: str, opts: dict) -> str:
         return _do_wishlist_list()
     if action == "oob_mint":
         return _do_oob_mint(opts)
-    return f"Unknown action '{action}'. Use: start, complete, status, qa_reply, recovery, artifact, pre_chain, set_skill, set_step, resume, wishlist_add, wishlist_list, start_kali, stop_kali, start_metasploit, stop_metasploit, pull_images, set_codebase, oob_start, oob_mint, oob_poll"
+    return f"Unknown action '{action}'. Use: start, complete, status, qa_reply, recovery, artifact, pre_chain, set_skill, set_step, resume, wishlist_add, wishlist_list, setup_gate, start_kali, stop_kali, start_metasploit, stop_metasploit, pull_images, set_codebase, oob_start, oob_mint, oob_poll"
 
 
 def _reset_coverage_matrix(target: str, prev_target: str, has_data: bool) -> bool:
@@ -2332,6 +2334,22 @@ def _do_recovery():
         unsatisfied_gates, pending_escalations, integrity_warnings,
         target, tools_run, action_list, next_call, resume_step,
     )
+
+    # Manual-setup gates still open (capabilities.yaml prerequisites). Surfaced so
+    # a deferred/failed gate survives compaction and the operator/agent can resume
+    # it. NON-blocking — these never appear as completion blockers.
+    open_setup_gates = [
+        {
+            "id": g["id"], "status": g.get("status"), "election": g.get("election"),
+            "requires_host": g.get("requires_host"), "skill": g.get("skill"),
+            "recheck": f"session(action='setup_gate', options={{'action':'check','id':'{g['id']}'}})",
+        }
+        for g in scan_session.list_setup_gates()
+        if g.get("status") in ("pending_election", "deferred", "elected_now", "failed")
+    ]
+    if open_setup_gates:
+        result["open_setup_gates"] = open_setup_gates
+
     try:
         return json.dumps(result, indent=2)
     except TypeError as e:
@@ -2679,6 +2697,11 @@ def _do_set_skill(opts):
     except Exception:
         pass
 
+    # Manual-setup prerequisites: if this skill ships a capabilities.yaml, open a
+    # NON-blocking setup gate per declared capability. Absent file → no-op
+    # (optimistic default). Fail-soft: a parse/load problem never breaks set_skill.
+    setup_note = _enqueue_setup_gates(skill_name)
+
     # Detect post-compaction resume: skill was already in history before this call
     if is_resume:
         recovery_brief = _do_recovery()
@@ -2688,12 +2711,41 @@ def _do_set_skill(opts):
         )
         if satisfied_gates:
             msg += f"\n\n(satisfied gate(s): {', '.join(satisfied_gates)})"
-        return msg
+        return msg + setup_note
 
     msg = f"Skill '{skill_name}' logged"
     if satisfied_gates:
         msg += f" (satisfied gate(s): {', '.join(satisfied_gates)})"
-    return msg
+    return msg + setup_note
+
+
+def _enqueue_setup_gates(skill_name: str) -> str:
+    """Open setup gates from a skill's capabilities.yaml. Returns a note for the
+    set_skill response (empty if the skill declares no manual prerequisites)."""
+    try:
+        from core import capabilities as _caps
+        gates, warns = _caps.enqueue_for_skill(skill_name)
+        for w in warns:
+            log.note(f"capabilities[{skill_name}]: {w}")
+        if not gates:
+            return ""
+        pending = [g["id"] for g in gates if g.get("status") in ("pending_election", "failed")]
+        preelected = [g["id"] for g in gates if g.get("status") == "elected_now"]
+        parts = []
+        if pending:
+            parts.append(
+                f"MANUAL SETUP REQUIRED for '{skill_name}': {', '.join(pending)}. This skill declares "
+                "manual prerequisite(s). For each, elect now/defer/skip via "
+                "session(action='setup_gate', options={'action':'elect','id':'<id>','choice':'...'}) then verify "
+                "with action='check'. Interactive → ask the operator; headless → default 'defer' (non-blocking)."
+            )
+        if preelected:
+            parts.append(f"Pre-elected from known assets (still run check to verify): {', '.join(preelected)}.")
+        return "\n\n" + " ".join(parts)
+    # capabilities is opt-in; a load failure must never break set_skill
+    except Exception as exc:  # noqa: BLE001
+        log.note(f"capabilities load failed for {skill_name}: {exc}")
+        return ""
 
 
 def _do_set_step(opts):
@@ -2863,3 +2915,133 @@ def _do_wishlist_list():
             for i in open_items
         ],
     }, indent=2)
+
+
+# ── Manual-setup gates (capabilities.yaml prerequisites) ───────────────────────
+# Non-blocking lifecycle for a manual/physical prerequisite a skill declares:
+# open (usually automatic on set_skill) → elect (now|defer|skip) → check (run the
+# allow-listed readiness probe). NEVER blocks session(complete) — distinct from the
+# skill-chaining gates in core/session/gates.py.
+
+def _setup_gate_describe(gate: dict, opened: bool = False) -> str:
+    gid = gate["id"]
+    host_note = " [requires_host — needs explicit human opt-in once/session]" if gate.get("requires_host") else ""
+    steps = gate.get("runbook") or []
+    runbook_txt = "\n".join(
+        f"  {i + 1}. {s.get('step', '')}" + (f"   [$ {s['command']}]" if s.get("command") else "")
+        for i, s in enumerate(steps)
+    ) or "  (no runbook steps declared)"
+    return (
+        f"{'Opened' if opened else 'Setup gate'} '{gid}' ({gate.get('category', 'other')}){host_note} "
+        f"— status {gate.get('status')}.\n{gate.get('description', '')}\n"
+        f"Runbook:\n{runbook_txt}\n\n"
+        f"ELECT: interactive → ASK the operator whether to set this up now; headless → default 'defer'. "
+        f"session(action='setup_gate', options={{'action':'elect','id':'{gid}','choice':'now|defer|skip'}}). "
+        f"After setup, verify: options={{'action':'check','id':'{gid}'}}."
+    )
+
+
+def _setup_gate_list_response() -> str:
+    gates = scan_session.list_setup_gates()
+    return json.dumps({
+        "count": len(gates),
+        "gates": [
+            {
+                "id": g["id"], "category": g.get("category"), "status": g.get("status"),
+                "election": g.get("election"), "requires_host": g.get("requires_host"),
+                "skill": g.get("skill"), "description": g.get("description", ""),
+                "probe_verb": (g.get("readiness_probe") or {}).get("verb"),
+                "probe_ok": (g.get("probe_result") or {}).get("ok"),
+            }
+            for g in gates
+        ],
+    }, indent=2)
+
+
+async def _setup_gate_check(gid: str) -> str:
+    from core import probe_runner
+    from mcp_server.scan_engine.artifacts import store_artifact
+
+    def _store(res):
+        return store_artifact("probe", json.dumps({"gate": gid, "result": res}, indent=2, default=str))
+
+    out = await probe_runner.check_gate(gid, artifact_store=_store)
+    status = out["status"]
+    if status == "no_gate":
+        return f"No setup gate '{gid}' found. List gates with options={{'action':'list'}}."
+    if status == "skipped":
+        return f"Gate '{gid}' was skipped by the operator — not probing. Re-elect 'now' to test it."
+    if status == "no_probe":
+        return f"Gate '{gid}' has no readiness_probe — confirm setup manually; this gate cannot be auto-verified."
+
+    res = out["result"]
+    artifact_id = out["artifact_id"]
+    if status == "ok":
+        return json.dumps({
+            "gate": gid, "status": "satisfied", "probe_ok": True,
+            "artifact_id": artifact_id, "device": res.get("device"),
+            "next": "Setup confirmed live by the readiness probe — proceed with the gated phase.",
+        }, indent=2, default=str)
+
+    return json.dumps({
+        "gate": gid, "status": "failed", "probe_ok": False, "artifact_id": artifact_id,
+        "ran": res.get("ran"), "exit_code": res.get("exit_code"),
+        "stdout_excerpt": (res.get("stdout") or "")[:300],
+        "reason": res.get("error") or "readiness-probe success criterion not met",
+        "next": ("Setup not ready. Re-check the runbook and re-run setup_gate check. If it cannot be set "
+                 "up, elect 'skip' and mark dependent cells skipped (reason: operator declined manual setup)."),
+    }, indent=2, default=str)
+
+
+def _setup_gate_open(opts: dict) -> str:
+    cap = opts.get("capability")
+    if not isinstance(cap, dict) or not cap.get("id"):
+        return ("setup_gate open needs options.capability={id,...}. Gates are usually opened "
+                "automatically from a skill's capabilities.yaml on set_skill — manual open is rarely needed.")
+    gate = scan_session.open_setup_gate(cap, skill=str(opts.get("skill", "")))
+    if gate is None:
+        return "No active running session — cannot open a setup gate."
+    return _setup_gate_describe(gate, opened=True)
+
+
+_SETUP_ELECT_MSG = {
+    "now": ("Gate '{gid}' elected NOW. Run the runbook steps, then verify with "
+            "session(action='setup_gate', options={{'action':'check','id':'{gid}'}})."),
+    "defer": ("Gate '{gid}' DEFERRED (non-blocking) — surfaced on the dashboard for the operator. "
+              "Keep testing other coverage; re-check later or let the operator fulfill it."),
+    "skip": ("Gate '{gid}' SKIPPED — mark its dependent cells skipped with reason "
+             "'operator declined manual setup'. Recorded so the gap is explicit in the report."),
+}
+
+
+def _setup_gate_elect(opts: dict) -> str:
+    gid = str(opts.get("id", "")).strip()
+    choice = str(opts.get("choice", "")).strip()
+    if not gid or choice not in _SETUP_ELECT_MSG:
+        return "setup_gate elect requires options.id and options.choice ∈ now|defer|skip."
+    gate = scan_session.record_election(gid, choice)
+    if gate is None:
+        return f"No setup gate '{gid}' found (or no running session)."
+    log.note(f"setup_gate {gid} elected: {choice}")
+    return _SETUP_ELECT_MSG[choice].format(gid=gid)
+
+
+async def _do_setup_gate(opts: dict) -> str:
+    """Manual-setup prerequisite lifecycle. options.action ∈ open|list|elect|check.
+
+    Non-blocking: an unsatisfied gate never blocks session(complete); it leaves
+    dependent work in a clearly-marked skipped state and the scan still completes.
+    """
+    sub = str(opts.get("action") or "list").strip()
+    if sub == "list":
+        return _setup_gate_list_response()
+    if sub == "open":
+        return _setup_gate_open(opts)
+    if sub == "elect":
+        return _setup_gate_elect(opts)
+    if sub == "check":
+        gid = str(opts.get("id", "")).strip()
+        if not gid:
+            return "setup_gate check requires options.id."
+        return await _setup_gate_check(gid)
+    return "setup_gate: options.action must be one of open|list|elect|check."

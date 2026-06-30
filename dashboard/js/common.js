@@ -97,7 +97,7 @@
   }
 
   // ── Tab switching ─────────────────────────────────────────────────────────
-  const TAB_NAMES = ['findings', 'topology', 'components', 'coverage', 'skills', 'activity', 'threat-model', 'metrics', 'logs'];
+  const TAB_NAMES = ['findings', 'topology', 'components', 'coverage', 'skills', 'activity', 'threat-model', 'metrics', 'setup-gates', 'logs'];
 
   function switchTab(name) {
     _activeTab = name;
@@ -123,6 +123,7 @@
     }
     if (name === 'metrics')       pollMetrics();
     if (name === 'threat-model')  pollThreatModel();
+    if (name === 'setup-gates')   pollSetupGates();
     if (name === 'logs')          pollLogs();
   }
 

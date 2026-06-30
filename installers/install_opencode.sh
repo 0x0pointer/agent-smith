@@ -366,6 +366,13 @@ _install_agent_skill() {
         rm -rf "$dst_dir/refs"
         cp -R "$refs_src" "$dst_dir/refs"
     fi
+    # Mirror capabilities.yaml (manual-setup prerequisites) for parity with the
+    # Claude install. NOTE: the MCP server reads the AUTHORITATIVE copy from the
+    # repo's skills/<name>/capabilities.yaml at runtime (core.capabilities); this
+    # installed copy is a mirror for inspection/portability, not the source of truth.
+    local cap_src
+    cap_src="$(dirname "$src")/capabilities.yaml"
+    [ -f "$cap_src" ] && _cp "$cap_src" "$dst_dir/capabilities.yaml"
     _AGENT_SKILL_OK=$((_AGENT_SKILL_OK + 1))
 }
 # /pentester gets the opencode variant when available
