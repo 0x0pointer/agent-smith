@@ -42,6 +42,13 @@ SCAN_TIMEOUT = int(os.environ.get("SMITH_MOBSF_SCAN_TIMEOUT", "600"))
 _start_lock = asyncio.Lock()
 
 
+def _read_bytes(path: str) -> bytes:
+    """Blocking file read — kept a plain sync function so async callers run it via
+    asyncio.to_thread (no blocking open() inside an async body — S7493)."""
+    with open(path, "rb") as fh:
+        return fh.read()
+
+
 # ---------------------------------------------------------------------------
 # State checks
 # ---------------------------------------------------------------------------
@@ -149,9 +156,9 @@ async def analyze(file_path: str) -> dict:
         return {"ok": False, "error": msg}
 
     try:
-        # Offload the blocking file read to a thread so this async function never
-        # blocks the event loop (S7493).
-        file_bytes = await asyncio.to_thread(lambda: open(file_path, "rb").read())
+        # Read via a thread (module-level sync helper) so this async function
+        # never blocks the event loop on file I/O (S7493).
+        file_bytes = await asyncio.to_thread(_read_bytes, file_path)
     except OSError as exc:
         return {"ok": False, "error": f"could not read {file_path}: {exc}"}
 
