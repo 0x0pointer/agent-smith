@@ -366,9 +366,12 @@ def _load_role_confusion_payloads(payload_set: str, goal: str, style_hints: str)
     path is resolved relative to the repo root (parent of mcp_server/).
     """
     import json as _json
-    from pathlib import Path
-    lib = (Path(__file__).resolve().parent.parent
-           / "skills" / "ai-redteam" / "refs" / "role-confusion-payloads.json")
+    from core import skill_paths
+    # Resolve by skill NAME (tolerates skills/ai-redteam/ OR skills/<domain>/ai-redteam/)
+    # so a future domain reorg doesn't silently break this read.
+    lib = skill_paths.skill_file("ai-redteam", "refs", "role-confusion-payloads.json")
+    if lib is None:
+        return []
     try:
         data = _json.loads(lib.read_text(encoding="utf-8"))
     except Exception:
@@ -711,6 +714,45 @@ async def _handle_exec_sandbox(target, flags, options):
     return header + clipped
 
 
+async def _handle_mobsf(target, flags, options):
+    """Static analysis of a built mobile binary (APK / IPA / APPX / source zip)
+    via the MobSF container: uploads the bytes, runs the scan, returns the
+    MASVS-aligned summary. `target` is a local file path."""
+    _record("mobsf")
+    import os
+    import json as _json
+    from mcp_server.scan_engine import wrap
+    if not os.path.isfile(target):
+        return wrap(
+            "mobsf",
+            _json.dumps({"error": f"not a file: {target!r}. Provide a path to an "
+                         ".apk / .ipa / .appx / source .zip."}),
+            {"target": target},
+        )
+    from tools import mobsf_runner
+    log.tool_call("mobsf", {"target": target})
+    call_id = cost_tracker.start("mobsf")
+    result = await mobsf_runner.analyze(target)
+    if result.get("ok"):
+        summary = mobsf_runner.summarize(result.get("report", {}))
+        summary["hash"] = result.get("hash")
+        summary["scan_type"] = result.get("scan_type")
+        payload = _json.dumps(summary, default=str)
+    else:
+        payload = _json.dumps({"error": result.get("error", "mobsf analysis failed")})
+    cost_tracker.finish(call_id, payload)
+    log.tool_result("mobsf", payload[:500])
+    return wrap("mobsf", payload, {"target": target, "scan_type": result.get("scan_type")})
+
+
+async def _handle_mobsfscan(target, flags, options):
+    """Static analysis of a mobile SOURCE tree (mounts the path; MASVS-tagged)."""
+    _record("mobsfscan")
+    raw = await _run("mobsfscan", path=target, flags=flags)
+    from mcp_server.scan_engine import wrap
+    return wrap("mobsfscan", raw, {"path": target})
+
+
 _DISPATCH = {
     "nmap":        _handle_nmap,
     "naabu":       _handle_naabu,
@@ -721,6 +763,8 @@ _DISPATCH = {
     "spider":      _handle_spider,
     "semgrep":     _handle_semgrep,
     "trufflehog":  _handle_trufflehog,
+    "mobsfscan":   _handle_mobsfscan,
+    "mobsf":       _handle_mobsf,
     "fuzzyai":     _handle_fuzzyai,
     "pyrit":       _handle_pyrit,
     "garak":       _handle_garak,

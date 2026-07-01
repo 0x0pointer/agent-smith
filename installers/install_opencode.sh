@@ -327,9 +327,12 @@ for _skill_file in "$REPO_DIR"/skills/*/SKILL.md; do
     _install_skill "$_skill_name" "$_skill_file"
 done
 
-# Backwards-compatible alias used by older docs and installs.
-if [ -f "$REPO_DIR/skills/threat-modeling/SKILL.md" ]; then
-    _install_skill "threat-model" "$REPO_DIR/skills/threat-modeling/SKILL.md"
+# Backwards-compatible alias used by older docs and installs. Resolve by name so
+# it works whether threat-modeling is flat (skills/threat-modeling/) or nested in a
+# domain (skills/appsec/threat-modeling/).
+_tm_src="$(find "$REPO_DIR/skills" -maxdepth 3 -path '*/threat-modeling/SKILL.md' 2>/dev/null | head -1)"
+if [ -n "$_tm_src" ]; then
+    _install_skill "threat-model" "$_tm_src"
 fi
 
 ok "$_SKILL_OK skill commands installed"
@@ -381,19 +384,20 @@ if [ -f "$REPO_DIR/skills/pentester-opencode/SKILL.md" ]; then
 elif [ -f "$REPO_DIR/skills/pentester.md" ]; then
     _install_agent_skill "pentester" "$REPO_DIR/skills/pentester.md"
 fi
-for _skill_file in "$REPO_DIR"/skills/*/SKILL.md; do
+# Discover flat skills/<name>/SKILL.md AND nested skills/<domain>/<name>/SKILL.md.
+while IFS= read -r _skill_file; do
     [ -e "$_skill_file" ] || continue
     _skill_name="$(basename "$(dirname "$_skill_file")")"
     [ "$_skill_name" = "pentester-opencode" ] && continue
     _install_agent_skill "$_skill_name" "$_skill_file"
-done
+done < <(find "$REPO_DIR/skills" -mindepth 2 -maxdepth 3 -name SKILL.md 2>/dev/null)
 ok "$_AGENT_SKILL_OK agent-callable skills installed in $OPENCODE_SKILLS_DIR"
 
 # ── Install skill reference files (lazy-loaded support material) ─────────────
 echo ""
 echo "Installing skill reference files..."
 _REF_OK=0
-for _refs_src in "$REPO_DIR"/skills/*/refs; do
+while IFS= read -r _refs_src; do
     [ -d "$_refs_src" ] || continue
     _skill_name="$(basename "$(dirname "$_refs_src")")"
     _refs_dst="$OPENCODE_COMMANDS_DIR/${_skill_name}-refs"
@@ -404,7 +408,7 @@ for _refs_src in "$REPO_DIR"/skills/*/refs; do
     mkdir -p "$_refs_dst"
     cp -R "$_refs_src"/. "$_refs_dst"/
     _REF_OK=$((_REF_OK + 1))
-done
+done < <(find "$REPO_DIR/skills" -mindepth 2 -maxdepth 3 -type d -name refs 2>/dev/null)
 ok "$_REF_OK skill reference directories installed"
 
 # ── AI testing API keys (FuzzyAI + PyRIT) ────────────────────────────────────
@@ -577,6 +581,22 @@ else
     warn "Metasploit build skipped — run later: docker build -t pentest-agent/metasploit $REPO_DIR/tools/metasploit/"
 fi
 
+echo ""
+
+# MobSF image (build) — mobile static analysis for /android-security & /ios-security
+printf "  Build MobSF image? (~5 min — required for /android-security & /ios-security) [Y/n]: "
+read -r _mobsf_answer || true
+if [[ "${_mobsf_answer:-Y}" =~ ^[Yy]$ ]]; then
+    echo "  Building pentest-agent/mobsf..."
+    if docker build -t pentest-agent/mobsf "$REPO_DIR/tools/mobsf/" 2>&1 | tail -5; then
+        ok "MobSF image built: pentest-agent/mobsf"
+    else
+        warn "MobSF build failed — run manually: docker build -t pentest-agent/mobsf $REPO_DIR/tools/mobsf/"
+    fi
+else
+    warn "MobSF build skipped — run later: docker build -t pentest-agent/mobsf $REPO_DIR/tools/mobsf/"
+fi
+
 # ── Done ──────────────────────────────────────────────────────────────────────
 echo ""
 echo "  Install complete!"
@@ -596,9 +616,12 @@ echo "    /cloud-security my-aws-account provider=aws — cloud security posture
 echo "    /ad-assessment 10.0.0.1 domain=CORP.LOCAL  — Active Directory security audit"
 echo "    /email-security example.com              — email SPF/DKIM/DMARC audit"
 echo "    /metasploit 10.0.0.5 cve=CVE-2017-0144   — Metasploit exploit validation"
+echo "    /android-security app.apk                — Android MASVS static+dynamic assessment"
+echo "    /ios-security app.ipa                    — iOS MASVS static+dynamic assessment"
 echo "    /gh-export                               — export findings as GitHub issue blocks"
 echo ""
 echo "  To rebuild images after adding new skills:"
 echo "    docker build -t pentest-agent/kali-mcp $REPO_DIR/tools/kali/"
 echo "    docker build -t pentest-agent/metasploit $REPO_DIR/tools/metasploit/"
+echo "    docker build -t pentest-agent/mobsf $REPO_DIR/tools/mobsf/"
 echo ""

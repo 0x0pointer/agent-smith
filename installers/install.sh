@@ -162,7 +162,10 @@ echo ""
 echo "Installing security analysis skills..."
 
 mkdir -p "$HOME/.claude/skills"
-for _skill_file in "$REPO_DIR"/skills/*/SKILL.md; do
+# Discover skills at BOTH skills/<name>/SKILL.md (flat) and skills/<domain>/<name>/SKILL.md
+# (one level of domain nesting, e.g. skills/mobile/android-security/). Install target
+# stays flat at ~/.claude/skills/<leaf-name>/ — nesting exists only in the repo.
+while IFS= read -r _skill_file; do
     [ -e "$_skill_file" ] || continue
     _skill_dir="$(dirname "$_skill_file")"
     _skill_name="$(basename "$_skill_dir")"
@@ -171,7 +174,7 @@ for _skill_file in "$REPO_DIR"/skills/*/SKILL.md; do
     [ "$_skill_name" = "pentester-opencode" ] && continue
 
     _install_skill_dir "$_skill_name" "$_skill_dir"
-done
+done < <(find "$REPO_DIR/skills" -mindepth 2 -maxdepth 3 -name SKILL.md 2>/dev/null)
 
 ok "$_SKILL_OK security analysis skills installed"
 if [ ${#_SKILL_MISSING[@]} -gt 0 ]; then
@@ -408,6 +411,22 @@ else
     warn "Metasploit build skipped — run later: docker build -t pentest-agent/metasploit $REPO_DIR/tools/metasploit/"
 fi
 
+echo ""
+
+# MobSF image (build) — mobile static analysis for /android-security & /ios-security
+printf "  Build MobSF image? (~5 min — required for /android-security & /ios-security) [Y/n]: "
+read -r _mobsf_answer || true
+if [[ "${_mobsf_answer:-Y}" =~ ^[Yy]$ ]]; then
+    echo "  Building pentest-agent/mobsf..."
+    if docker build -t pentest-agent/mobsf "$REPO_DIR/tools/mobsf/" 2>&1 | tail -5; then
+        ok "MobSF image built: pentest-agent/mobsf"
+    else
+        warn "MobSF build failed — run manually: docker build -t pentest-agent/mobsf $REPO_DIR/tools/mobsf/"
+    fi
+else
+    warn "MobSF build skipped — run later: docker build -t pentest-agent/mobsf $REPO_DIR/tools/mobsf/"
+fi
+
 # ── Done ──────────────────────────────────────────────────────────────────
 echo ""
 echo "  Install complete!"
@@ -431,4 +450,5 @@ echo ""
 echo "  To rebuild images after adding new skills:"
 echo "    docker build -t pentest-agent/kali-mcp $REPO_DIR/tools/kali/"
 echo "    docker build -t pentest-agent/metasploit $REPO_DIR/tools/metasploit/"
+echo "    docker build -t pentest-agent/mobsf $REPO_DIR/tools/mobsf/"
 echo ""

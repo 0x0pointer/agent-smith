@@ -220,6 +220,10 @@ async def _dispatch_async_action(action: str, opts: dict) -> str | None:
         return await _do_start_metasploit()
     if action == "stop_metasploit":
         return await _do_stop_metasploit()
+    if action == "start_mobsf":
+        return await _do_start_mobsf()
+    if action == "stop_mobsf":
+        return await _do_stop_mobsf()
     if action == "pull_images":
         return await _do_pull_images()
     if action == "qa_reply":
@@ -266,7 +270,7 @@ def _dispatch_sync_action(action: str, opts: dict) -> str:
         return _do_wishlist_list()
     if action == "oob_mint":
         return _do_oob_mint(opts)
-    return f"Unknown action '{action}'. Use: start, complete, status, qa_reply, recovery, artifact, pre_chain, set_skill, set_step, resume, wishlist_add, wishlist_list, setup_gate, start_kali, stop_kali, start_metasploit, stop_metasploit, pull_images, set_codebase, oob_start, oob_mint, oob_poll"
+    return f"Unknown action '{action}'. Use: start, complete, status, qa_reply, recovery, artifact, pre_chain, set_skill, set_step, resume, wishlist_add, wishlist_list, setup_gate, start_kali, stop_kali, start_metasploit, stop_metasploit, start_mobsf, stop_mobsf, pull_images, set_codebase, oob_start, oob_mint, oob_poll"
 
 
 def _reset_coverage_matrix(target: str, prev_target: str, has_data: bool) -> bool:
@@ -2796,6 +2800,27 @@ async def _do_stop_metasploit():
     log.tool_call("stop_metasploit", {})
     result = await metasploit_runner.stop()
     log.tool_result("stop_metasploit", result)
+    return result
+
+
+async def _do_start_mobsf():
+    from tools import mobsf_runner
+    log.tool_call("start_mobsf", {})
+    ok, msg = await mobsf_runner.ensure_running()
+    result = (
+        f"MobSF container ready at {mobsf_runner.MOBSF_API} ({msg}) — "
+        f"run scan(tool='mobsf', target='/path/app.apk')."
+        if ok else f"Failed to start MobSF container: {msg}"
+    )
+    log.tool_result("start_mobsf", result)
+    return result
+
+
+async def _do_stop_mobsf():
+    from tools import mobsf_runner
+    log.tool_call("stop_mobsf", {})
+    result = await mobsf_runner.stop()
+    log.tool_result("stop_mobsf", result)
     return result
 
 

@@ -61,12 +61,30 @@ def _validate_capability(cap: dict) -> tuple[bool, str]:
     return True, "ok"
 
 
+def _capabilities_path(skill_name: str) -> Path | None:
+    """Locate <skill_name>/capabilities.yaml, supporting one level of domain
+    nesting (skills/<name>/... OR skills/<domain>/<name>/...). Returns the path
+    or None. Flat layout is checked first for speed + backward compatibility."""
+    direct = _SKILLS_DIR / skill_name / "capabilities.yaml"
+    if direct.is_file():
+        return direct
+    try:
+        for sub in _SKILLS_DIR.iterdir():
+            if sub.is_dir():
+                nested = sub / skill_name / "capabilities.yaml"
+                if nested.is_file():
+                    return nested
+    except OSError:
+        pass
+    return None
+
+
 def load_capabilities(skill_name: str) -> tuple[list[dict], list[str]]:
     """Return (capabilities, warnings) for a skill. Absent file → ([], [])."""
     if not skill_name:
         return [], []
-    path = _SKILLS_DIR / skill_name / "capabilities.yaml"
-    if not path.is_file():
+    path = _capabilities_path(skill_name)
+    if path is None:
         return [], []
     data, err = _parse_yaml(path)
     if err:
