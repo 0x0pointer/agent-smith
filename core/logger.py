@@ -17,8 +17,40 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import re
 from datetime import datetime, timezone
 from core import paths as _paths
+
+# ---------------------------------------------------------------------------
+# Secret redaction — tool output (HTTP responses, kali stdout) routinely carries
+# Authorization/Cookie headers, JWTs and login bodies. pentest.log is a long-lived
+# forensic file; mask those before they land at rest (AS-06 / AS-15). The log stays
+# useful — only the secret VALUE is masked, not the surrounding context.
+# ---------------------------------------------------------------------------
+
+# Replacement keeps the label group and drops the secret value. Shared so the
+# literal isn't duplicated across patterns (S1192).
+_MASK = r"\1<redacted>"
+
+# `token` also matches access_token/refresh_token; `\s` already covers \r\n, so
+# the value class stays `[^"\s,&}]` (no duplicate members — S5869) and the keyword
+# set is kept small to bound regex complexity (S5843).
+_SECRET_PATTERNS = [
+    (re.compile(r"(?i)(authorization:\s*(?:bearer\s+)?)\S+"), _MASK),
+    (re.compile(r"(?i)((?:set-)?cookie:\s*)[^\r\n]+"), _MASK),
+    (re.compile(r"eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}"), "<redacted-jwt>"),
+    (re.compile(r'(?i)("?(?:password|secret|token|api[_-]?key|otp)"?\s*[:=]\s*"?)([^"\s,&}]+)'), _MASK),
+]
+
+
+def _redact(text: str) -> str:
+    """Mask credential/token values in a string before it is logged at rest."""
+    if not text:
+        return text
+    for pat, repl in _SECRET_PATTERNS:
+        text = pat.sub(repl, text)
+    return text
 
 # ---------------------------------------------------------------------------
 # Setup — single persistent log file, appended across sessions
@@ -36,6 +68,12 @@ _fmt = logging.Formatter(
 
 _fh = logging.FileHandler(log_path, mode="a", encoding="utf-8")
 _fh.setFormatter(_fmt)
+# Owner-only — the log carries harvested tokens/cookies/creds (redacted below, but
+# defense-in-depth) and must not be world-readable on a shared host (AS-15).
+try:
+    os.chmod(log_path, 0o600)
+except OSError:
+    pass
 
 _log = logging.getLogger("pentest")
 _log.setLevel(logging.DEBUG)
@@ -57,16 +95,16 @@ def tool_call(name: str, kwargs: dict) -> None:
 
 
 def tool_result(name: str, result: str) -> None:
-    """Log the full unclipped tool output for forensic review."""
-    _log.info("TOOL_RESULT  %-20s\n%s\n%s", name, result, "─" * 80)
+    """Log the full (secret-redacted) tool output for forensic review."""
+    _log.info("TOOL_RESULT  %-20s\n%s\n%s", name, _redact(result), "─" * 80)
 
 
 def tool_result_verbose(name: str, raw_stdout: str, raw_stderr: str) -> None:
-    """Log raw stdout+stderr before any clipping — full verbose output."""
+    """Log raw stdout+stderr (secret-redacted) before any clipping."""
     if raw_stdout:
-        _log.debug("RAW_STDOUT   %-20s\n%s", name, raw_stdout)
+        _log.debug("RAW_STDOUT   %-20s\n%s", name, _redact(raw_stdout))
     if raw_stderr:
-        _log.debug("RAW_STDERR   %-20s\n%s", name, raw_stderr)
+        _log.debug("RAW_STDERR   %-20s\n%s", name, _redact(raw_stderr))
 
 
 def finding(severity: str, title: str, target: str) -> None:

@@ -64,8 +64,14 @@
   async function renderThreatModel(content, svgs) {
     const wrap = document.getElementById('threat-model-wrap');
     wrap.classList.remove('empty');
+    // marked@9 passes raw HTML through, and this markdown is scan-derived
+    // (embeds attacker-influenced recon strings). Sanitize marked's output with
+    // the allow-list DOM sanitizer (common.js) before innerHTML so injected
+    // tags / event handlers / scripts cannot execute (AS-07). The <pre><code
+    // class="language-mermaid"> blocks survive sanitization, so the mermaid
+    // post-processing below still works.
     const html = (typeof marked !== 'undefined')
-      ? marked.parse(content)
+      ? sanitizeHtml(marked.parse(content))
       : `<pre style="white-space:pre-wrap;word-break:break-all;font-size:.82rem;color:#c9d1d9">${esc(content)}</pre>`;
     wrap.innerHTML = `<div id="tm-content">${html}</div>`;
 

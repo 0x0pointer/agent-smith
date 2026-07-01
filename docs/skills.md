@@ -4,6 +4,64 @@ Skills are slash commands that expand into detailed instructions for Claude. The
 
 ---
 
+## Catalog
+
+**Penetration testing**
+
+| Skill | What it does |
+|---|---|
+| `/pentester` | Full autonomous engagement — chains everything else |
+| `/web-exploit` | SQLi, XSS, SSRF, SSTI, deserialization, JWT, smuggling, race conditions, etc. |
+| `/param-fuzz` | Auth stripping, type confusion, boundary values, mass assignment, token entropy analysis |
+| `/business-logic` | Value/quantity abuse, workflow bypass, BOLA/BFLA, replay, quota bypass, multi-tenant isolation |
+| `/api-security` | OWASP API Top 10 (2023) — BOLA, BFLA, mass assignment, JWT/OAuth abuse, SSRF, business-flow abuse, inventory drift. REST/GraphQL/gRPC/SOAP/MCP |
+| `/network-assess` | VLAN hopping, LLMNR/NBT-NS, SNMP, segmentation |
+| `/post-exploit` | Linux/Windows privesc, persistence, credential harvesting |
+| `/lateral-movement` | PTH, PTT, Kerberoasting, NTLM relay, delegation abuse |
+| `/metasploit` | Exploit validation in an isolated Docker container |
+| `/reverse-shell` | Generates and manages reverse shells across all platforms |
+| `/pivot-tunnel` | Chisel + SOCKS5 tunneling after RCE |
+
+**Cloud, infra & identity**
+
+| Skill | What it does |
+|---|---|
+| `/cloud-security` | AWS / Azure / GCP IAM, storage, serverless, logging gaps |
+| `/container-k8s-security` | Container escape, K8s RBAC, etcd, service account abuse |
+| `/ad-assessment` | ADCS (ESC1–ESC8), BloodHound, GPO, LAPS, forest trusts |
+| `/email-security` | SPF / DKIM / DMARC, open relay, MTA-STS, SMTP security |
+| `/ssl-tls-audit` | TLS protocol/cipher audit, cert chain, POODLE/BEAST/Heartbleed/etc. |
+| `/credential-audit` | Brute force, password spraying, default creds, lockout, MFA bypass |
+
+**Recon & analysis**
+
+| Skill | What it does |
+|---|---|
+| `/osint` | Subdomain takeover, cert transparency, Shodan, leaked creds |
+| `/threat-modeling` | PASTA + STRIDE + 4-question, attack tree, risk register |
+| `/codebase` | OWASP ASVS 5.0 white-box review (16 chapters, 427 requirements) |
+| `/analyze-cve` | CVE code-path tracing + Burp PoC |
+| `/aikido-triage` | Triage Aikido SAST/SCA/secret-scan CSV against your code |
+
+**AI safety & red-team**
+
+| Skill | What it does |
+|---|---|
+| `/ai-redteam` | OWASP LLM Top 10 + AITG v1 + MCP Top 10 runtime attacks |
+| `/colang-gen` | Generate NeMo Guardrails Colang configs from plain language |
+
+**Reporting & remediation**
+
+| Skill | What it does |
+|---|---|
+| `/remediate` | Writes code patches and config fixes for every finding |
+| `/gh-export` | Formats confirmed findings as copy-pasteable GitHub issues |
+| `/request-cves` | Generates CVE submission packages — MITRE form, GHSA draft, disclosure report, vendor email |
+
+The per-skill sections below document each in depth.
+
+---
+
 ## `/codebase`
 
 White-box source code security review structured around OWASP ASVS 5.0 (427 verification requirements). Reads and understands application source code to build a security knowledge base that enriches all downstream skills.
@@ -575,7 +633,102 @@ No new tools needed — uses ncat, socat, msfvenom, openssl already in Kali.
 
 ## Chaining skills
 
-Skills are designed to be chained automatically during an engagement:
+Skills are designed to be chained automatically during an engagement. The agent decides what
+to run next based on what it just found:
+
+```mermaid
+flowchart LR
+
+    %% Codebase enriches multiple skills (white-box context)
+    codebase[/codebase/] -.enriches.-> pentester
+    codebase -.enriches.-> web[/web-exploit/]
+    codebase -.enriches.-> cve[/analyze-cve/]
+    codebase -.detects LLM use.-> ai
+
+    %% Pentester is the hub — branches to every scan/discovery skill
+    pentester[/pentester/] --> web
+    pentester --> pf[/param-fuzz/]
+    pentester --> bl[/business-logic/]
+    pentester --> api[/api-security/]
+    pentester --> net[/network-assess/]
+    pentester --> creds[/credential-audit/]
+    pentester --> ssl[/ssl-tls-audit/]
+    pentester --> email[/email-security/]
+    pentester --> cloud[/cloud-security/]
+    pentester --> cve
+    pentester --> msf[/metasploit/]
+    pentester --> ai-redteam
+    pentester --> ad[/ad-assessment/]
+    pentester --> rsh[/reverse-shell/]
+
+    %% Cloud discovers AI endpoints and K8s clusters
+    cloud --> ai-redteam
+    cloud --> k8s[/container-k8s-security/]
+    cloud --> cve
+
+    %% Web exploitation feeds CVE analysis, creds, post-exploit, param-fuzz, business-logic, and AI red-team
+    web --> pf
+    web --> bl
+    web --> cve
+    web --> creds
+    web --> post[/post-exploit/]
+    web --> ai-redteam
+
+    %% API security: chains into web-exploit for injection depth, param-fuzz/business-logic for auth/logic, ai-redteam for LLM endpoints
+    api --> web
+    api --> pf
+    api --> bl
+    api --> ai-redteam
+    api --> cve
+    api --> creds
+    api --> post
+    codebase -.enriches.-> api
+
+    %% Metasploit & reverse-shell drop into post-exploit
+    msf --> post
+    rsh --> post
+
+    %% Network assessment branches
+    net --> creds
+    net --> ssl
+    net --> k8s
+    net --> post
+    net --> lateral[/lateral-movement/]
+
+    %% Credential audit and SSL feed into post-exploit
+    creds --> post
+    creds --> lateral
+    ssl --> creds
+    email --> creds
+
+    %% Container/K8s security
+    k8s --> post
+
+    %% Post-exploit → pivoting & lateral movement
+    post --> lateral
+    post --> pivot[/pivot-tunnel/]
+    post --> ai_post[/ai-redteam<br/>Phase 3c/]
+    pivot --> lateral
+    ad --> lateral
+
+    %% AI red-team → post-access infra checks
+    ai --> post
+    ai --> k8s
+    ai --> cve
+
+    %% Aikido triage feeds CVE dataflow analysis
+    aikido[/aikido-triage/] --> cve
+
+    %% Reporting tail
+    pentester --> tm[/threat-modeling/]
+    tm --> remediate[/remediate/]
+    pentester --> remediate
+    codebase --> remediate
+    pentester --> ghexp[/gh-export/]
+    pentester --> req[/request-cves/]
+```
+
+The text tree below is the same routing in reference form:
 
 ```
 Before a pentest

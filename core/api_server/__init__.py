@@ -84,6 +84,33 @@ if _sentry_dsn:
 
 app = FastAPI(title="pentest-agent")
 
+
+@app.middleware("http")
+async def _require_dashboard_token(request: Request, call_next):
+    """Gate the ``/api/*`` control plane behind the per-session bearer token.
+
+    Enforced only once a scan session has minted a token (``logs/dashboard.token``)
+    — before that there is nothing sensitive to serve, and the health probe stays
+    green. The page shell, static assets, favicons, ``/logo.png`` and ``/healthz``
+    stay open so the browser can bootstrap before it holds the token; the dashboard
+    JS captures the token from the URL fragment and attaches it as
+    ``Authorization: Bearer …`` on every same-origin fetch.
+
+    Disable for the test suite via ``SMITH_DASHBOARD_AUTH=0`` (see tests/conftest).
+    """
+    path = request.url.path
+    auth_on = os.environ.get("SMITH_DASHBOARD_AUTH", "1").lower() not in ("0", "false", "no")
+    if auth_on and path.startswith("/api/"):
+        from core import dashboard_auth
+        token = dashboard_auth.read_token()
+        if token:  # a session is active → require the bearer token
+            hdr = request.headers.get("authorization", "")
+            supplied = hdr[7:].strip() if hdr[:7].lower() == "bearer " else ""
+            if not dashboard_auth.verify(supplied):
+                return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return await call_next(request)
+
+
 # Dashboard UI: a Jinja2-rendered index.html that {% include %}s one HTML
 # partial per tab, plus raw static CSS/JS — all under dashboard/. Mounted at
 # import so both TestClient(app) and the live uvicorn server serve it.

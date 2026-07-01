@@ -64,6 +64,13 @@ def _load() -> dict:
 
 def _save(data: dict) -> None:
     _store.save(FINDINGS_FILE, data)
+    # AS-REPUD: write a detached HMAC signature so post-hoc edits to the signed
+    # deliverable are detectable (verify via core.integrity.verify_file). Best-effort.
+    try:
+        from core import integrity
+        integrity.sign_file(FINDINGS_FILE)
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------

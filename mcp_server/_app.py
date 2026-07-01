@@ -176,6 +176,7 @@ async def _run(name: str, **kwargs) -> str:
                 tool.image, args, timeout=tool.default_timeout,
                 mount_path=mount, extra_volumes=tool.extra_volumes or None,
                 env_vars=env_vars,
+                network=tool.network, cap_add=tool.cap_add or None,
             )
         except asyncio.TimeoutError:
             result = f"[{name} timed out after {tool.default_timeout}s — increase timeout or reduce scope]"

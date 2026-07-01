@@ -2,6 +2,13 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
+  <!-- Defense-in-depth CSP. connect-src 'self' blocks a same-origin XSS from
+       exfiltrating to an external host; object-src/base-uri/frame-ancestors
+       harden against plugin/base-tag/clickjacking. 'unsafe-inline' is still
+       required by the existing inline onclick handlers, so this is not the
+       primary XSS control — output escaping/sanitization in the JS is; tightening
+       to remove 'unsafe-inline' needs those handlers refactored first. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'">
   <title>Pentest Dashboard</title>
   <link rel="icon" type="image/vnd.microsoft.icon" href="/favicon.ico">
   <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">

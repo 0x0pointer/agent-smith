@@ -92,7 +92,7 @@
       return `<td><span class="cov-cell ${cell.status}"
         data-cell-id="${cell.id}"
         data-ep-path="${esc(ep.path)}"
-        data-ep-method="${ep.method}"
+        data-ep-method="${esc(ep.method)}"
         data-param="${esc(param)}"
         data-inj="${esc(inj)}"
         data-status="${cell.status}"
@@ -118,7 +118,7 @@
       bodyRows += `<tr class="cov-ep-header" data-id="${esc(ep.id)}" onclick="toggleCovEndpoint(this.dataset.id)" style="cursor:pointer">
         <td style="font-weight:600;color:#f0f6fc">
           <span style="margin-right:.4rem;font-size:.7rem">${arrow}</span>
-          ${ep.method} ${esc(ep.path)}
+          ${esc(ep.method)} ${esc(ep.path)}
           <span style="color:#6e7681;font-weight:400;margin-left:.5rem">${doneCells}/${totalCells}</span>
           ${vulnBadge}${progBadge}
         </td>
@@ -149,17 +149,48 @@
       pending: '#8b949e', in_progress: '#58a6ff', tested_clean: '#3fb950', vulnerable: '#ff4d4f',
       not_applicable: '#6e7681', skipped: '#d2a922'
     };
-    const status = el.dataset.status;
+    const status = el.dataset.status || '';
     const color = statusColors[status] || '#8b949e';
-    tt.innerHTML = `
-      <div><strong>${el.dataset.epMethod} ${el.dataset.epPath}</strong></div>
-      <div style="margin-top:.2rem">Param: <strong>${el.dataset.param === '_endpoint' ? '(endpoint-level)' : el.dataset.param}</strong></div>
-      <div style="margin-top:.2rem">Test: <strong>${el.dataset.inj}</strong></div>
-      <div style="margin-top:.3rem"><span class="cov-tt-status" style="color:${color}">${status.replace('_',' ')}</span></div>
-      ${el.dataset.notes ? `<div style="margin-top:.3rem;color:#8b949e">${el.dataset.notes}</div>` : ''}
-      ${el.dataset.finding ? `<div style="margin-top:.2rem;color:#58a6ff">Finding: ${el.dataset.finding}</div>` : ''}
-      ${el.dataset.tested ? `<div style="margin-top:.2rem;color:#6e7681;font-size:.72rem">${new Date(el.dataset.tested).toLocaleString()}</div>` : ''}
-    `;
+
+    // Build with DOM nodes + textContent — NOT innerHTML. The dataset values
+    // (endpoint path, param, notes) originate from scan-target bytes; assigning
+    // them via textContent means they are never parsed as HTML, so a stored
+    // `<img onerror=…>` renders as inert text instead of executing (AS-05).
+    const row = (style) => { const d = document.createElement('div'); if (style) d.style.cssText = style; return d; };
+    const strong = (text) => { const s = document.createElement('strong'); s.textContent = text; return s; };
+    tt.textContent = '';
+
+    const head = row('');
+    head.appendChild(strong(`${el.dataset.epMethod || ''} ${el.dataset.epPath || ''}`));
+    tt.appendChild(head);
+
+    const paramRow = row('margin-top:.2rem');
+    paramRow.append('Param: ', strong(el.dataset.param === '_endpoint' ? '(endpoint-level)' : (el.dataset.param || '')));
+    tt.appendChild(paramRow);
+
+    const testRow = row('margin-top:.2rem');
+    testRow.append('Test: ', strong(el.dataset.inj || ''));
+    tt.appendChild(testRow);
+
+    const statusRow = row('margin-top:.3rem');
+    const statusSpan = document.createElement('span');
+    statusSpan.className = 'cov-tt-status';
+    statusSpan.style.color = color;
+    statusSpan.textContent = status.replace('_', ' ');
+    statusRow.appendChild(statusSpan);
+    tt.appendChild(statusRow);
+
+    if (el.dataset.notes) {
+      const n = row('margin-top:.3rem;color:#8b949e'); n.textContent = el.dataset.notes; tt.appendChild(n);
+    }
+    if (el.dataset.finding) {
+      const f = row('margin-top:.2rem;color:#58a6ff'); f.textContent = `Finding: ${el.dataset.finding}`; tt.appendChild(f);
+    }
+    if (el.dataset.tested) {
+      const d = row('margin-top:.2rem;color:#6e7681;font-size:.72rem');
+      d.textContent = new Date(el.dataset.tested).toLocaleString(); tt.appendChild(d);
+    }
+
     tt.style.display = 'block';
     tt.style.left = (e.clientX + 12) + 'px';
     tt.style.top = (e.clientY + 12) + 'px';
