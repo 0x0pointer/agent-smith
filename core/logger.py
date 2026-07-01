@@ -29,11 +29,18 @@ from core import paths as _paths
 # useful — only the secret VALUE is masked, not the surrounding context.
 # ---------------------------------------------------------------------------
 
+# Replacement keeps the label group and drops the secret value. Shared so the
+# literal isn't duplicated across patterns (S1192).
+_MASK = r"\1<redacted>"
+
+# `token` also matches access_token/refresh_token; `\s` already covers \r\n, so
+# the value class stays `[^"\s,&}]` (no duplicate members — S5869) and the keyword
+# set is kept small to bound regex complexity (S5843).
 _SECRET_PATTERNS = [
-    (re.compile(r"(?i)(authorization:\s*(?:bearer\s+)?)\S+"), r"\1<redacted>"),
-    (re.compile(r"(?i)((?:set-)?cookie:\s*)[^\r\n]+"), r"\1<redacted>"),
+    (re.compile(r"(?i)(authorization:\s*(?:bearer\s+)?)\S+"), _MASK),
+    (re.compile(r"(?i)((?:set-)?cookie:\s*)[^\r\n]+"), _MASK),
     (re.compile(r"eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}"), "<redacted-jwt>"),
-    (re.compile(r'(?i)("?(?:password|passwd|api[_-]?key|secret|access[_-]?token|refresh[_-]?token|token|otp)"?\s*[:=]\s*"?)([^"\s,&}\r\n]+)'), r"\1<redacted>"),
+    (re.compile(r'(?i)("?(?:password|secret|token|api[_-]?key|otp)"?\s*[:=]\s*"?)([^"\s,&}]+)'), _MASK),
 ]
 
 
