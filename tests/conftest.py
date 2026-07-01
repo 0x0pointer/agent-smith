@@ -14,6 +14,7 @@ import core.cost
 import core.session
 import core.findings
 import core.coverage
+import core.paths
 
 # ── MCP tool decorator shim ───────────────────────────────────────────────────
 # FastMCP.add_tool() calls pydantic.create_model(result=<class 'str'>) which
@@ -25,6 +26,22 @@ from unittest.mock import patch as _patch
 from mcp.server.fastmcp import FastMCP as _FastMCP
 _mcp_tool_shim = _patch.object(_FastMCP, "tool", side_effect=lambda **kw: lambda f: f)
 _mcp_tool_shim.start()
+
+
+@pytest.fixture(autouse=True)
+def disable_dashboard_auth(monkeypatch, tmp_path):
+    """Disable the per-session dashboard bearer-token gate for the suite.
+
+    The FastAPI middleware requires an Authorization header on /api/* once a
+    scan has minted a token (core.dashboard_auth). The existing API tests drive
+    those routes via TestClient without a header, so enforcement is switched off
+    here; the auth behaviour itself is covered by test_dashboard_auth.py, which
+    re-enables it explicitly. The token file is also redirected to tmp_path so a
+    test that runs the real session-start path can't mint a token into the repo's
+    logs/dashboard.token.
+    """
+    monkeypatch.setenv("SMITH_DASHBOARD_AUTH", "0")
+    monkeypatch.setattr(core.paths, "DASHBOARD_TOKEN_FILE", tmp_path / "dashboard.token")
 
 
 @pytest.fixture(autouse=True)

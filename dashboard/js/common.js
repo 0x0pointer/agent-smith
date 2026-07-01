@@ -1,3 +1,104 @@
+  // ── Dashboard auth: per-session bearer token ────────────────────────────────
+  // The MCP server mints a random token when a scan starts and prints the
+  // dashboard URL with it in the fragment (…/#k=<token>). Capture it into
+  // sessionStorage (never sent to the server via the URL), strip it from the
+  // address bar, and attach it as `Authorization: Bearer …` on every same-origin
+  // API call. Closes the unauthenticated-control-plane / CSRF / DNS-rebind class:
+  // a cross-origin or rebound page can neither read the token (origin-scoped
+  // storage) nor set the Authorization header without a CORS preflight that has
+  // no allow. (A same-origin XSS still holds the token — that is handled by
+  // output escaping/sanitization, not here.)
+  (function initDashboardAuth() {
+    const KEY = 'smith_dash_token';
+    function token() {
+      try { return sessionStorage.getItem(KEY) || ''; } catch (_) { return ''; }
+    }
+    try {
+      const m = (location.hash || '').match(/[#&]k=([^&]+)/);
+      if (m) {
+        sessionStorage.setItem(KEY, decodeURIComponent(m[1]));
+        history.replaceState(null, '', location.pathname + location.search);
+      }
+    } catch (_) { /* storage unavailable — wrapper simply no-ops */ }
+
+    const _origFetch = window.fetch.bind(window);
+    window.fetch = function (input, init) {
+      let sameOrigin = true;
+      try {
+        const raw = (typeof input === 'string') ? input : (input && input.url) || '';
+        sameOrigin = new URL(raw, location.href).origin === location.origin;
+      } catch (_) { sameOrigin = true; }
+      const t = token();
+      if (sameOrigin && t) {
+        init = init ? Object.assign({}, init) : {};
+        const h = new Headers(init.headers || (typeof input !== 'string' && input && input.headers) || {});
+        if (!h.has('Authorization')) h.set('Authorization', 'Bearer ' + t);
+        init.headers = h;
+      }
+      return _origFetch(input, init);
+    };
+
+    // No token yet (bare URL / bookmark)? Ask once — the CLI prints the key with
+    // the dashboard URL. Blank just leaves calls unauthenticated, which is fine
+    // before a scan has started (nothing sensitive is served).
+    try {
+      if (!token()) {
+        const pasted = window.prompt(
+          'Dashboard key required.\nPaste the key printed with the dashboard URL ' +
+          '(leave blank if no scan has started yet):'
+        );
+        if (pasted) sessionStorage.setItem(KEY, pasted.trim());
+      }
+    } catch (_) { /* non-interactive context */ }
+  })();
+
+  // ── HTML sanitizer for untrusted markdown (threat-model tab) ────────────────
+  // marked@9 passes raw HTML through, and scan-derived markdown embeds
+  // attacker-influenced recon strings. Render marked's output through this
+  // allow-list DOM sanitizer before innerHTML so injected tags / event handlers
+  // / scripts / javascript: URLs cannot execute. Keeps <pre><code class=…> so the
+  // mermaid post-processing still finds language-mermaid blocks.
+  const _SANITIZE_ALLOWED_TAGS = new Set([
+    'A','P','DIV','SPAN','BR','HR','PRE','CODE','BLOCKQUOTE','KBD','SMALL',
+    'H1','H2','H3','H4','H5','H6','UL','OL','LI','STRONG','EM','B','I','U',
+    'DEL','INS','SUP','SUB','TABLE','THEAD','TBODY','TFOOT','TR','TH','TD','DL','DT','DD','IMG',
+  ]);
+  const _SANITIZE_ALLOWED_ATTRS = new Set([
+    'href','src','alt','title','class','colspan','rowspan','align','start',
+  ]);
+  const _SANITIZE_DROP_TAGS = new Set([
+    'SCRIPT','STYLE','IFRAME','OBJECT','EMBED','FORM','LINK','META','BASE','SVG','MATH','TEMPLATE',
+  ]);
+  function sanitizeHtml(html) {
+    const doc = new DOMParser().parseFromString(String(html), 'text/html');
+    const walk = (root) => {
+      [...root.children].forEach((el) => {
+        const tag = el.tagName;
+        if (!_SANITIZE_ALLOWED_TAGS.has(tag)) {
+          if (_SANITIZE_DROP_TAGS.has(tag)) { el.remove(); return; }
+          const span = doc.createElement('span');   // unwrap unknown tags to text
+          span.textContent = el.textContent;
+          el.replaceWith(span);
+          return;
+        }
+        [...el.attributes].forEach((a) => {
+          const name = a.name.toLowerCase();
+          if (!_SANITIZE_ALLOWED_ATTRS.has(name)) { el.removeAttribute(a.name); return; }
+          if (name === 'href' || name === 'src') {
+            const v = (a.value || '').replace(/[\u0000-\u0020]+/g, '').toLowerCase();
+            if (v.startsWith('javascript:') || v.startsWith('vbscript:') ||
+                (v.startsWith('data:') && !v.startsWith('data:image/'))) {
+              el.removeAttribute(a.name);
+            }
+          }
+        });
+        walk(el);
+      });
+    };
+    walk(doc.body);
+    return doc.body.innerHTML;
+  }
+
   mermaid.initialize({
     startOnLoad: false,
     theme: 'base',

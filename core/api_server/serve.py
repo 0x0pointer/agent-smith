@@ -13,6 +13,7 @@ take effect when ``serve()`` calls them.
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 
 import core.api_server as _api
@@ -87,7 +88,7 @@ def _port_healthy(port: int) -> bool:
     """Return True only if our FastAPI dashboard is responding on this port."""
     import urllib.request
     try:
-        with urllib.request.urlopen(f"http://localhost:{port}/api/session", timeout=2) as r:
+        with urllib.request.urlopen(f"http://localhost:{port}/healthz", timeout=2) as r:
             return r.status == 200
     except Exception:
         return False
@@ -124,10 +125,16 @@ async def serve(port: int = 7777) -> str:
     # Fire-and-forget: process runs independently in a new session.
     # stdout/stderr → /dev/null so the MCP stdio pipe is never touched.
     # start_new_session=True detaches from MCP server's process group.
+    # Bind loopback by default so the control plane isn't exposed on the network.
+    # Combined with the per-session bearer token (core.dashboard_auth), this closes
+    # the unauthenticated-dashboard / CSRF / rebind class. Override with
+    # DASHBOARD_HOST=0.0.0.0 only behind a trusted boundary (e.g. reach it via an
+    # SSH tunnel instead — see docs/production-isolation.md).
+    host = os.environ.get("DASHBOARD_HOST", "127.0.0.1")
     proc = await asyncio.create_subprocess_exec(
         sys.executable, "-m", "uvicorn",
         "core.api_server:app",
-        "--host", "0.0.0.0",
+        "--host", host,
         "--port", str(port),
         "--no-access-log",
         "--log-level", "critical",

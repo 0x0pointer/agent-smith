@@ -66,6 +66,7 @@ def _parse(stdout: str, stderr: str) -> list[dict]:
 
 TOOL = Tool(
     name            = "semgrep",
+    network         = "none",   # analyzes untrusted mounted code, needs no network (AS-13)
     image           = "semgrep/semgrep:latest",
     build_args      = _build_args,
     parser          = _parse,

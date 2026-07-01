@@ -771,6 +771,16 @@ async def _do_dashboard(data):
             port = requested
         log.tool_call("dashboard", {"port": port, "requested": requested})
         url = await api_server.serve(port)
+        # Carry the per-session bearer token in the URL fragment (never sent to
+        # the server, stays out of access logs). The dashboard JS captures it into
+        # sessionStorage and sends it as Authorization: Bearer on every /api call.
+        try:
+            from core import dashboard_auth
+            tok = dashboard_auth.read_token()
+            if tok and url.startswith("http"):
+                url = f"{url}/#k={tok}"
+        except Exception:
+            pass
         log.tool_result("dashboard", url)
         return f"Dashboard running — open {url}"
     except BaseException as exc:

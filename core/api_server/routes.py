@@ -21,13 +21,6 @@ _log = logging.getLogger(__name__)
 router = APIRouter()
 
 
-# ── Sentry smoke-test route (remove after verifying Sentry receives events) ──
-
-@router.get("/sentry-debug")
-async def sentry_debug():
-    division_by_zero = 1 / 0
-
-
 # ── Dashboard UI + static assets ────────────────────────────────────────────
 
 @router.get("/")
@@ -35,6 +28,14 @@ async def dashboard_ui(request: Request):
     """Render the dashboard shell — index.html {% include %}s the per-tab
     partials; CSS/JS load from the /static mount."""
     return _api.templates.TemplateResponse(request, "index.html")
+
+
+@router.get("/healthz")
+async def healthz() -> JSONResponse:
+    """Unauthenticated liveness probe used by serve() to detect a healthy
+    dashboard. Returns no scan data, so it stays reachable when the /api/*
+    control plane requires the per-session bearer token."""
+    return JSONResponse({"ok": True})
 
 
 @router.get("/logo.png")

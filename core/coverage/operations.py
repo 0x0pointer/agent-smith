@@ -9,6 +9,7 @@ patchable from the package namespace.
 """
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import datetime, timezone
 
@@ -20,6 +21,23 @@ from .validation import (
     _validate_auth_response,
     _validate_finding_link,
 )
+
+_CTRL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _sanitize_registered(value: str, maxlen: int = 256) -> str:
+    """Neutralize a discovery-derived string (endpoint path / param name) before it
+    is stored and later interpolated into the agent's recovery / EXECUTE_NOW prompt.
+
+    Strips control characters + newlines — so an endpoint/param name authored by a
+    malicious scan target cannot inject extra instruction lines into the agent's
+    authoritative next-action string (AS-08, second-order prompt injection) — and
+    caps length. Legitimate URL paths and parameter names never contain control
+    characters, so this is behaviour-preserving for real inputs.
+    """
+    if not isinstance(value, str):
+        return value
+    return _CTRL_CHARS.sub("", value)[:maxlen]
 
 
 def _tested_by_from_artifact(artifact_id: str) -> str:
@@ -46,6 +64,7 @@ async def add_endpoint(
 
     Returns {"endpoint_id": ..., "new_cells": N, "dedup": bool}.
     """
+    path = _sanitize_registered(path)  # AS-08: defang target-authored paths before storage
     norm_path = _normalize_path(path)
     method_upper = method.upper()
 
@@ -75,7 +94,7 @@ async def add_endpoint(
 
         # Per-parameter cells
         for param in params:
-            p_name = param.get("name", "")
+            p_name = _sanitize_registered(param.get("name", ""), 128)  # AS-08
             p_type = param.get("type", "query")
             p_hint = param.get("value_hint", "")
             for inj_type in _applicable_types(p_type, p_hint):

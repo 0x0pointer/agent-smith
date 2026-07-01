@@ -19,3 +19,9 @@ class Tool:
     extra_volumes:   list[tuple[str, str]] = field(default_factory=list)
     # Host env vars to forward into the container (e.g. API keys)
     forward_env:     list[str] = field(default_factory=list)
+    # Container network mode (AS-13): "host" (default — target-probing tools),
+    # "bridge", or "none" (untrusted-code analyzers that need no network at all).
+    network:         str  = "host"
+    # Capabilities to add back after the runner's --cap-drop=ALL (e.g. NET_RAW so
+    # raw-socket scanners still work under the hardened default).
+    cap_add:         list[str] = field(default_factory=list)
