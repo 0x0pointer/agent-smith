@@ -581,21 +581,8 @@ else
     warn "Metasploit build skipped — run later: docker build -t pentest-agent/metasploit $REPO_DIR/tools/metasploit/"
 fi
 
-echo ""
-
-# MobSF image (build) — mobile static analysis for /android-security & /ios-security
-printf "  Build MobSF image? (~5 min — required for /android-security & /ios-security) [Y/n]: "
-read -r _mobsf_answer || true
-if [[ "${_mobsf_answer:-Y}" =~ ^[Yy]$ ]]; then
-    echo "  Building pentest-agent/mobsf..."
-    if docker build -t pentest-agent/mobsf "$REPO_DIR/tools/mobsf/" 2>&1 | tail -5; then
-        ok "MobSF image built: pentest-agent/mobsf"
-    else
-        warn "MobSF build failed — run manually: docker build -t pentest-agent/mobsf $REPO_DIR/tools/mobsf/"
-    fi
-else
-    warn "MobSF build skipped — run later: docker build -t pentest-agent/mobsf $REPO_DIR/tools/mobsf/"
-fi
+# MobSF needs no build — /android-security & /ios-security use the official MobSF
+# image, auto-pulled by tools/mobsf_runner.py on the first scan(tool='mobsf').
 
 # ── Done ──────────────────────────────────────────────────────────────────────
 echo ""
@@ -623,5 +610,4 @@ echo ""
 echo "  To rebuild images after adding new skills:"
 echo "    docker build -t pentest-agent/kali-mcp $REPO_DIR/tools/kali/"
 echo "    docker build -t pentest-agent/metasploit $REPO_DIR/tools/metasploit/"
-echo "    docker build -t pentest-agent/mobsf $REPO_DIR/tools/mobsf/"
 echo ""

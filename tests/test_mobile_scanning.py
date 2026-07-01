@@ -117,3 +117,156 @@ def test_resolve_skill_dir_flat_and_nested(monkeypatch, tmp_path):
     assert skill_paths.resolve_skill_dir("ghost") is None
     assert skill_paths.skill_file("nestedskill", "refs", "x.md") == tmp_path / "mobile" / "nestedskill" / "refs" / "x.md"
     assert skill_paths.skill_file("ghost", "x") is None
+
+
+# ── mobsf_runner lifecycle + REST (mocked Docker/aiohttp) ────────────────────────
+
+import asyncio as _aio
+
+
+class _FakeProc:
+    def __init__(self, returncode=0, stdout=b"", stderr=b""):
+        self.returncode = returncode
+        self._out, self._err = stdout, stderr
+
+    async def wait(self):
+        return self.returncode
+
+    async def communicate(self):
+        return (self._out, self._err)
+
+
+class _FakeResp:
+    def __init__(self, status=200, json_data=None, read_data=b""):
+        self.status = status
+        self._json = json_data if json_data is not None else {}
+        self._read = read_data
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def json(self):
+        return self._json
+
+    async def read(self):
+        return self._read
+
+
+class _FakeSession:
+    def __init__(self, responses):
+        self._responses = list(responses)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    def post(self, *a, **k):
+        return self._responses.pop(0)
+
+    def get(self, *a, **k):
+        return self._responses.pop(0)
+
+
+def _patch_subproc(monkeypatch, proc):
+    async def _fake(*a, **k):
+        return proc
+    monkeypatch.setattr(_aio, "create_subprocess_exec", _fake)
+
+
+def test_mobsf_image_and_container_checks(monkeypatch):
+    _patch_subproc(monkeypatch, _FakeProc(returncode=0))
+    assert _aio.run(mobsf_runner.image_exists()) is True
+    _patch_subproc(monkeypatch, _FakeProc(returncode=0, stdout=b"true\n"))
+    assert _aio.run(mobsf_runner.container_running()) is True
+    _patch_subproc(monkeypatch, _FakeProc(returncode=0, stdout=b"false\n"))
+    assert _aio.run(mobsf_runner.container_running()) is False
+
+
+def test_mobsf_ensure_running_already_up(monkeypatch):
+    monkeypatch.setattr(mobsf_runner, "container_running", AsyncMock(return_value=True))
+    ok, msg = _aio.run(mobsf_runner.ensure_running())
+    assert ok and msg == "already running"
+
+
+def test_mobsf_ensure_running_pull_fails(monkeypatch):
+    monkeypatch.setattr(mobsf_runner, "container_running", AsyncMock(return_value=False))
+    monkeypatch.setattr(mobsf_runner, "image_exists", AsyncMock(return_value=False))
+    _patch_subproc(monkeypatch, _FakeProc(returncode=1, stderr=b"no such image"))
+    ok, msg = _aio.run(mobsf_runner.ensure_running())
+    assert not ok and "could not pull" in msg
+
+
+def test_mobsf_stop(monkeypatch):
+    _patch_subproc(monkeypatch, _FakeProc(returncode=0))
+    assert "stopped" in _aio.run(mobsf_runner.stop())
+
+
+def test_mobsf_analyze_file_not_found():
+    out = _aio.run(mobsf_runner.analyze("/no/such/file.apk"))
+    assert out["ok"] is False and "file not found" in out["error"]
+
+
+def test_mobsf_analyze_ensure_running_fails(monkeypatch, tmp_path):
+    apk = tmp_path / "x.apk"; apk.write_bytes(b"PK\x03\x04")
+    monkeypatch.setattr(mobsf_runner, "ensure_running", AsyncMock(return_value=(False, "image missing")))
+    out = _aio.run(mobsf_runner.analyze(str(apk)))
+    assert out["ok"] is False and out["error"] == "image missing"
+
+
+def test_mobsf_analyze_success(monkeypatch, tmp_path):
+    apk = tmp_path / "x.apk"; apk.write_bytes(b"PK\x03\x04")
+    monkeypatch.setattr(mobsf_runner, "ensure_running", AsyncMock(return_value=(True, "started")))
+    report = {"app_name": "V", "package_name": "com.v", "appsec": {"high": [], "warning": [], "info": []}}
+    sess = _FakeSession([
+        _FakeResp(200, {"hash": "h1", "scan_type": "apk", "file_name": "x.apk"}),  # upload
+        _FakeResp(200, read_data=b"scanned"),                                        # scan
+        _FakeResp(200, report),                                                      # report_json
+    ])
+    monkeypatch.setattr("aiohttp.ClientSession", lambda *a, **k: sess)
+    out = _aio.run(mobsf_runner.analyze(str(apk)))
+    assert out["ok"] is True and out["hash"] == "h1" and out["report"]["package_name"] == "com.v"
+
+
+def test_mobsf_analyze_401(monkeypatch, tmp_path):
+    apk = tmp_path / "x.apk"; apk.write_bytes(b"PK\x03\x04")
+    monkeypatch.setattr(mobsf_runner, "ensure_running", AsyncMock(return_value=(True, "started")))
+    sess = _FakeSession([_FakeResp(401, {})])
+    monkeypatch.setattr("aiohttp.ClientSession", lambda *a, **k: sess)
+    out = _aio.run(mobsf_runner.analyze(str(apk)))
+    assert out["ok"] is False and "401" in out["error"]
+
+
+def test_mobsf_analyze_upload_no_hash(monkeypatch, tmp_path):
+    apk = tmp_path / "x.apk"; apk.write_bytes(b"PK\x03\x04")
+    monkeypatch.setattr(mobsf_runner, "ensure_running", AsyncMock(return_value=(True, "started")))
+    sess = _FakeSession([_FakeResp(200, {"status": "failed"})])  # no hash
+    monkeypatch.setattr("aiohttp.ClientSession", lambda *a, **k: sess)
+    out = _aio.run(mobsf_runner.analyze(str(apk)))
+    assert out["ok"] is False and "upload failed" in out["error"]
+
+
+def test_skill_paths_empty_name():
+    from core import skill_paths
+    assert skill_paths.resolve_skill_dir("") is None
+    assert skill_paths.skill_file("", "x") is None
+
+
+def test_mobsf_ensure_running_starts_and_healthchecks(monkeypatch):
+    monkeypatch.setattr(mobsf_runner, "container_running", AsyncMock(return_value=False))
+    monkeypatch.setattr(mobsf_runner, "image_exists", AsyncMock(return_value=True))
+    _patch_subproc(monkeypatch, _FakeProc(returncode=0))                 # docker run OK
+    monkeypatch.setattr("aiohttp.ClientSession", lambda *a, **k: _FakeSession([_FakeResp(200)]))
+    ok, msg = _aio.run(mobsf_runner.ensure_running())
+    assert ok and msg == "started"
+
+
+def test_session_stop_mobsf_routes(monkeypatch):
+    import mcp_server.session_tools as se
+    monkeypatch.setattr(mobsf_runner, "stop", AsyncMock(return_value="Container 'pentest-mobsf' stopped."))
+    out = _aio.run(se._dispatch_async_action("stop_mobsf", {}))
+    assert out is not None and "stopped" in out

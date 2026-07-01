@@ -23,7 +23,10 @@ import os
 
 from tools.docker_cli import docker_executable
 
-MOBSF_IMAGE     = "pentest-agent/mobsf"
+# Use the official MobSF image directly — we don't customise it, so there's no
+# wrapper Dockerfile to build (and none whose base-image root user to flag).
+# Auto-pulled on first use. Pin — update explicitly (and CVE-scan the new tag).
+MOBSF_IMAGE     = "opensecurity/mobile-security-framework-mobsf:v4.4.6"
 MOBSF_CONTAINER = "pentest-mobsf"
 MOBSF_PORT      = 5003          # host port → container port 8000
 MOBSF_API       = f"http://localhost:{MOBSF_PORT}"
@@ -73,10 +76,18 @@ async def ensure_running() -> tuple[bool, str]:
         if await container_running():
             return True, "already running"
         if not await image_exists():
-            return False, (
-                f"Image '{MOBSF_IMAGE}' not found. Build it first:\n"
-                f"  docker build -t {MOBSF_IMAGE} ./tools/mobsf/"
+            # Public image — pull it (large; no build step). docker run would
+            # auto-pull too, but an explicit pull keeps the health-poll honest.
+            pull = await asyncio.create_subprocess_exec(
+                docker_executable(), "pull", MOBSF_IMAGE,
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
             )
+            _, perr = await pull.communicate()
+            if pull.returncode != 0:
+                return False, (
+                    f"could not pull {MOBSF_IMAGE}: {perr.decode().strip()} — "
+                    f"check Docker/network, or run: docker pull {MOBSF_IMAGE}"
+                )
         proc = await asyncio.create_subprocess_exec(
             docker_executable(), "run", "-d",
             "--name", MOBSF_CONTAINER,
@@ -138,8 +149,9 @@ async def analyze(file_path: str) -> dict:
         return {"ok": False, "error": msg}
 
     try:
-        with open(file_path, "rb") as fh:
-            file_bytes = fh.read()
+        # Offload the blocking file read to a thread so this async function never
+        # blocks the event loop (S7493).
+        file_bytes = await asyncio.to_thread(lambda: open(file_path, "rb").read())
     except OSError as exc:
         return {"ok": False, "error": f"could not read {file_path}: {exc}"}
 
