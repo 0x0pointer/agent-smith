@@ -19,55 +19,27 @@ You bring the expertise. agent-smith brings 50+ tools, the methodology, and the 
 
 ## Why agent-smith
 
-- 🧠 **The LLM is the brain, not a payload library.** 
-
-
-Skills teach *methodology*; the LLM invents the actual attacks. No two scans look 100% alike.
-- 🔗 **Skills chain themselves.** 
-
-
-`/pentester` discovers an injection point and pivots into `/web-exploit`; `/codebase` finds an LLM call site and pivots into `/ai-redteam`. The agent decides what to run next based on what it just found.
-- 🛠 **Bring your own LLM.** 
-
-
-Works with Claude Code, OpenAI Codex, [OpenCode](https://opencode.ai) (any provider — OpenAI, Gemini, Ollama, OpenRouter, local models), or any MCP-capable client. Smith **auto-detects a small / local model** and scales its context budget, completion-blocker delivery, and review-pass count to fit a 16–32K window — so it stays runnable on a ~27B local model (Qwen3, Llama), not just frontier cloud ones.
-- 📦 **End-to-end deliverables.** 
-
-
-Findings, PoCs (Burp-ready `.http` files), threat models, code patches, GitHub issues, and CVE submission packages all generated for you.
-- 🐳 **Sandboxed by default.** 
-
-
-Every scanner runs inside an ephemeral Docker container. Hard cost / time / call-count limits enforced server-side.
-- 🔍 **Depth enforcement — a QA agent watches Smith.** 
-
-
-A background QA daemon runs every 2 minutes and pushes the agent to go deeper rather than surface-scanning. It detects stalls, premature completion, shortcut behaviour (bulk N/A marking, suspiciously fast cell closures), missing skill chains, and un-followed-up critical findings. When something is wrong it injects a steering directive that overrides whatever Smith was doing next. When the agent is genuinely stuck it escalates to a human-intervention pause (HIR) so you can unblock it.
-- 🧪 **Evidence, not guesses.** 
-
-
-Every finding is artifact-backed and runs an always-on senior-review **adjudication gate** before completion. Blind vulns (SSRF / RCE / XXE / OAST-SQLi) are confirmed **out-of-band** via a callback server; multi-step attacks are recorded as **proven exploit chains** (each hand-off artifact-verified, auto-scored to the terminal blast radius); white-box findings carry a **source trace** whose `file:line` is resolved against the repo — a hallucinated location is rejected at the door. A code finding can be confirmed by building and running it in a **hardened, capability-dropped sandbox** (any stack — Python, Node, Go, …).
-- 📊 **A dashboard built for collaboration, not observation.** 
-
-
-Watch findings, topology, coverage, and the threat model populate in real time at `localhost:7777`. But it's not just a display — you can steer Smith mid-scan, respond to intervention pauses, inject strategic directives, and watch Smith acknowledge them. When Smith hits a wall it can't pass alone — it needs credentials, wider scope, or rate-limit relief — it drops the ask on a **non-blocking wishlist** you fulfill from the dashboard (which reopens the cells it was blocking), and it keeps testing meanwhile. The dashboard is the interface between your judgment and Smith's execution.
+- 🧠 **The LLM is the brain, not a payload library.** Skills teach *methodology*; the LLM invents the actual attacks. No two scans look 100% alike.
+- 🔗 **Skills chain themselves.** `/pentester` finds an injection point and pivots into `/web-exploit`; `/codebase` finds an LLM call site and pivots into `/ai-redteam`. The agent decides what runs next based on what it just found.
+- 🛠 **Bring your own LLM.** Claude Code, OpenAI Codex, [OpenCode](https://opencode.ai) (any provider — OpenAI, Gemini, Ollama, OpenRouter, local models), or any MCP-capable client. Smith auto-scales its context budget to small / local models, so it even runs **fully local on your own GPU** — no API bills, nothing leaving your network. ([setup →](docs/installation.md#self-hosted-local-model-dgx-spark--vllm))
+- 📦 **End-to-end deliverables.** Findings, PoCs (Burp-ready `.http` files), threat models, code patches, GitHub issues, and CVE submission packages — all generated for you.
+- 🐳 **Sandboxed by default.** Every scanner runs inside an ephemeral Docker container. Hard cost / time / call-count limits enforced server-side.
+- 🔍 **Depth enforcement.** A background QA daemon watches Smith and pushes it to go deeper — catching stalls, premature completion, and shortcut behaviour, escalating to you when it's genuinely stuck. ([details →](docs/operating.md#qa-depth-enforcement))
+- 🧪 **Evidence, not guesses.** Every finding is artifact-backed and passes a senior-review **adjudication gate**. Blind vulns are confirmed **out-of-band** via a callback server; multi-step attacks are recorded as **proven exploit chains**; white-box findings carry a **source trace** whose `file:line` is resolved against the repo — a hallucinated location is rejected at the door.
+- 📊 **A dashboard built for collaboration.** Watch findings, topology, coverage, and the threat model populate in real time at `localhost:7777` — and steer Smith mid-scan, respond to intervention pauses, and fulfill its resource wishlist. ([API →](docs/dashboard-api.md))
 
 ---
 
 ## The new way: skills as pattern teachings
 
-Most pentest automation ships a giant payload library and runs it linearly. agent-smith does the opposite.
+Most pentest automation ships a giant payload library and runs it linearly. agent-smith does the opposite. **Skills are not scripts — they are prompts that teach the LLM a way of *thinking*.** A skill describes the vulnerability class, the surface area, the verification logic, and the chaining rules, then leaves the actual attacks to the model.
 
-**Skills are not scripts. Skills are prompts that teach the LLM a way of *thinking*.** They describe the vulnerability class, the surface area, the verification logic, and the chaining rules but they leave the actual attacks to the model. The LLM reads the skill, understands the *pattern*, and then finds its own paths through your target.
-
-This means:
-
-| Traditional Security tools | agent-smith |
+| Traditional security tools | agent-smith |
 |---|---|
-| Fixed payload list | Us: LLM-generated payloads, contextual to each target |
+| Fixed payload list | LLM-generated payloads, contextual to each target |
 | One tool per phase | Skills compose — `/codebase` enriches `/pentester`, which enriches `/post-exploit` |
 | Stops at first success | Keeps probing until the cost / time / coverage budget is hit |
-| Generates a PDF | Generates findings, PoCs, patches, threat models, coverage matrix, CVE packages and more...|
+| Generates a PDF | Findings, PoCs, patches, threat models, coverage matrix, CVE packages, and more |
 | Same scan every time | Two runs against the same target produce different attack paths |
 
 The skills are inspiration. The LLM is the operator.
@@ -75,8 +47,6 @@ The skills are inspiration. The LLM is the operator.
 ---
 
 ## See it in action
-
-<!-- TODO: drop gifs into docs/gifs/ — paths are already wired up below -->
 
 <table>
   <tr>
@@ -107,61 +77,20 @@ The skills are inspiration. The LLM is the operator.
 
 ---
 
-## Use cases
+## What you can do
 
-Drop in any of these the moment you start your client/agent. No setup beyond the installer for your client.
+Drop any of these the moment you start your client. `/pentester` orchestrates everything; the single-purpose skills give you laser focus.
 
-Below are the skills you can use in Codex, OpenCode, or Claude Code, these are just a couple examples and use cases as we have more then 25+ Cyber Security skills.
+| Command | What it does |
+|---|---|
+| `/pentester scan https://staging.example.com depth=thorough` | Full hands-off engagement: OSINT → recon → web-exploit → post-exploit → report |
+| `/codebase path=./src` | White-box OWASP ASVS 5.0 review across 16 chapters / 427 requirements |
+| `/analyze-cve lodash 4.17.20 CVE-2021-23337` | Traces a CVE from user input to sink in your tree, decides if you're exploitable, writes a Burp PoC |
+| `/ai-redteam https://your-app.com/api/chat depth=thorough` | OWASP LLM Top 10 (2025) + AITG v1 + MCP Top 10 runtime attacks |
+| `/request-cves` | MITRE CVE form + GHSA draft + disclosure report + vendor email, per qualifying finding |
+| `/threat-modeling` | PASTA + STRIDE — component map, data-flow diagram, attack tree, risk register |
 
-### 1. Run a full pentest, hands-off
-
-```
-/pentester scan https://staging.example.com depth=thorough
-```
-
-The agent runs OSINT → recon → web exploit → post-exploit → reporting, deciding each pivot from the previous result. End state: `findings.json`, PoCs in `pocs/`, a topology diagram, a coverage matrix, and a patch ready code fix.
-
-### 2. Pre-prod secure code review
-
-```
-/codebase path=./src
-```
-
-White-box ASVS 5.0 review across 16 chapters and 427 requirements. Maps every route, every sink, every dangerous pattern. 
-
-### 3. Triage a CVE in your dependency tree
-
-```
-/analyze-cve lodash 4.17.20 CVE-2021-23337
-```
-
-The agent reads your code, traces the vulnerable function from user input to sink, decides whether you're actually exploitable, and writes a Burp-ready PoC if you are.
-
-### 4. AI / LLM red-team
-
-```
-/ai-redteam https://your-app.com/api/chat provider=openai depth=thorough
-```
-
-Covers OWASP LLM Top 10 (2025), the OWASP AI Testing Guide (AITG v1, Nov 2025), and OWASP MCP Top 10 runtime attacks. Generates payloads on the fly using FuzzyAI, Garak, PyRIT, and promptfoo.
-
-### 5. Build a CVE submission package
-
-```
-/request-cves
-```
-
-After a pentest the agent generates the MITRE CVE form, a GitHub Security Advisory draft, a full disclosure report, and a vendor notification email — for every qualifying finding.
-
-### 6. Threat-model an architecture
-
-```
-/threat-modeling
-```
-
-PASTA + STRIDE + 4-question framework. Outputs component map, data flow diagram, attack tree, prioritized risk register, and a mitigation plan.
-
-> 💡 **Pick a skill or let `/pentester` orchestrate.** Single-purpose skills give you laser focus; `/pentester` chains everything based on what it finds.
+> 💡 25+ skills total — full catalog and chaining map in **[docs/skills.md](docs/skills.md)**.
 
 ---
 
@@ -194,228 +123,24 @@ The dashboard isn't a progress bar — it's the collaboration interface.
 
 ## Quick start
 
-### Requirements
-
-| Dependency | Notes |
+| Requirement | Notes |
 |---|---|
-| [Docker Desktop](https://www.docker.com/products/docker-desktop/) | Must be running. All scanners are sandboxed. |
+| [Docker Desktop](https://www.docker.com/products/docker-desktop/) | Must be running — all scanners are sandboxed |
 | [Poetry](https://python-poetry.org) | `curl -sSL https://install.python-poetry.org \| python3 -` |
-| **One LLM client** (pick one) | See below ↓ |
-| [Node.js](https://nodejs.org) v18+ | Optional — enables server-side Mermaid pre-rendering. |
-
-### Pick your LLM client
-
-agent-smith ships an MCP server. Anything that speaks MCP can drive it.
-
-<table>
-  <tr>
-    <th width="25%">Claude Code</th>
-    <th width="25%">Codex</th>
-    <th width="25%">OpenCode (BYO LLM)</th>
-    <th width="25%">Custom MCP client</th>
-  </tr>
-  <tr>
-    <td>
-      Anthropic's official CLI. Best UX, native skill support.
-      <pre><code>git clone --recursive &lt;repo&gt;
-cd agent-smith
-./installers/install.sh</code></pre>
-      Requires <a href="https://docs.anthropic.com/en/docs/claude-code">Claude Code</a> + an Anthropic API key.
-    </td>
-    <td>
-      OpenAI's coding agent. Installs AGENTS.md instructions, Codex skills, and the stdio MCP server.
-      <pre><code>git clone --recursive &lt;repo&gt;
-cd agent-smith
-./installers/install_codex.sh</code></pre>
-      Requires <a href="https://developers.openai.com/codex">Codex</a>. Restart Codex after install so the MCP server and skills reload.
-    </td>
-    <td>
-      Open-source coding agent that supports <strong>any</strong> provider — OpenAI, Anthropic, Google, OpenRouter, Ollama, llama.cpp, vLLM, your own endpoint.
-      <pre><code>git clone --recursive &lt;repo&gt;
-cd agent-smith
-./installers/install_opencode.sh</code></pre>
-      Requires <a href="https://opencode.ai">OpenCode</a>. Configure your model in <code>~/.config/opencode/opencode.json</code>.
-    </td>
-    <td>
-      Any MCP-capable client (Cursor, Continue, Zed, custom Agent SDK app, etc.).
-      <pre><code>poetry install
-poetry run python -m mcp_server</code></pre>
-      Wire the stdio MCP server into your client. Skills are plain markdown in <code>skills/</code> — load them however your client expects prompts.
-    </td>
-  </tr>
-</table>
-
-> 🧠 **The LLM is your choice.** agent-smith doesn't care if it's Claude Opus 4.6, GPT-5, Gemini 2.5, Llama-4, or a local Qwen3 — anything strong enough to follow tool-use instructions will work. Bigger / smarter models find more interesting attack paths. On a small / local model Smith auto-scales to a tighter `small` profile so it doesn't overflow a 16–32K context; force it with `SMITH_MODEL_PROFILE=small` in `.env` (the one knob works identically across Claude Code, Codex, and opencode — handy because those clients don't pass their model name to the server).
-
-> ⚠️ **After install, fully restart your client.** The MCP server connects at startup.
-
-### Self-hosted local model (DGX Spark + vLLM)
-
-Run Smith **fully local** — no API bills, nothing leaving your network — by serving an open model on your own GPU host with [vLLM](https://docs.vllm.ai) and pointing opencode at it. This is the exact setup we run on an **NVIDIA DGX Spark (GB10, 128 GB unified memory)**; any vLLM-capable box works.
-
-**Model — `Qwen/Qwen3.6-27B-FP8`.** A dense 27B at FP8: strong tool-calling + reasoning, a **native 256K context** (no rope-scaling needed), and small enough that weights (~29 GB) + a large KV cache fit the GB10's unified memory. The big window matters — a *thorough* scan accumulates a lot of context (endpoints, coverage matrix, artifacts), and a cramped 16–32K window forces constant compaction.
-
-**1. Serve it with vLLM (Docker)** — on the GPU host (this is our `model-agent.sh`; `HF_HOME` points at the HF cache, `HF_TOKEN` only needed to download):
+| **One LLM client** | Claude Code · Codex · OpenCode (BYO LLM) · any MCP client |
+| [Node.js](https://nodejs.org) v18+ | Optional — server-side Mermaid pre-rendering |
 
 ```bash
-docker run -d --name vllm-agent-smith --gpus all \
-  --ipc=host --ulimit memlock=-1 --ulimit stack=67108864 \
-  -p 8000:8000 \
-  -e HF_TOKEN="$HF_TOKEN" \
-  -v "$HF_HOME":/root/.cache/huggingface \
-  --restart unless-stopped \
-  vllm/vllm-openai:latest \
-    --model Qwen/Qwen3.6-27B-FP8 \
-    --served-model-name agent-smith \
-    --host 0.0.0.0 --port 8000 \
-    --tensor-parallel-size 1 \
-    --max-model-len 262144 \
-    --max-num-seqs 2 \
-    --gpu-memory-utilization 0.92 \
-    --kv-cache-dtype fp8 \
-    --enable-prefix-caching --enable-chunked-prefill \
-    --enable-auto-tool-choice \
-    --tool-call-parser qwen3_coder \
-    --reasoning-parser qwen3 \
-    --language-model-only \
-    --speculative-config '{"method":"qwen3_next_mtp","num_speculative_tokens":2}'
-```
-
-Flags that matter: `--max-model-len 262144` serves the full **256K** window (native — no rope-scaling); `--kv-cache-dtype fp8` roughly halves KV-cache memory; `--tool-call-parser qwen3_coder` + `--enable-auto-tool-choice` make the model emit real tool calls (agent-smith is all tool use); `--reasoning-parser qwen3` keeps thinking tokens out of the output; `--served-model-name agent-smith` is the id opencode targets. The KV cache is the gate, not the weights — at 256K with fp8 KV and `--gpu-memory-utilization 0.92`, vLLM reserves ~79 GB of KV pool (~2.2M tokens, ~8× concurrency), plenty for one Smith. On a smaller host, lower `--max-model-len` (e.g. `131072`) or `--gpu-memory-utilization`.
-
-**2. Point opencode at it** — add the `provider` + `model` to `~/.config/opencode/opencode.json` (`install_opencode.sh` writes the `mcp` / `compaction` / `permission` / `agent` blocks for you and sizes them from the model's reported window):
-
-```json
-{
-  "provider": {
-    "agent-smith-vllm": {
-      "npm": "@ai-sdk/openai-compatible",
-      "options": { "baseURL": "http://YOUR-GPU-HOST:8000/v1", "apiKey": "dummy" },
-      "models": {
-        "agent-smith": {
-          "name": "Agent Smith (Qwen3.6-27B-FP8 @256k)",
-          "tool_call": true,
-          "reasoning": true,
-          "limit": { "context": 262144, "output": 16384 },
-          "options": { "temperature": 0.7, "top_p": 0.8, "top_k": 20, "repetition_penalty": 1.05 }
-        }
-      }
-    }
-  },
-  "model": "agent-smith-vllm/agent-smith",
-  "mcp": {
-    "pentest-agent": { "type": "remote", "url": "http://127.0.0.1:7778/sse", "enabled": true, "timeout": 9000000 }
-  },
-  "compaction": { "auto": true, "prune": true, "reserved": 24384 },
-  "permission": { "doom_loop": "allow", "bash": "allow", "edit": "allow", "webfetch": "allow", "external_directory": "allow" },
-  "agent": { "build": { "steps": 10000 } }
-}
-```
-
-Things that bite on a slow local model:
-
-- **`compaction.reserved` must stay greater than `limit.output`.** opencode compacts when `input > context − reserved`, but the server rejects when `input + output > context`. If `reserved ≤ output`, the server rejects *before* opencode compacts and the session dies with `maximum context length…`. `prune: true` evicts already-read file bodies from context.
-- **`mcp.timeout` is huge (2.5 h)** because spider / sqlmap / kali runs are long; the 5 s default would cut them off.
-- **`external_directory: allow`** lets `/codebase` review paths outside opencode's cwd without an unanswerable permission prompt.
-- opencode reads the **served** `max_model_len` from `/v1/models` at runtime, so the effective window follows whatever you launch vLLM with. Local reasoning models are slow on a full window, so the dashboard watchdog tolerates up to **30 min** between tool calls before treating Smith as hung.
-
-### Running on Windows 
-
-> ⚠️ **Experimental — not fully tested.** The native Windows / PowerShell path (the `.ps1` installers) is provided as-is and has not been thoroughly validated. For the most reliable setup, run under **WSL2** with the bash installers above. Bug reports and PRs for the Windows path are welcome.
-
-The installers above are bash-only (macOS / Linux / WSL). For native Windows
-PowerShell, use the `.ps1` siblings:
-
-```powershell
-# Clone the repo, then from an elevated PowerShell window:
+git clone --recursive <repo>
 cd agent-smith
-.\installers\install.ps1            # Claude Code
-.\installers\install_opencode.ps1   # opencode
-.\installers\install_codex.ps1      # Codex
+./installers/install.sh          # Claude Code  (or install_codex.sh / install_opencode.sh)
 ```
 
-What's different on Windows:
+> ⚠️ **After install, fully restart your client** — the MCP server connects at startup.
 
-- **Auto-start:** the bash installer wires the MCP daemon into macOS launchd.
-  The PowerShell installer wires it into **Windows Task Scheduler** instead —
-  same intent ("run at logon, restart on failure"), different service manager.
-  Elevation is required for the Task Scheduler registration; everything else
-  runs without admin.
-- **Process management:** the dashboard uses `psutil` for cross-platform
-  process introspection (PID liveness, client detection). No Unix tools
-  (`lsof`, `pgrep`, `ps`) are required at runtime.
-- **CLIs on `$PATH`:** the installer looks up `claude` / `opencode` / `codex`
-  through `Get-Command` (PATHEXT-aware, handles `.cmd` shims from npm) — no
-  hardcoded `/opt/homebrew/`-style fallbacks.
-- **Docker:** the Kali and Metasploit images are Linux containers. They run
-  via **Docker Desktop's WSL2 backend** with no code changes. See the next
-  section for the build commands in each shell.
+**Full setup** — other clients (Codex, OpenCode, custom MCP), self-hosted local models (vLLM / DGX Spark), Windows / PowerShell, and the optional Kali & Metasploit images → **[docs/installation.md](docs/installation.md)**.
 
-### Optional images
-
-The Kali and Metasploit images are optional but required for most deep
-skills. They are full Linux containers that build identically on every
-host — only the path syntax of `docker build` differs per shell.
-
-**Kali** — required for `/credential-audit`, `/web-exploit` deep tools,
-`/ad-assessment`, `/lateral-movement`, etc. ~10 min build, ~3 GB image.
-
-```bash
-# macOS / Linux / WSL / Git Bash
-docker build -t pentest-agent/kali-mcp ./tools/kali/
-```
-```powershell
-# Windows PowerShell
-docker build -t pentest-agent/kali-mcp .\tools\kali\
-```
-
-**Metasploit** — required for `/metasploit`. ~5 min build.
-
-```bash
-# macOS / Linux / WSL / Git Bash
-docker build -t pentest-agent/metasploit ./tools/metasploit/
-```
-```powershell
-# Windows PowerShell
-docker build -t pentest-agent/metasploit .\tools\metasploit\
-```
-
-**Prerequisites on Windows:**
-
-1. **Docker Desktop** with the **WSL2 backend enabled**
-   (Settings → General → "Use the WSL 2 based engine"). Linux containers
-   under Hyper-V's classic backend will not work — WSL2 is required for the
-   `ARM64`/`AMD64` multi-arch buildx that the Kali Dockerfile uses, as well
-   as for `--device=/dev/net/tun` mounts used by VPN-aware tools.
-2. **At least 16 GB free disk space** allocated to Docker Desktop's data
-   volume (Settings → Resources → Disk image size). The Kali image alone is
-   ~3 GB, the Metasploit image adds ~2 GB, and build caches roughly double
-   that during the first build.
-3. **Either** `C:\` mounted into WSL (the default) **or** the agent-smith
-   checkout placed under your WSL home (`\\wsl$\Ubuntu\home\<you>\…`) for
-   noticeably faster volume mounts. Either works; the WSL-home path avoids
-   NTFS↔ext4 translation on every scan write.
-
-**One-shot pre-pull** of the lightweight scanner images (nmap, naabu,
-httpx, nuclei, subfinder, semgrep, trufflehog) is identical on every host:
-
-```bash
-# bash
-docker pull instrumentisto/nmap projectdiscovery/naabu projectdiscovery/httpx \
-            projectdiscovery/nuclei projectdiscovery/subfinder \
-            semgrep/semgrep trufflesecurity/trufflehog
-```
-```powershell
-# PowerShell — same images, different line-continuation
-'instrumentisto/nmap', 'projectdiscovery/naabu', 'projectdiscovery/httpx',
-'projectdiscovery/nuclei', 'projectdiscovery/subfinder',
-'semgrep/semgrep', 'trufflesecurity/trufflehog' | ForEach-Object { docker pull $_ }
-```
-
-(The lightweight images also auto-pull on first use; the explicit pull is
-just to avoid the wait during your first scan.)
-
-Lightweight tools (nmap, nuclei, httpx, ffuf, semgrep, trufflehog, …) are auto-pulled on first use.
+> 🛡️ **Running a real engagement?** Smith ingests attacker-controlled data and can run commands, so prompt injection is a design reality — run it in an isolated, disposable VM. See **[docs/production-isolation.md](docs/production-isolation.md)**.
 
 ---
 
@@ -431,388 +156,32 @@ You (/pentester scan target.com)
               └── FastAPI dashboard    — live findings at localhost:7777
 ```
 
-The LLM decides what to run. Each tool's output is aggregated and returned to the model, which interprets the result and chooses the next action — pivoting deeper, skipping dead ends, or finalizing findings. Hard cost / time / call-count limits are enforced server-side. When any limit fires, the tool returns a stop signal and the agent writes the final report.
-
-### Architecture
-
-```mermaid
-flowchart TD
-    User["You<br/>/pentester · /codebase · /ai-redteam · /threat-modeling"]
-    Agent["Your LLM client<br/>Claude Code · Codex · OpenCode · MCP-capable IDE"]
-    MCP["mcp_server/<br/>5 consolidated tools<br/>scan · kali · http · report · session"]
-    Docker["Docker containers<br/>ephemeral --rm · 2 GB RAM · 1.5 CPU<br/>nmap · nuclei · httpx · ffuf · semgrep · trufflehog"]
-    Kali["Kali Linux container<br/>persistent · port 5001<br/>nikto · sqlmap · hydra · testssl · pyrit"]
-    Msf["Metasploit container<br/>persistent · port 5002"]
-    Core["core/<br/>session · logger · findings · cost · coverage · api_server"]
-    Dashboard["FastAPI dashboard<br/>localhost:7777<br/>Findings · Topology · Components · Coverage · Threat Model · Logs"]
-    Target["Target<br/>URL · IP range · codebase"]
-
-    User -->|slash command| Agent
-    Agent -->|MCP stdio| MCP
-    MCP --> Docker
-    MCP --> Kali
-    MCP --> Msf
-    MCP --> Core
-    Core --> Dashboard
-    Docker -->|raw output| Target
-    Kali  -->|raw output| Target
-    Msf   -->|raw output| Target
-    Docker -->|aggregated| Agent
-    Kali   -->|aggregated| Agent
-    Msf    -->|aggregated| Agent
-```
-
----
-
-## Scan modes
-
-Pass `scan_mode` to `session(action="start")` to change how Smith handles critical findings.
-
-| Mode | How to start | Exploit escalation on critical/high |
-|---|---|---|
-| `pentest` *(default)* | `session(action="start", options={target, scan_mode: "pentest"})` | Pauses and asks you before exploiting further (RCE, SQLi extraction, etc.) |
-| `benchmark` | `session(action="start", options={target, scan_mode: "benchmark"})` | Automatically pushes Smith to exploit the full chain — RCE, DB dump, pivot — without waiting for permission |
-
-> **Everything else is identical.** Both modes enforce all Human Intervention Required (HIR) pauses, cost limits, and depth-enforcement rules. Only the exploit-escalation decision on critical/high findings differs. The dashboard shows a **BENCHMARK** badge in the command center when this mode is active.
-
-### Human Intervention Required (HIR)
-
-Certain conditions pause the scan and block every tool call until you respond from the dashboard. While paused, the envelope returns a `HUMAN_INTERVENTION_REQUIRED` payload on every tool attempt so Smith cannot accidentally keep working in the dark.
-
-| Trigger | Condition |
-|---|---|
-| Auth failure | >60 % of recent HTTP calls return 401/403 after prior successful 2xx responses. **Credential-validation attempts are excluded** — login requests carrying `password` / `api_key` / `secret` / `otp` fields or hitting a known auth endpoint don't count toward the threshold, so login-flow noise doesn't trip a false HIR. |
-| Budget limit | >90 % of tool-call budget used with <80 % coverage |
-| Zero endpoints | Spider finished, matrix is empty, 10+ min elapsed — target may be SPA/JS-heavy |
-| Target unreachable | 3+ consecutive errors against the same target |
-| Repeated tool failure | Same tool fails 3+ consecutive times within 20 min. **Tool-aware messaging**: Docker-backed tools (kali, nuclei, metasploit, …) get a container/infrastructure framing; in-process tools (`http_request`, `spider`) get a target-reachability framing (DNS / SSL / proxy block / target down). |
-| Stuck on target | 5+ tool calls against the same target with no new finding — first cycle injects a steering directive; second cycle escalates to HIR |
-| Force-complete blocked | Smith tried to mark the scan complete with unresolved quality blockers and exhausted its retry budget — the human chooses to skip cells, reduce scope, accept partial, or continue |
-
-The dashboard surfaces the HIR reason in the notification with one-tap option buttons. Resolution flows back through `/api/intervention/respond`, which injects a high-priority steering directive into Smith's next tool call.
-
-> **Polite note:** resolving an HIR after the scan was already marked **complete** / **incomplete\_with\_unresolved\_blockers** / **limit\_reached** no longer reopens the scan — the terminal status wins.
-
-### Smith lifecycle and resilience
-
-The dashboard exposes three operator actions tied to the scan lifecycle:
-
-| Action | What it does |
-|---|---|
-| **Complete Scan** button | Marks `session.status = complete` and **soft-stops Smith**: the next tool envelope returns `SCAN_COMPLETED`, Smith writes a final summary, and `opencode run` / `claude -p` exits naturally. Resolving any stale HIR after this keeps the terminal status. |
-| **Restart Smith** button | Spawns a fresh non-interactive Smith process. **Auto-detects the right client**: if you launched with OpenCode, the button reads "Restart Smith (opencode)" and spawns `opencode run`; for Claude Code it spawns `claude -p`. The choice persists across restarts. |
-| **Watchdog (background)** | Polls every 60 s. If `session.status == running` but Smith's process is dead, the watchdog auto-restarts Smith — capped at 20 restarts/hour. **MCP-health gate**: the watchdog will not respawn Smith when the MCP SSE server (port 7778) is unreachable, preventing tight respawn loops against a dead backend. |
-
-If the human leaves a free-form note via the **Instruct Smith** panel, it becomes a HUMAN_STEER directive that is **nagged on every tool call** until Smith acknowledges via `session(action="qa_reply", options={message: …})` — the dashboard shows that reply directly in the QA ↔ Smith conversation view.
-
----
-
-## QA depth enforcement
-
-A background QA daemon runs every 2 minutes alongside Smith. Its sole job is to ensure the scan goes deep and doesn't cut corners. It never fires mid-tool; it reads the quick-log between tool calls and injects steering directives or HIR events as needed.
-
-### What it enforces
-
-| Check | What it catches |
-|---|---|
-| **Vulnerable cells need a finding_id** | Marking a coverage cell `vulnerable` without a `finding_id` is rejected at the server. Smith must `report(action='finding', …)`, capture the returned `id`, and pass it back — guarantees every vulnerable cell has a formal finding entry and prevents the per-cell-granularity duplicates we used to see for app-wide misconfigs. |
-| **Artifact required to close** | `tested_clean` and `vulnerable` closures require an `artifact_id` whose file exists on disk — no closing cells from memory. |
-| **Auth-failure block** | Closing an injection cell as `tested_clean` while the artifact shows HTTP 401/403 is rejected — that's a missing-auth signal, not evidence the payload was filtered. The reject message tells Smith to retry with the JWT from `known_assets.auth_tokens`. |
-| **Bulk N/A marking** | >10 coverage cells marked N/A with no tested_by tool — blocks completion |
-| **Coverage integrity** | Cells marked tested but no artifact on disk — blocks completion |
-| **Premature completion** | Thorough scan tries to complete before 3 semgrep passes — blocked |
-| **Suspicious speed** | >20 cells closed in <10 min — likely rubber-stamping, not real testing |
-| **N/A abuse** | N/A rate >35 % of all cells — injects a directive to re-examine skipped tests |
-| **Depth after finding** | Critical/high finding logged >20 min ago with no follow-up tool — pushes Smith to go deeper |
-| **Whitebox passes** | Thorough codebase scans must complete 3 real semgrep passes, not one |
-| **Tool inactivity** | No tool call for >15 min — injects a recovery directive |
-| **Core skill chain** | Enforces the universal spider → /web-exploit → /param-fuzz → /business-logic progression |
-| **Missing skills** | Endpoint types (SQLi-eligible, financial logic, auth flows) with no matching skill invoked |
-
-### Directive priority + alert dedup
-
-When the QA agent injects a steering directive it takes over Smith's next action completely — the planner suppresses all `required`/`recommended` suggestions while a directive is active. QA alerts at medium/low urgency go to the dashboard only; only `high` urgency alerts surface in Smith's tool envelope to keep the model context lean.
-
-**Content-based dedup** — an identical `(code, message)` alert is suppressed for 30 minutes after the first injection. Without this, persistent state (e.g. "553 cells lack tested_by") would re-surface every 2-minute cycle and Smith would burn turns acknowledging the same message it just answered. The cooldown resets the moment the message text changes (counts grow, condition flips), so escalations still land immediately.
-
-**HUMAN_STEER nag** — free-form instructions from the operator are nagged on every tool call until Smith calls `session(action="qa_reply")` to acknowledge. This prevents Smith reading the steer once, deciding to act on the substance, and never closing the loop with a reply the human can see on the dashboard.
-
-### Known assets vault
-
-The MCP server auto-extracts authentication context into `session.json → known_assets`:
-
-| Key | Populated from |
-|---|---|
-| `credentials` | A 2xx POST to an auth-looking URL with a `username + password` body is recorded as a working credential pair. |
-| `auth_tokens` | Any JWT-shaped string (`eyJ…`) found in response bodies or request `Authorization` headers is captured with timestamp + source URL. |
-| `auth_endpoints` | Login endpoints discovered above are stored with their method + body template. |
-
-`session(action='recovery')` surfaces an `auth_context` block at the top of the recovery brief listing the most recent credentials, tokens, and endpoints — Smith uses these instead of marking auth-protected injection cells as `tested_clean` on 401 (which is now rejected at the server).
-
-**Missing-auth warning** — every `http_request` returning 401/403 with **no auth** in the request (no `Authorization`, no `Cookie`, no `X-Api-Key` / `X-Auth-*` / `X-Session-*` header, no `?token=`-style query parameter) gets an `AUTH_MISSING` envelope warning telling Smith exactly which JWT to attach on retry.
-
----
-
-## Skills
-
-Skills are markdown files that teach the LLM a methodology. They live in the [`skills/` submodule](https://github.com/0x0pointer/skills) and are loaded by your client at startup.
-
-### How they chain
-
-```mermaid
-flowchart LR
-
-    %% Codebase enriches multiple skills (white-box context)
-    codebase[/codebase/] -.enriches.-> pentester
-    codebase -.enriches.-> web[/web-exploit/]
-    codebase -.enriches.-> cve[/analyze-cve/]
-    codebase -.detects LLM use.-> ai
-
-    %% Pentester is the hub — branches to every scan/discovery skill
-    pentester[/pentester/] --> web
-    pentester --> pf[/param-fuzz/]
-    pentester --> bl[/business-logic/]
-    pentester --> api[/api-security/]
-    pentester --> net[/network-assess/]
-    pentester --> creds[/credential-audit/]
-    pentester --> ssl[/ssl-tls-audit/]
-    pentester --> email[/email-security/]
-    pentester --> cloud[/cloud-security/]
-    pentester --> cve
-    pentester --> msf[/metasploit/]
-    pentester --> ai-redteam
-    pentester --> ad[/ad-assessment/]
-    pentester --> rsh[/reverse-shell/]
-
-    %% Cloud discovers AI endpoints and K8s clusters
-    cloud --> ai-redteam
-    cloud --> k8s[/container-k8s-security/]
-    cloud --> cve
-
-    %% Web exploitation feeds CVE analysis, creds, post-exploit, param-fuzz, business-logic, and AI red-team
-    web --> pf
-    web --> bl
-    web --> cve
-    web --> creds
-    web --> post[/post-exploit/]
-    web --> ai-redteam
-
-    %% API security: chains into web-exploit for injection depth, param-fuzz/business-logic for auth/logic, ai-redteam for LLM endpoints
-    api --> web
-    api --> pf
-    api --> bl
-    api --> ai-redteam
-    api --> cve
-    api --> creds
-    api --> post
-    codebase -.enriches.-> api
-
-    %% Metasploit & reverse-shell drop into post-exploit
-    msf --> post
-    rsh --> post
-
-    %% Network assessment branches
-    net --> creds
-    net --> ssl
-    net --> k8s
-    net --> post
-    net --> lateral[/lateral-movement/]
-
-    %% Credential audit and SSL feed into post-exploit
-    creds --> post
-    creds --> lateral
-    ssl --> creds
-    email --> creds
-
-    %% Container/K8s security
-    k8s --> post
-
-    %% Post-exploit → pivoting & lateral movement
-    post --> lateral
-    post --> pivot[/pivot-tunnel/]
-    post --> ai_post[/ai-redteam<br/>Phase 3c/]
-    pivot --> lateral
-    ad --> lateral
-
-    %% AI red-team → post-access infra checks
-    ai --> post
-    ai --> k8s
-    ai --> cve
-
-    %% Aikido triage feeds CVE dataflow analysis
-    aikido[/aikido-triage/] --> cve
-
-    %% Reporting tail
-    pentester --> tm[/threat-modeling/]
-    tm --> remediate[/remediate/]
-    pentester --> remediate
-    codebase --> remediate
-    pentester --> ghexp[/gh-export/]
-    pentester --> req[/request-cves/]
-
-```
-
-### Catalog
-
-<details>
-<summary><strong>Penetration testing</strong></summary>
-
-| Skill | What it does |
-|---|---|
-| `/pentester` | Full autonomous engagement — chains everything else |
-| `/web-exploit` | SQLi, XSS, SSRF, SSTI, deserialization, JWT, smuggling, race conditions, etc. |
-| `/param-fuzz` | Auth stripping, type confusion, boundary values, mass assignment, token entropy analysis |
-| `/business-logic` | Value/quantity abuse, workflow bypass, BOLA/BFLA, replay, quota bypass, multi-tenant isolation |
-| `/api-security` | OWASP API Top 10 (2023) — BOLA, BFLA, mass assignment, JWT/OAuth abuse, SSRF, business-flow abuse, inventory drift. REST/GraphQL/gRPC/SOAP/MCP |
-| `/network-assess` | VLAN hopping, LLMNR/NBT-NS, SNMP, segmentation |
-| `/post-exploit` | Linux/Windows privesc, persistence, credential harvesting |
-| `/lateral-movement` | PTH, PTT, Kerberoasting, NTLM relay, delegation abuse |
-| `/metasploit` | Exploit validation in an isolated Docker container |
-| `/reverse-shell` | Generates and manages reverse shells across all platforms |
-| `/pivot-tunnel` | Chisel + SOCKS5 tunneling after RCE |
-</details>
-
-<details>
-<summary><strong>Cloud, infra & identity</strong></summary>
-
-| Skill | What it does |
-|---|---|
-| `/cloud-security` | AWS / Azure / GCP IAM, storage, serverless, logging gaps |
-| `/container-k8s-security` | Container escape, K8s RBAC, etcd, service account abuse |
-| `/ad-assessment` | ADCS (ESC1–ESC8), BloodHound, GPO, LAPS, forest trusts |
-| `/email-security` | SPF / DKIM / DMARC, open relay, MTA-STS, SMTP security |
-| `/ssl-tls-audit` | TLS protocol/cipher audit, cert chain, POODLE/BEAST/Heartbleed/etc. |
-| `/credential-audit` | Brute force, password spraying, default creds, lockout, MFA bypass |
-</details>
-
-<details>
-<summary><strong>Recon & analysis</strong></summary>
-
-| Skill | What it does |
-|---|---|
-| `/osint` | Subdomain takeover, cert transparency, Shodan, leaked creds |
-| `/threat-modeling` | PASTA + STRIDE + 4-question, attack tree, risk register |
-| `/codebase` | OWASP ASVS 5.0 white-box review (16 chapters, 427 requirements) |
-| `/analyze-cve` | CVE code-path tracing + Burp PoC |
-| `/aikido-triage` | Triage Aikido SAST/SCA/secret-scan CSV against your code |
-</details>
-
-<details>
-<summary><strong>AI safety & red-team</strong></summary>
-
-| Skill | What it does |
-|---|---|
-| `/ai-redteam` | OWASP LLM Top 10 + AITG v1 + MCP Top 10 runtime attacks |
-| `/colang-gen` | Generate NeMo Guardrails Colang configs from plain language |
-</details>
-
-<details>
-<summary><strong>Reporting & remediation</strong></summary>
-
-| Skill | What it does |
-|---|---|
-| `/remediate` | Writes code patches and config fixes for every finding |
-| `/gh-export` | Formats confirmed findings as copy-pasteable GitHub issues |
-| `/request-cves` | Generates CVE submission packages — MITRE form, GHSA draft, disclosure report, vendor email |
-</details>
-
----
-
-## What you get out
-
-Every scan produces a structured set of artifacts you can hand to a developer, a manager, or a vendor on day one:
-
-| Artifact | Where | What it's for |
-|---|---|---|
-| `findings.json` | repo root | Machine-readable findings + diagrams |
-| `pocs/*.http` | repo root | Raw HTTP PoCs (open in Burp Repeater) |
-| Live dashboard | `localhost:7777` | Findings, Topology, Components, Coverage, Threat Model, Logs |
-| Coverage matrix | dashboard tab | Endpoint × technique tracking — proves what you tested |
-| Code patches | inline edits | One per finding, generated by `/remediate` |
-| Threat model | `threat-model/*.md` | PASTA + STRIDE write-up + diagrams |
-| CVE packages | via `/request-cves` | MITRE form, GHSA draft, vendor email, full disclosure |
-| Session log | `logs/pentest.log` | Full audit trail of what the agent decided and why |
-| QA state | `qa_state.json` | Live QA alerts, steering directives, and Smith's acknowledgements |
-| Steering queue | `steering_queue.json` | Active depth-enforcement directives injected by the QA daemon |
-
----
-
-## Project layout
-
-<details>
-<summary>Click to expand</summary>
-
-```
-mcp_server/              MCP tool layer — 5 consolidated tools (LLM-callable)
-  __main__.py            entry point  →  python -m mcp_server
-  _app.py                FastMCP singleton + shared helpers (_run, _clip)
-  scan_tools.py          scan()    — nmap · naabu · httpx · nuclei · ffuf · spider
-                                     subfinder · semgrep · trufflehog · fuzzyai · pyrit
-                                     garak · promptfoo · metasploit
-  kali_tools.py          kali()    — freeform commands in the Kali container
-  http_tools.py          http()    — raw HTTP requests + PoC saving
-  report_tools.py        report()  — findings · diagrams · notes · dashboard · coverage
-  session_tools.py       session() — scan lifecycle · Kali infra · codebase target
-
-core/                    Server infrastructure
-  session.py             Scan scope, depth presets, hard limit enforcement, scan_mode
-  logger.py              Structured session log → logs/pentest.log
-  findings.py            findings.json read/write
-  cost.py                Cost tracking per tool invocation
-  coverage.py            Endpoint × technique coverage matrix (artifact_id enforced)
-  qa_agent.py            QA daemon — depth enforcement, HIR triggers, steering directives
-  quick_log.py           Fast structured log consumed by the QA daemon
-  steering.py            Steering directive queue (steering_queue.json)
-  api_server.py          FastAPI web server (dashboard + REST API)
-
-mcp_server/scan_engine/  Per-tool response pipeline
-  envelope.py            Canonical tool-response wrapper — summarise → store → plan → steer → QA
-  planner.py             Next-action suggestions (suppressed while a directive is active)
-  budget.py              Hard call / cost / time limit enforcement
-  summarizers.py         Tool-specific output summarisers
-  artifacts.py           Raw output storage with artifact_id generation
-
-tools/                   Docker tool definitions + runners
-  base.py · docker_runner.py · kali_runner.py · metasploit_runner.py
-  nmap / naabu / httpx / nuclei / ffuf / subfinder / semgrep / trufflehog / fuzzyai
-
-tools/kali/              Kali image (Dockerfile + pyrit_runner.py)
-tools/metasploit/        Metasploit image (Dockerfile + msfconsole HTTP shim)
-
-skills/                  Slash command definitions (git submodule)
-                         27+ skills covering recon → exploit → report → remediate
-
-templates/dashboard.html 6-tab dashboard
-threat-model/            Threat model reports (auto-displayed in the dashboard)
-tests/                   pytest suite
-logs/                    Session logs
-pocs/                    Saved proof-of-concept HTTP requests
-docs/gifs/               Demo gifs (drop your recordings here)
-
-installers/
-  install.sh                     Claude Code installer
-  install_codex.sh               Codex installer
-  install_opencode.sh            OpenCode installer (BYO LLM)
-  uninstall.sh                   Remove MCP config and installed skills
-  opencode-pentest-recovery.mjs  Compaction recovery plugin for OpenCode
-
-.codex/                          Codex project hooks
-AGENTS.md                        Codex project instructions
-```
-</details>
+The LLM decides what to run; each tool's output is aggregated and returned to the model, which chooses the next action. Hard cost / time / call-count limits are enforced server-side. Full component diagram, repository layout, and scan deliverables → **[docs/architecture.md](docs/architecture.md)**.
 
 ---
 
 ## Documentation
 
-| Doc | Contents |
-|---|---|
-| [docs/tools.md](docs/tools.md) | All MCP tools — parameters, purpose, examples |
-| [docs/kali-toolchain.md](docs/kali-toolchain.md) | Full `kali` command reference |
-| [docs/skills.md](docs/skills.md) | Slash commands, chaining guide, examples |
-| [docs/dashboard-api.md](docs/dashboard-api.md) | FastAPI endpoints, response shapes |
-| [docs/extending.md](docs/extending.md) | How to add new tools and skills |
-| [docs/testing.md](docs/testing.md) | Running the test suite, coverage, adding tests |
+**Getting started**
+- [installation.md](docs/installation.md) — every client, self-hosted local models, Windows, optional images
+
+**Concepts**
+- [architecture.md](docs/architecture.md) — component diagram, project layout, what a scan produces
+- [skills.md](docs/skills.md) — full skill catalog, chaining map, per-skill reference
+
+**Operating Smith**
+- [operating.md](docs/operating.md) — scan modes, Human Intervention (HIR), lifecycle, QA depth enforcement
+- [production-isolation.md](docs/production-isolation.md) — running Smith sandboxed in production
+- [dashboard-api.md](docs/dashboard-api.md) — FastAPI endpoints and response shapes
+
+**Reference**
+- [tools.md](docs/tools.md) — all MCP tools: parameters, purpose, examples
+- [kali-toolchain.md](docs/kali-toolchain.md) — full `kali` command reference
+
+**Contributing**
+- [extending.md](docs/extending.md) — adding new tools and skills
+- [testing.md](docs/testing.md) — running the test suite, coverage, adding tests
+- [phase1-detector-trust.md](docs/phase1-detector-trust.md) — internals: coverage-matrix trust model
 
 > **Adding a new skill?** Skills live in a separate repo ([github.com/0x0pointer/skills](https://github.com/0x0pointer/skills)) pulled in as a git submodule. After adding a skill there, update the submodule pointer (`git add skills && git commit`) and re-run the installer to deploy it.
 
