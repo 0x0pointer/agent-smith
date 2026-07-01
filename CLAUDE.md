@@ -52,6 +52,8 @@ Run any security scanner.
 | garak | URL | probes=dan,encoding,promptinject,..., generator=rest |
 | promptfoo | URL | plugins=prompt-injection,..., attack_strategies=jailbreak,crescendo |
 | metasploit | host/IP | module=, payload=, rport=, lhost=, lport=4444 |
+| mobsf | path to `.apk`/`.ipa`/`.appx`/source `.zip` | MobSF static analysis → MASVS-mapped report; auto-starts the MobSF container. Used by `/android-security` & `/ios-security`. |
+| mobsfscan | path (mobile source tree) | mobile SOURCE static analysis (MASVS/OWASP-Mobile tagged) — like semgrep for Android/iOS source |
 
 ### `kali(command, timeout)`
 Run any command in the Kali container (auto-starts if needed). Hundreds of tools: nikto, sqlmap, gobuster, hydra, testssl, enum4linux-ng, wapiti, searchsploit, etc.
@@ -91,6 +93,7 @@ Scan lifecycle and infrastructure.
 - `action="artifact"` — options: `{id, mode=summary, max_chars=4000, pattern=}` — retrieve raw tool output stored by the scan engine
 - `action="start_kali"` / `action="stop_kali"` — Kali container lifecycle
 - `action="start_metasploit"` / `action="stop_metasploit"` — Metasploit container lifecycle
+- `action="start_mobsf"` / `action="stop_mobsf"` — MobSF container lifecycle (auto-starts on first `scan(tool="mobsf")`)
 - `action="pull_images"` — pre-pull all Docker images
 - `action="set_skill"` — options: `{skill, reason, chained_from}` — log skill selection with reasoning; **call this before invoking any skill** via the Skill tool
 - `action="set_codebase"` — options: `{path}` — set local codebase for semgrep/trufflehog
@@ -163,6 +166,8 @@ Skills are slash commands that contain full structured workflows. In Claude Code
 | `/credential-audit` | Brute-force, spraying, MFA bypass, OAuth/OIDC, session entropy | Authentication surface testing |
 | `/post-exploit` | Privesc (Linux/Windows), persistence, credential harvesting, pivoting | Shell access obtained |
 | `/container-k8s-security` | Container escape, Docker socket, K8s RBAC, pod security, etcd | Docker / Kubernetes target |
+| `/android-security` | Android APK static (MobSF/jadx/mobsfscan) + dynamic (Frida/objection), MASVS/MASTG | `.apk` / Android package / mobile source |
+| `/ios-security` | iOS IPA static (MobSF/class-dump/mobsfscan) + dynamic (jailbroken device), MASVS/MASTG | `.ipa` / bundle id / iOS source |
 | `/osint` | Subdomain enumeration, email harvest, Shodan, CT logs, Wayback | External recon phase; passive information gathering |
 | `/ssl-tls-audit` | TLS protocol versions, cipher suites, cert chain, POODLE/BEAST/Heartbleed | Any HTTPS/TLS endpoint |
 | `/email-security` | SPF/DKIM/DMARC, open relay, spoofing, SMTP security, MTA-STS | Domain email infrastructure |
@@ -201,3 +206,4 @@ cd ~/Desktop/agent-smith
 - **Lightweight tools** (nmap, naabu, httpx, nuclei, ffuf, subfinder, semgrep, trufflehog): public Docker Hub images. Auto-pull on first use. Call `session(action="pull_images")` to pre-fetch.
 - **kali-mcp**: custom image — must be built locally with `docker build -t pentest-agent/kali-mcp ./tools/kali/`. Container auto-starts on first `kali()` call and persists until `session(action="stop_kali")`. Uses the kali-server-mcp HTTP API on port 5001.
 - **metasploit**: custom image — `docker build -t pentest-agent/metasploit ./tools/metasploit/`. Auto-starts on first `scan(tool="metasploit")` call. API on port 5002.
+- **mobsf**: the official `opensecurity/mobile-security-framework-mobsf` image (no build/wrapper) — auto-pulled by `tools/mobsf_runner.py` and started on first `scan(tool="mobsf")` call. REST API on port 5003. Used by `/android-security` & `/ios-security` for APK/IPA static analysis.

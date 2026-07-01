@@ -279,6 +279,24 @@ def test_parse_device_ios_and_serial_kinds():
     assert probe_runner.parse_device("picocom", [], "login:")["kind"] == "serial"
 
 
+def test_capabilities_lookup_supports_domain_nesting(monkeypatch):
+    """skills/<name>/capabilities.yaml AND skills/<domain>/<name>/capabilities.yaml
+    both resolve (enables the /mobile /web domain split)."""
+    tmp = Path(tempfile.mkdtemp())
+    monkeypatch.setattr(capabilities, "_SKILLS_DIR", tmp)
+    probe = "  readiness_probe: {run_on: host, verb: ping, args: ['-c','1','127.0.0.1'], success: exit_zero}\n"
+    (tmp / "flatskill").mkdir()
+    (tmp / "flatskill" / "capabilities.yaml").write_text("- id: flat\n" + probe)
+    (tmp / "mobile" / "nested").mkdir(parents=True)
+    (tmp / "mobile" / "nested" / "capabilities.yaml").write_text("- id: nested\n" + probe)
+    assert capabilities._capabilities_path("flatskill") is not None
+    assert capabilities._capabilities_path("nested") is not None      # one level of nesting
+    assert capabilities._capabilities_path("ghost") is None
+    caps_flat, _ = capabilities.load_capabilities("flatskill")
+    caps_nested, _ = capabilities.load_capabilities("nested")
+    assert caps_flat[0]["id"] == "flat" and caps_nested[0]["id"] == "nested"
+
+
 def test_capabilities_yaml_unavailable(monkeypatch):
     monkeypatch.setattr(capabilities, "yaml", None)
     tmp = Path(tempfile.mkdtemp())

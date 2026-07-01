@@ -162,7 +162,10 @@ echo ""
 echo "Installing security analysis skills..."
 
 mkdir -p "$HOME/.claude/skills"
-for _skill_file in "$REPO_DIR"/skills/*/SKILL.md; do
+# Discover skills at BOTH skills/<name>/SKILL.md (flat) and skills/<domain>/<name>/SKILL.md
+# (one level of domain nesting, e.g. skills/mobile/android-security/). Install target
+# stays flat at ~/.claude/skills/<leaf-name>/ — nesting exists only in the repo.
+while IFS= read -r _skill_file; do
     [ -e "$_skill_file" ] || continue
     _skill_dir="$(dirname "$_skill_file")"
     _skill_name="$(basename "$_skill_dir")"
@@ -171,7 +174,7 @@ for _skill_file in "$REPO_DIR"/skills/*/SKILL.md; do
     [ "$_skill_name" = "pentester-opencode" ] && continue
 
     _install_skill_dir "$_skill_name" "$_skill_dir"
-done
+done < <(find "$REPO_DIR/skills" -mindepth 2 -maxdepth 3 -name SKILL.md 2>/dev/null)
 
 ok "$_SKILL_OK security analysis skills installed"
 if [ ${#_SKILL_MISSING[@]} -gt 0 ]; then
@@ -407,6 +410,9 @@ if [[ "${_msf_answer:-Y}" =~ ^[Yy]$ ]]; then
 else
     warn "Metasploit build skipped — run later: docker build -t pentest-agent/metasploit $REPO_DIR/tools/metasploit/"
 fi
+
+# MobSF needs no build — /android-security & /ios-security use the official MobSF
+# image, auto-pulled by tools/mobsf_runner.py on the first scan(tool='mobsf').
 
 # ── Done ──────────────────────────────────────────────────────────────────
 echo ""

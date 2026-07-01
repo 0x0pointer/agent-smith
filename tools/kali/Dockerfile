@@ -313,6 +313,23 @@ RUN gzip -d /usr/share/wordlists/rockyou.txt.gz 2>/dev/null || true
 COPY playwright_spider.py /usr/local/bin/playwright-spider
 RUN chmod +x /usr/local/bin/playwright-spider
 
+# Layer 14: mobile app reversing + dynamic instrumentation (used by
+# /android-security and /ios-security). APK reversing/repackaging (apktool,
+# dex2jar, jadx, apksigner, zipalign) + the adb transport. adb/frida connect OUT
+# to an operator-provided emulator/device over the network (adb connect <ip>:5555)
+# — the `android-dynamic` setup gate confirms the device is live before use.
+RUN apt-get update && apt-get install -y --no-install-recommends --fix-missing \
+    apktool dex2jar jadx apksigner zipalign adb fastboot \
+    && rm -rf /var/lib/apt/lists/* || true
+
+# Frida + objection for runtime hooking: SSL-pinning bypass, keystore/keychain
+# dumps, runtime storage/heap inspection. NOTE (client↔server coupling): the
+# operator must push a frida-server whose version MATCHES this frida-tools pin to
+# the device/emulator (see the android-security skill's dynamic ref). Pinned as a
+# compatible pair (frida 16.x) — update explicitly when bumping.
+RUN pip3 install --no-cache-dir --break-system-packages \
+    frida-tools==12.5.1 objection==1.11.0 || true
+
 EXPOSE 5000
 
 # kali-server-mcp is the Flask API component of mcp-kali-server.

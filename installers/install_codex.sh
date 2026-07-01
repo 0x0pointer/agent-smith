@@ -148,7 +148,10 @@ mkdir -p "$CODEX_SKILLS_DIR"
 
 _install_markdown_skill "pentester" "$REPO_DIR/skills/pentester.md"
 
-for _skill_file in "$REPO_DIR"/skills/*/SKILL.md; do
+# Discover flat skills/<name>/SKILL.md AND nested skills/<domain>/<name>/SKILL.md
+# (one level of domain nesting, e.g. skills/mobile/android-security/). Install target
+# stays flat — nesting exists only in the repo.
+while IFS= read -r _skill_file; do
     [ -e "$_skill_file" ] || continue
     _skill_dir="$(dirname "$_skill_file")"
     _skill_name="$(basename "$_skill_dir")"
@@ -157,7 +160,7 @@ for _skill_file in "$REPO_DIR"/skills/*/SKILL.md; do
     [ "$_skill_name" = "pentester-opencode" ] && continue
 
     _install_skill_dir "$_skill_name" "$_skill_dir"
-done
+done < <(find "$REPO_DIR/skills" -mindepth 2 -maxdepth 3 -name SKILL.md 2>/dev/null)
 
 ok "$_SKILL_OK Codex skills installed"
 if [ ${#_SKILL_MISSING[@]} -gt 0 ]; then
