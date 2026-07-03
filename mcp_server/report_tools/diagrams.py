@@ -43,7 +43,33 @@ def _chain_mermaid(steps: list, titles: dict) -> str:
     return "\n".join(lines)
 
 
+def _suggest_chains() -> str:
+    """Surface graph-derived candidate kill-chains (AR-B3). Fenced target text."""
+    from core.graph import build_graph, candidate_chains
+    from core.prompt_fence import fence as _fence
+    try:
+        props = candidate_chains(build_graph())
+    except Exception as exc:  # fail-soft — never break on a graph error
+        return f"Chain suggestion unavailable: {exc}"
+    if not props:
+        return ("No multi-step chains proposable yet — need ≥2 related findings, an "
+                "escalation lead, or a credential leak. Keep exploiting; re-run "
+                "report(action='chain', data={type:'suggest'}) as findings accrue.")
+    lines = [f"🔗 {len(props)} candidate chain(s) to PROVE (then file with artifact-backed steps):"]
+    for i, p in enumerate(props[:8], 1):
+        arrow = " → ".join(_fence(s) for s in p["steps"])
+        lines.append(f"  {i}. [{p['combined_severity']}] {arrow}\n     terminal: {_fence(p['terminal'])} — {p['rationale']}")
+    return "\n".join(lines)
+
+
 async def _do_chain(data):
+    # Phase 2 / AR-B3: type='suggest' returns GRAPH-DERIVED candidate chains for
+    # the model to prove — the kill chain was previously 100% model-declared with
+    # nothing proposing which finding feeds which. Proposals only; recording a
+    # chain still requires the artifact-backed steps below.
+    if data.get("type") == "suggest":
+        return _suggest_chains()
+
     name = data.get("name", "") or "exploit chain"
     steps = data.get("steps", [])
     if not isinstance(steps, list) or not steps:

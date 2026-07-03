@@ -123,6 +123,8 @@ async def report(action: str, data: Any) -> str:
       — records a PROVEN exploit chain: every step's transition_artifact_id must
       exist on disk (the artifact proving step N's output feeds step N+1), else the
       chain is rejected. Auto-renders a MITRE-labelled Mermaid kill-chain diagram.
+      • data={type:'suggest'} — returns GRAPH-DERIVED candidate chains (from the
+        knowledge graph of findings/creds/hosts) for you to prove and then file.
 
     dashboard data:
       port=7777
