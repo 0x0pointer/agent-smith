@@ -1,0 +1,162 @@
+"""session(action='complete') — completion counters, thorough-depth gate, dispatch."""
+import json
+
+from core import cost as cost_tracker
+from core import findings as findings_store
+from core import logger as log
+from core import session as scan_session
+
+import mcp_server.session_tools as _st
+from .blocker_response import _build_blocker_response
+
+
+def _persist_completion_counters() -> dict:
+    """Flush attempt/pass counters to session.json and return current session."""
+    current = scan_session.get() or {}
+    if current:
+        current["complete_attempts"] = _st._complete_attempts
+        current["analysis_passes"] = _st._analysis_passes
+        scan_session._flush()
+    return current
+
+
+def _apply_thorough_depth_gate(blockers: list, current: dict) -> list:
+    """Increment analysis pass counter when quality-clean and append iteration blocker if needed.
+
+    Returns the (possibly appended) blockers list.
+    """
+    depth = (scan_session.get() or {}).get("depth", "")
+    if blockers or depth != "thorough":
+        return blockers
+    _st._analysis_passes += 1
+    if current:
+        current["analysis_passes"] = _st._analysis_passes
+        scan_session._flush()
+    if _st._analysis_passes < _st._min_iterations():
+        brief = (
+            _st._deepen_brief_whitebox(_st._analysis_passes)
+            if _st._is_whitebox_scan()
+            else _st._deepen_brief(_st._analysis_passes)
+        )
+        blockers.append(brief)
+    return blockers
+
+
+async def _autoclose_crosscutting_best_effort() -> None:
+    """Propagate app-wide cross-cutting verdicts to their cells before completion.
+
+    The matrix fans cors/csrf/security_headers across every endpoint, but their
+    verdict is app-wide — the model files the finding ("Wildcard CORS on all
+    endpoints") yet rarely marks the 50+ per-endpoint cells, so the coverage gate
+    sees an empty matrix and the scan wedges (the overnight no-progress loop).
+    Running the honest propagator here (links the finding, cites a real response,
+    marks GET-endpoint CSRF N/A) means a completion attempt automatically reflects
+    the work already done. Best-effort + idempotent — only touches pending
+    cross-cutting cells and never blocks completion.
+    """
+    try:
+        from core import coverage as _cov
+        from mcp_server.report_tools import _do_coverage_auto_crosscutting
+        res = await _do_coverage_auto_crosscutting({"type": "auto_crosscutting"}, _cov)
+        log.note(f"auto_crosscutting (pre-complete): {str(res)[:200]}")
+    except Exception:
+        log.note("auto_crosscutting (pre-complete) failed — non-fatal")
+
+
+def _do_complete():
+    _st._complete_attempts += 1
+
+    data = findings_store._load()
+    current = _persist_completion_counters()
+
+    effective = _st._effective_tools()
+    blockers = _st._collect_completion_blockers(data, effective)
+    blockers = _apply_thorough_depth_gate(blockers, current)
+
+    # Progress-aware HIR (condensed profiles): blockers are surfaced one at a
+    # time, so a model clearing them across several complete() calls is making
+    # progress, not stalling. When the count DROPS, refund the attempt budget so
+    # serialized fixing doesn't trip the 8-attempt HIR; HIR still fires when the
+    # count is stuck (genuine inability to progress).
+    if _st._condensed_directives() and blockers:
+        n = len(blockers)
+        if _st._last_blocker_count is not None and n < _st._last_blocker_count:
+            _st._complete_attempts = 1
+        _st._last_blocker_count = n
+    elif not blockers:
+        _st._last_blocker_count = None
+
+    if blockers:
+        # Log the adjudication directive whenever the gate fires so the Activity
+        # tab reflects that a review pass is owed.
+        try:
+            from core.adjunction import pending_findings
+            from core.adjunction.log import log_directive
+            pending = pending_findings(data)
+            if pending:
+                log_directive(pending)
+        except Exception:
+            pass
+        return _build_blocker_response(blockers)
+
+    _st._complete_attempts = 0
+    _st._analysis_passes = 0
+
+    # Only the human operator can mark a scan complete.
+    # Smith passes all quality gates here — the scan is ready — but completion
+    # is deliberately reserved for the human via the dashboard "Complete Scan"
+    # button or the Instruct Smith panel.
+    log.note(
+        f"complete() called by Smith (attempt {_st._complete_attempts}) — "
+        "all quality gates passed; awaiting human completion via dashboard."
+    )
+
+    # Inject any active steering directives directly into this response so
+    # Smith sees them immediately without needing another tool call.
+    # (session() bypasses the envelope pipeline, so directives won't reach
+    # Smith otherwise if it stops making scan tool calls here.)
+    try:
+        from core.steering import steering_queue
+        active = steering_queue.get_active()
+        if active:
+            directive_lines = "\n".join(
+                f"  ⚠ STEERING [{d.priority.upper()}]: {d.message}" for d in active
+            )
+            steering_queue.mark_injected(active[0].id)
+            return (
+                "COMPLETION HELD — human sign-off required via dashboard.\n"
+                "Do NOT summarise findings. Do NOT explain the situation to the user.\n"
+                "EXECUTE NOW: act on the pending human instructions below, then call "
+                "session(action='status') to check for more directives.\n\n"
+                f"{directive_lines}"
+            )
+    except Exception:
+        pass
+
+    return (
+        "COMPLETION HELD — human sign-off required via dashboard.\n"
+        "Do NOT summarise findings. Do NOT explain the situation to the user. "
+        "Do NOT call session(action='complete') again.\n"
+        "EXECUTE NOW: call session(action='status') to check for pending QA alerts "
+        "and steering directives, then act on them. Keep making tool calls."
+    )
+
+
+def _record_metrics(findings_data: dict, completion_blockers: list[str], force_completed: bool) -> None:
+    try:
+        import core.metrics as metrics_mod
+        from core.quick_log import quick_log
+        from core.steering import steering_queue
+        from core.coverage import get_matrix
+        metrics_mod.record(
+            session=scan_session.get() or {},
+            cost_summary=cost_tracker.get_summary(),
+            findings_data=findings_data,
+            coverage=get_matrix(),
+            force_completed=force_completed,
+            completion_blockers=completion_blockers,
+            quick_log_entries=quick_log.read_all(),
+            steering_history=steering_queue.get_history(),
+        )
+    except Exception:
+        pass

@@ -1,0 +1,154 @@
+"""
+Diagram, exploit-chain, note, and dashboard actions.
+"""
+from ._common import (
+    findings_store,
+    log,
+    scan_session,
+    _safe,
+    _mermaid_label,
+    _safe_port,
+)
+from .gates import _auto_trigger_note_gates
+
+
+async def _do_diagram(data):
+    title = data.get("title", "")
+    mermaid = data.get("mermaid", "")
+    await findings_store.add_diagram(title=title, mermaid=mermaid)
+    log.diagram(title)
+    return f"Diagram saved: {title}"
+
+
+def _chain_mermaid(steps: list, titles: dict) -> str:
+    """Build a left-to-right MITRE-labelled Mermaid kill-chain from steps."""
+    lines = ["graph LR"]
+
+    def _node(fid: str) -> str:
+        label = _mermaid_label((titles.get(fid) or fid)[:48])
+        return f'  F_{_safe(fid)}["{label}"]'
+
+    seen: set[str] = set()
+    for s in steps:
+        for fid in (s.get("from_finding_id", ""), s.get("to_finding_id", "")):
+            if fid and fid not in seen:
+                seen.add(fid)
+                lines.append(_node(fid))
+    for s in steps:
+        a = _safe(s.get("from_finding_id", ""))
+        b = _safe(s.get("to_finding_id", ""))
+        tech = _mermaid_label(s.get("mitre_technique", "") or "enables")
+        if a and b:
+            lines.append(f"  F_{a} -->|{tech}| F_{b}")
+    return "\n".join(lines)
+
+
+async def _do_chain(data):
+    name = data.get("name", "") or "exploit chain"
+    steps = data.get("steps", [])
+    if not isinstance(steps, list) or not steps:
+        return "Missing/empty 'steps'. Provide steps=[{from_finding_id, to_finding_id, transition_artifact_id, mitre_technique}]."
+
+    from mcp_server.scan_engine.artifacts import artifact_exists
+    # Enforce PROVEN hand-offs: every transition must be backed by an artifact
+    # that exists on disk. A chain is only as valid as its weakest edge, so any
+    # unproven transition rejects the whole submission.
+    unproven = [
+        f"step {i + 1} ({s.get('from_finding_id', '?')}→{s.get('to_finding_id', '?')}): "
+        f"transition_artifact_id '{s.get('transition_artifact_id', '')}' not found on disk"
+        for i, s in enumerate(steps)
+        if not artifact_exists(s.get("transition_artifact_id", ""))
+    ]
+    if unproven:
+        return (
+            "REJECTED: exploit chain has unproven transition(s) — every step needs a "
+            "transition_artifact_id whose artifact exists on disk (the evidence that step N's "
+            "output is consumed by step N+1). Run/capture the proving artifact, then re-submit.\n  - "
+            + "\n  - ".join(unproven)
+        )
+
+    # Build the kill-chain diagram, labelling nodes with finding titles.
+    all_findings = findings_store._load().get("findings", [])
+    titles = {f.get("id"): f.get("title", "") for f in all_findings}
+    mermaid = _chain_mermaid(steps, titles)
+
+    await findings_store.add_chain(
+        name=name,
+        steps=steps,
+        terminal_impact=data.get("terminal_impact", ""),
+        combined_severity=str(data.get("combined_severity", "")).lower(),
+        mermaid=mermaid,
+    )
+    # Also surface it as a diagram so it renders on the dashboard immediately.
+    await findings_store.add_diagram(title=f"Exploit chain: {name}", mermaid=mermaid)
+    log.note(f"Exploit chain recorded: {name} ({len(steps)} proven step(s))")
+    return f"Exploit chain saved: '{name}' — {len(steps)} proven step(s), diagram rendered."
+
+
+def _do_note(data):
+    message = data.get("message", "")
+    log.note(message)
+
+    # ── Auto-trigger gates based on note content ─────────────────────────────
+    gates_triggered = _auto_trigger_note_gates(message)
+    if gates_triggered:
+        return f"Logged.\n\nGATE(S) TRIGGERED: {', '.join(gates_triggered)}. These skills are now mandatory before completion."
+    return "Logged."
+
+
+# Single source of truth for the dashboard port. Match the launchd plist,
+# the install scripts, CLAUDE.md docs, and the api_server.serve() default —
+# every reference in this repo says 7777.
+_DASHBOARD_CANONICAL_PORT = 7777
+
+# Ports we silently rewrite to the canonical one. The skills submodule
+# pentester*.md files hard-code `data={"port": 5000}` which dates back to
+# an earlier convention. Rather than wait for a submodule-bump PR + cascade
+# every operator's `~/.config/opencode/opencode.json` to a new port, we
+# normalize the legacy values here so Smith's call lands on the port the
+# operator's browser is already pointed at. Add new aliases here as
+# upstream skill repos drift.
+_LEGACY_DASHBOARD_PORTS = {5000, 8000, 8080}
+
+
+async def _do_dashboard(data):
+    try:
+        from core import api_server
+        # Sanitize at the boundary — `requested` is now guaranteed to be an
+        # int in [1, 65535], safe to interpolate into log lines and audit
+        # trails without S5145 (log injection) exposure.
+        requested = _safe_port(data.get("port"), _DASHBOARD_CANONICAL_PORT)
+        if requested in _LEGACY_DASHBOARD_PORTS:
+            log.tool_result(
+                "dashboard",
+                f"port {requested} normalized to {_DASHBOARD_CANONICAL_PORT} "
+                "(canonical agent-smith dashboard port)",
+            )
+            port = _DASHBOARD_CANONICAL_PORT
+        else:
+            port = requested
+        log.tool_call("dashboard", {"port": port, "requested": requested})
+        url = await api_server.serve(port)
+        # Carry the per-session bearer token in the URL fragment (never sent to
+        # the server, stays out of access logs). The dashboard JS captures it into
+        # sessionStorage and sends it as Authorization: Bearer on every /api call.
+        try:
+            from core import dashboard_auth
+            tok = dashboard_auth.read_token()
+            if tok and url.startswith("http"):
+                url = f"{url}/#k={tok}"
+        except Exception:
+            pass
+        log.tool_result("dashboard", url)
+        return f"Dashboard running — open {url}"
+    except BaseException as exc:
+        # Defense against S5145: don't echo the raw exception message into
+        # the audit log or the return string — its content could come from
+        # user-controlled input (e.g. a malformed port value). The exception
+        # type alone is enough for Smith to diagnose. Full traceback still
+        # goes via Python's standard logger which uses parameter binding,
+        # not string interpolation, so log-injection is prevented there too.
+        safe_err = f"Dashboard failed: {type(exc).__name__}"
+        log.tool_result("dashboard", safe_err)
+        return safe_err
+        return err

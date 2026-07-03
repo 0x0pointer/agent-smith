@@ -277,7 +277,6 @@ from .serve import (  # noqa: E402
 from .smith import (  # noqa: E402
     _KNOWN_CLIENTS,
     _SMITH_IDLE_SECONDS,
-    _SMITH_PROC_NEEDLES,
     _SMITH_STALL_SECONDS,
     _SPAWN_SOURCE_TAGS,
     _WATCHDOG_MAX_NO_PROGRESS,
