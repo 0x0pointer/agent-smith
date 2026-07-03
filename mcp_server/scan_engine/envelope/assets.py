@@ -157,6 +157,19 @@ def _persist_http_auth_assets(scan_session: Any, evidence: dict, ctx: dict) -> N
     _update_jwt_tokens(scan_session, req_headers, body_prev, url)
     _update_credentials(scan_session, url, method, status, req_body)
     _update_session_cookies(scan_session, evidence, url)
+    _update_rate_limits(scan_session, evidence, url)
+
+
+def _update_rate_limits(scan_session: Any, evidence: dict, url: str) -> None:
+    """CH-8: record throttle state (429 / Retry-After / X-RateLimit-*) in
+    known_assets so the agent stays throttle-aware (respects request caps) and
+    can flag endpoints that DON'T rate-limit."""
+    status = evidence.get("status", 0)
+    rl = evidence.get("rate_limit") or {}
+    if status == 429 or rl:
+        hdr = " ".join(f"{k}={v}" for k, v in rl.items())
+        scan_session.update_known_assets(
+            "rate_limits", [f"{url}: HTTP {status}{(' ' + hdr) if hdr else ''}".strip()])
 
 
 def _trigger_body_signal_gates(scan_session: Any, result: Any, ctx: dict) -> None:
@@ -210,3 +223,21 @@ def _extract_and_persist_assets(tool: str, result: Any, ctx: dict) -> None:
     elif tool == "http_request":
         _persist_http_auth_assets(scan_session, evidence, ctx)
         _trigger_body_signal_gates(scan_session, result, ctx)
+    elif tool == "kali_sqlmap":
+        # CH-11: drive the gate from the TOOL's own verdict, not the model's
+        # wording — sqlmap confirming injectability opens the web-exploit gate to
+        # weaponize (dump/stack/RCE) before completion.
+        if evidence.get("vulnerable"):
+            scan_session.trigger_gate(
+                "web_exploit_sqli",
+                f"sqlmap confirmed injectable: {ctx.get('target', '')}",
+                ["web-exploit"])
+    elif tool == "nuclei":
+        # CH-11 + CH-3: a critical/high nuclei hit — especially a CVE — opens the
+        # exploit-validation chain deterministically.
+        findings = evidence.get("findings", []) or []
+        if any(f.get("severity") in ("critical", "high") for f in findings):
+            scan_session.trigger_gate(
+                "analyze_cve",
+                "nuclei reported a critical/high finding",
+                ["analyze-cve"])

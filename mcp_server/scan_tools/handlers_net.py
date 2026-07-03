@@ -88,4 +88,19 @@ async def _handle_ffuf(target, flags, options):
     cost_tracker.finish(call_id, raw)
     log.tool_result("ffuf", raw)
     from mcp_server.scan_engine import wrap
-    return wrap("ffuf", raw, {"url": target})
+    result = wrap("ffuf", raw, {"url": target})
+    # CH-6: auto-register the paths ffuf discovered as coverage endpoints so they
+    # enter the matrix (and fire endpoint-type gates) instead of relying on the
+    # model to hand-register each. Fail-soft — never break the ffuf result.
+    try:
+        from mcp_server.scan_engine.discovery import discover_and_register
+        from mcp_server.scan_tools.spider import _spider_discovery_auth
+        paths = [ln.strip() for ln in raw.splitlines() if ln.strip().startswith("http")]
+        if paths:
+            enrich = await discover_and_register(target, paths, auth=_spider_discovery_auth(None))
+            if enrich.get("registered"):
+                result += (f"\n\n🧭 AUTO-DISCOVERY: registered {enrich['registered']} ffuf-found "
+                           f"endpoint(s) / {enrich['cells']} cell(s) — test them via the matrix.")
+    except Exception as exc:  # pragma: no cover - defensive
+        log.note(f"ffuf auto-discovery skipped: {exc}")
+    return result
