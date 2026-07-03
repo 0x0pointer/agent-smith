@@ -21,10 +21,8 @@ def _section_after(raw: str, marker: str) -> str:
     return raw[idx + len(marker):] if idx != -1 else ""
 
 
-def _summarize_garak(raw: str, ctx: dict) -> SummaryResult:
-    """Parse garak's report.jsonl eval entries for per-probe attack hits."""
-    result = SummaryResult()
-    section = _section_after(raw, "=== GARAK REPORT JSONL ===")
+def _parse_garak_evals(section: str) -> list[dict]:
+    """Parse garak report.jsonl lines → the 'eval'-type entries only."""
     evals: list[dict] = []
     for line in section.splitlines():
         line = line.strip()
@@ -36,16 +34,11 @@ def _summarize_garak(raw: str, ctx: dict) -> SummaryResult:
             continue
         if d.get("entry_type") == "eval":
             evals.append(d)
+    return evals
 
-    if not evals:
-        result.summary = "garak ran — no structured eval entries parsed (check artifact / REST config)"
-        result.facts = [l.strip()[:200] for l in raw.strip().splitlines()[:5] if l.strip()]
-        result.evidence = {"eval_entries": 0}
-        result.recommended.append(
-            "Verify the garak REST config reached the target (response_field set?); inspect the artifact"
-        )
-        return result
 
+def _collect_garak_hits(evals: list[dict], result: SummaryResult) -> list[dict]:
+    """Append a per-probe fact line to `result` for each eval; return the ones with hits."""
     hits: list[dict] = []
     for e in evals:
         probe    = e.get("probe", "?")
@@ -57,6 +50,25 @@ def _summarize_garak(raw: str, ctx: dict) -> SummaryResult:
         if failed > 0:
             hits.append({"probe": probe, "detector": detector, "failed": failed, "total": total})
     result.facts = result.facts[:20]
+    return hits
+
+
+def _summarize_garak(raw: str, _ctx: dict) -> SummaryResult:
+    """Parse garak's report.jsonl eval entries for per-probe attack hits."""
+    result = SummaryResult()
+    section = _section_after(raw, "=== GARAK REPORT JSONL ===")
+    evals = _parse_garak_evals(section)
+
+    if not evals:
+        result.summary = "garak ran — no structured eval entries parsed (check artifact / REST config)"
+        result.facts = [l.strip()[:200] for l in raw.strip().splitlines()[:5] if l.strip()]
+        result.evidence = {"eval_entries": 0}
+        result.recommended.append(
+            "Verify the garak REST config reached the target (response_field set?); inspect the artifact"
+        )
+        return result
+
+    hits = _collect_garak_hits(evals, result)
 
     if hits:
         result.summary = f"garak: {len(hits)} probe(s) with hits across {len(evals)} eval(s)"
@@ -72,18 +84,31 @@ def _summarize_garak(raw: str, ctx: dict) -> SummaryResult:
     return result
 
 
-def _summarize_promptfoo(raw: str, ctx: dict) -> SummaryResult:
+def _parse_promptfoo_section(raw: str) -> dict | None:
+    """Extract + parse the promptfoo results JSON block; None if absent/unparseable."""
+    section = _section_after(raw, "=== PROMPTFOO RESULTS JSON ===").strip()
+    if not section.startswith("{"):
+        return None
+    try:
+        data = json.loads(section)
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _promptfoo_plugin_id(r: dict) -> str:
+    """Best-effort plugin/strategy id from a single promptfoo result row."""
+    tc = r.get("testCase") if isinstance(r.get("testCase"), dict) else {}
+    meta = tc.get("metadata") if isinstance(tc.get("metadata"), dict) else {}
+    return meta.get("pluginId") or meta.get("strategyId") or "?"
+
+
+def _summarize_promptfoo(raw: str, _ctx: dict) -> SummaryResult:
     """Parse promptfoo's results JSON; a failed assertion = attack succeeded."""
     result = SummaryResult()
-    section = _section_after(raw, "=== PROMPTFOO RESULTS JSON ===").strip()
-    data = None
-    if section.startswith("{"):
-        try:
-            data = json.loads(section)
-        except json.JSONDecodeError:
-            data = None
+    data = _parse_promptfoo_section(raw)
 
-    if not isinstance(data, dict):
+    if data is None:
         result.summary = "promptfoo ran — could not parse results JSON (check artifact)"
         result.facts = [l.strip()[:200] for l in raw.strip().splitlines()[:5] if l.strip()]
         result.evidence = {"parsed": False}
@@ -111,11 +136,7 @@ def _summarize_promptfoo(raw: str, ctx: dict) -> SummaryResult:
         f"promptfoo: {len(items)} test(s), no failures parsed"
     )
     for r in failed[:10]:
-        plugin = "?"
-        tc = r.get("testCase") if isinstance(r.get("testCase"), dict) else {}
-        meta = tc.get("metadata") if isinstance(tc.get("metadata"), dict) else {}
-        plugin = meta.get("pluginId") or meta.get("strategyId") or "?"
-        result.anomalies.append(f"promptfoo hit: plugin/strategy={plugin}")
+        result.anomalies.append(f"promptfoo hit: plugin/strategy={_promptfoo_plugin_id(r)}")
     if failed:
         result.recommended.append(
             "File a finding per promptfoo failure, then close the matching LLM cell vulnerable with this artifact_id"

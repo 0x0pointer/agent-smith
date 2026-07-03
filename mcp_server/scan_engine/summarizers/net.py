@@ -11,7 +11,7 @@ from ._common import SummaryResult
 # naabu summarizer
 # ---------------------------------------------------------------------------
 
-def _summarize_naabu(raw: str, ctx: dict) -> SummaryResult:
+def _summarize_naabu(raw: str, _ctx: dict) -> SummaryResult:
     """Parse naabu JSON lines output for open ports."""
     result = SummaryResult()
     ports: dict[str, set[int]] = {}  # host -> set of ports
@@ -46,7 +46,7 @@ def _summarize_naabu(raw: str, ctx: dict) -> SummaryResult:
 # subfinder summarizer
 # ---------------------------------------------------------------------------
 
-def _summarize_subfinder(raw: str, ctx: dict) -> SummaryResult:
+def _summarize_subfinder(raw: str, _ctx: dict) -> SummaryResult:
     """Parse subfinder output — one subdomain per line."""
     result = SummaryResult()
     subs = [l.strip() for l in raw.strip().splitlines() if l.strip() and not l.startswith("[")]
@@ -92,7 +92,7 @@ def _parse_nuclei_line(line: str) -> dict | None:
     return None
 
 
-def _summarize_nuclei(raw: str, ctx: dict) -> SummaryResult:
+def _summarize_nuclei(raw: str, _ctx: dict) -> SummaryResult:
     """Parse nuclei output for vulnerability findings."""
     result = SummaryResult()
     findings: list[dict] = []

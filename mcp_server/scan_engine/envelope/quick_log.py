@@ -18,7 +18,7 @@ def _build_quick_log_entry(
     """
     import re as _re
     if tool == "spider":
-        m = _re.search(r'(\d+)\s+unique\s+endpoint', summarizer_summary, _re.IGNORECASE)
+        m = _re.search(r'(\d+)\s{1,3}unique\s{1,3}endpoint', summarizer_summary, _re.IGNORECASE)
         return {
             "type": "SPIDER",
             "target": target,

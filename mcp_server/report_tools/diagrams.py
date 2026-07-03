@@ -167,7 +167,7 @@ async def _do_dashboard(data):
             pass
         log.tool_result("dashboard", url)
         return f"Dashboard running — open {url}"
-    except BaseException as exc:
+    except Exception as exc:
         # Defense against S5145: don't echo the raw exception message into
         # the audit log or the return string — its content could come from
         # user-controlled input (e.g. a malformed port value). The exception
@@ -177,4 +177,3 @@ async def _do_dashboard(data):
         safe_err = f"Dashboard failed: {type(exc).__name__}"
         log.tool_result("dashboard", safe_err)
         return safe_err
-        return err

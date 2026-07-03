@@ -8,7 +8,7 @@ from mcp_server._app import _clip, _record
 from ._common import _spider_succeeded
 
 
-async def _run_spider_thorough(target: str, flags: str, cookies: dict, depth: str, max_pages: str, timeout: int) -> str:
+async def _run_spider_thorough(target: str, flags: str, cookies: dict, depth: str, max_pages: str, budget_s: int) -> str:
     """Run katana + playwright + ZAP AJAX spider in thorough mode and return merged raw output."""
     import asyncio as _asyncio
     from tools import kali_runner
@@ -17,9 +17,9 @@ async def _run_spider_thorough(target: str, flags: str, cookies: dict, depth: st
     safe_url = shlex.quote(target)
     safe_cookies = shlex.quote(_json.dumps(cookies))
     # Split the budget across the 3 subtools so total wall-clock caps at the
-    # user-provided `timeout` value (default 2h → ~40min per subtool, floor
+    # user-provided `budget_s` value (default 2h → ~40min per subtool, floor
     # 20min so a tiny budget doesn't starve any one tool).
-    per_subtool = max(timeout // 3, 1200)
+    per_subtool = max(budget_s // 3, 1200)
     log.note(f"spider: thorough mode — katana + playwright + zap-ajax (per-subtool timeout={per_subtool}s)")
 
     safe_flags = shlex.join(shlex.split(flags)) if flags else ""
@@ -60,7 +60,7 @@ async def _run_spider_thorough(target: str, flags: str, cookies: dict, depth: st
     return "\n\n".join(parts)
 
 
-async def _run_spider_fast(target: str, flags: str, cookies: dict, depth: str, max_pages: str, mode: str, timeout: int) -> str:
+async def _run_spider_fast(target: str, flags: str, cookies: dict, depth: str, max_pages: str, mode: str, budget_s: int) -> str:
     """Run the fast/playwright/deep spider mode and return raw output."""
     import asyncio as _asyncio
     from tools import kali_runner
@@ -88,7 +88,7 @@ async def _run_spider_fast(target: str, flags: str, cookies: dict, depth: str, m
         if safe_flags:
             cmd += f" {safe_flags}"
 
-    async with _asyncio.timeout(timeout):
+    async with _asyncio.timeout(budget_s):
         # SP-11: return the FULL crawl; bounding happens in _handle_spider.
         return await kali_runner.exec_command(cmd)
 

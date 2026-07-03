@@ -91,6 +91,50 @@ def _start_response(cfg: dict, classification: dict, target: str, scan_mode: str
     return "\n".join(lines)
 
 
+# Reason string recorded on every steering directive cancelled at scan start.
+_CLEARED_ON_START = "cleared on new scan start"
+
+
+def _purge_stale_steering() -> None:
+    """Purge stale adjudication/triage/skill-chain steering directives on scan start.
+
+    These ride get_active() into the spawn prompt (core/api_server/smith.py) and
+    the session status/recovery responses, so an un-acknowledged directive left
+    over from a prior run (operator triage that never finished, a legacy
+    FORCE_COMPLETE_ADJUDICATION, or a MISSING_WEB_EXPLOIT mandate) would otherwise
+    replay into — and hijack — this fresh run. Starting a scan is a deliberate
+    reset; the operator re-triggers triage via the dashboard button if they want it.
+    """
+    try:
+        from core.steering import steering_queue
+        steering_queue.cancel_by_trigger("TRIAGE_ADJUDICATION", _CLEARED_ON_START)
+        steering_queue.cancel_by_trigger("FORCE_COMPLETE_ADJUDICATION", _CLEARED_ON_START)
+        for _trig in ("MISSING_WEB_EXPLOIT", "MISSING_PARAM_FUZZ", "MISSING_BUSINESS_LOGIC"):
+            steering_queue.cancel_by_trigger(_trig, _CLEARED_ON_START)
+    except Exception:
+        pass
+
+
+def _archive_qa_state() -> None:
+    """Archive + clear the QA daemon's input log and alert state so a prior scan's
+    entries don't re-derive stale skill-chain alerts against this run. Archive
+    rather than delete."""
+    try:
+        import shutil
+        from datetime import datetime as _dt, timezone as _tz
+        from core.coverage import COVERAGE_FILE
+        base = COVERAGE_FILE.parent
+        arch = base / "logs"; arch.mkdir(exist_ok=True)
+        _ts = _dt.now(_tz.utc).strftime("%Y%m%d_%H%M%S")
+        for stale in ("quick_log.json", _st._QA_STATE_FILENAME):
+            p = base / stale
+            if p.exists():
+                shutil.copy2(p, arch / f"{p.stem}_{_ts}.json")
+                p.unlink()
+    except Exception:
+        pass
+
+
 def _do_start(opts):
     existing = scan_session.get() or {}
     if existing.get("status") == "intervention_required":
@@ -153,41 +197,11 @@ def _do_start(opts):
         _adj_log_clear()
     except Exception:
         pass
-    # Purge stale adjudication/triage steering directives on every scan start.
-    # These ride get_active() into the spawn prompt (core/api_server/smith.py)
-    # and the session status/recovery responses, so an un-acknowledged review
-    # directive left over from a prior run (operator triage that never finished,
-    # or a legacy FORCE_COMPLETE_ADJUDICATION) would otherwise replay into this
-    # fresh run and drive Smith straight into adjudication with no operator
-    # action. Starting a scan is a deliberate reset; the operator re-triggers
-    # triage via the dashboard button if they want it.
-    try:
-        from core.steering import steering_queue
-        steering_queue.cancel_by_trigger("TRIAGE_ADJUDICATION", "cleared on new scan start")
-        steering_queue.cancel_by_trigger("FORCE_COMPLETE_ADJUDICATION", "cleared on new scan start")
-        # Also clear stale SKILL-CHAIN directives so a prior run's mandate (e.g.
-        # MISSING_WEB_EXPLOIT) can't replay into — and hijack — this fresh scan.
-        for _trig in ("MISSING_WEB_EXPLOIT", "MISSING_PARAM_FUZZ", "MISSING_BUSINESS_LOGIC"):
-            steering_queue.cancel_by_trigger(_trig, "cleared on new scan start")
-    except Exception:
-        pass
+    _purge_stale_steering()
     # On a NON-resume start, reset the QA daemon's input log + alert state so a
     # prior scan's SPIDER/SKILL/TOOL entries don't re-derive stale skill-chain
     # alerts against this run (the cross-session bleed that hijacked a fresh
     # ai-redteam scan into /web-exploit). Archive rather than delete.
     if not is_resume:
-        try:
-            import shutil
-            from datetime import datetime as _dt, timezone as _tz
-            from core.coverage import COVERAGE_FILE
-            base = COVERAGE_FILE.parent
-            arch = base / "logs"; arch.mkdir(exist_ok=True)
-            _ts = _dt.now(_tz.utc).strftime("%Y%m%d_%H%M%S")
-            for stale in ("quick_log.json", _st._QA_STATE_FILENAME):
-                p = base / stale
-                if p.exists():
-                    shutil.copy2(p, arch / f"{p.stem}_{_ts}.json")
-                    p.unlink()
-        except Exception:
-            pass
+        _archive_qa_state()
     return _start_response(cfg, classification, target, scan_mode, depth, is_resume)

@@ -44,6 +44,34 @@ async def _autofile_crosscutting_findings(headers: dict, artifact_id: str,
     return filed
 
 
+def _load_findings_list() -> list:
+    """Load the findings list from the on-disk findings file; [] on absence/error."""
+    from core import paths as _paths
+    try:
+        ff = _paths.FINDINGS_FILE
+        if ff.exists():
+            return json.loads(ff.read_text()).get("findings", [])
+    except Exception:
+        pass
+    return []
+
+
+def _resolve_evidence_artifact(data, cov):
+    """Resolve the representative response artifact + parsed headers for app-wide
+    cross-cutting evidence: honor a caller-supplied `artifact_id`, else auto-pick a
+    representative one. Returns (artifact_id, headers) — artifact_id is "" if none."""
+    from core import paths as _paths
+    artifact_id = (data.get("artifact_id") or "").strip()
+    headers: dict = {}
+    if artifact_id:
+        art_file = _paths.ARTIFACTS_DIR / f"{artifact_id}.txt"
+        if art_file.exists():
+            _, headers = cov.parse_artifact_headers(art_file.read_text())
+    if not artifact_id or not headers:
+        artifact_id, headers = cov.pick_representative_artifact(str(_paths.ARTIFACTS_DIR))
+    return artifact_id, headers
+
+
 async def _do_coverage_auto_crosscutting(data, cov):
     """Propagate app-wide cross-cutting verdicts to their per-endpoint cells.
 
@@ -60,28 +88,12 @@ async def _do_coverage_auto_crosscutting(data, cov):
     """
     import collections
 
-    from core import paths as _paths
-
     matrix = cov.get_matrix()
     cells = matrix.get("matrix", [])
     endpoints = matrix.get("endpoints", [])
 
-    findings = []
-    try:
-        ff = _paths.FINDINGS_FILE
-        if ff.exists():
-            findings = json.loads(ff.read_text()).get("findings", [])
-    except Exception:
-        pass
-
-    artifact_id = (data.get("artifact_id") or "").strip()
-    headers: dict = {}
-    if artifact_id:
-        art_file = _paths.ARTIFACTS_DIR / f"{artifact_id}.txt"
-        if art_file.exists():
-            _, headers = cov.parse_artifact_headers(art_file.read_text())
-    if not artifact_id or not headers:
-        artifact_id, headers = cov.pick_representative_artifact(str(_paths.ARTIFACTS_DIR))
+    findings = _load_findings_list()
+    artifact_id, headers = _resolve_evidence_artifact(data, cov)
 
     if not artifact_id:
         return (
@@ -100,10 +112,7 @@ async def _do_coverage_auto_crosscutting(data, cov):
     except Exception:
         target = ""
     if await _autofile_crosscutting_findings(headers, artifact_id, target, findings):
-        try:
-            findings = json.loads(_paths.FINDINGS_FILE.read_text()).get("findings", [])
-        except Exception:
-            pass
+        findings = _load_findings_list()
 
     closures = cov.plan_crosscutting_closures(cells, endpoints, findings, headers, artifact_id)
     if not closures:

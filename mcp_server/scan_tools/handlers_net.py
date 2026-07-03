@@ -21,7 +21,7 @@ async def _handle_naabu(target, flags, options):
     return wrap("naabu", raw, {"host": _strip_scheme(target)})
 
 
-async def _handle_subfinder(target, flags, options):
+async def _handle_subfinder(target, flags, _options):
     _record("subfinder")
     raw = await _run("subfinder", domain=_strip_scheme(target), flags=flags)
     from mcp_server.scan_engine import wrap

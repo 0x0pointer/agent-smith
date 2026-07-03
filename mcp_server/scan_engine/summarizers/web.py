@@ -73,7 +73,7 @@ def _build_sqlmap_vulnerable_result(result: SummaryResult, parsed: dict) -> None
     result.recommended.append("Try OS shell: kali(command='sqlmap ... --os-shell')")
 
 
-def _summarize_kali_sqlmap(raw: str, ctx: dict) -> SummaryResult:
+def _summarize_kali_sqlmap(raw: str, _ctx: dict) -> SummaryResult:
     """Parse sqlmap output for injection results."""
     result = SummaryResult()
     lines = raw.strip().splitlines()
@@ -131,7 +131,7 @@ def _parse_ffuf_text(raw: str) -> list[dict]:
     return paths
 
 
-def _summarize_ffuf(raw: str, ctx: dict) -> SummaryResult:
+def _summarize_ffuf(raw: str, _ctx: dict) -> SummaryResult:
     """Parse ffuf output for discovered paths."""
     result = SummaryResult()
     paths = _parse_ffuf_json(raw)
@@ -194,7 +194,7 @@ def _extract_dynamic_endpoints(urls: list[str]) -> list[dict]:
     return endpoints
 
 
-def _summarize_spider(raw: str, ctx: dict) -> SummaryResult:
+def _summarize_spider(raw: str, _ctx: dict) -> SummaryResult:
     """Parse katana/spider output — one URL per line. Extract endpoints for registration."""
     result = SummaryResult()
     urls = [l.strip() for l in raw.strip().splitlines() if l.strip() and l.strip().startswith("http")]
