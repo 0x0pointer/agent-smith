@@ -983,3 +983,64 @@
     .log-line.diagram     { color: var(--purple); opacity: 0.85; }
     .log-line.warning     { color: #faad14; }
     .log-line.error       { color: #ff4d4f; }
+
+/* ── World Model tab (Phase 2 knowledge graph) ─────────────────────────────── */
+.wm-stats { display:flex; flex-wrap:wrap; gap:0.4rem; align-items:center; margin-bottom:0.9rem; }
+.wm-stat-total { font-family:'IBM Plex Mono',monospace; font-size:0.78rem; color:var(--text-muted); margin-right:0.4rem; }
+.wm-stat-chip { font-family:'IBM Plex Mono',monospace; font-size:0.66rem; padding:0.12rem 0.45rem; border-radius:3px;
+  background:var(--bg-raised); color:var(--text-muted); border:1px solid var(--border-subtle); text-transform:lowercase; }
+.wm-err { color:#f97316; font-size:0.72rem; margin-left:0.5rem; }
+.wm-grid { display:grid; grid-template-columns:1fr 1fr; gap:1rem; }
+@media (max-width:820px){ .wm-grid { grid-template-columns:1fr; } }
+.wm-panel { background:var(--bg-card); border:1px solid var(--border); border-radius:8px; padding:0.9rem 1rem; margin-bottom:1rem; }
+.wm-h { font-size:0.82rem; font-weight:600; color:var(--text); margin:0 0 0.6rem; }
+.wm-h-mt { margin-top:1rem; }
+.wm-sub { font-family:'IBM Plex Mono',monospace; font-size:0.62rem; color:var(--text-dim); font-weight:400; text-transform:uppercase; letter-spacing:0.06em; margin-left:0.4rem; }
+.wm-empty { color:var(--text-dim); font-size:0.76rem; padding:0.5rem 0; }
+
+.wm-chain { display:flex; gap:0.6rem; padding:0.55rem 0; border-bottom:1px solid var(--border-subtle); }
+.wm-chain:last-child { border-bottom:none; }
+.wm-chain-body { flex:1; min-width:0; }
+.wm-steps { display:flex; flex-wrap:wrap; align-items:center; gap:0.3rem; }
+.wm-step { background:var(--bg-raised); border:1px solid var(--border-subtle); border-radius:4px; padding:0.1rem 0.45rem; font-size:0.72rem; color:var(--text); }
+.wm-arrow { color:var(--text-dim); font-size:0.8rem; }
+.wm-terminal { font-family:'IBM Plex Mono',monospace; font-size:0.66rem; color:var(--text-muted); margin-top:0.3rem; }
+.wm-rationale { font-size:0.7rem; color:var(--text-dim); margin-top:0.15rem; }
+
+.wm-sev { font-family:'IBM Plex Mono',monospace; font-size:0.6rem; font-weight:700; text-transform:uppercase;
+  padding:0.1rem 0.4rem; border-radius:3px; height:fit-content; white-space:nowrap; }
+.wm-sev-critical { background:#da3633; color:#fff; }
+.wm-sev-high     { background:#f97316; color:#000; }
+.wm-sev-medium   { background:#d29922; color:#000; }
+.wm-sev-low      { background:#3b82f6; color:#fff; }
+.wm-sev-info     { background:var(--bg-raised); color:var(--text-muted); }
+
+.wm-list { display:flex; flex-direction:column; gap:0.25rem; }
+.wm-row { display:flex; align-items:center; gap:0.5rem; font-size:0.74rem; padding:0.2rem 0; }
+.wm-row-label { color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.wm-why { color:var(--text-dim); font-size:0.66rem; margin-left:auto; white-space:nowrap; }
+.wm-pending { font-family:'IBM Plex Mono',monospace; font-size:0.64rem; background:var(--bg-raised); color:var(--text-muted);
+  border-radius:3px; padding:0.05rem 0.35rem; min-width:1.4rem; text-align:center; }
+
+/* graph */
+.wm-graph { overflow-x:auto; }
+.wm-svg { min-width:1000px; font-family:'IBM Plex Mono',monospace; }
+.wm-col-title { fill:var(--text-dim); font-size:10px; text-transform:uppercase; letter-spacing:0.06em; }
+.wm-node rect { fill:var(--bg-raised); stroke:var(--border); stroke-width:1; }
+.wm-node text { fill:var(--text-muted); font-size:10px; }
+.wm-node-host rect { fill:#2d2b55; stroke:#7b78ff; }
+.wm-node-endpoint rect { fill:#1a1840; stroke:#4f8cff; }
+.wm-node-param rect { fill:#171533; stroke:var(--border-subtle); }
+.wm-node-credential rect, .wm-node-token rect { fill:#2a2118; stroke:#d29922; }
+.wm-node-tech rect { fill:#132a24; stroke:#12a5a0; }
+.wm-node-finding text, .wm-node text { fill:var(--text); }
+.wm-sevfill-critical rect { fill:#3a1414; stroke:#da3633; }
+.wm-sevfill-high rect { fill:#33220f; stroke:#f97316; }
+.wm-sevfill-medium rect { fill:#302713; stroke:#d29922; }
+.wm-sevfill-low rect { fill:#122033; stroke:#3b82f6; }
+.wm-sevfill-info rect { fill:var(--bg-raised); stroke:var(--border); }
+.wm-edge { stroke:var(--border-subtle); stroke-width:1; }
+.wm-edge-leaks { stroke:#d29922; stroke-width:1.5; }
+.wm-edge-escalates_to { stroke:#da3633; stroke-width:1.5; }
+.wm-edge-authenticates { stroke:#12a5a0; stroke-dasharray:3 2; }
+.wm-more { fill:var(--text-dim); font-size:10px; }

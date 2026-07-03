@@ -198,7 +198,7 @@
   }
 
   // ── Tab switching ─────────────────────────────────────────────────────────
-  const TAB_NAMES = ['findings', 'topology', 'components', 'coverage', 'skills', 'activity', 'threat-model', 'metrics', 'setup-gates', 'logs'];
+  const TAB_NAMES = ['findings', 'topology', 'components', 'coverage', 'world-model', 'skills', 'activity', 'threat-model', 'metrics', 'setup-gates', 'logs'];
 
   function switchTab(name) {
     _activeTab = name;
@@ -210,6 +210,7 @@
     if (name === 'topology')      renderTopology(allData.diagrams || []);
     if (name === 'components')    renderComponentMap(allData.findings || []);
     if (name === 'coverage')      pollCoverage();
+    if (name === 'world-model')   pollWorldModel();
     if (name === 'skills')        pollSkills();
     if (name === 'activity') {
       // Immediately paint whatever data we already have so the tab is not

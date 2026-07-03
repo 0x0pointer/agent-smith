@@ -93,10 +93,11 @@ def build_graph() -> m.Graph:
                    status=(f.get("status") or "").lower())
         fhost = _host_of(f.get("target", "")) or root_host
         if fhost:
+            g.add_node(f"host:{fhost}", m.HOST, fhost)  # materialize so the edge isn't dangling
             g.add_edge(fid, f"host:{fhost}", m.FOUND_ON)
         text = f"{f.get('title','')} {f.get('description','')}".lower()
-        if any(k in text for k in ("credential", "password", "token leak", "secret", "api key", "api_key")):
-            g.add_edge(fid, f"host:{fhost or root_host}", m.LEAKS, what="credential-material")
+        if fhost and any(k in text for k in ("credential", "password", "token leak", "secret", "api key", "api_key")):
+            g.add_edge(fid, f"host:{fhost}", m.LEAKS, what="credential-material")
         for lead in f.get("escalation_leads", []) or []:
             if isinstance(lead, dict) and lead.get("status") == "pending":
                 g.add_edge(fid, fid, m.ESCALATES_TO, lead=lead.get("lead", ""))

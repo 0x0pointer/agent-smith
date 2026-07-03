@@ -1,4 +1,8 @@
 """Phase 2: knowledge-graph world-model — model, chain proposals, projection."""
+import json
+
+import pytest
+
 import core.graph.model as gm
 from core.graph import Graph, candidate_chains
 from core.graph.model import (
@@ -124,6 +128,22 @@ class TestGraphSteer:
         rec: list[str] = []
         planner._add_graph_steer(rec)  # must not raise
         assert rec == []
+
+
+class TestGraphApi:
+    @pytest.mark.asyncio
+    async def test_api_graph_shape(self, monkeypatch):
+        import core.session as scan_session
+        from core.api_server.routes.findings_routes import api_graph
+        scan_session._current = {"status": "running", "target": "http://t.test", "known_assets": {}}
+        monkeypatch.setattr("core.findings._load", lambda: {"findings": [
+            {"id": "f1", "title": "SQLi", "severity": "high", "target": "http://t.test/login"}]})
+        monkeypatch.setattr("core.coverage.get_matrix", lambda: {"endpoints": [], "matrix": []})
+        body = json.loads((await api_graph()).body)
+        assert set(body) >= {"stats", "nodes", "edges", "candidate_chains",
+                             "ranked_findings", "next_targets"}
+        assert body["stats"]["nodes"] >= 1
+        scan_session._current = None
 
 
 class TestBuildProjection:
