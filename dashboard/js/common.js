@@ -142,7 +142,7 @@
   let lastOk     = null;
   let _steeringData = null;
   let _sessionData  = null;
-  let _activeTab = 'findings';
+  let _activeTab = 'overview';
   let _logLines  = [];
 
   // ── Notification system ───────────────────────────────────────────────────
@@ -198,7 +198,8 @@
   }
 
   // ── Tab switching ─────────────────────────────────────────────────────────
-  const TAB_NAMES = ['findings', 'topology', 'components', 'coverage', 'world-model', 'skills', 'activity', 'threat-model', 'metrics', 'setup-gates', 'logs'];
+  // Order MUST match the .tab-btn DOM order in index.html's sidebar (switchTab maps by index).
+  const TAB_NAMES = ['overview', 'findings', 'topology', 'components', 'coverage', 'skills', 'activity', 'world-model', 'threat-model', 'metrics', 'setup-gates', 'logs'];
 
   function switchTab(name) {
     _activeTab = name;
