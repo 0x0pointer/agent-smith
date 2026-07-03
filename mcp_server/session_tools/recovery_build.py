@@ -108,8 +108,9 @@ def _build_recovery_result(
     # the model chains findings without being asked — the "system gets smarter as
     # it learns" behavior. Top 3, fenced. Fail-soft (never break recovery).
     try:
-        from core.graph import build_graph, candidate_chains
-        chains = candidate_chains(build_graph())
+        from core.graph import build_graph, candidate_chains, rank_findings
+        _g = build_graph()
+        chains = candidate_chains(_g)
         if chains:
             result["candidate_chains"] = [
                 {"steps": [_fence(s) for s in c["steps"]],
@@ -117,6 +118,12 @@ def _build_recovery_result(
                  "combined_severity": c["combined_severity"]}
                 for c in chains[:3]
             ]
+        # WF-A5: push the single highest-value finding to deepen next.
+        ranked = rank_findings(_g)
+        if ranked:
+            top = ranked[0]
+            result["deepen_next"] = {"finding": _fence(top["label"]),
+                                     "severity": top["severity"], "why": top["why"]}
     except Exception:
         pass
 

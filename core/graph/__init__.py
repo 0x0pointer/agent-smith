@@ -12,5 +12,7 @@ from __future__ import annotations
 from .build import build_graph
 from .chains import candidate_chains
 from .model import Edge, Graph, Node
+from .views import coverage_view, next_targets, rank_findings
 
-__all__ = ["build_graph", "candidate_chains", "Graph", "Node", "Edge"]
+__all__ = ["build_graph", "candidate_chains", "coverage_view", "next_targets",
+           "rank_findings", "Graph", "Node", "Edge"]

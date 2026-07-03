@@ -62,6 +62,44 @@ class TestCandidateChains:
         assert candidate_chains(self._base()) == []
 
 
+class TestViews:
+    def _graph(self):
+        from core.graph.model import ENDPOINT, HAS_PARAM, PARAM, TESTED_FOR
+        g = Graph()
+        g.add_node("ep:e1", ENDPOINT, "POST /login", path="/login", method="POST")
+        g.add_node("ep:e2", ENDPOINT, "GET /about", path="/about", method="GET")
+        g.add_edge("ep:e1", "inj:sqli", TESTED_FOR, status="pending", param="u")
+        g.add_edge("ep:e1", "inj:xss", TESTED_FOR, status="tested_clean", param="u")
+        g.add_edge("ep:e2", "inj:sqli", TESTED_FOR, status="pending", param="q")
+        return g
+
+    def test_coverage_view_projects_matrix_shape(self):
+        from core.graph import coverage_view
+        v = coverage_view(self._graph())
+        assert {e["path"] for e in v["endpoints"]} == {"/login", "/about"}
+        assert len(v["matrix"]) == 3
+        assert any(c["injection_type"] == "sqli" and c["status"] == "pending" for c in v["matrix"])
+
+    def test_next_targets_value_ranked(self):
+        from core.graph import next_targets
+        t = next_targets(self._graph())
+        # /login (auth, rank 1) must come before /about (rank 6)
+        paths = [x["path"] for x in t]
+        assert paths.index("/login") < paths.index("/about")
+
+    def test_rank_findings_orders_by_severity_and_potential(self):
+        from core.graph import rank_findings
+        g = Graph()
+        g.add_node("host:t", HOST)
+        g.add_node("finding:lo", FINDING, "missing header", severity="low")
+        g.add_edge("finding:lo", "host:t", FOUND_ON)
+        g.add_node("finding:hi", FINDING, "RCE", severity="critical")
+        g.add_edge("finding:hi", "host:t", FOUND_ON)
+        g.add_edge("finding:hi", "finding:hi", ESCALATES_TO, lead="pivot to internal")
+        ranked = rank_findings(g)
+        assert ranked[0]["label"] == "RCE" and ranked[0]["score"] > ranked[1]["score"]
+
+
 class TestBuildProjection:
     def test_build_from_stores(self, monkeypatch):
         import core.graph.build as gb
