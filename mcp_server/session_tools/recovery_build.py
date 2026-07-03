@@ -104,6 +104,22 @@ def _build_recovery_result(
     if integrity_warnings:
         result["integrity_warnings"] = integrity_warnings
 
+    # Phase 2 / AR-B3: PUSH graph-derived kill-chain proposals into the brief so
+    # the model chains findings without being asked — the "system gets smarter as
+    # it learns" behavior. Top 3, fenced. Fail-soft (never break recovery).
+    try:
+        from core.graph import build_graph, candidate_chains
+        chains = candidate_chains(build_graph())
+        if chains:
+            result["candidate_chains"] = [
+                {"steps": [_fence(s) for s in c["steps"]],
+                 "terminal": _fence(c["terminal"]),
+                 "combined_severity": c["combined_severity"]}
+                for c in chains[:3]
+            ]
+    except Exception:
+        pass
+
     # Open wishlist items — needs Smith raised for the operator. Surfaced so a
     # fulfilled need (operator dropped in creds/scope) is picked up after
     # compaction and the linked cells get reopened instead of forgotten.
