@@ -330,7 +330,7 @@ def _route_params(route: str) -> list[dict]:
     params = [{"name": n, "type": "query", "value_hint": "string"}
               for n in parse_qs(parts.query) if not n.startswith("__")]
     for i, seg in enumerate(parts.path.split("/")):
-        if seg.isdigit() or re.fullmatch(r"[:{]\w+[}]?", seg):
+        if seg.isdigit() or re.fullmatch(r"[:{]\w+}?", seg):
             name = seg.strip(":{}") or f"id_{i}"
             params.append({"name": name, "type": "path", "value_hint": "integer"})
     return params

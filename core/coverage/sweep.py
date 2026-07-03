@@ -31,7 +31,7 @@ SWEEPABLE = frozenset({"ssti", "xss", "cmdi", "traversal", "sqli"})
 _UNIX_FILE_RE = re.compile(r"root:.*?:0:0:")            # /etc/passwd
 _WIN_INI_RE = re.compile(r"\bfor 16-bit app support\b|\[extensions\]", re.IGNORECASE)
 _CMDI_UNIX_RE = re.compile(r"uid=\d+\(")               # id output
-_CMDI_WIN_RE = re.compile(r"\bnt authority\\|\\\w+\$?\s*$", re.IGNORECASE)
+_CMDI_WIN_RE = re.compile(r"(?:\bnt authority\\)|(?:\\\w+\$?\s*$)", re.IGNORECASE)
 _SQLMAP_VULN_RE = re.compile(r"is vulnerable|sqlmap identified the following injection|"
                              r"appears to be .* injectable", re.IGNORECASE)
 _SQLMAP_CLEAN_RE = re.compile(r"all tested parameters do not appear to be injectable",

@@ -264,6 +264,8 @@ def _resolve_url(target: str, path: str, param: str, param_type: str, payload: s
 # CH-1: route the probe payload by the fingerprint already in known_assets, so a
 # real probe fires for the detected stack instead of a generic {{7*7}} a non-Jinja
 # engine ignores. The single most valuable chaining signal (tech) was inert before.
+# Default SSTI arithmetic probe for Jinja-family engines (evaluates to 49).
+_JINJA_SSTI_PROBE = "{{7*7}}"
 _SSTI_BY_TECH: list[tuple[tuple[str, ...], str]] = [
     (("freemarker",), "${7*7}"),
     (("velocity",), "#set($x=7*7)${x}"),
@@ -271,7 +273,7 @@ _SSTI_BY_TECH: list[tuple[tuple[str, ...], str]] = [
     (("erb", "rails", "ruby", "puma", "passenger"), "<%= 7*7 %>"),
     (("smarty",), "{7*7}"),
     (("jinja", "flask", "werkzeug", "django", "twig", "symfony",
-      "nunjucks", "handlebars", "express", "node"), "{{7*7}}"),
+      "nunjucks", "handlebars", "express", "node"), _JINJA_SSTI_PROBE),
 ]
 _WINDOWS_TECH = ("iis", "asp.net", "microsoft-httpapi", "kestrel", "windows")
 
@@ -310,7 +312,7 @@ def _injection_command_with_payload(inj: str, target: str, path: str, method: st
         return f"kali(command=\"sqlmap -u '{_resolve_url(target, path, param, param_type, 'test')}' --batch --level=2\")"
     payloads = {
         "xss": "<script>alert(1)</script>",
-        "ssti": "{{7*7}}",
+        "ssti": _JINJA_SSTI_PROBE,
         "cmdi": ";id",
         "ssrf": "http://127.0.0.1:80",
         "traversal": "....//....//etc/passwd",
@@ -345,7 +347,7 @@ def build_probe(inj: str, target: str, path: str, method: str, param: str,
                 "cmd": f"sqlmap -u '{url}' --batch --level=2"}
     http_payloads = {
         "xss": "<script>alert(1)</script>",
-        "ssti": _routed_payload("ssti", "{{7*7}}", techs),
+        "ssti": _routed_payload("ssti", _JINJA_SSTI_PROBE, techs),
         "cmdi": _routed_payload("cmdi", ";id", techs),
         "traversal": _routed_payload("traversal", "....//....//etc/passwd", techs),
     }

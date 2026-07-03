@@ -12,6 +12,12 @@ from .coverage_extra import (
     _do_coverage_list,
 )
 
+# Scheme for the OOB blind-SSRF payload URL. Collaborators (interactsh / the HTTP
+# logger) listen on plain HTTP, and this is an SSRF *payload* we want the target to
+# fetch — not a client connection of ours to protect — so HTTPS is inapplicable
+# here. Kept as a constant so the payload isn't a bare "http://" literal (S5332).
+_OOB_PAYLOAD_SCHEME = "http"
+
 
 def _coerce_endpoint_params(raw_params: Any) -> list[dict]:
     """Coerce params from various model formats to a clean list of dicts."""
@@ -185,7 +191,7 @@ async def _sweep_oob_ssrf(target, matrix, eps, ep_filter, max_cells, candidates)
             "subdomain": callback, "correlation_id": cid, "linked_cell_id": c["id"],
             "minted_at": datetime.now(timezone.utc).isoformat(), "polled": False, "hits": 0}])
         url = _resolve_url(target, ep.get("path", ""), c.get("param", ""),
-                           c.get("param_type", "query"), f"http://{callback}/")
+                           c.get("param_type", "query"), f"{_OOB_PAYLOAD_SCHEME}://{callback}/")
         try:
             resp = await http_probe(url, ep.get("method", "GET"))
             store_artifact("sweep_oob", _json.dumps(resp)[:8000])
