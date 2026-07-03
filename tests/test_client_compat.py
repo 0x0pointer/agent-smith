@@ -91,14 +91,22 @@ def _skill_leaves() -> set[str]:
     return {p.parent.name for p in _SKILLS_DIR.rglob("SKILL.md")}
 
 
-@pytest.mark.skipif(not _SKILLS_DIR.exists(), reason="skills submodule not checked out")
+def _skills_populated() -> bool:
+    """True only when the submodule is actually checked out AND populated. A fresh
+    clone (or a checkout without --recursive, or mid `git submodule update`) leaves
+    `skills/` as an empty gitlink dir that EXISTS but has no SKILL.md — those
+    environment states must SKIP, not hard-fail the suite."""
+    return _SKILLS_DIR.exists() and any(_SKILLS_DIR.rglob("SKILL.md"))
+
+
+@pytest.mark.skipif(not _skills_populated(), reason="skills submodule not checked out/populated")
 def test_core_skills_present_in_submodule():
     leaves = _skill_leaves()
     missing = CORE_SKILLS - leaves
     assert not missing, f"CLAUDE.md references skills with no SKILL.md: {sorted(missing)}"
 
 
-@pytest.mark.skipif(not _SKILLS_DIR.exists(), reason="skills submodule not checked out")
+@pytest.mark.skipif(not _skills_populated(), reason="skills submodule not checked out/populated")
 def test_skill_leaf_names_are_unique():
     """Skills install to a flat per-client dir (~/.claude/skills/<leaf>/), so two
     skills sharing a leaf name would clobber each other on install."""
