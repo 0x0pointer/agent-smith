@@ -54,3 +54,6 @@ report_generator.py
 steering_queue.json
 recovery_latest.json
 pentest_metrics.jsonl
+
+# AS-REPUD detached signatures (never commit)
+*.sig

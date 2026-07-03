@@ -61,15 +61,33 @@ async def run_container(
     mount_path: str | None = None,
     extra_volumes: list[tuple[str, str]] | None = None,
     env_vars: dict[str, str] | None = None,
+    network: str = "host",
+    cap_add: list[str] | None = None,
 ) -> tuple[str, str, int]:
     """
     Run a Docker container and return (stdout, stderr, exit_code).
     Raises asyncio.TimeoutError if the container exceeds the timeout.
     extra_volumes: list of (host_path, container_path) tuples for additional -v mounts.
     env_vars: environment variables to inject into the container via -e flags.
+    network: docker network mode ("host" default, "bridge", or "none" for untrusted
+        code analysis that needs no network — AS-13).
+    cap_add: capabilities to add back after --cap-drop=ALL (e.g. NET_RAW).
+
+    Hardening (AS-13): all scanner containers run with every Linux capability
+    dropped, no-new-privileges, and a pid cap — so a scanner/parser RCE while
+    analyzing untrusted target code cannot use ambient caps or fork-bomb the VM.
+    Tools that need a specific capability add it back via cap_add; code analyzers
+    (semgrep/trufflehog/mobsfscan) additionally run with network="none".
     """
     await _ensure_image(image)
-    cmd = [docker_executable(), "run", "--rm", "--network=host", "--memory=2g", "--cpus=1.5"]
+    cmd = [
+        docker_executable(), "run", "--rm",
+        f"--network={network}",
+        "--cap-drop=ALL", "--security-opt=no-new-privileges", "--pids-limit=512",
+        "--memory=2g", "--cpus=1.5",
+    ]
+    for cap in (cap_add or []):
+        cmd += [f"--cap-add={cap}"]
 
     for key, val in (env_vars or {}).items():
         cmd += ["-e", f"{key}={val}"]

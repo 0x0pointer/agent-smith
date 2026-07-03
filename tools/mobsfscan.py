@@ -61,6 +61,7 @@ def _parse(stdout: str, stderr: str) -> list[dict]:
 
 TOOL = Tool(
     name            = "mobsfscan",
+    network         = "none",   # analyzes untrusted mobile source, needs no network (AS-13)
     image           = "opensecurity/mobsfscan:latest",
     build_args      = _build_args,
     parser          = _parse,

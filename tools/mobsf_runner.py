@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import os
 
+from core import paths as _paths
 from tools.docker_cli import docker_executable
 
 # Use the official MobSF image directly — we don't customise it, so there's no
@@ -31,9 +32,38 @@ MOBSF_CONTAINER = "pentest-mobsf"
 MOBSF_PORT      = 5003          # host port → container port 8000
 MOBSF_API       = f"http://localhost:{MOBSF_PORT}"
 
-# Deterministic API key: injected into the container at run time (-e) and sent on
-# every REST call. Overridable via env for operators who want their own.
-API_KEY = os.environ.get("SMITH_MOBSF_API_KEY", "smith0mobsf0static0analysis0key00")
+# API key: injected into the container at run time (-e) and sent on every REST
+# call. Overridable via SMITH_MOBSF_API_KEY. When unset, a RANDOM key is minted
+# per install and persisted 0600 to logs/mobsf.key (gitignored) — so it survives
+# process restarts and stays in sync with a reused container, without shipping a
+# hardcoded, git-committed default secret (which any repo reader would know).
+def _resolve_api_key() -> str:
+    env = os.environ.get("SMITH_MOBSF_API_KEY")
+    if env:
+        return env
+    import secrets
+
+    key_file = _paths.LOGS_DIR / "mobsf.key"
+    try:
+        existing = key_file.read_text().strip()
+        if existing:
+            return existing
+    except OSError:
+        pass
+    key = secrets.token_hex(24)
+    try:
+        _paths.LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(key_file), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            os.write(fd, key.encode())
+        finally:
+            os.close(fd)
+    except OSError:
+        pass  # fall back to the in-memory key for this process
+    return key
+
+
+API_KEY = _resolve_api_key()
 
 # Static scans of a large APK/IPA can take minutes — give the scan call plenty of
 # headroom. The MCP client transport timeout must exceed this.

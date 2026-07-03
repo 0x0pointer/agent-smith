@@ -46,6 +46,14 @@ def save(path, data, indent: int = 2) -> None:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(json.dumps(data, indent=indent))
         os.replace(tmp, p)
+        # State files (session.json, findings.json, coverage, …) hold harvested
+        # target credentials / JWTs — keep them owner-only. mkstemp already creates
+        # 0600 and os.replace preserves it, but chmod explicitly in case the target
+        # pre-existed with looser perms (AS-06 hardening).
+        try:
+            os.chmod(p, 0o600)
+        except OSError:
+            pass
     except Exception:
         try:
             os.unlink(tmp)
