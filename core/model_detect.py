@@ -77,6 +77,20 @@ def classify_model(name: str) -> tuple[str | None, str]:
     return None, f"unrecognised model '{name}'"
 
 
+def _detected_context_window() -> int | None:
+    """The model's TRUE context window in tokens, if known (SM-2).
+
+    Read from SMITH_CONTEXT_WINDOW — exported by the opencode installer, which
+    queries the model server's /v1/models (max_model_len/context_length). Returns
+    None when unknown, so profile resolution falls back to the name-based guess."""
+    raw = os.environ.get("SMITH_CONTEXT_WINDOW", "").strip()
+    try:
+        n = int(raw)
+        return n if n > 0 else None
+    except ValueError:
+        return None
+
+
 def detect_profile(explicit: str | None = None) -> tuple[str, str]:
     """Resolve the model profile. Returns (profile, reason)."""
     if explicit and explicit.strip().lower() in VALID_PROFILES:
@@ -85,6 +99,19 @@ def detect_profile(explicit: str | None = None) -> tuple[str, str]:
     forced = os.environ.get("SMITH_MODEL_PROFILE", "").strip().lower()
     if forced in VALID_PROFILES:
         return forced, "SMITH_MODEL_PROFILE env"
+
+    # SM-2: the MEASURED context window (the installer detects it from the model
+    # server; exported as SMITH_CONTEXT_WINDOW) is a far better profile signal
+    # than an env-var model-name guess — a local 27B behind a generic proxy sets
+    # no recognizable name and would otherwise fall through to `full` and overflow.
+    # A detected window drives the profile directly, ranking ABOVE the name match.
+    win = _detected_context_window()
+    if win:
+        if win <= 49_152:      # ≤ ~48k tokens
+            return "small", f"detected context window {win} -> small"
+        if win <= 131_072:     # ≤ ~128k tokens
+            return "medium", f"detected context window {win} -> medium"
+        return "full", f"detected context window {win} -> full"
 
     for var in _MODEL_ENV_VARS:
         val = os.environ.get(var, "").strip()

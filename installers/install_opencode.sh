@@ -217,6 +217,14 @@ if model_cfg is not None:
     # every request under the real ceiling while still using ~95% of the window.
     if true_ctx:
         limit["context"] = int(true_ctx * 0.95)
+        # SM-2: publish the model's TRUE window so the MCP server picks the right
+        # model profile (core.model_detect reads SMITH_CONTEXT_WINDOW; the MCP's
+        # .env loader makes it win over inherited env). Upsert into repo .env.
+        _envf = repo_dir / ".env"
+        _lines = [ln for ln in (_envf.read_text().splitlines() if _envf.exists() else [])
+                  if not ln.startswith("SMITH_CONTEXT_WINDOW=")]
+        _lines.append(f"SMITH_CONTEXT_WINDOW={int(true_ctx)}")
+        _envf.write_text("\n".join(_lines) + "\n")
     context = limit.get("context")
     if context:
         # Respect an operator-chosen output budget; else a sane fraction capped at 16k.

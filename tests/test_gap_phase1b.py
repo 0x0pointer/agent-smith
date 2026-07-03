@@ -78,3 +78,36 @@ class TestBolaGate:
         scan_session.update_known_assets("credentials", [{"username": "alice", "password": "1"}])
         scan_session.update_known_assets("credentials", [{"username": "alice", "password": "1"}])
         assert "bola_multi_identity" not in self._gates()
+
+
+# ── SM-2: profile from the measured context window ──────────────────────────────
+class TestProfileFromWindow:
+    def _isolate(self, monkeypatch, win):
+        from core import model_detect as md
+        for v in ("SMITH_MODEL_PROFILE", "OPENCODE_MODEL", "OLLAMA_MODEL",
+                  "OLLAMA_HOST", "SMITH_MODEL", "OPENAI_MODEL", "SMITH_CONTEXT_WINDOW"):
+            monkeypatch.delenv(v, raising=False)
+        if win is not None:
+            monkeypatch.setenv("SMITH_CONTEXT_WINDOW", str(win))
+        return md.detect_profile()[0]
+
+    def test_small_window(self, monkeypatch):
+        assert self._isolate(monkeypatch, 32768) == "small"
+
+    def test_medium_window(self, monkeypatch):
+        assert self._isolate(monkeypatch, 131072) == "medium"
+
+    def test_large_window(self, monkeypatch):
+        assert self._isolate(monkeypatch, 200000) == "full"
+
+    def test_window_beats_name_guess(self, monkeypatch):
+        # a small measured window wins over a frontier-sounding model name
+        from core import model_detect as md
+        for v in ("SMITH_MODEL_PROFILE", "OLLAMA_HOST"):
+            monkeypatch.delenv(v, raising=False)
+        monkeypatch.setenv("OPENCODE_MODEL", "gpt-4o")   # would classify full by name
+        monkeypatch.setenv("SMITH_CONTEXT_WINDOW", "32768")
+        assert md.detect_profile()[0] == "small"
+
+    def test_no_window_falls_through(self, monkeypatch):
+        assert self._isolate(monkeypatch, None) == "full"
