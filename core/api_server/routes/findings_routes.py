@@ -114,9 +114,9 @@ async def api_graph() -> JSONResponse:
             "ranked_findings": rank_findings(g)[:10],
             "next_targets": next_targets(g, limit=8),
         })
-    except Exception as exc:
-        _log.debug("api_graph failed: %s", exc)
-        return JSONResponse({**empty, "error": str(exc)})
+    except Exception:
+        _log.exception("api_graph failed")
+        return JSONResponse({**empty, "error": _api._ERR_REQUEST_FAILED})
 
 
 @router.get("/api/threat-model")
