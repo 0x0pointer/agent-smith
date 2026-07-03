@@ -20,6 +20,44 @@ from ._common import (
 _CVE_RE = re.compile(r"cve-\d{4}-\d{4,7}", re.IGNORECASE)
 
 
+def _maybe_trigger_cve_gate(text: str, cve: str, speculative: bool, severity: str) -> str | None:
+    """CH-3: a confirmed CVE (cve= field or CVE-id in the text) auto-opens an
+    exploitability-validation chain (analyze-cve; +metasploit at high/critical)
+    instead of sitting as text. Suppressed for speculative findings."""
+    match = _CVE_RE.search(cve or "") or _CVE_RE.search(text)
+    if not match or speculative:
+        return None
+    skills = ["analyze-cve"] + (["metasploit"] if severity in ("critical", "high") else [])
+    scan_session.trigger_gate("analyze_cve", f"CVE identified: {match.group(0).upper()}", skills)
+    return "analyze_cve"
+
+
+def _maybe_trigger_rce_gate(text: str, title: str, severity: str, speculative: bool) -> str | None:
+    """RCE-class finding → post-exploit is mandatory — but ONLY when code execution
+    is actually confirmed. A speculative mention ("appears to support SSTI", ${7*7}
+    merely reflected) is not RCE, so it must not impose the gate."""
+    if (severity in ("critical", "high")
+            and any(kw in text for kw in _RCE_KEYWORDS)
+            and not speculative):
+        scan_session.trigger_gate("post_exploit_rce", f"RCE confirmed: {title}", ["post-exploit"])
+        return "post_exploit_rce"
+    return None
+
+
+def _maybe_trigger_auth_gate(text: str, title: str, severity: str) -> str | None:
+    """Auth weakness → credential-audit is mandatory. Require a real weakness
+    (high/critical severity OR a weakness keyword), not just an auth-service name."""
+    auth_weakness = severity in ("critical", "high") or any(k in text for k in _AUTH_WEAKNESS_KEYWORDS)
+    if not (auth_weakness and any(kw in text for kw in _AUTH_KEYWORDS)):
+        return None
+    current = scan_session.get()
+    depth = current.get("depth", "standard") if current else "standard"
+    if depth in ("standard", "thorough"):
+        scan_session.trigger_gate("credential_audit", f"Auth service detected: {title}", ["credential-audit"])
+        return "credential_audit"
+    return None
+
+
 def _auto_trigger_finding_gates(title: str, severity: str, description: str, cve: str = "") -> list[str]:
     """Check finding content and trigger appropriate gates. Returns list of triggered gate IDs.
 
@@ -27,52 +65,19 @@ def _auto_trigger_finding_gates(title: str, severity: str, description: str, cve
     intended finding triggers nothing, and credential-audit needs a real auth
     WEAKNESS signal — not just the name of an auth service.
     """
-    triggered: list[str] = []
     text = f"{title} {description}".lower()
 
     # Mitigated / not-exploitable findings must not impose a mandatory skill gate.
     if any(marker in text for marker in _GATE_BENIGN_MARKERS):
-        return triggered
+        return []
 
-    # CH-3: a confirmed CVE (cve= field or CVE-id in the text) auto-opens an
-    # exploitability-validation chain (analyze-cve; +metasploit at high/critical)
-    # instead of sitting as text. Suppressed for speculative/benign findings.
     speculative = any(m in text for m in _SPECULATION_MARKERS)
-    if (_CVE_RE.search(cve or "") or _CVE_RE.search(text)) and not speculative:
-        skills = ["analyze-cve"] + (["metasploit"] if severity in ("critical", "high") else [])
-        cve_id = (_CVE_RE.search(cve or "") or _CVE_RE.search(text)).group(0).upper()
-        scan_session.trigger_gate("analyze_cve", f"CVE identified: {cve_id}", skills)
-        triggered.append("analyze_cve")
-
-    # RCE-class finding → post-exploit is mandatory — but ONLY when code execution
-    # is actually confirmed. A speculative mention ("appears to support SSTI",
-    # ${7*7} merely reflected) is not RCE, so it must not impose the post-exploit
-    # gate (the false-fire seen on a SQLi-auth-bypass finding that name-dropped SSTI).
-    if (severity in ("critical", "high")
-            and any(kw in text for kw in _RCE_KEYWORDS)
-            and not speculative):
-        scan_session.trigger_gate(
-            "post_exploit_rce",
-            f"RCE confirmed: {title}",
-            ["post-exploit"],
-        )
-        triggered.append("post_exploit_rce")
-
-    # Auth weakness → credential-audit is mandatory. Require a real weakness
-    # (high/critical severity OR a weakness keyword), not just an auth-service name.
-    auth_weakness = severity in ("critical", "high") or any(k in text for k in _AUTH_WEAKNESS_KEYWORDS)
-    if auth_weakness and any(kw in text for kw in _AUTH_KEYWORDS):
-        current = scan_session.get()
-        depth = current.get("depth", "standard") if current else "standard"
-        if depth in ("standard", "thorough"):
-            scan_session.trigger_gate(
-                "credential_audit",
-                f"Auth service detected: {title}",
-                ["credential-audit"],
-            )
-            triggered.append("credential_audit")
-
-    return triggered
+    candidates = (
+        _maybe_trigger_cve_gate(text, cve, speculative, severity),
+        _maybe_trigger_rce_gate(text, title, severity, speculative),
+        _maybe_trigger_auth_gate(text, title, severity),
+    )
+    return [g for g in candidates if g]
 
 
 def _auto_trigger_note_gates(message: str) -> list[str]:

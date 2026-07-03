@@ -155,10 +155,9 @@ async def _do_coverage_import(cov_type: str, data):
             "The matrix is your test plan — move to per-cell testing (or report(coverage type='sweep')).")
 
 
-async def _sweep_oob_ssrf(target, matrix, eps, ep_filter, max_cells, candidates) -> str:
-    """CH-9: fire OOB-bearing blind-SSRF probes at pending ssrf cells and confirm
-    via collaborator callback. No-op (returns '') when no OOB listener is active.
-    Best-effort poll; confirmed → candidate, un-confirmed → surfaced to re-poll."""
+async def _fire_oob_ssrf_probes(target, eps, ssrf_cells, base, mode) -> list:
+    """Mint a unique OOB callback per ssrf cell, embed it in the param, fire the
+    probe. Returns [(cell, correlation_id)] for the poll pass."""
     import json as _json
     import uuid
     from datetime import datetime, timezone
@@ -168,18 +167,6 @@ async def _sweep_oob_ssrf(target, matrix, eps, ep_filter, max_cells, candidates)
     from mcp_server.http_tools import http_probe
     from mcp_server.scan_engine.artifacts import store_artifact
     from mcp_server.scan_engine.planner import _resolve_url
-
-    listener = _sess_assets.get_oob_listener()
-    if not listener:
-        return ""
-    base, mode = listener.get("base_domain", ""), listener.get("mode", "interactsh")
-    if not base:
-        return ""
-    ssrf_cells = [c for c in matrix.get("matrix", [])
-                  if c.get("status") == "pending" and c.get("injection_type") == "ssrf"
-                  and (not ep_filter or c.get("endpoint_id") == ep_filter)][:max_cells]
-    if not ssrf_cells:
-        return ""
 
     fired = []  # (cell, correlation_id)
     for c in ssrf_cells:
@@ -198,10 +185,19 @@ async def _sweep_oob_ssrf(target, matrix, eps, ep_filter, max_cells, candidates)
         except Exception:
             pass
         fired.append((c, cid))
+    return fired
 
-    # Best-effort poll (callbacks lag; earlier cells have had time by now).
-    confirmed = pending = 0
+
+async def _poll_oob_ssrf_callbacks(fired, listener, mode, eps, candidates) -> tuple[int, int]:
+    """Best-effort poll of each fired probe's collaborator (callbacks lag). A hit
+    appends an ssrf CANDIDATE (artifact-backed). Returns (confirmed, pending)."""
+    import json as _json
+    from core import oob as _oob
+    from core.session import assets as _sess_assets
+    from mcp_server.scan_engine.artifacts import store_artifact
     from tools import kali_runner
+
+    confirmed = pending = 0
     for c, cid in fired:
         try:
             if mode == "http":
@@ -225,11 +221,95 @@ async def _sweep_oob_ssrf(target, matrix, eps, ep_filter, max_cells, candidates)
             confirmed += 1
         else:
             pending += 1
+    return confirmed, pending
+
+
+async def _sweep_oob_ssrf(target, matrix, eps, ep_filter, max_cells, candidates) -> str:
+    """CH-9: fire OOB-bearing blind-SSRF probes at pending ssrf cells and confirm
+    via collaborator callback. No-op (returns '') when no OOB listener is active.
+    Best-effort poll; confirmed → candidate, un-confirmed → surfaced to re-poll."""
+    from core.session import assets as _sess_assets
+
+    listener = _sess_assets.get_oob_listener()
+    if not listener:
+        return ""
+    base, mode = listener.get("base_domain", ""), listener.get("mode", "interactsh")
+    if not base:
+        return ""
+    ssrf_cells = [c for c in matrix.get("matrix", [])
+                  if c.get("status") == "pending" and c.get("injection_type") == "ssrf"
+                  and (not ep_filter or c.get("endpoint_id") == ep_filter)][:max_cells]
+    if not ssrf_cells:
+        return ""
+
+    fired = await _fire_oob_ssrf_probes(target, eps, ssrf_cells, base, mode)
+    confirmed, pending = await _poll_oob_ssrf_callbacks(fired, listener, mode, eps, candidates)
+
     note = f"OOB blind-SSRF: fired {len(fired)} probe(s), {confirmed} confirmed via callback"
     if pending:
         note += (f", {pending} awaiting a callback (they lag — re-run the sweep or "
                  "session(action='oob_poll') to re-check; no callback = not reaching an SSRF sink)")
     return note + "."
+
+
+async def _run_sweep_probe(c, ep, target):
+    """Build + run the probe for one cell, store the artifact, evaluate it.
+    Returns (artifact_id, verdict_dict) — or None when the probe couldn't run
+    (no probe built / execution error), which the caller counts as inconclusive."""
+    import json as _json
+    from core.coverage import sweep as _sweep
+    from mcp_server.http_tools import http_probe
+    from mcp_server.scan_engine import planner as _planner
+    from mcp_server.scan_engine.envelope import store_artifact
+
+    probe = _planner.build_probe(
+        c["injection_type"], target, ep.get("path", ""), ep.get("method", "GET"),
+        c.get("param", ""), c.get("param_type", "query"))
+    if not probe:
+        return None
+    try:
+        if probe["kind"] == "http":
+            resp = await http_probe(probe["url"], probe["method"])
+            status, body = resp.get("status", 0), resp.get("body", "")
+            content = _json.dumps(resp)[:20_000]
+        else:  # kali — sqlmap runs its own oracle
+            from tools import kali_runner
+            body = await kali_runner.exec_command(probe["cmd"])
+            status, content = 0, body[:20_000]
+    except Exception as exc:  # fail-soft — one dead probe never aborts the sweep
+        log.note(f"sweep probe error on cell {c['id']}: {exc}")
+        return None
+
+    artifact_id = store_artifact("sweep", content)
+    v = _sweep.evaluate_probe(c["injection_type"], probe.get("payload", ""), status, body)
+    return artifact_id, v
+
+
+def _format_sweep_report(cells, applied, candidates, blocked, inconclusive, oob_note) -> str:
+    """Render the operator-facing sweep summary + the CANDIDATES to confirm."""
+    from core.prompt_fence import fence as _fence
+    lines = [
+        f"🧹 SWEEP: probed {len(cells)} pending cell(s) — "
+        f"{applied.get('updated', 0)} auto-closed tested_clean, {len(candidates)} candidate(s), "
+        f"{blocked} auth-blocked, {inconclusive} inconclusive."
+    ]
+    if oob_note:
+        lines.append(oob_note)
+    if blocked:
+        lines.append("Auth-blocked cells stayed pending — re-run the sweep once authenticated.")
+    if not candidates:
+        lines.append("No exploitable candidates surfaced by the sweep on these cells.")
+        return "\n".join(lines)
+    lines.append("\nCANDIDATES — confirm each, file a finding, then close the cell vulnerable "
+                 "with the linked artifact_id:")
+    for cand in candidates:
+        lines.append(
+            f"  • cell {cand['cell_id']} [{cand['injection']}] on {_fence(cand['endpoint'])} "
+            f"param {_fence(cand['param'])} — {cand['basis']} (artifact_id={cand['artifact_id']}). "
+            f"report(action='finding', …) then report(action='coverage', data={{type:'tested', "
+            f"cell_id:'{cand['cell_id']}', status:'vulnerable', finding_id:'<id>', artifact_id:'{cand['artifact_id']}'}})"
+        )
+    return "\n".join(lines)
 
 
 async def _do_coverage_sweep(data, cov):
@@ -240,12 +320,7 @@ async def _do_coverage_sweep(data, cov):
     (artifact-backed); oracle POSITIVES are returned as CANDIDATES for the model
     to confirm + file (never auto-filed — respects the finding_id gate). Opt-in,
     bounded, fail-soft."""
-    import json as _json
     from core.coverage import sweep as _sweep
-    from core.prompt_fence import fence as _fence
-    from mcp_server.http_tools import http_probe
-    from mcp_server.scan_engine import planner as _planner
-    from mcp_server.scan_engine.envelope import store_artifact
 
     target = (scan_session.get() or {}).get("target", "")
     if not target:
@@ -270,36 +345,20 @@ async def _do_coverage_sweep(data, cov):
 
     for c in cells:
         ep = eps.get(c["endpoint_id"], {})
-        probe = _planner.build_probe(
-            c["injection_type"], target, ep.get("path", ""), ep.get("method", "GET"),
-            c.get("param", ""), c.get("param_type", "query"))
-        if not probe:
+        outcome = await _run_sweep_probe(c, ep, target)
+        if outcome is None:
             inconclusive += 1
             continue
-        try:
-            if probe["kind"] == "http":
-                resp = await http_probe(probe["url"], probe["method"])
-                status, body = resp.get("status", 0), resp.get("body", "")
-                content = _json.dumps(resp)[:20_000]
-            else:  # kali — sqlmap runs its own oracle
-                from tools import kali_runner
-                body = await kali_runner.exec_command(probe["cmd"])
-                status, content = 0, body[:20_000]
-        except Exception as exc:  # fail-soft — one dead probe never aborts the sweep
-            inconclusive += 1
-            log.note(f"sweep probe error on cell {c['id']}: {exc}")
-            continue
-
-        artifact_id = store_artifact("sweep", content)
-        v = _sweep.evaluate_probe(c["injection_type"], probe.get("payload", ""), status, body)
-        if v["verdict"] == "clean":
+        artifact_id, v = outcome
+        verdict = v["verdict"]
+        if verdict == "clean":
             closures.append({"cell_id": c["id"], "status": "tested_clean",
                              "artifact_id": artifact_id, "notes": f"sweep: {v['basis']}"})
-        elif v["verdict"] == "candidate":
+        elif verdict == "candidate":
             candidates.append({"cell_id": c["id"], "injection": c["injection_type"],
                                "endpoint": ep.get("path", ""), "param": c.get("param", ""),
                                "artifact_id": artifact_id, "basis": v["basis"]})
-        elif v["verdict"] == "blocked":
+        elif verdict == "blocked":
             blocked += 1
         else:
             inconclusive += 1
@@ -312,28 +371,7 @@ async def _do_coverage_sweep(data, cov):
     # otherwise hand-runs and drops. Fail-soft; appends OOB candidates + a note.
     oob_note = await _sweep_oob_ssrf(target, m, eps, ep_filter, max_cells, candidates)
 
-    lines = [
-        f"🧹 SWEEP: probed {len(cells)} pending cell(s) — "
-        f"{applied.get('updated', 0)} auto-closed tested_clean, {len(candidates)} candidate(s), "
-        f"{blocked} auth-blocked, {inconclusive} inconclusive."
-    ]
-    if oob_note:
-        lines.append(oob_note)
-    if blocked:
-        lines.append("Auth-blocked cells stayed pending — re-run the sweep once authenticated.")
-    if candidates:
-        lines.append("\nCANDIDATES — confirm each, file a finding, then close the cell vulnerable "
-                     "with the linked artifact_id:")
-        for cand in candidates:
-            lines.append(
-                f"  • cell {cand['cell_id']} [{cand['injection']}] on {_fence(cand['endpoint'])} "
-                f"param {_fence(cand['param'])} — {cand['basis']} (artifact_id={cand['artifact_id']}). "
-                f"report(action='finding', …) then report(action='coverage', data={{type:'tested', "
-                f"cell_id:'{cand['cell_id']}', status:'vulnerable', finding_id:'<id>', artifact_id:'{cand['artifact_id']}'}})"
-            )
-    else:
-        lines.append("No exploitable candidates surfaced by the sweep on these cells.")
-    return "\n".join(lines)
+    return _format_sweep_report(cells, applied, candidates, blocked, inconclusive, oob_note)
 
 
 async def _do_coverage(data):

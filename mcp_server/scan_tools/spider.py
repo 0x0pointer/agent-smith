@@ -115,6 +115,50 @@ def _spider_discovery_auth(crawl_cookies: dict | None) -> dict | None:
     return {"headers": headers, "cookies": cookies} if (headers or cookies) else None
 
 
+def _evaluate_spider_gate(target: str, raw: str) -> bool:
+    """Did the spider actually run? Advances the failure-retry gate and returns the
+    (possibly retry-released) ok flag."""
+    spider_ok = _spider_succeeded(raw)
+    current_retries = scan_session.get_spider_failures().get(target, {}).get("retry_count", 0)
+    if spider_ok:
+        scan_session.clear_spider_failure(target)
+    elif current_retries >= scan_session.spider_max_retries():
+        # After N retries still empty — assume non-crawlable target, release gate.
+        scan_session.clear_spider_failure(target)
+        log.note(f"spider: gate released for {target} after {current_retries + 1} attempts (treating as non-crawlable)")
+        spider_ok = True
+    else:
+        new_count = scan_session.record_spider_failure(target)
+        log.note(f"spider: GATE TRIGGERED for {target} — empty/error output (attempt {new_count})")
+    return spider_ok
+
+
+async def _spider_autodiscovery_note(target: str, raw: str, cookies: dict) -> str:
+    """Auto-discovery enrichment: parse any OpenAPI/Swagger spec, mine JS bundles,
+    read form fields, and AUTO-REGISTER the inventory into the coverage matrix.
+    Shifts the model's job from "build the matrix" to "test the matrix". Returns a
+    note to append ('' on nothing found / error). Fail-soft — never breaks spider."""
+    try:
+        from mcp_server.scan_engine.discovery import discover_and_register
+        urls = [ln.strip() for ln in raw.splitlines() if ln.strip().startswith("http")]
+        enrich = await discover_and_register(target, urls, auth=_spider_discovery_auth(cookies))
+        log.note(f"spider auto-discovery: {enrich}")
+        if enrich.get("registered"):
+            src = ", ".join(f"{k}:{v}" for k, v in sorted(enrich["by_source"].items()))
+            return (
+                f"\n\n🧭 AUTO-DISCOVERY: registered {enrich['registered']} endpoint(s) / "
+                f"{enrich['cells']} coverage cell(s) ({src})"
+                + ("; OpenAPI/Swagger spec parsed and expanded" if enrich.get("spec_found") else "")
+                + ".\nThe coverage matrix is now your test plan — you do NOT need to re-register "
+                "these. Move to systematic per-cell testing (mark in_progress, run the tool, "
+                "cite the artifact_id). If you discover further endpoints (JS, auth-gated pages), "
+                "register them too before testing."
+            )
+    except Exception as exc:  # pragma: no cover - defensive
+        log.note(f"spider auto-discovery skipped: {exc}")
+    return ""
+
+
 async def _handle_spider(target, flags, options):
     mode = options.get("mode", "fast")
     depth = str(max(1, options.get("depth", 3)))
@@ -148,19 +192,7 @@ async def _handle_spider(target, flags, options):
     cost_tracker.finish(call_id, raw_summary)
     log.tool_result("spider", raw_summary)
 
-    # Spider gate: detect whether the tool actually ran.
-    spider_ok = _spider_succeeded(raw)
-    current_retries = scan_session.get_spider_failures().get(target, {}).get("retry_count", 0)
-    if spider_ok:
-        scan_session.clear_spider_failure(target)
-    elif current_retries >= scan_session.spider_max_retries():
-        # After N retries still empty — assume non-crawlable target, release gate.
-        scan_session.clear_spider_failure(target)
-        log.note(f"spider: gate released for {target} after {current_retries + 1} attempts (treating as non-crawlable)")
-        spider_ok = True
-    else:
-        new_count = scan_session.record_spider_failure(target)
-        log.note(f"spider: GATE TRIGGERED for {target} — empty/error output (attempt {new_count})")
+    spider_ok = _evaluate_spider_gate(target, raw)
 
     from mcp_server.scan_engine import wrap
     # Bounded summary inline; FULL crawl retained as the on-disk artifact (SP-11).
@@ -177,27 +209,5 @@ async def _handle_spider(target, flags, options):
             f"  (Failure tracking auto-releases after {scan_session.spider_max_retries()} retries.)"
         )
     else:
-        # Auto-discovery enrichment: parse any OpenAPI/Swagger spec, mine JS
-        # bundles, read form fields, and AUTO-REGISTER the whole inventory into
-        # the coverage matrix. Shifts the model's job from "build the matrix"
-        # (which weaker models skip, leaving stub endpoints) to "test the
-        # matrix". Fail-soft — never break the spider result on enrichment error.
-        try:
-            from mcp_server.scan_engine.discovery import discover_and_register
-            urls = [ln.strip() for ln in raw.splitlines() if ln.strip().startswith("http")]
-            enrich = await discover_and_register(target, urls, auth=_spider_discovery_auth(cookies))
-            log.note(f"spider auto-discovery: {enrich}")
-            if enrich.get("registered"):
-                src = ", ".join(f"{k}:{v}" for k, v in sorted(enrich["by_source"].items()))
-                result += (
-                    f"\n\n🧭 AUTO-DISCOVERY: registered {enrich['registered']} endpoint(s) / "
-                    f"{enrich['cells']} coverage cell(s) ({src})"
-                    + ("; OpenAPI/Swagger spec parsed and expanded" if enrich.get("spec_found") else "")
-                    + ".\nThe coverage matrix is now your test plan — you do NOT need to re-register "
-                    "these. Move to systematic per-cell testing (mark in_progress, run the tool, "
-                    "cite the artifact_id). If you discover further endpoints (JS, auth-gated pages), "
-                    "register them too before testing."
-                )
-        except Exception as exc:  # pragma: no cover - defensive
-            log.note(f"spider auto-discovery skipped: {exc}")
+        result += await _spider_autodiscovery_note(target, raw, cookies)
     return result

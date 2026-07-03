@@ -42,19 +42,48 @@ def _verdict(v: str, basis: str) -> dict:
     return {"verdict": v, "basis": basis}
 
 
+def _eval_sqli(body: str) -> dict:
+    """sqlmap carries its own verdict in stdout — trust it over a hand oracle."""
+    if _SQLMAP_VULN_RE.search(body):
+        return _verdict("candidate", "sqlmap reported the parameter injectable")
+    if _SQLMAP_CLEAN_RE.search(body):
+        return _verdict("clean", "sqlmap: no parameter appears injectable")
+    return _verdict("inconclusive", "sqlmap output inconclusive")
+
+
+def _eval_ssti(payload: str, body: str) -> dict:
+    # 7*7=49 for every engine. Evaluated (49 present, literal payload absent) →
+    # candidate; a reflected-but-unevaluated payload is an XSS concern, not SSTI.
+    if "49" in body and payload not in body:
+        return _verdict("candidate", "arithmetic evaluated (49) — template injection")
+    return _verdict("clean", "payload not evaluated by a template engine")
+
+
+def _eval_xss(payload: str, body: str) -> dict:
+    if payload and payload in body:  # exact, unencoded reflection
+        return _verdict("candidate", "payload reflected unencoded in the response")
+    return _verdict("clean", "payload absent or encoded in the response")
+
+
+def _eval_cmdi(body: str) -> dict:
+    if _CMDI_UNIX_RE.search(body) or _CMDI_WIN_RE.search(body):
+        return _verdict("candidate", "command output present — command injection")
+    return _verdict("clean", "no command output in the response")
+
+
+def _eval_traversal(body: str) -> dict:
+    if _UNIX_FILE_RE.search(body) or _WIN_INI_RE.search(body):
+        return _verdict("candidate", "file contents leaked — path traversal")
+    return _verdict("clean", "no file contents in the response")
+
+
 def evaluate_probe(inj_type: str, payload: str, status: int, body: str) -> dict:
     """Adjudicate one executed probe. ``body`` is the response body (http) or the
     tool's stdout (sqlmap). Returns ``{"verdict", "basis"}``."""
     if inj_type not in SWEEPABLE:
         return _verdict("inconclusive", f"{inj_type} not server-side sweepable")
-
-    # sqlmap carries its own verdict in stdout — trust it over a hand oracle.
     if inj_type == "sqli":
-        if _SQLMAP_VULN_RE.search(body):
-            return _verdict("candidate", "sqlmap reported the parameter injectable")
-        if _SQLMAP_CLEAN_RE.search(body):
-            return _verdict("clean", "sqlmap: no parameter appears injectable")
-        return _verdict("inconclusive", "sqlmap output inconclusive")
+        return _eval_sqli(body)
 
     # HTTP-payload oracles below need a response to judge.
     if status in (401, 403):
@@ -62,28 +91,12 @@ def evaluate_probe(inj_type: str, payload: str, status: int, body: str) -> dict:
     if status >= 500 or not body:
         return _verdict("inconclusive", f"no usable response (HTTP {status})")
 
-    b = body
     if inj_type == "ssti":
-        # 7*7=49 for every engine. Evaluated (49 present, literal payload absent)
-        # → candidate; literal payload reflected but not evaluated → clean (that's
-        # an XSS concern, not SSTI); neither → clean.
-        if "49" in b and payload not in b:
-            return _verdict("candidate", "arithmetic evaluated (49) — template injection")
-        return _verdict("clean", "payload not evaluated by a template engine")
-
+        return _eval_ssti(payload, body)
     if inj_type == "xss":
-        if payload and payload in b:  # exact, unencoded reflection
-            return _verdict("candidate", "payload reflected unencoded in the response")
-        return _verdict("clean", "payload absent or encoded in the response")
-
+        return _eval_xss(payload, body)
     if inj_type == "cmdi":
-        if _CMDI_UNIX_RE.search(b) or _CMDI_WIN_RE.search(b):
-            return _verdict("candidate", "command output present — command injection")
-        return _verdict("clean", "no command output in the response")
-
+        return _eval_cmdi(body)
     if inj_type == "traversal":
-        if _UNIX_FILE_RE.search(b) or _WIN_INI_RE.search(b):
-            return _verdict("candidate", "file contents leaked — path traversal")
-        return _verdict("clean", "no file contents in the response")
-
+        return _eval_traversal(body)
     return _verdict("inconclusive", "unhandled")

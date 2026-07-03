@@ -192,6 +192,50 @@ def _trigger_body_signal_gates(scan_session: Any, result: Any, ctx: dict) -> Non
             ["web-exploit"])
 
 
+def _persist_subfinder_assets(scan_session, evidence) -> None:
+    subs = evidence.get("subdomains", [])
+    if subs:
+        scan_session.update_known_assets("domains", subs[:50])
+
+
+def _persist_spider_assets(scan_session, evidence) -> None:
+    endpoints = evidence.get("endpoints", [])
+    if endpoints:
+        scan_session.update_known_assets(
+            "endpoints",
+            [ep.get("path", "") for ep in endpoints if ep.get("path")])
+
+
+def _persist_ai_target_asset(scan_session, ctx) -> None:
+    """AI scans pass the URL straight to the tool (no spider), so without this the
+    AI endpoint never lands in known_assets — leaving recovery and the deepen gate
+    blind to the AI surface. Persist the target path."""
+    target = ctx.get("target", "")
+    if target:
+        from urllib.parse import urlparse
+        path = urlparse(target).path or target
+        scan_session.update_known_assets("endpoints", [path])
+
+
+def _persist_sqlmap_gate(scan_session, evidence, ctx) -> None:
+    # CH-11: drive the gate from the TOOL's own verdict, not the model's wording —
+    # sqlmap confirming injectability opens the web-exploit gate to weaponize.
+    if evidence.get("vulnerable"):
+        scan_session.trigger_gate(
+            "web_exploit_sqli",
+            f"sqlmap confirmed injectable: {ctx.get('target', '')}",
+            ["web-exploit"])
+
+
+def _persist_nuclei_gate(scan_session, evidence) -> None:
+    # CH-11 + CH-3: a critical/high nuclei hit — especially a CVE — opens the
+    # exploit-validation chain deterministically.
+    findings = evidence.get("findings", []) or []
+    if any(f.get("severity") in ("critical", "high") for f in findings):
+        scan_session.trigger_gate(
+            "analyze_cve", "nuclei reported a critical/high finding", ["analyze-cve"])
+
+
 def _extract_and_persist_assets(tool: str, result: Any, ctx: dict) -> None:
     """Extract discovered assets from summarizer result and persist to session."""
     from core import session as scan_session
@@ -202,42 +246,15 @@ def _extract_and_persist_assets(tool: str, result: Any, ctx: dict) -> None:
     elif tool in ("naabu", "nmap"):
         _persist_port_scan_assets(scan_session, evidence, ctx)
     elif tool == "subfinder":
-        subs = evidence.get("subdomains", [])
-        if subs:
-            scan_session.update_known_assets("domains", subs[:50])
+        _persist_subfinder_assets(scan_session, evidence)
     elif tool == "spider":
-        endpoints = evidence.get("endpoints", [])
-        if endpoints:
-            scan_session.update_known_assets(
-                "endpoints",
-                [ep.get("path", "") for ep in endpoints if ep.get("path")])
+        _persist_spider_assets(scan_session, evidence)
     elif tool in ("fuzzyai", "garak", "pyrit", "promptfoo"):
-        # AI scans pass the URL straight to the tool (no spider), so without this
-        # the AI endpoint never lands in known_assets — leaving recovery and the
-        # deepen gate blind to the AI surface. Persist the target path.
-        target = ctx.get("target", "")
-        if target:
-            from urllib.parse import urlparse
-            path = urlparse(target).path or target
-            scan_session.update_known_assets("endpoints", [path])
+        _persist_ai_target_asset(scan_session, ctx)
     elif tool == "http_request":
         _persist_http_auth_assets(scan_session, evidence, ctx)
         _trigger_body_signal_gates(scan_session, result, ctx)
     elif tool == "kali_sqlmap":
-        # CH-11: drive the gate from the TOOL's own verdict, not the model's
-        # wording — sqlmap confirming injectability opens the web-exploit gate to
-        # weaponize (dump/stack/RCE) before completion.
-        if evidence.get("vulnerable"):
-            scan_session.trigger_gate(
-                "web_exploit_sqli",
-                f"sqlmap confirmed injectable: {ctx.get('target', '')}",
-                ["web-exploit"])
+        _persist_sqlmap_gate(scan_session, evidence, ctx)
     elif tool == "nuclei":
-        # CH-11 + CH-3: a critical/high nuclei hit — especially a CVE — opens the
-        # exploit-validation chain deterministically.
-        findings = evidence.get("findings", []) or []
-        if any(f.get("severity") in ("critical", "high") for f in findings):
-            scan_session.trigger_gate(
-                "analyze_cve",
-                "nuclei reported a critical/high finding",
-                ["analyze-cve"])
+        _persist_nuclei_gate(scan_session, evidence)
