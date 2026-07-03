@@ -99,7 +99,7 @@ def update_known_assets(asset_type: str, items: list) -> None:
         "domains": [], "ips": [], "ports": [],
         "technologies": [], "endpoints": [],
         "credentials": [], "auth_tokens": [], "auth_endpoints": [],
-        "oob_interactions": [], "devices": [],
+        "oob_interactions": [], "devices": [], "session_cookies": [],
     })
     if asset_type == "ports":
         _update_ports_assets(assets, items)
@@ -107,6 +107,8 @@ def update_known_assets(asset_type: str, items: list) -> None:
         _update_dict_assets(assets, asset_type, items, ("username",))
     elif asset_type == "auth_tokens":
         _update_dict_assets(assets, asset_type, items, ("value",))
+    elif asset_type == "session_cookies":
+        _update_dict_assets(assets, asset_type, items, ("name",))
     elif asset_type == "auth_endpoints":
         _update_dict_assets(assets, asset_type, items, ("path", "method"))
     elif asset_type == "oob_interactions":

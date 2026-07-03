@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from core import session as scan_session
 from core.coverage import get_matrix, select_next_batch
+from core.prompt_fence import fence as _fence
 
 
 def _add_recon_actions(required: list[str], recommended: list[str], tools_run: set, target: str) -> None:
@@ -62,9 +63,9 @@ def _inject_pending_gates(required: list[str]) -> None:
             trigger = gate.get("trigger", "")
             for skill in missing:
                 required.insert(0, (
-                    f"CHAIN REQUIRED (before completion): /{skill} — gate '{gate['id']}' triggered by {trigger}. "
+                    f"CHAIN REQUIRED (before completion): /{skill} — gate '{gate['id']}' triggered by {_fence(trigger)}. "
                     f"Finish your current recon/mapping step first if you're mid-task, then chain it: "
-                    f"session(action='set_skill', options={{skill: '{skill}', reason: '{trigger}'}}) then Skill('{skill}'). "
+                    f"session(action='set_skill', options={{skill: '{skill}', reason: 'gate {gate['id']}'}}) then Skill('{skill}'). "
                     "Don't leave it unaddressed — this gate blocks completion."
                 ))
             # Inject at most one gate per response to avoid context flooding.
@@ -232,6 +233,43 @@ def _resolve_url(target: str, path: str, param: str, param_type: str, payload: s
     return f"{target}{path}?{param}={payload}"
 
 
+# CH-1: route the probe payload by the fingerprint already in known_assets, so a
+# real probe fires for the detected stack instead of a generic {{7*7}} a non-Jinja
+# engine ignores. The single most valuable chaining signal (tech) was inert before.
+_SSTI_BY_TECH: list[tuple[tuple[str, ...], str]] = [
+    (("freemarker",), "${7*7}"),
+    (("velocity",), "#set($x=7*7)${x}"),
+    (("thymeleaf", "spring"), "${7*7}"),
+    (("erb", "rails", "ruby", "puma", "passenger"), "<%= 7*7 %>"),
+    (("smarty",), "{7*7}"),
+    (("jinja", "flask", "werkzeug", "django", "twig", "symfony",
+      "nunjucks", "handlebars", "express", "node"), "{{7*7}}"),
+]
+_WINDOWS_TECH = ("iis", "asp.net", "microsoft-httpapi", "kestrel", "windows")
+
+
+def _known_techs() -> str:
+    ka = (scan_session.get() or {}).get("known_assets") or {}
+    return " ".join(str(t) for t in (ka.get("technologies") or [])).lower()
+
+
+def _routed_payload(inj: str, default: str, techs: str) -> str:
+    """Tech-specific payload for ssti/cmdi/traversal; ``default`` otherwise."""
+    if not techs:
+        return default
+    is_win = any(t in techs for t in _WINDOWS_TECH)
+    if inj == "ssti":
+        for needles, pl in _SSTI_BY_TECH:
+            if any(n in techs for n in needles):
+                return pl
+        return default
+    if inj == "cmdi":
+        return "& whoami" if is_win else default
+    if inj == "traversal":
+        return r"..\..\..\windows\win.ini" if is_win else default
+    return default
+
+
 def _injection_command_with_payload(inj: str, target: str, path: str, method: str, param: str, param_type: str) -> str | None:
     """Return the tool-call string for injection types that require a payload in the URL.
 
@@ -249,6 +287,9 @@ def _injection_command_with_payload(inj: str, target: str, path: str, method: st
         "ssrf": "http://127.0.0.1:80",
         "traversal": "....//....//etc/passwd",
     }
+    _techs = _known_techs()
+    for _inj in ("ssti", "cmdi", "traversal"):
+        payloads[_inj] = _routed_payload(_inj, payloads[_inj], _techs)
     if inj in payloads:
         test_url = _resolve_url(target, path, param, param_type, payloads[inj])
         return f"http(action='request', url='{test_url}', method='{method}')"
@@ -257,6 +298,34 @@ def _injection_command_with_payload(inj: str, target: str, path: str, method: st
         test_url2 = _resolve_url(target, path, param, param_type, "2")
         return f"http(action='request', url='{test_url}', method='{method}') then compare with url='{test_url2}'"
     return None
+
+
+def build_probe(inj: str, target: str, path: str, method: str, param: str,
+                param_type: str = "query") -> dict | None:
+    """Structured probe for the server-side sweep (SM-5). Unlike
+    _concrete_test_command (a human-readable string), this returns the params the
+    sweep executes directly. ``None`` when the type isn't server-side sweepable.
+
+      {"kind": "http", "url", "method", "payload"}   # inject payload, read response
+      {"kind": "kali", "cmd", "payload": ""}          # sqlmap runs its own oracle
+    """
+    techs = _known_techs()
+    if inj == "sqli":
+        seed = "1*" if param_type == "path" else "test"
+        url = _resolve_url(target, path, param, param_type, seed)
+        return {"kind": "kali", "payload": "",
+                "cmd": f"sqlmap -u '{url}' --batch --level=2"}
+    http_payloads = {
+        "xss": "<script>alert(1)</script>",
+        "ssti": _routed_payload("ssti", "{{7*7}}", techs),
+        "cmdi": _routed_payload("cmdi", ";id", techs),
+        "traversal": _routed_payload("traversal", "....//....//etc/passwd", techs),
+    }
+    if inj in http_payloads:
+        payload = http_payloads[inj]
+        return {"kind": "http", "method": method, "payload": payload,
+                "url": _resolve_url(target, path, param, param_type, payload)}
+    return None  # ssrf/xxe/nosqli/idor/… need OOB / diffing / judgment — not swept
 
 
 def _injection_command_endpoint_level(inj: str, url: str) -> str | None:

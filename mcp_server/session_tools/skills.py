@@ -113,6 +113,11 @@ def _do_set_skill(opts):
     if result is None:
         return "No active running session — cannot set skill."
 
+    # SM-1: a loaded skill (30-44 KB) is now resident in the window — tell the
+    # context meter so pressure reflects reality (only on a first load, not resume).
+    if not is_resume:
+        _st.scan_session.charge_skill_context(skill_name)
+
     satisfied_gates = _manage_skill_gates(skill_name, result)
 
     log.skill_start(skill_name, reason=reason, chained_from=chained_from)

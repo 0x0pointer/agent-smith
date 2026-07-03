@@ -110,7 +110,11 @@ def start(
             # Lets a setup_gate auto-satisfy its re-prompt across skills (never the probe).
             "devices": [],          # [{kind, serial, transport, source, obtained_at}]
         },
-        "context_chars_sent": 0,
+        # SM-1: seed with the always-resident overhead (system prompt + tool
+        # schemas + CLAUDE.md/AGENTS.md) instead of counting tool output from 0 —
+        # otherwise the meter reads ~10% while the window is near full and the
+        # recovery directive never fires in time on a small model.
+        "context_chars_sent": _sess._fixed_context_overhead_chars(),
         "complete_attempts":  0,        # incremented each time session(complete) is called
     }
     # Capture which Smith process drove this start() call so the dashboard

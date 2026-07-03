@@ -127,6 +127,102 @@ async def _do_coverage_reset(cov: Any) -> str:
     return "Coverage matrix reset."
 
 
+async def _do_coverage_sweep(data, cov):
+    """SM-5/SM-10: server-side probe → evaluate → auto-close-clean / flag-candidates
+    for pending INJECTION cells (ssti/xss/cmdi/traversal/sqli), so the model
+    doesn't hand-run every probe and thread every artifact_id — the mechanical
+    bookkeeping small models drop. Auto-closes ONLY confident-clean cells
+    (artifact-backed); oracle POSITIVES are returned as CANDIDATES for the model
+    to confirm + file (never auto-filed — respects the finding_id gate). Opt-in,
+    bounded, fail-soft."""
+    import json as _json
+    from core.coverage import sweep as _sweep
+    from core.prompt_fence import fence as _fence
+    from mcp_server.http_tools import http_probe
+    from mcp_server.scan_engine import planner as _planner
+    from mcp_server.scan_engine.envelope import store_artifact
+
+    target = (scan_session.get() or {}).get("target", "")
+    if not target:
+        return "Sweep needs a running scan with a target."
+
+    max_cells = max(1, min(int(data.get("max_cells", 25) or 25), 60))
+    ep_filter = data.get("endpoint_id")
+
+    m = cov.get_matrix()
+    eps = {e["id"]: e for e in m.get("endpoints", [])}
+    cells = [c for c in m.get("matrix", [])
+             if c.get("status") == "pending"
+             and c.get("injection_type") in _sweep.SWEEPABLE
+             and (not ep_filter or c.get("endpoint_id") == ep_filter)][:max_cells]
+    if not cells:
+        return ("Sweep: no pending server-side-sweepable injection cells "
+                "(ssti/xss/cmdi/traversal/sqli). Other types need OOB/diffing/judgment — test those manually.")
+
+    closures: list[dict] = []
+    candidates: list[dict] = []
+    blocked = inconclusive = 0
+
+    for c in cells:
+        ep = eps.get(c["endpoint_id"], {})
+        probe = _planner.build_probe(
+            c["injection_type"], target, ep.get("path", ""), ep.get("method", "GET"),
+            c.get("param", ""), c.get("param_type", "query"))
+        if not probe:
+            inconclusive += 1
+            continue
+        try:
+            if probe["kind"] == "http":
+                resp = await http_probe(probe["url"], probe["method"])
+                status, body = resp.get("status", 0), resp.get("body", "")
+                content = _json.dumps(resp)[:20_000]
+            else:  # kali — sqlmap runs its own oracle
+                from tools import kali_runner
+                body = await kali_runner.exec_command(probe["cmd"])
+                status, content = 0, body[:20_000]
+        except Exception as exc:  # fail-soft — one dead probe never aborts the sweep
+            inconclusive += 1
+            log.note(f"sweep probe error on cell {c['id']}: {exc}")
+            continue
+
+        artifact_id = store_artifact("sweep", content)
+        v = _sweep.evaluate_probe(c["injection_type"], probe.get("payload", ""), status, body)
+        if v["verdict"] == "clean":
+            closures.append({"cell_id": c["id"], "status": "tested_clean",
+                             "artifact_id": artifact_id, "notes": f"sweep: {v['basis']}"})
+        elif v["verdict"] == "candidate":
+            candidates.append({"cell_id": c["id"], "injection": c["injection_type"],
+                               "endpoint": ep.get("path", ""), "param": c.get("param", ""),
+                               "artifact_id": artifact_id, "basis": v["basis"]})
+        elif v["verdict"] == "blocked":
+            blocked += 1
+        else:
+            inconclusive += 1
+
+    applied = await cov.bulk_update(closures) if closures else {"updated": 0}
+
+    lines = [
+        f"🧹 SWEEP: probed {len(cells)} pending cell(s) — "
+        f"{applied.get('updated', 0)} auto-closed tested_clean, {len(candidates)} candidate(s), "
+        f"{blocked} auth-blocked, {inconclusive} inconclusive."
+    ]
+    if blocked:
+        lines.append("Auth-blocked cells stayed pending — re-run the sweep once authenticated.")
+    if candidates:
+        lines.append("\nCANDIDATES — confirm each, file a finding, then close the cell vulnerable "
+                     "with the linked artifact_id:")
+        for cand in candidates:
+            lines.append(
+                f"  • cell {cand['cell_id']} [{cand['injection']}] on {_fence(cand['endpoint'])} "
+                f"param {_fence(cand['param'])} — {cand['basis']} (artifact_id={cand['artifact_id']}). "
+                f"report(action='finding', …) then report(action='coverage', data={{type:'tested', "
+                f"cell_id:'{cand['cell_id']}', status:'vulnerable', finding_id:'<id>', artifact_id:'{cand['artifact_id']}'}})"
+            )
+    else:
+        lines.append("No exploitable candidates surfaced by the sweep on these cells.")
+    return "\n".join(lines)
+
+
 async def _do_coverage(data):
     from core import coverage as cov
 
@@ -148,11 +244,13 @@ async def _do_coverage(data):
         return await _do_coverage_list(data, cov)
     if cov_type == "next_batch":
         return await _do_coverage_next_batch(data, cov)
+    if cov_type == "sweep":
+        return await _do_coverage_sweep(data, cov)
     if cov_type == "auto_crosscutting":
         return await _do_coverage_auto_crosscutting(data, cov)
     return (
         f"Unknown coverage type '{cov_type}'. Use: endpoint, tested, bulk_tested, list, next_batch, "
-        f"auto_crosscutting, reset. "
+        f"sweep, auto_crosscutting, reset. "
         f"Example: report(action='coverage', data={{type:'endpoint', path:'/login', method:'GET', "
         f"params:[{{name:'user', type:'query', value_hint:'string'}}]}})"
     )

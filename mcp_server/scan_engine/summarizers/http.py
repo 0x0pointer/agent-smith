@@ -168,6 +168,10 @@ def _summarize_http_request(raw: str, ctx: dict) -> SummaryResult:
         "status": status,
         "content_type": headers.get("Content-Type", ""),
         "body_preview": body[:500],
+        # CH-2: surface Set-Cookie so the envelope can capture a session cookie
+        # into known_assets for reuse (the majority of classic web apps are
+        # cookie-session, not JWT).
+        "set_cookie": headers.get("Set-Cookie", "") or headers.get("set-cookie", ""),
     }
 
     # Security-relevant headers

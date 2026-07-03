@@ -65,6 +65,25 @@ async def http(
         return f"Unknown action '{action}'. Use: request, save_poc"
 
 
+async def http_probe(url, method="GET", headers=None, body=None, timeout=20) -> dict:
+    """Low-level request returning the STRUCTURED response (status/headers/body).
+
+    Used by the server-side coverage sweep, which needs to evaluate a response
+    with an oracle — not the human-readable envelope _do_request wraps. No
+    cost/log/envelope side effects; fail-soft (a dead target returns status 0)."""
+    import aiohttp
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.request(
+                method, url, headers=headers or {}, data=body,
+                timeout=aiohttp.ClientTimeout(total=timeout), ssl=False,
+            ) as resp:
+                return {"status": resp.status, "headers": dict(resp.headers),
+                        "body": await resp.text()}
+    except Exception as exc:
+        return {"status": 0, "headers": {}, "body": "", "error": str(exc)}
+
+
 async def _do_request(url, method, headers, body, opts):
     import aiohttp
 

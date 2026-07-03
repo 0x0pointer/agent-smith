@@ -78,6 +78,56 @@ TYPE_PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r'(?:/api\b|/v\d+\b)',                  re.IGNORECASE), "api"),
 ]
 
+# ── Value ranking for test ordering (WF-A1) ───────────────────────────────────
+# An experienced tester front-loads the highest-value surface (auth, admin,
+# payment, object-reference endpoints) and defers static/low-value ones. Lower
+# rank = tested earlier. Keyed by the classify_endpoint() tag; unclassified
+# endpoints fall to the default and are pulled forward only by a high-value param.
+ENDPOINT_VALUE_RANK: dict[str, int] = {
+    "financial":  0,   # payment / transfer / balance — crown jewels
+    "auth":       1,   # login / token / sso
+    "admin":      1,
+    "ai-redteam": 2,
+    "graphql":    2,
+    "upload":     3,
+    "api":        4,
+    "websocket":  4,
+}
+ENDPOINT_VALUE_DEFAULT = 6
+
+# Param names that mark an endpoint as higher-value regardless of its path —
+# object references, identity, and secrets are where authz/IDOR bugs live.
+HIGH_VALUE_PARAM_TOKENS: frozenset[str] = frozenset({
+    "id", "uid", "user", "userid", "user_id", "account", "accountid", "account_id",
+    "role", "admin", "token", "key", "apikey", "api_key", "password", "secret",
+    "order", "orderid", "order_id", "object", "objectid", "object_id", "ref",
+    "owner", "tenant", "org", "orgid", "customer", "customerid",
+})
+
+# ── Name-aware param refinement (AR-B4) ───────────────────────────────────────
+# A param whose NAME unambiguously implies its purpose does not need the broad
+# type-based fan-out — a redirect_uri getting sqli/ssti/cmdi cells is pure noise
+# that inflates the matrix (root cause of 700-cell matrices) and dilutes signal.
+# DELIBERATELY CONSERVATIVE: only NARROW-INTENT names refine (redirect / url /
+# file / command). Generic content params (q, search, name, id, email, data,
+# comment) keep the full fan-out — their attack surface really is broad, and
+# over-pruning would be a coverage regression. First match wins; the refined set
+# is INTERSECTED with the type's applicable set, so refinement can only ever
+# narrow, never add a nonsensical-for-type cell.
+NAME_REFINEMENTS: list[tuple[tuple[str, ...], list[str]]] = [
+    (("redirect", "redir", "returnurl", "return_url", "returnto", "return_to",
+      "callback", "goto", "continue", "successurl", "success_url", "backurl"),
+     ["redirect", "ssrf", "xss"]),
+    (("url", "uri", "link", "webhook", "proxy", "fetch", "feed", "remote",
+      "callbackurl", "imageurl", "image_url", "avatarurl"),
+     ["ssrf", "redirect", "crlf"]),
+    (("file", "filename", "filepath", "path", "template", "include",
+      "download", "upload", "attachment", "document", "load"),
+     ["traversal", "ssti", "xxe", "lfi"]),
+    (("cmd", "command", "exec", "execute", "shell", "cmdline", "ping"),
+     ["cmdi", "ssti"]),
+]
+
 # ── Injection types with known bypass techniques — marking these N/A requires
 # the notes to explain WHY the bypass doesn't apply. ──────────────────────────
 BYPASS_REQUIRED_TYPES: dict[str, str] = {

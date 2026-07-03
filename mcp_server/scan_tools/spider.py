@@ -50,7 +50,11 @@ async def _run_spider_thorough(target: str, flags: str, cookies: dict, depth: st
         ("=== zap-ajax ===", zap_cmd, per_subtool),
     ]:
         async with _asyncio.timeout(t):
-            out = _clip(await kali_runner.exec_command(cmd), 4_000)
+            # SP-11: keep the FULL sub-tool output — discovery parses every URL
+            # from it. The inline summary/cost are bounded downstream in
+            # _handle_spider; clipping here silently dropped the deep-crawl tail
+            # (the interesting admin/API routes) before cells were ever generated.
+            out = await kali_runner.exec_command(cmd)
         parts.append(f"{label}\n{out}")
 
     return "\n\n".join(parts)
@@ -85,7 +89,30 @@ async def _run_spider_fast(target: str, flags: str, cookies: dict, depth: str, m
             cmd += f" {safe_flags}"
 
     async with _asyncio.timeout(timeout):
-        return _clip(await kali_runner.exec_command(cmd), 8_000)
+        # SP-11: return the FULL crawl; bounding happens in _handle_spider.
+        return await kali_runner.exec_command(cmd)
+
+
+def _spider_discovery_auth(crawl_cookies: dict | None) -> dict | None:
+    """SP-1: assemble auth for the discovery re-fetch from the crawl's cookies +
+    known_assets (latest JWT, captured session cookies). Returns
+    ``{"headers", "cookies"}`` or None when nothing is known — so an anonymous
+    scan behaves exactly as before, but a credentialed scan enriches under auth."""
+    headers: dict[str, str] = {}
+    cookies: dict[str, str] = {}
+    if isinstance(crawl_cookies, dict):
+        cookies.update({str(k): str(v) for k, v in crawl_cookies.items()})
+    ka = (scan_session.get() or {}).get("known_assets") or {}
+    toks = ka.get("auth_tokens") or []
+    if toks:
+        last = toks[-1]
+        val = last.get("value") if isinstance(last, dict) else last
+        if val:
+            headers["Authorization"] = f"Bearer {val}"
+    for c in (ka.get("session_cookies") or []):  # CH-2 populates this
+        if isinstance(c, dict) and c.get("name"):
+            cookies[str(c["name"])] = str(c.get("value", ""))
+    return {"headers": headers, "cookies": cookies} if (headers or cookies) else None
 
 
 async def _handle_spider(target, flags, options):
@@ -114,8 +141,12 @@ async def _handle_spider(target, flags, options):
         raw = await _run_spider_fast(target, flags, cookies, depth, max_pages, mode, timeout)
 
     _record("spider")
-    cost_tracker.finish(call_id, raw)
-    log.tool_result("spider", raw)
+    # SP-11: `raw` is now the FULL crawl. Cost/log/summary reflect what actually
+    # enters the model's context (the bounded envelope), not the whole crawl —
+    # charging the full raw would inflate cost since the model never sees it.
+    raw_summary = _clip(raw, 8_000)
+    cost_tracker.finish(call_id, raw_summary)
+    log.tool_result("spider", raw_summary)
 
     # Spider gate: detect whether the tool actually ran.
     spider_ok = _spider_succeeded(raw)
@@ -132,7 +163,8 @@ async def _handle_spider(target, flags, options):
         log.note(f"spider: GATE TRIGGERED for {target} — empty/error output (attempt {new_count})")
 
     from mcp_server.scan_engine import wrap
-    result = wrap("spider", raw, {"url": target})
+    # Bounded summary inline; FULL crawl retained as the on-disk artifact (SP-11).
+    result = wrap("spider", raw_summary, {"url": target}, artifact_raw=raw)
     if not spider_ok:
         result += (
             "\n\n⚠️  SPIDER WARNING: Spider returned empty or error output. "
@@ -153,7 +185,7 @@ async def _handle_spider(target, flags, options):
         try:
             from mcp_server.scan_engine.discovery import discover_and_register
             urls = [ln.strip() for ln in raw.splitlines() if ln.strip().startswith("http")]
-            enrich = await discover_and_register(target, urls)
+            enrich = await discover_and_register(target, urls, auth=_spider_discovery_auth(cookies))
             log.note(f"spider auto-discovery: {enrich}")
             if enrich.get("registered"):
                 src = ", ".join(f"{k}:{v}" for k, v in sorted(enrich["by_source"].items()))

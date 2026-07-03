@@ -101,6 +101,42 @@ def _update_credentials(
         }])
 
 
+# CH-2: session-cookie names worth capturing for auth reuse. A framework session
+# cookie (not a tracking/analytics one) authenticates subsequent requests, so it
+# belongs in known_assets alongside JWTs — the AUTH_MISSING retry and the SP-1
+# discovery re-fetch both consume it.
+_SESSION_COOKIE_HINTS = (
+    "session", "sess", "sid", "phpsessid", "jsessionid", "asp.net_sessionid",
+    "connect.sid", "auth", "token", "_session", "csrf", "xsrf", "remember",
+)
+
+
+def _update_session_cookies(scan_session: Any, evidence: dict, url: str) -> None:
+    """Persist session-ish Set-Cookie pairs into known_assets.session_cookies."""
+    raw = evidence.get("set_cookie") or ""
+    if not raw:
+        return
+    from datetime import datetime, timezone
+    seen: list[dict] = []
+    # A dict(resp.headers) collapses multiple Set-Cookie into one comma-joined
+    # value; split conservatively on ", " boundaries that precede a `name=`.
+    import re as _re
+    for part in _re.split(r",(?=\s*[A-Za-z0-9!#$%&'*+.^_`|~-]+=)", raw):
+        pair = part.strip().split(";", 1)[0]
+        if "=" not in pair:
+            continue
+        name, _, value = pair.partition("=")
+        name, value = name.strip(), value.strip()
+        if not name or not value:
+            continue
+        if any(h in name.lower() for h in _SESSION_COOKIE_HINTS):
+            seen.append({"name": name, "value": value,
+                         "source_url": url,
+                         "obtained_at": datetime.now(timezone.utc).isoformat()})
+    if seen:
+        scan_session.update_known_assets("session_cookies", seen)
+
+
 def _persist_http_auth_assets(scan_session: Any, evidence: dict, ctx: dict) -> None:
     """Extract JWTs, credentials, and auth endpoints from an http_request.
 
@@ -120,6 +156,7 @@ def _persist_http_auth_assets(scan_session: Any, evidence: dict, ctx: dict) -> N
 
     _update_jwt_tokens(scan_session, req_headers, body_prev, url)
     _update_credentials(scan_session, url, method, status, req_body)
+    _update_session_cookies(scan_session, evidence, url)
 
 
 def _extract_and_persist_assets(tool: str, result: Any, ctx: dict) -> None:

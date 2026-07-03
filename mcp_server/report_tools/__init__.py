@@ -72,6 +72,7 @@ from .coverage import (
     _do_coverage_auto_crosscutting,
     _do_coverage_next_batch,
     _do_coverage_list,
+    _do_coverage_sweep,
     _emit_coverage_event,
 )
 
@@ -127,7 +128,7 @@ async def report(action: str, data: Any) -> str:
       port=7777
 
     coverage data:
-      type: endpoint | tested | bulk_tested | reset
+      type: endpoint | tested | bulk_tested | sweep | reset
 
       endpoint — register an endpoint and auto-generate test cells:
         path, method, params=[{name, type, value_hint}], discovered_by=spider, auth_context=none
@@ -137,6 +138,13 @@ async def report(action: str, data: Any) -> str:
 
       bulk_tested — mark multiple cells:
         updates=[{cell_id, status, notes=, finding_id=}]
+
+      sweep — SERVER-SIDE probe + evaluate for pending injection cells
+        (ssti/xss/cmdi/traversal/sqli): options max_cells=25, endpoint_id=. The
+        server runs each probe, stores the artifact, AUTO-CLOSES confident-clean
+        cells, and returns oracle-positive cells as CANDIDATES for you to confirm,
+        file a finding, and close vulnerable. Use this to close injection coverage
+        fast instead of hand-running every probe — then handle the candidates.
 
       reset — clear the entire matrix (no additional fields)
     """

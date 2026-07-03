@@ -52,7 +52,12 @@ MODEL_PROFILES: dict[str, dict] = {
     },
     "medium": {
         "enforce_budget": True,
-        "enforce_coverage": False,   # local model — coverage advisory, not a completion gate (see "full")
+        # SM-5: with the server-side sweep (report coverage type='sweep') a medium
+        # model can now honestly close injection cells without hand-running every
+        # probe, so coverage is a hard completion gate again. `small` stays
+        # advisory until the sweep is proven on a real 27B run (a hard gate on the
+        # smallest window risks the "spun on a 700-cell matrix and stalled" failure).
+        "enforce_coverage": True,
         "budget_multiplier": 1.0,    # base budgets as-is
         "context_budget_chars": 160_000,  # ~40K tokens
         "recovery_cells_shown": 10,

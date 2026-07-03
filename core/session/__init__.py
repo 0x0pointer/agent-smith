@@ -176,8 +176,10 @@ from .lifecycle import (  # noqa: E402
     start,
 )
 from .limits import (  # noqa: E402
+    _fixed_context_overhead_chars,
     _stop,
     charge_context,
+    charge_skill_context,
     check_limits,
     get_context_pressure,
     remaining,
