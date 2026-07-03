@@ -159,6 +159,26 @@ def _persist_http_auth_assets(scan_session: Any, evidence: dict, ctx: dict) -> N
     _update_session_cookies(scan_session, evidence, url)
 
 
+def _trigger_body_signal_gates(scan_session: Any, result: Any, ctx: dict) -> None:
+    """CH-4: a response body signal that was previously a dead-end anomaly now
+    opens a follow-up gate — the deterministic 'the tool already saw the bug'
+    push a small model won't chain on its own. An interactive Werkzeug debugger
+    is a near-certain RCE console; a reflected SQL error points at an injectable
+    param. Both → a mandatory web-exploit gate to weaponize before completing."""
+    anomalies = " ".join(getattr(result, "anomalies", []) or []).lower()
+    url = ctx.get("url", "")
+    if "werkzeug debugger" in anomalies:
+        scan_session.trigger_gate(
+            "web_exploit_debugger",
+            f"Interactive debugger exposed at {url} — likely RCE",
+            ["web-exploit"])
+    elif "sql error" in anomalies:
+        scan_session.trigger_gate(
+            "web_exploit_sqli",
+            f"SQL error reflected from {url} — likely injectable",
+            ["web-exploit"])
+
+
 def _extract_and_persist_assets(tool: str, result: Any, ctx: dict) -> None:
     """Extract discovered assets from summarizer result and persist to session."""
     from core import session as scan_session
@@ -189,3 +209,4 @@ def _extract_and_persist_assets(tool: str, result: Any, ctx: dict) -> None:
             scan_session.update_known_assets("endpoints", [path])
     elif tool == "http_request":
         _persist_http_auth_assets(scan_session, evidence, ctx)
+        _trigger_body_signal_gates(scan_session, result, ctx)

@@ -121,6 +121,20 @@ def update_known_assets(asset_type: str, items: list) -> None:
         _update_scalar_assets(assets, asset_type, items)
     _sess._flush()
 
+    # CH-5: once TWO distinct principals are known, cross-account testing
+    # (BOLA/BFLA, multi-tenant isolation — OWASP API #1) is possible. Open a
+    # mandatory business-logic gate so it isn't left to the model to remember.
+    # Fired AFTER _flush (trigger_gate reconciles from disk) and idempotent, so a
+    # single-identity scan is unaffected and re-fires are no-ops.
+    if asset_type == "credentials":
+        distinct = {(c.get("username") or "").lower() for c in assets.get("credentials", [])
+                    if isinstance(c, dict) and c.get("username")}
+        if len(distinct) >= 2:
+            _sess.trigger_gate(
+                "bola_multi_identity",
+                f"{len(distinct)} distinct identities known — test cross-account access (BOLA/BFLA)",
+                ["business-logic"])
+
 
 # ── Out-of-band (OOB) collaborator state ───────────────────────────────────────
 # The minted listener domain + the minted-callback registry live in session

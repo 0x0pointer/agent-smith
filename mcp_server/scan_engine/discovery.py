@@ -319,13 +319,31 @@ async def _discover_spec(base: str, spider_urls: list[str]) -> list[dict] | None
     return None
 
 
+def _route_params(route: str) -> list[dict]:
+    """SP-2: infer params from a JS-mined route so it generates injection cells,
+    not just endpoint-level cells. Query params from ?a=b; path params from
+    numeric segments AND templatized {id}/:id placeholders (integer hint → the
+    IDOR/SQLi cells that matter on an object-reference route). A route with no
+    inferable params yields [] (endpoint-level cells only) as before."""
+    from urllib.parse import parse_qs, urlsplit
+    parts = urlsplit(route)
+    params = [{"name": n, "type": "query", "value_hint": "string"}
+              for n in parse_qs(parts.query) if not n.startswith("__")]
+    for i, seg in enumerate(parts.path.split("/")):
+        if seg.isdigit() or re.fullmatch(r"[:{]\w+[}]?", seg):
+            name = seg.strip(":{}") or f"id_{i}"
+            params.append({"name": name, "type": "path", "value_hint": "integer"})
+    return params
+
+
 async def _discover_js(spider_urls: list[str]) -> list[dict]:
     """Mine linked JS bundles for routes."""
     js_urls = [u for u in spider_urls if u.lower().split("?", 1)[0].endswith(".js")][:_MAX_JS_FILES]
     eps: list[dict] = []
     for res in await asyncio.gather(*(_fetch(u) for u in js_urls), return_exceptions=True):
         if isinstance(res, tuple) and res[0] and res[1]:
-            eps += [{"path": r, "method": "GET", "params": [], "discovered_by": "js-bundle"}
+            eps += [{"path": r, "method": "GET", "params": _route_params(r),
+                     "discovered_by": "js-bundle"}
                     for r in extract_js_routes(res[1])]
     return eps
 
