@@ -4,7 +4,7 @@ from core import logger as log
 from mcp_server._app import _record, _run
 
 
-async def _handle_mobsf(target, flags, options):
+async def _handle_mobsf(target, _flags, _options):
     """Static analysis of a built mobile binary (APK / IPA / APPX / source zip)
     via the MobSF container: uploads the bytes, runs the scan, returns the
     MASVS-aligned summary. `target` is a local file path."""
@@ -35,7 +35,7 @@ async def _handle_mobsf(target, flags, options):
     return wrap("mobsf", payload, {"target": target, "scan_type": result.get("scan_type")})
 
 
-async def _handle_mobsfscan(target, flags, options):
+async def _handle_mobsfscan(target, flags, _options):
     """Static analysis of a mobile SOURCE tree (mounts the path; MASVS-tagged)."""
     _record("mobsfscan")
     raw = await _run("mobsfscan", path=target, flags=flags)

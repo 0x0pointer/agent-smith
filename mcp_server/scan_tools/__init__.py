@@ -133,7 +133,7 @@ async def scan(tool: str, target: str, flags: str = "", options: dict | str | No
 
     try:
         return await handler(target, flags, options)
-    except BaseException as exc:
+    except Exception as exc:
         err = f"[{tool} error: {type(exc).__name__}: {exc}]"
         log.tool_result(tool, err)
         if tool == "spider":

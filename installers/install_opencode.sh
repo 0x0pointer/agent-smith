@@ -192,11 +192,23 @@ comp = data.setdefault("compaction", {})
 comp["auto"] = True
 comp.setdefault("prune", True)   # evict already-read tool outputs (source files) from context
 
+DEFAULT_LOCAL_CONTEXT = 32768  # conservative floor for an unknown local model
+
 reserved = None
+detection_failed = False
 if model_cfg is not None:
     limit = model_cfg.setdefault("limit", {})
     detected = _detect_context(base_url, model_id)
     true_ctx = detected or limit.get("context")
+    if true_ctx is None:
+        # Fail-soft: the model server was unreachable / advertised no window and
+        # the config pins none. Leaving limit.context unset lets opencode guess a
+        # window — and a local model with a small real window then overflows and
+        # crashes the TUI *before* compaction can run. Apply a conservative
+        # default so a request can never exceed the pin, and WARN loudly so the
+        # operator can correct it if the true window differs.
+        detection_failed = True
+        true_ctx = DEFAULT_LOCAL_CONTEXT
     # Pin opencode's budget ~5% BELOW the model's real window. opencode fills the
     # prompt up to limit.context - output; when limit.context equals the TRUE
     # window it overshoots the server's hard wall by ~1 token and the request is
@@ -205,6 +217,14 @@ if model_cfg is not None:
     # every request under the real ceiling while still using ~95% of the window.
     if true_ctx:
         limit["context"] = int(true_ctx * 0.95)
+        # SM-2: publish the model's TRUE window so the MCP server picks the right
+        # model profile (core.model_detect reads SMITH_CONTEXT_WINDOW; the MCP's
+        # .env loader makes it win over inherited env). Upsert into repo .env.
+        _envf = repo_dir / ".env"
+        _lines = [ln for ln in (_envf.read_text().splitlines() if _envf.exists() else [])
+                  if not ln.startswith("SMITH_CONTEXT_WINDOW=")]
+        _lines.append(f"SMITH_CONTEXT_WINDOW={int(true_ctx)}")
+        _envf.write_text("\n".join(_lines) + "\n")
     context = limit.get("context")
     if context:
         # Respect an operator-chosen output budget; else a sane fraction capped at 16k.
@@ -224,7 +244,15 @@ if model_cfg is not None:
 # buffer clears typical ~8k output reservations.
 comp["reserved"] = reserved if reserved is not None else max(comp.get("reserved", 0), 16000)
 
-if model_cfg is not None and model_cfg.get("limit", {}).get("context"):
+if detection_failed:
+    _l = model_cfg["limit"]
+    print(f"  ⚠️  context safety: could NOT detect the context window for model "
+          f"'{model_id}' (server {base_url or '?'} unreachable or advertised none). "
+          f"Applied a conservative default limit.context={_l['context']} "
+          f"(compaction.reserved={comp['reserved']}). If the model's real window "
+          f"differs, set provider.{prov_id}.models.{model_id}.limit.context in "
+          f"~/.config/opencode/opencode.json.")
+elif model_cfg is not None and model_cfg.get("limit", {}).get("context"):
     _l = model_cfg["limit"]
     print(f"  context safety: window={_l['context']} output={_l['output']} "
           f"compaction.reserved={comp['reserved']} (reserved>output: {comp['reserved'] > _l['output']})")

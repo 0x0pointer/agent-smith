@@ -168,6 +168,15 @@ def _summarize_http_request(raw: str, ctx: dict) -> SummaryResult:
         "status": status,
         "content_type": headers.get("Content-Type", ""),
         "body_preview": body[:500],
+        # CH-2: surface Set-Cookie so the envelope can capture a session cookie
+        # into known_assets for reuse (the majority of classic web apps are
+        # cookie-session, not JWT).
+        "set_cookie": headers.get("Set-Cookie", "") or headers.get("set-cookie", ""),
+        # CH-8: surface rate-limit signals (429 / Retry-After / X-RateLimit-*) so
+        # the envelope can record throttle state — the agent must respect it
+        # (e.g. the SMS-token request cap) and a MISSING limit is itself a finding.
+        "rate_limit": {k: v for k, v in headers.items()
+                       if k.lower() == "retry-after" or k.lower().startswith("x-ratelimit")},
     }
 
     # Security-relevant headers

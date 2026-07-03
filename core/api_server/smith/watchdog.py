@@ -79,6 +79,33 @@ async def _watchdog_respawn_flow(now: float) -> None:
         _log.info("watchdog: spawned pid=%d", int(result) if isinstance(result, int) else 0)
 
 
+def _kill_stalled_or_hung(hung_pid, stalled_pid) -> None:
+    """Notify + kill a hung/stalled Smith process; the caller then falls through to
+    the respawn flow. `hung_pid is None` distinguishes a stall (loop exited mid-scan)
+    from a hang (process alive but no MCP heartbeat) for the log/notification wording
+    and dedup key."""
+    kill_pid = hung_pid or stalled_pid
+    is_stall = hung_pid is None
+    idle_desc = (
+        f"agent loop exited mid-scan (idle > {_SMITH_STALL_SECONDS // 60} min, "
+        "not generating, cells still pending)"
+        if is_stall else
+        f"no MCP heartbeat in {_SMITH_IDLE_SECONDS // 60} min"
+    )
+    _log.warning(
+        "watchdog: %s Smith pid=%d — killing + respawning (%s)",
+        "stalled" if is_stall else "hung", kill_pid, idle_desc,
+    )
+    _smith._watchdog_notify(
+        ("Smith stalled — agent loop exited mid-scan" if is_stall
+         else "Smith hung — process alive but no progress"),
+        f"Watchdog detected pid {kill_pid}: {idle_desc}. Killing it and respawning to "
+        "resume the scan. Check the dashboard if it stays stuck.",
+        ("WATCHDOG_SMITH_STALLED" if is_stall else "WATCHDOG_SMITH_HUNG"),
+    )
+    _api._kill_hung_smith(kill_pid)
+
+
 async def _watchdog_tick(now: float) -> None:
     """Single watchdog tick: restart Smith if all guard conditions pass.
 
@@ -108,27 +135,8 @@ async def _watchdog_tick(now: float) -> None:
     # cells still pending. This respawns in minutes instead of waiting out the
     # blunt 30-min timer, without false-killing a slow generation.
     stalled_pid = _api._smith_stalled_pid() if hung_pid is None else None
-    kill_pid = hung_pid or stalled_pid
-    if kill_pid is not None:
-        is_stall = hung_pid is None
-        idle_desc = (
-            f"agent loop exited mid-scan (idle > {_SMITH_STALL_SECONDS // 60} min, "
-            "not generating, cells still pending)"
-            if is_stall else
-            f"no MCP heartbeat in {_SMITH_IDLE_SECONDS // 60} min"
-        )
-        _log.warning(
-            "watchdog: %s Smith pid=%d — killing + respawning (%s)",
-            "stalled" if is_stall else "hung", kill_pid, idle_desc,
-        )
-        _smith._watchdog_notify(
-            ("Smith stalled — agent loop exited mid-scan" if is_stall
-             else "Smith hung — process alive but no progress"),
-            f"Watchdog detected pid {kill_pid}: {idle_desc}. Killing it and respawning to "
-            "resume the scan. Check the dashboard if it stays stuck.",
-            ("WATCHDOG_SMITH_STALLED" if is_stall else "WATCHDOG_SMITH_HUNG"),
-        )
-        _api._kill_hung_smith(kill_pid)
+    if hung_pid is not None or stalled_pid is not None:
+        _kill_stalled_or_hung(hung_pid, stalled_pid)
         # Fall through into the spawn flow — do NOT return early.
     elif _api._smith_exited():
         # Cleanly EXITED mid-scan: process gone, no pid to kill. This branch MUST

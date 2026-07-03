@@ -59,11 +59,47 @@ def check_limits(cost_summary: dict) -> str | None:
     return None
 
 
+def _fixed_context_overhead_chars() -> int:
+    """Always-resident window occupancy independent of tool output (SM-1):
+    system prompt + the 5 tool schemas + harness scaffolding, plus the actual
+    CLAUDE.md/AGENTS.md operating contract. Seeding the meter with this is what
+    makes context-pressure reflect reality on a small window."""
+    base = 60_000  # system prompt + tool schemas + scaffolding (~15k tokens)
+    try:
+        from core import paths as _paths
+        for name in ("CLAUDE.md", "AGENTS.md"):
+            p = _paths.REPO_ROOT / name
+            if p.is_file():
+                base += p.stat().st_size
+                break
+    except OSError:
+        base += 25_000
+    return base
+
+
 def charge_context(chars: int) -> None:
     """Track cumulative response chars sent to the model."""
     if _sess._current and _sess._current.get("status") == "running":
         _sess._current["context_chars_sent"] = _sess._current.get("context_chars_sent", 0) + chars
         _sess._flush()
+
+
+def charge_skill_context(skill_name: str) -> None:
+    """SM-1: add a loaded skill's byte size to the context meter. A skill can be
+    30-44 KB — on a small window that's most of the budget, and the meter must
+    know it's resident. Best-effort: locates the installed SKILL.md; a miss is a
+    no-op (the fixed-overhead seed still applies)."""
+    if not (_sess._current and _sess._current.get("status") == "running" and skill_name):
+        return
+    try:
+        from core.capabilities import _SKILLS_DIR  # flat OR domain-nested layout
+        for cand in list(_SKILLS_DIR.glob(f"{skill_name}/SKILL.md")) + \
+                    list(_SKILLS_DIR.glob(f"*/{skill_name}/SKILL.md")):
+            if cand.is_file():
+                charge_context(cand.stat().st_size)
+                return
+    except Exception:
+        pass
 
 
 def get_context_pressure(profile: dict) -> float:

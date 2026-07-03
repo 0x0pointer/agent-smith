@@ -15,154 +15,181 @@
   <link rel="shortcut icon" type="image/vnd.microsoft.icon" href="/favicon.ico">
   <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked@9/marked.min.js"></script>
-  <link rel="stylesheet" href="/static/css/dashboard.css?v=2">
+  <link rel="stylesheet" href="/static/css/dashboard.css?v=3">
 </head>
 <body>
 
-<!-- ── Header ────────────────────────────────────────────────────────────── -->
-<div class="header-row">
-  <div class="header-brand">
-    <img class="header-logo" src="/logo.png" alt="NullPointer Studio" onerror="this.style.display='none'">
-    <h1>Pentest <span class="h1-accent">Dashboard</span></h1>
-  </div>
-  <div class="header-buttons">
-    <button class="tunnel-btn" onclick="cleanupTunnels()" title="Kill chisel tunnels and Meterpreter sessions">Cleanup Tunnels</button>
-    <button class="clear-btn" onclick="clearFindings()" title="Wipe all scan data — findings, session, coverage, logs, QA state">Clear All</button>
-  </div>
+<div class="app-shell">
+  <!-- ── Sidebar: brand · grouped nav · footer ─────────────────────────────── -->
+  <aside class="sidebar">
+    <div class="sidebar-brand">
+      <img class="header-logo" src="/logo.png" alt="NullPointer Studio" onerror="this.style.display='none'">
+      <h1>Pentest <span class="h1-accent">Dashboard</span></h1>
+    </div>
+
+    <!-- The .tab-btn DOM order below MUST match TAB_NAMES in common.js
+         (switchTab maps by index). -->
+    <nav class="side-nav">
+      <button class="tab-btn tab-btn-home active" onclick="switchTab('overview')">Overview</button>
+
+      <div class="nav-group">
+        <div class="nav-group-label">Results</div>
+        <button class="tab-btn" onclick="switchTab('findings')">Findings</button>
+        <button class="tab-btn" onclick="switchTab('topology')">Topology</button>
+        <button class="tab-btn" onclick="switchTab('components')">Components</button>
+      </div>
+      <div class="nav-group">
+        <div class="nav-group-label">Progress</div>
+        <button class="tab-btn" onclick="switchTab('coverage')" id="tab-btn-coverage">Coverage</button>
+        <button class="tab-btn" onclick="switchTab('skills')" id="tab-btn-skills">Skills</button>
+        <button class="tab-btn" onclick="switchTab('activity')" id="tab-btn-activity">Activity</button>
+      </div>
+      <div class="nav-group">
+        <div class="nav-group-label">Analysis</div>
+        <button class="tab-btn" onclick="switchTab('world-model')" id="tab-btn-world-model">World Model</button>
+        <button class="tab-btn" onclick="switchTab('threat-model')" id="tab-btn-threat-model">Threat Model</button>
+        <button class="tab-btn" onclick="switchTab('metrics')" id="tab-btn-metrics">Metrics</button>
+      </div>
+      <div class="nav-group">
+        <div class="nav-group-label">System</div>
+        <button class="tab-btn" onclick="switchTab('setup-gates')" id="tab-btn-setup-gates">Setup Gates</button>
+        <button class="tab-btn" onclick="switchTab('logs')">Logs</button>
+      </div>
+    </nav>
+
+    <div class="sidebar-footer">
+      <button class="tunnel-btn" onclick="cleanupTunnels()" title="Kill chisel tunnels and Meterpreter sessions">Cleanup Tunnels</button>
+      <button class="clear-btn" onclick="clearFindings()" title="Wipe all scan data — findings, session, coverage, logs, QA state">Clear All</button>
+    </div>
+  </aside>
+
+  <!-- ── Main column ───────────────────────────────────────────────────────── -->
+  <main class="main">
+    <div id="status"><span class="dot"></span>Connecting…</div>
+
+    <!-- HIR panel — visible only during intervention_required -->
+    <div id="hir-panel">
+      <div class="hir-header">
+        <div class="hir-badge">SCAN PAUSED</div>
+        <div class="hir-code" id="hir-code">HIR_UNKNOWN</div>
+        <div class="hir-dismiss" onclick="dismissHir()" title="Dismiss (scan stays paused)">✕ dismiss view</div>
+      </div>
+      <div class="hir-body">
+        <div class="hir-situation" id="hir-situation"></div>
+        <div id="hir-tried-wrap" style="display:none">
+          <div class="hir-section-label">What Smith already tried</div>
+          <div class="hir-tried" id="hir-tried"></div>
+        </div>
+        <div class="hir-section-label">Choose how to respond — click to select, then Send</div>
+        <div class="hir-options" id="hir-options"></div>
+        <div class="hir-section-label">Optional message to Smith (add context or override)</div>
+        <div class="hir-input-row">
+          <textarea id="hir-message" placeholder="Type your instruction… (or click a quick option above)"></textarea>
+          <button class="hir-send-btn" id="hir-send-btn" onclick="sendHirResponse()">Send Response</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Status + Command Center -->
+    <div id="cmd-center">
+      <div id="cmd-status-row" class="cmd-status-row">
+        <div class="cmd-status-left">
+          <span class="cmd-target-label">Target</span>
+          <span class="cmd-target-val" id="cmd-target">—</span>
+          <div id="cmd-phase-pill" class="cmd-phase-pill" style="display:none">
+            <span id="cmd-phase-text" class="cmd-phase-active">recon</span>
+            <span id="cmd-phase-skill-sep" style="display:none"> › </span>
+            <span id="cmd-phase-skill" class="cmd-skill-name" style="display:none"></span>
+          </div>
+          <div id="cmd-benchmark-badge" style="display:none;margin-left:8px;background:#f59e0b;color:#000;font-size:10px;font-weight:700;letter-spacing:.08em;padding:2px 7px;border-radius:3px;">BENCHMARK</div>
+        </div>
+        <div class="cmd-status-mid" id="cmd-status-mid">
+          <div id="cmd-cov-group" class="cmd-cov-group" style="display:none">
+            <span class="cmd-dim">cov</span>
+            <div class="cmd-cov-track"><div class="cmd-cov-bar" id="cmd-cov-bar" style="width:0%"></div></div>
+            <span id="cmd-cov-txt" class="cmd-dim">0/0</span>
+          </div>
+          <div id="cmd-gates-alert" style="display:none">
+            <span class="cmd-gates-txt">⚠ <span id="cmd-gates-count"></span></span>
+          </div>
+          <div id="cmd-cost-group" style="display:none">
+            <span class="cmd-dim">cost</span>
+            <span id="cmd-cost-val" class="cmd-val">—</span>
+          </div>
+        </div>
+        <div class="cmd-status-right">
+          <span class="cmd-dim">scan </span>
+          <strong id="cmd-scan-status" class="cmd-scan-status">—</strong>
+          <span class="cmd-status-sep">·</span>
+          <span class="cmd-dim">smith </span>
+          <strong id="cmd-smith-process-status" class="cmd-smith-process-status cmd-smith-process-unknown">—</strong>
+        </div>
+      </div>
+      <div class="cmd-smith-panel">
+        <div class="cmd-smith-header">
+          <span class="cmd-smith-dot" id="cmd-smith-dot"></span>
+          <span class="cmd-smith-label" id="cmd-smith-label">Instruct Smith</span>
+          <span id="cmd-smith-hint" class="cmd-smith-hint"></span>
+        </div>
+        <div class="cmd-smith-row">
+          <textarea id="cmd-smith-input" class="cmd-smith-input"
+            placeholder="Type a steering instruction… (e.g. 'focus on /api/users', 'skip rate_limit cells', 'the JWT secret is HS256')"></textarea>
+          <button class="cmd-smith-send" id="cmd-smith-send-btn" onclick="sendCmdSmith()">Send</button>
+        </div>
+        <div class="cmd-quick-chips">
+          <span class="cmd-chip" onclick="setSmithChip('What are you currently doing and what cells are next?')">Status check</span>
+          <span class="cmd-chip" onclick="setSmithChip('Focus on the most critical untested endpoints and parameters')">Focus critical</span>
+          <span class="cmd-chip" onclick="setSmithChip('Skip the current cell and move to the next pending one')">Skip cell</span>
+          <span class="cmd-chip" onclick="setSmithChip('Summarize all findings discovered so far')">Summarize findings</span>
+        </div>
+        <div id="cmd-smith-feedback" class="cmd-smith-feedback"></div>
+        <div class="cmd-smith-complete-row">
+          <button class="cmd-smith-restart-btn" id="cmd-restart-btn" onclick="restartSmith()" style="display:none">
+            &#9654; <span id="cmd-restart-label">Restart Smith</span>
+          </button>
+          <button class="cmd-smith-triage-btn" id="cmd-triage-btn" onclick="triageFindings()" style="display:none">
+            &#9878; Triage findings
+          </button>
+          <button class="cmd-smith-complete-btn" id="cmd-complete-btn" onclick="completeScan()">
+            &#10003; Complete Scan
+          </button>
+          <button class="cmd-smith-complete-btn" id="cmd-force-stop-btn" onclick="forceStop()" style="background:#da3633;color:#fff" title="Kill Smith now and end the scan — skips the adjudication relaunch (findings are kept)">
+            &#10005; Force stop
+          </button>
+          <span class="cmd-smith-complete-hint" id="cmd-smith-status-hint">Only you can end the scan — Smith will keep testing until you do. Triage runs after the scan stops.</span>
+        </div>
+        <div id="adjudication-banner" style="display:none" class="adjudication-banner">
+          <span id="adjudication-banner-msg">&#9203; Triage in progress — Smith is recording verdicts&hellip;</span>
+          <span class="adjudication-banner-actions">
+            <button class="adj-banner-btn" onclick="reNudgeTriage()">Re-nudge Smith</button>
+            <button class="adj-banner-btn adj-banner-dismiss" onclick="cancelTriage()">Dismiss</button>
+          </span>
+        </div>
+      </div>
+    </div>
+
+    {% include 'tabs/overview.html' %}
+    {% include 'tabs/findings.html' %}
+    {% include 'tabs/topology.html' %}
+    {% include 'tabs/components.html' %}
+    {% include 'tabs/coverage.html' %}
+    {% include 'tabs/skills.html' %}
+    {% include 'tabs/activity.html' %}
+    {% include 'tabs/world-model.html' %}
+    {% include 'tabs/threat-model.html' %}
+    {% include 'tabs/metrics.html' %}
+    {% include 'tabs/setup-gates.html' %}
+    {% include 'tabs/logs.html' %}
+  </main>
 </div>
-<div id="status"><span class="dot"></span>Connecting…</div>
-
-<!-- ── HIR panel — visible only during intervention_required ─────────────── -->
-<div id="hir-panel">
-  <div class="hir-header">
-    <div class="hir-badge">SCAN PAUSED</div>
-    <div class="hir-code" id="hir-code">HIR_UNKNOWN</div>
-    <div class="hir-dismiss" onclick="dismissHir()" title="Dismiss (scan stays paused)">✕ dismiss view</div>
-  </div>
-  <div class="hir-body">
-    <div class="hir-situation" id="hir-situation"></div>
-    <div id="hir-tried-wrap" style="display:none">
-      <div class="hir-section-label">What Smith already tried</div>
-      <div class="hir-tried" id="hir-tried"></div>
-    </div>
-    <div class="hir-section-label">Choose how to respond — click to select, then Send</div>
-    <div class="hir-options" id="hir-options"></div>
-    <div class="hir-section-label">Optional message to Smith (add context or override)</div>
-    <div class="hir-input-row">
-      <textarea id="hir-message" placeholder="Type your instruction… (or click a quick option above)"></textarea>
-      <button class="hir-send-btn" id="hir-send-btn" onclick="sendHirResponse()">Send Response</button>
-    </div>
-  </div>
-</div>
-
-<!-- ── Status + Command Center ──────────────────────────────────────────── -->
-<div id="cmd-center">
-  <div id="cmd-status-row" class="cmd-status-row">
-    <div class="cmd-status-left">
-      <span class="cmd-target-label">Target</span>
-      <span class="cmd-target-val" id="cmd-target">—</span>
-      <div id="cmd-phase-pill" class="cmd-phase-pill" style="display:none">
-        <span id="cmd-phase-text" class="cmd-phase-active">recon</span>
-        <span id="cmd-phase-skill-sep" style="display:none"> › </span>
-        <span id="cmd-phase-skill" class="cmd-skill-name" style="display:none"></span>
-      </div>
-      <div id="cmd-benchmark-badge" style="display:none;margin-left:8px;background:#f59e0b;color:#000;font-size:10px;font-weight:700;letter-spacing:.08em;padding:2px 7px;border-radius:3px;">BENCHMARK</div>
-    </div>
-    <div class="cmd-status-mid" id="cmd-status-mid">
-      <div id="cmd-cov-group" class="cmd-cov-group" style="display:none">
-        <span class="cmd-dim">cov</span>
-        <div class="cmd-cov-track"><div class="cmd-cov-bar" id="cmd-cov-bar" style="width:0%"></div></div>
-        <span id="cmd-cov-txt" class="cmd-dim">0/0</span>
-      </div>
-      <div id="cmd-gates-alert" style="display:none">
-        <span class="cmd-gates-txt">⚠ <span id="cmd-gates-count"></span></span>
-      </div>
-      <div id="cmd-cost-group" style="display:none">
-        <span class="cmd-dim">cost</span>
-        <span id="cmd-cost-val" class="cmd-val">—</span>
-      </div>
-    </div>
-    <div class="cmd-status-right">
-      <span class="cmd-dim">scan </span>
-      <strong id="cmd-scan-status" class="cmd-scan-status">—</strong>
-      <span class="cmd-status-sep">·</span>
-      <span class="cmd-dim">smith </span>
-      <strong id="cmd-smith-process-status" class="cmd-smith-process-status cmd-smith-process-unknown">—</strong>
-    </div>
-  </div>
-  <div class="cmd-smith-panel">
-    <div class="cmd-smith-header">
-      <span class="cmd-smith-dot" id="cmd-smith-dot"></span>
-      <span class="cmd-smith-label" id="cmd-smith-label">Instruct Smith</span>
-      <span id="cmd-smith-hint" class="cmd-smith-hint"></span>
-    </div>
-    <div class="cmd-smith-row">
-      <textarea id="cmd-smith-input" class="cmd-smith-input"
-        placeholder="Type a steering instruction… (e.g. 'focus on /api/users', 'skip rate_limit cells', 'the JWT secret is HS256')"></textarea>
-      <button class="cmd-smith-send" id="cmd-smith-send-btn" onclick="sendCmdSmith()">Send</button>
-    </div>
-    <div class="cmd-quick-chips">
-      <span class="cmd-chip" onclick="setSmithChip('What are you currently doing and what cells are next?')">Status check</span>
-      <span class="cmd-chip" onclick="setSmithChip('Focus on the most critical untested endpoints and parameters')">Focus critical</span>
-      <span class="cmd-chip" onclick="setSmithChip('Skip the current cell and move to the next pending one')">Skip cell</span>
-      <span class="cmd-chip" onclick="setSmithChip('Summarize all findings discovered so far')">Summarize findings</span>
-    </div>
-    <div id="cmd-smith-feedback" class="cmd-smith-feedback"></div>
-    <div class="cmd-smith-complete-row">
-      <button class="cmd-smith-restart-btn" id="cmd-restart-btn" onclick="restartSmith()" style="display:none">
-        &#9654; <span id="cmd-restart-label">Restart Smith</span>
-      </button>
-      <button class="cmd-smith-triage-btn" id="cmd-triage-btn" onclick="triageFindings()" style="display:none">
-        &#9878; Triage findings
-      </button>
-      <button class="cmd-smith-complete-btn" id="cmd-complete-btn" onclick="completeScan()">
-        &#10003; Complete Scan
-      </button>
-      <button class="cmd-smith-complete-btn" id="cmd-force-stop-btn" onclick="forceStop()" style="background:#da3633;color:#fff" title="Kill Smith now and end the scan — skips the adjudication relaunch (findings are kept)">
-        &#10005; Force stop
-      </button>
-      <span class="cmd-smith-complete-hint" id="cmd-smith-status-hint">Only you can end the scan — Smith will keep testing until you do. Triage runs after the scan stops.</span>
-    </div>
-    <div id="adjudication-banner" style="display:none" class="adjudication-banner">
-      <span id="adjudication-banner-msg">&#9203; Triage in progress — Smith is recording verdicts&hellip;</span>
-      <span class="adjudication-banner-actions">
-        <button class="adj-banner-btn" onclick="reNudgeTriage()">Re-nudge Smith</button>
-        <button class="adj-banner-btn adj-banner-dismiss" onclick="cancelTriage()">Dismiss</button>
-      </span>
-    </div>
-  </div>
-</div>
-
-<!-- ── Tab nav ───────────────────────────────────────────────────────────── -->
-<nav class="tab-nav">
-  <button class="tab-btn active" onclick="switchTab('findings')">Findings</button>
-  <button class="tab-btn"        onclick="switchTab('topology')">Topology</button>
-  <button class="tab-btn"        onclick="switchTab('components')">Components</button>
-  <button class="tab-btn"        onclick="switchTab('coverage')" id="tab-btn-coverage">Coverage</button>
-  <button class="tab-btn"        onclick="switchTab('skills')" id="tab-btn-skills">Skills</button>
-  <button class="tab-btn"        onclick="switchTab('activity')" id="tab-btn-activity">Activity</button>
-  <button class="tab-btn"        onclick="switchTab('threat-model')" id="tab-btn-threat-model">Threat Model</button>
-  <button class="tab-btn"        onclick="switchTab('metrics')" id="tab-btn-metrics">Metrics</button>
-  <button class="tab-btn"        onclick="switchTab('setup-gates')" id="tab-btn-setup-gates">Setup Gates</button>
-  <button class="tab-btn"        onclick="switchTab('logs')">Logs</button>
-</nav>
-
-{% include 'tabs/findings.html' %}
-{% include 'tabs/topology.html' %}
-{% include 'tabs/components.html' %}
-{% include 'tabs/coverage.html' %}
-{% include 'tabs/skills.html' %}
-{% include 'tabs/activity.html' %}
-{% include 'tabs/threat-model.html' %}
-{% include 'tabs/metrics.html' %}
-{% include 'tabs/setup-gates.html' %}
-{% include 'tabs/logs.html' %}
 
 <script src="/static/js/common.js"></script>
+<script src="/static/js/overview.js"></script>
 <script src="/static/js/findings.js"></script>
 <script src="/static/js/topology.js?v=2"></script>
 <script src="/static/js/components.js"></script>
 <script src="/static/js/coverage.js"></script>
+<script src="/static/js/world-model.js"></script>
 <script src="/static/js/threat-model.js?v=2"></script>
 <script src="/static/js/logs.js"></script>
 <script src="/static/js/skills.js"></script>

@@ -91,6 +91,34 @@ async def api_coverage() -> JSONResponse:
     return JSONResponse(_api._read_json(_api._COVERAGE_FILE))
 
 
+@router.get("/api/graph")
+async def api_graph() -> JSONResponse:
+    """Phase 2: the knowledge-graph world-model for the dashboard's World Model
+    tab — nodes/edges + graph-derived candidate chains, finding rankings, and
+    value-ranked next targets. The dashboard is a separate process, so load the
+    session from disk first (findings/matrix are already disk-backed)."""
+    empty = {"stats": {"nodes": 0, "edges": 0, "by_kind": {}}, "nodes": [], "edges": [],
+             "candidate_chains": [], "ranked_findings": [], "next_targets": []}
+    try:
+        from core import session as scan_session
+        from core.graph import build_graph, candidate_chains, next_targets, rank_findings
+        if scan_session.get() is None:
+            scan_session.load_from_disk()
+        g = build_graph()
+        return JSONResponse({
+            "stats": g.stats(),
+            "nodes": [{"id": n.id, "kind": n.kind, "label": n.label,
+                       "severity": n.attrs.get("severity", "")} for n in list(g.nodes.values())[:400]],
+            "edges": [{"src": e.src, "dst": e.dst, "kind": e.kind} for e in g.edges[:800]],
+            "candidate_chains": candidate_chains(g)[:10],
+            "ranked_findings": rank_findings(g)[:10],
+            "next_targets": next_targets(g, limit=8),
+        })
+    except Exception:
+        _log.exception("api_graph failed")
+        return JSONResponse({**empty, "error": _api._ERR_REQUEST_FAILED})
+
+
 @router.get("/api/threat-model")
 async def api_get_threat_model(file: str = "") -> JSONResponse:
     md_paths: list = []

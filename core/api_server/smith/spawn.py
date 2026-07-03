@@ -95,6 +95,81 @@ def _resume_prompt(directive_text: str) -> str:
     )
 
 
+def _clear_qa_alerts() -> None:
+    """Clear QA alerts so Smith's first post-respawn tool call doesn't immediately
+    re-trigger the same HIR that caused the intervention. The QA daemon re-evaluates
+    every 120s and re-fires any persistent issue on the next cycle."""
+    try:
+        from core import paths as _paths, store as _store
+        import json as _json
+        _qa_file = _paths.QA_STATE_FILE
+        if _qa_file.exists():
+            _qa = _json.loads(_qa_file.read_text())
+            _qa["alerts"] = []
+            _store.save(_qa_file, _qa, indent=None)
+    except Exception as _e:
+        _log.debug("spawn_smith: qa_state clear failed: %s", _e)
+
+
+async def _resolve_resume_sid(client: str, loop) -> str | None:
+    """Resolve the opencode session id to resume, or None for a cold start.
+
+    Cold-starts (returns None) when recent respawns have made NO progress — a
+    bloated session usually hangs just re-loading on resume, so resuming can only
+    re-enter the hang loop; the agent recovers its position from disk instead.
+    Breaks the loop one rung before HIR_NO_PROGRESS, and applies to the manual
+    "Restart Smith" button too so a manual restart on a wedged scan finally helps.
+    """
+    if client != "opencode":
+        return None
+    resume_sid = await loop.run_in_executor(
+        None, lambda: _api._latest_opencode_session(str(_api._REPO_ROOT))
+    )
+    if resume_sid and _smith._watchdog_no_progress_count >= _smith._WATCHDOG_COLD_START_AFTER:
+        _log.warning(
+            "watchdog: %d no-progress respawn(s) — COLD-STARTING a fresh session "
+            "instead of resuming the bloated one (agent recovers from disk)",
+            _smith._watchdog_no_progress_count,
+        )
+        return None
+    return resume_sid
+
+
+def _build_spawn_args(binary: str, client: str, resume_sid: str | None, prompt: str) -> list[str]:
+    """Assemble argv for the client subprocess.
+
+    claude and opencode-cold both pass --dangerously-skip-permissions: a detached
+    background spawn has no controlling TTY, so an interactive permission prompt
+    would hang on closed stdin or exit. opencode auto-approves prompts not
+    explicitly denied in opencode.json's permission.deny block (the installer
+    recommends a starter set of destructive-command denials). An opencode resume
+    adds --session <id> to rehydrate the scan's prior conversation — linear
+    continue (not --fork) so all work accrues to one chain.
+    """
+    if client == "claude":
+        return [binary, "--dangerously-skip-permissions", "-p", prompt]
+    if resume_sid:
+        return [binary, "run", "--session", resume_sid, "--dangerously-skip-permissions", prompt]
+    return [binary, "run", "--dangerously-skip-permissions", prompt]
+
+
+def _build_spawn_kwargs(log_fh) -> dict:
+    """Build create_subprocess_exec kwargs, detaching the child so signals to the
+    dashboard process don't reach it. POSIX uses os.setsid() via start_new_session;
+    Windows uses the CREATE_NEW_PROCESS_GROUP creationflag — same intent, different API."""
+    spawn_kwargs: dict = {"stdout": log_fh, "stderr": log_fh, "cwd": str(_api._REPO_ROOT)}
+    import sys as _sys
+    if _sys.platform == "win32":
+        # CREATE_NEW_PROCESS_GROUP is only defined on Windows CPython; the literal
+        # 0x00000200 is the documented Win32 flag, used as a fallback so cross-platform
+        # tests that force sys.platform="win32" still resolve to the expected integer.
+        import subprocess as _subprocess
+        spawn_kwargs["creationflags"] = getattr(_subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+    else:
+        spawn_kwargs["start_new_session"] = True
+    return spawn_kwargs
+
+
 async def _spawn_smith(client: str, source: str = "api") -> tuple[bool, int | str]:
     """Core spawn logic shared by the /api/restart-smith endpoint and the
     watchdog. Returns (ok, pid_or_error_message). source is logged so the
@@ -126,49 +201,16 @@ async def _spawn_smith(client: str, source: str = "api") -> tuple[bool, int | st
                 "CONTINUE",
                 f"Smith restarted (source={source})",
             )
-        # Clear QA alerts so Smith's first tool call doesn't immediately re-trigger
-        # the same HIR that caused the intervention. The QA daemon re-evaluates every
-        # 120 s and will re-fire any persistent issues on the next cycle.
-        try:
-            from core import paths as _paths, store as _store
-            import json as _json
-            _qa_file = _paths.QA_STATE_FILE
-            if _qa_file.exists():
-                _qa = _json.loads(_qa_file.read_text())
-                _qa["alerts"] = []
-                _store.save(_qa_file, _qa, indent=None)
-        except Exception as _e:
-            _log.debug("spawn_smith: qa_state clear failed: %s", _e)
+        _clear_qa_alerts()
 
         log_path = _api._REPO_ROOT / "logs" / "smith_restart.log"
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, lambda: log_path.parent.mkdir(parents=True, exist_ok=True))
 
         # Resume the agent's own opencode session when one exists for this scan,
-        # so the respawn keeps its in-context memory (what it already tested,
-        # which tools fail here) instead of cold-starting from the recovery brief
-        # and re-walking the same dead ends. None → cold start (first launch /
-        # mismatch / opencode not resolvable).
-        resume_sid = None
-        if client == "opencode":
-            resume_sid = await loop.run_in_executor(
-                None, lambda: _api._latest_opencode_session(str(_api._REPO_ROOT))
-            )
-            # Cold-start fallback: when recent respawns have made NO progress, the
-            # session has usually bloated to where the model hangs just re-loading
-            # it on resume — so resuming can only re-enter the hang loop. Drop the
-            # resume and cold-start a fresh, small context; the agent recovers its
-            # position from disk via session(action='recovery'). Breaks the loop
-            # one rung before HIR_NO_PROGRESS. Applies to the "Restart Smith" button
-            # too, so a manual restart on a wedged scan finally helps.
-            if resume_sid and _smith._watchdog_no_progress_count >= _smith._WATCHDOG_COLD_START_AFTER:
-                _log.warning(
-                    "watchdog: %d no-progress respawn(s) — COLD-STARTING a fresh session "
-                    "instead of resuming the bloated one (agent recovers from disk)",
-                    _smith._watchdog_no_progress_count,
-                )
-                resume_sid = None
-
+        # so the respawn keeps its in-context memory instead of cold-starting from
+        # the recovery brief and re-walking the same dead ends.
+        resume_sid = await _resolve_resume_sid(client, loop)
         prompt = _smith._resume_prompt(directive_text) if resume_sid else _smith._cold_recovery_prompt(directive_text)
 
         audit_kind = f"resume session={resume_sid}" if resume_sid else "cold-start"
@@ -179,47 +221,10 @@ async def _spawn_smith(client: str, source: str = "api") -> tuple[bool, int | st
         binary = shutil.which(client)
         if not binary:
             return False, f"{client} binary not found on PATH"
-        if client == "claude":
-            args = [binary, "--dangerously-skip-permissions", "-p", prompt]
-        elif resume_sid:
-            # opencode resume: --session <id> rehydrates the scan's prior
-            # conversation so the agent continues with full memory. Linear
-            # continue (not --fork) so all work accrues to one chain.
-            args = [binary, "run", "--session", resume_sid, "--dangerously-skip-permissions", prompt]
-        else:
-            # opencode cold: detached background spawn has no controlling TTY, so any
-            # permission prompt either hangs forever (waiting on closed stdin)
-            # or exits because no TTY is available. --dangerously-skip-permissions
-            # auto-approves prompts that aren't explicitly denied in opencode.json's
-            # `permission.deny` block. Mirrors how the claude branch above handles
-            # the same constraint. To keep the safety net, users should add
-            # destructive-command denials to ~/.config/opencode/opencode.json —
-            # the installer recommends a starter set.
-            args = [binary, "run", "--dangerously-skip-permissions", prompt]
+        args = _build_spawn_args(binary, client, resume_sid, prompt)
 
         log_fh = await loop.run_in_executor(None, lambda: log_path.open("a"))
-
-        # Detach the child so signals to the dashboard process don't reach it.
-        # POSIX uses os.setsid() via start_new_session; Windows uses the
-        # CREATE_NEW_PROCESS_GROUP creationflag. Same intent, different API.
-        spawn_kwargs: dict = {
-            "stdout": log_fh,
-            "stderr": log_fh,
-            "cwd": str(_api._REPO_ROOT),
-        }
-        import sys as _sys
-        if _sys.platform == "win32":
-            # subprocess.CREATE_NEW_PROCESS_GROUP is only defined on Windows
-            # builds of CPython. The literal value is the documented Win32
-            # CREATE_NEW_PROCESS_GROUP creation flag (0x00000200), used as a
-            # fallback so cross-platform tests that force sys.platform="win32"
-            # still resolve to the expected integer.
-            import subprocess as _subprocess
-            spawn_kwargs["creationflags"] = getattr(
-                _subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200
-            )
-        else:
-            spawn_kwargs["start_new_session"] = True
+        spawn_kwargs = _build_spawn_kwargs(log_fh)
 
         proc = await asyncio.create_subprocess_exec(*args, **spawn_kwargs)
         _api._SMITH_PID_FILE.write_text(str(proc.pid))

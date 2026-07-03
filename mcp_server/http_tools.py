@@ -65,6 +65,31 @@ async def http(
         return f"Unknown action '{action}'. Use: request, save_poc"
 
 
+async def http_probe(url, method="GET", headers=None, body=None, timeout_s=20) -> dict:
+    """Low-level request returning the STRUCTURED response (status/headers/body).
+
+    Used by the server-side coverage sweep, which needs to evaluate a response
+    with an oracle — not the human-readable envelope _do_request wraps. No
+    cost/log/envelope side effects; fail-soft (a dead target returns status 0).
+
+    TLS verification is intentionally disabled (`ssl=False`): this is a pentest
+    probe against operator-chosen targets that routinely present self-signed,
+    expired, or mismatched certs (the same posture as nuclei/sqlmap/curl -k).
+    Enabling validation would make those in-scope targets unscannable. The probe
+    only reads responses to feed an oracle; it sends no secrets to protect."""
+    import aiohttp
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.request(
+                method, url, headers=headers or {}, data=body,
+                timeout=aiohttp.ClientTimeout(total=timeout_s), ssl=False,  # NOSONAR S4830 — intentional: see docstring
+            ) as resp:
+                return {"status": resp.status, "headers": dict(resp.headers),
+                        "body": await resp.text()}
+    except Exception as exc:
+        return {"status": 0, "headers": {}, "body": "", "error": str(exc)}
+
+
 async def _do_request(url, method, headers, body, opts):
     import aiohttp
 

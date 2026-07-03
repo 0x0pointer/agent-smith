@@ -43,6 +43,7 @@ from mcp_server.scan_engine.envelope.assets import (
     _AUTH_PATH_HINTS,
     _update_jwt_tokens,
     _update_credentials,
+    _update_session_cookies,
     _persist_http_auth_assets,
     _extract_and_persist_assets,
 )
@@ -224,6 +225,7 @@ __all__ = [
     "_AUTH_PATH_HINTS",
     "_update_jwt_tokens",
     "_update_credentials",
+    "_update_session_cookies",
     "_persist_http_auth_assets",
     "_extract_and_persist_assets",
     "_check_context_pressure",

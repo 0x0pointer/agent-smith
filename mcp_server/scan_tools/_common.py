@@ -15,10 +15,11 @@ from mcp_server._app import mcp, _clip, _ensure_dict, _record, _run
 
 
 def _strip_scheme(target: str) -> str:
-    """Strip http(s):// and trailing path — models often pass URLs to host-only tools."""
+    """Strip the URL scheme + trailing path — models often pass URLs to host-only tools."""
     from urllib.parse import urlparse
-    if target.startswith(("http://", "https://")):
-        return urlparse(target).hostname or target
+    parsed = urlparse(target)
+    if parsed.scheme and parsed.hostname:
+        return parsed.hostname
     return target
 
 

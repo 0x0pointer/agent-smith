@@ -8,7 +8,7 @@ from mcp_server._app import _clip, _record
 from ._common import _spider_succeeded
 
 
-async def _run_spider_thorough(target: str, flags: str, cookies: dict, depth: str, max_pages: str, timeout: int) -> str:
+async def _run_spider_thorough(target: str, flags: str, cookies: dict, depth: str, max_pages: str, budget_s: int) -> str:
     """Run katana + playwright + ZAP AJAX spider in thorough mode and return merged raw output."""
     import asyncio as _asyncio
     from tools import kali_runner
@@ -17,9 +17,9 @@ async def _run_spider_thorough(target: str, flags: str, cookies: dict, depth: st
     safe_url = shlex.quote(target)
     safe_cookies = shlex.quote(_json.dumps(cookies))
     # Split the budget across the 3 subtools so total wall-clock caps at the
-    # user-provided `timeout` value (default 2h → ~40min per subtool, floor
+    # user-provided `budget_s` value (default 2h → ~40min per subtool, floor
     # 20min so a tiny budget doesn't starve any one tool).
-    per_subtool = max(timeout // 3, 1200)
+    per_subtool = max(budget_s // 3, 1200)
     log.note(f"spider: thorough mode — katana + playwright + zap-ajax (per-subtool timeout={per_subtool}s)")
 
     safe_flags = shlex.join(shlex.split(flags)) if flags else ""
@@ -50,13 +50,17 @@ async def _run_spider_thorough(target: str, flags: str, cookies: dict, depth: st
         ("=== zap-ajax ===", zap_cmd, per_subtool),
     ]:
         async with _asyncio.timeout(t):
-            out = _clip(await kali_runner.exec_command(cmd), 4_000)
+            # SP-11: keep the FULL sub-tool output — discovery parses every URL
+            # from it. The inline summary/cost are bounded downstream in
+            # _handle_spider; clipping here silently dropped the deep-crawl tail
+            # (the interesting admin/API routes) before cells were ever generated.
+            out = await kali_runner.exec_command(cmd)
         parts.append(f"{label}\n{out}")
 
     return "\n\n".join(parts)
 
 
-async def _run_spider_fast(target: str, flags: str, cookies: dict, depth: str, max_pages: str, mode: str, timeout: int) -> str:
+async def _run_spider_fast(target: str, flags: str, cookies: dict, depth: str, max_pages: str, mode: str, budget_s: int) -> str:
     """Run the fast/playwright/deep spider mode and return raw output."""
     import asyncio as _asyncio
     from tools import kali_runner
@@ -84,8 +88,75 @@ async def _run_spider_fast(target: str, flags: str, cookies: dict, depth: str, m
         if safe_flags:
             cmd += f" {safe_flags}"
 
-    async with _asyncio.timeout(timeout):
-        return _clip(await kali_runner.exec_command(cmd), 8_000)
+    async with _asyncio.timeout(budget_s):
+        # SP-11: return the FULL crawl; bounding happens in _handle_spider.
+        return await kali_runner.exec_command(cmd)
+
+
+def _spider_discovery_auth(crawl_cookies: dict | None) -> dict | None:
+    """SP-1: assemble auth for the discovery re-fetch from the crawl's cookies +
+    known_assets (latest JWT, captured session cookies). Returns
+    ``{"headers", "cookies"}`` or None when nothing is known — so an anonymous
+    scan behaves exactly as before, but a credentialed scan enriches under auth."""
+    headers: dict[str, str] = {}
+    cookies: dict[str, str] = {}
+    if isinstance(crawl_cookies, dict):
+        cookies.update({str(k): str(v) for k, v in crawl_cookies.items()})
+    ka = (scan_session.get() or {}).get("known_assets") or {}
+    toks = ka.get("auth_tokens") or []
+    if toks:
+        last = toks[-1]
+        val = last.get("value") if isinstance(last, dict) else last
+        if val:
+            headers["Authorization"] = f"Bearer {val}"
+    for c in (ka.get("session_cookies") or []):  # CH-2 populates this
+        if isinstance(c, dict) and c.get("name"):
+            cookies[str(c["name"])] = str(c.get("value", ""))
+    return {"headers": headers, "cookies": cookies} if (headers or cookies) else None
+
+
+def _evaluate_spider_gate(target: str, raw: str) -> bool:
+    """Did the spider actually run? Advances the failure-retry gate and returns the
+    (possibly retry-released) ok flag."""
+    spider_ok = _spider_succeeded(raw)
+    current_retries = scan_session.get_spider_failures().get(target, {}).get("retry_count", 0)
+    if spider_ok:
+        scan_session.clear_spider_failure(target)
+    elif current_retries >= scan_session.spider_max_retries():
+        # After N retries still empty — assume non-crawlable target, release gate.
+        scan_session.clear_spider_failure(target)
+        log.note(f"spider: gate released for {target} after {current_retries + 1} attempts (treating as non-crawlable)")
+        spider_ok = True
+    else:
+        new_count = scan_session.record_spider_failure(target)
+        log.note(f"spider: GATE TRIGGERED for {target} — empty/error output (attempt {new_count})")
+    return spider_ok
+
+
+async def _spider_autodiscovery_note(target: str, raw: str, cookies: dict) -> str:
+    """Auto-discovery enrichment: parse any OpenAPI/Swagger spec, mine JS bundles,
+    read form fields, and AUTO-REGISTER the inventory into the coverage matrix.
+    Shifts the model's job from "build the matrix" to "test the matrix". Returns a
+    note to append ('' on nothing found / error). Fail-soft — never breaks spider."""
+    try:
+        from mcp_server.scan_engine.discovery import discover_and_register
+        urls = [ln.strip() for ln in raw.splitlines() if ln.strip().startswith("http")]
+        enrich = await discover_and_register(target, urls, auth=_spider_discovery_auth(cookies))
+        log.note(f"spider auto-discovery: {enrich}")
+        if enrich.get("registered"):
+            src = ", ".join(f"{k}:{v}" for k, v in sorted(enrich["by_source"].items()))
+            return (
+                f"\n\n🧭 AUTO-DISCOVERY: registered {enrich['registered']} endpoint(s) / "
+                f"{enrich['cells']} coverage cell(s) ({src})"
+                + ("; OpenAPI/Swagger spec parsed and expanded" if enrich.get("spec_found") else "")
+                + ".\nThe coverage matrix is now your test plan — you do NOT need to re-register "
+                "these. Move to systematic per-cell testing (mark in_progress, run the tool, "
+                "cite the artifact_id). If you discover further endpoints (JS, auth-gated pages), "
+                "register them too before testing."
+            )
+    except Exception as exc:  # pragma: no cover - defensive
+        log.note(f"spider auto-discovery skipped: {exc}")
+    return ""
 
 
 async def _handle_spider(target, flags, options):
@@ -114,25 +185,18 @@ async def _handle_spider(target, flags, options):
         raw = await _run_spider_fast(target, flags, cookies, depth, max_pages, mode, timeout)
 
     _record("spider")
-    cost_tracker.finish(call_id, raw)
-    log.tool_result("spider", raw)
+    # SP-11: `raw` is now the FULL crawl. Cost/log/summary reflect what actually
+    # enters the model's context (the bounded envelope), not the whole crawl —
+    # charging the full raw would inflate cost since the model never sees it.
+    raw_summary = _clip(raw, 8_000)
+    cost_tracker.finish(call_id, raw_summary)
+    log.tool_result("spider", raw_summary)
 
-    # Spider gate: detect whether the tool actually ran.
-    spider_ok = _spider_succeeded(raw)
-    current_retries = scan_session.get_spider_failures().get(target, {}).get("retry_count", 0)
-    if spider_ok:
-        scan_session.clear_spider_failure(target)
-    elif current_retries >= scan_session.spider_max_retries():
-        # After N retries still empty — assume non-crawlable target, release gate.
-        scan_session.clear_spider_failure(target)
-        log.note(f"spider: gate released for {target} after {current_retries + 1} attempts (treating as non-crawlable)")
-        spider_ok = True
-    else:
-        new_count = scan_session.record_spider_failure(target)
-        log.note(f"spider: GATE TRIGGERED for {target} — empty/error output (attempt {new_count})")
+    spider_ok = _evaluate_spider_gate(target, raw)
 
     from mcp_server.scan_engine import wrap
-    result = wrap("spider", raw, {"url": target})
+    # Bounded summary inline; FULL crawl retained as the on-disk artifact (SP-11).
+    result = wrap("spider", raw_summary, {"url": target}, artifact_raw=raw)
     if not spider_ok:
         result += (
             "\n\n⚠️  SPIDER WARNING: Spider returned empty or error output. "
@@ -145,27 +209,5 @@ async def _handle_spider(target, flags, options):
             f"  (Failure tracking auto-releases after {scan_session.spider_max_retries()} retries.)"
         )
     else:
-        # Auto-discovery enrichment: parse any OpenAPI/Swagger spec, mine JS
-        # bundles, read form fields, and AUTO-REGISTER the whole inventory into
-        # the coverage matrix. Shifts the model's job from "build the matrix"
-        # (which weaker models skip, leaving stub endpoints) to "test the
-        # matrix". Fail-soft — never break the spider result on enrichment error.
-        try:
-            from mcp_server.scan_engine.discovery import discover_and_register
-            urls = [ln.strip() for ln in raw.splitlines() if ln.strip().startswith("http")]
-            enrich = await discover_and_register(target, urls)
-            log.note(f"spider auto-discovery: {enrich}")
-            if enrich.get("registered"):
-                src = ", ".join(f"{k}:{v}" for k, v in sorted(enrich["by_source"].items()))
-                result += (
-                    f"\n\n🧭 AUTO-DISCOVERY: registered {enrich['registered']} endpoint(s) / "
-                    f"{enrich['cells']} coverage cell(s) ({src})"
-                    + ("; OpenAPI/Swagger spec parsed and expanded" if enrich.get("spec_found") else "")
-                    + ".\nThe coverage matrix is now your test plan — you do NOT need to re-register "
-                    "these. Move to systematic per-cell testing (mark in_progress, run the tool, "
-                    "cite the artifact_id). If you discover further endpoints (JS, auth-gated pages), "
-                    "register them too before testing."
-                )
-        except Exception as exc:  # pragma: no cover - defensive
-            log.note(f"spider auto-discovery skipped: {exc}")
+        result += await _spider_autodiscovery_note(target, raw, cookies)
     return result

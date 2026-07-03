@@ -70,28 +70,37 @@
   }
 
   function renderFindingsTable(findings) {
+    // Detail view takes over the pane when a finding is open (progressive disclosure).
+    if (_openFindingId) {
+      const wrapEl = document.getElementById('findings-wrap');
+      const f = (findings || []).find(x => x.id === _openFindingId);
+      if (f && wrapEl) { wrapEl.innerHTML = renderFindingDetail(f); return; }
+      _openFindingId = null;  // finding vanished (cleared) → fall back to the grid
+    }
     let filtered = filter === 'all' ? findings : findings.filter(f => f.severity === filter);
     if (vfilter !== 'all') filtered = filtered.filter(f => f.verification_status === vfilter);
-    filtered.sort((a, b) => {
-      const vd = (VS_ORDER[a.verification_status]??9) - (VS_ORDER[b.verification_status]??9);
-      if (vd !== 0) return vd;
-      const d = (SEV_ORDER[a.severity]??5) - (SEV_ORDER[b.severity]??5);
-      return d !== 0 ? d : new Date(b.timestamp) - new Date(a.timestamp);
-    });
     const wrap = document.getElementById('findings-wrap');
     if (!filtered.length) {
       wrap.innerHTML = '<div class="empty-placeholder">No findings' +
         (filter !== 'all' || vfilter !== 'all' ? ` matching current filters` : ' yet — run a scan.') + '</div>';
       return;
     }
-    const openIds = new Set();
-    wrap.querySelectorAll('details[open]').forEach(el => openIds.add(el.dataset.id));
-    wrap.innerHTML = `<div class="finding-cards">${filtered.map(f => cardHTML(f, openIds)).join('')}</div>`;
-    // Restore open fix panels after DOM rebuild
-    _openFixPanels.forEach(id => {
-      const el = document.getElementById('fix-' + id);
-      if (el) el.style.display = 'block';
-    });
+    // Group into severity SECTIONS (critical → info); within a section, order by
+    // verification (unverified first — needs attention) then newest first. Each
+    // section is a responsive grid of uniform, scannable cards.
+    const SEVS = ['critical', 'high', 'medium', 'low', 'info'];
+    const bySev = {};
+    filtered.forEach(f => { (bySev[f.severity] = bySev[f.severity] || []).push(f); });
+    wrap.innerHTML = SEVS.filter(s => bySev[s] && bySev[s].length).map(s => {
+      const cards = bySev[s].sort((a, b) =>
+        ((VS_ORDER[a.verification_status] ?? 9) - (VS_ORDER[b.verification_status] ?? 9))
+        || (new Date(b.timestamp) - new Date(a.timestamp))
+      ).map(f => cardHTML(f)).join('');
+      return `<div class="finding-section">
+        <div class="finding-section-head sev-${s}"><span class="fs-dot"></span>${s.toUpperCase()}<span class="fs-count">${bySev[s].length}</span></div>
+        <div class="finding-cards">${cards}</div>
+      </div>`;
+    }).join('');
   }
 
   const SEV_RANK = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
@@ -125,9 +134,98 @@
       </div>`;
   }
 
-  function cardHTML(f, openIds) {
+  // ── Full finding detail view (progressive disclosure: card → click → detail) ──
+  let _openFindingId = null;
+
+  function openFinding(id) {
+    _openFindingId = id;
+    renderFindingsTable(allData.findings || []);
+    window.scrollTo(0, 0);
+  }
+  function closeFinding() {
+    _openFindingId = null;
+    renderFindingsTable(allData.findings || []);
+  }
+  function copyEvidence(btn, findingId) {
+    const f = (allData.findings || []).find(x => x.id === findingId);
+    if (!f?.evidence) return;
+    navigator.clipboard.writeText(f.evidence).then(() => {
+      const t = btn.textContent; btn.textContent = 'Copied!';
+      setTimeout(() => { btn.textContent = t; }, 1500);
+    });
+  }
+
+  function _rail(label, val) {
+    return `<div class="fd-rail-k">${esc(label)}</div><div class="fd-rail-v">${val}</div>`;
+  }
+
+  function renderFindingDetail(f) {
+    const vs = f.verification_status || 'unverified';
+    const ts = f.timestamp ? new Date(f.timestamp).toLocaleString() : '—';
+    const triaged = f.adjudication?.rationale ? `<span class="triaged-badge">⚖ Triaged</span>` : '';
+    const sevVal  = `<span class="badge badge-${esc(f.severity)}">${esc(f.severity)}</span>`;
+    const idCopy  = `<span class="fd-id">${esc(f.id)}</span>` +
+                    `<button class="fd-copy" onclick="copyFindingId(this,'${esc(f.id)}')">copy</button>`;
+    const evidence = f.evidence ? `
+      <div class="fd-sec-head">Evidence <button class="fd-copy" onclick="copyEvidence(this,'${esc(f.id)}')">Copy evidence</button></div>
+      <pre class="evidence">${esc(f.evidence)}</pre>` : '';
+    const repro = f.reproduction?.command ? `
+      <div class="fd-sec-head">Reproduction <button class="fd-copy" onclick="copyReplay(this,'${esc(f.id)}')">▸ Copy command</button></div>
+      <pre class="evidence">${esc(f.reproduction.command)}</pre>
+      ${f.reproduction.expected ? `<div class="fd-expected">expected: ${esc(f.reproduction.expected)}</div>` : ''}` : '';
+    const seniorReview = f.adjudication?.rationale ? _adjudicationBlock(f.adjudication) : '';
+    const pocs = (f.poc_files && f.poc_files.length)
+      ? `<div class="fd-rail-box"><div class="fd-rail-title">PoC files</div>${
+          f.poc_files.map(p => `<div class="fd-poc">${esc(p)}</div>`).join('')}</div>` : '';
+    const remediation = f.remediation ? `<div class="fd-block">${buildFixDetail(f).replace('display:none', 'display:block')}</div>` : '';
+    const impact = f.business_impact ? `
+      <div class="finding-impact"><span class="finding-impact-icon">&#9888;</span>
+      <span class="finding-impact-label">Business impact&nbsp;&nbsp;</span>
+      <span class="finding-impact-text">${esc(f.business_impact)}</span></div>` : '';
+
+    return `<div class="fd-view">
+      <button class="fd-back" onclick="closeFinding()">← All findings</button>
+      <div class="fd-hero sev-${esc(f.severity)}">
+        <div class="fd-hero-badges">${sevVal}<span class="vbadge vbadge-${vs}">${VS_LABELS[vs] || vs}</span>${triaged}</div>
+        <h2 class="fd-title">${esc(f.title)}</h2>
+        <div class="fd-hero-meta"><span class="target">${esc(f.target)}</span>
+          ${f.tool_used ? `<span class="tool">${esc(f.tool_used)}</span>` : ''}
+          <span class="finding-ts-meta">first seen ${ts}</span></div>
+      </div>
+      <div class="fd-body">
+        <div class="fd-main">
+          ${f.description ? `<div class="fd-sec-head">Description</div><div class="finding-desc">${esc(f.description)}</div>` : ''}
+          ${impact}
+          ${evidence}
+          ${repro}
+          ${remediation}
+        </div>
+        <aside class="fd-rail">
+          <div class="fd-rail-box fd-rail-grid">
+            ${_rail('Severity', sevVal)}
+            ${_rail('Verification', `<span class="vbadge vbadge-${vs}">${VS_LABELS[vs] || vs}</span>`)}
+            ${_rail('Target', esc(f.target))}
+            ${_rail('Tool', esc(f.tool_used || '—'))}
+            ${_rail('Status', esc(f.status || 'confirmed'))}
+            ${_rail('First seen', esc(ts))}
+            ${_rail('Finding ID', idCopy)}
+            ${f.cve ? _rail('CVE', esc(f.cve)) : ''}
+          </div>
+          ${seniorReview}
+          ${pocs}
+        </aside>
+      </div>
+    </div>`;
+  }
+
+  function copyFindingId(btn, id) {
+    navigator.clipboard.writeText(id).then(() => {
+      const t = btn.textContent; btn.textContent = 'copied'; setTimeout(() => { btn.textContent = t; }, 1500);
+    });
+  }
+
+  function cardHTML(f) {
     const isNew    = freshIds.has(f.id);
-    const isOpen   = openIds.has(f.id);
     const ts       = new Date(f.timestamp).toLocaleTimeString();
     const newBadge = isNew ? '<span class="new-badge">NEW</span>' : '';
     const cve      = f.cve ? `<span class="cve">CVE: ${esc(f.cve)}</span>` : '';
@@ -139,52 +237,20 @@
       : '';
     const vs = f.verification_status || 'unverified';
     const vsBadge = `<span class="vbadge vbadge-${vs}" title="Verification status: ${vs.replace(/_/g,' ')}">${VS_LABELS[vs] || vs}</span>`;
-    const ghBtn = f.gh_issue
-      ? `<button class="copy-gh-btn" data-id="${esc(f.id)}" onclick="copyGhIssue(this,this.dataset.id)" title="Copy GitHub issue">
-           <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
-             <path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"/><path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"/>
-           </svg>
-           GH Issue
-         </button>`
-      : '';
-    const replayBtn = f.reproduction?.command
-      ? `<button class="replay-btn" data-id="${esc(f.id)}" onclick="copyReplay(this,this.dataset.id)" title="Copy reproduction command">&#9654; Replay</button>`
-      : '';
-    const fixBtn = f.remediation
-      ? `<button class="fix-btn" data-id="${esc(f.id)}" onclick="toggleFix(this.dataset.id)" title="Show remediation">&#128295; Fix</button>`
-      : '';
-    const fixDetail  = f.remediation ? buildFixDetail(f) : '';
-    const adjBlock   = _adjudicationBlock(f.adjudication);
-    const impactHtml = f.business_impact
-      ? `<div class="finding-impact">
-           <span class="finding-impact-icon">&#9888;</span>
-           <span class="finding-impact-label">Business impact&nbsp;&nbsp;</span>
-           <span class="finding-impact-text">${esc(f.business_impact)}</span>
-         </div>`
-      : '';
-    return `<div class="finding-card sev-${f.severity}">
-      <div class="finding-header">
-        <span class="badge badge-${f.severity}">${f.severity}</span>${statusBadge}${triagedBadge}${vsBadge}
-        <div class="finding-title-group">
-          <div class="finding-title">${esc(f.title)}${newBadge}</div>
-          <div class="finding-meta-row">
-            <span class="target">${esc(f.target)}</span>
-            ${f.tool_used ? `<span class="tool">${esc(f.tool_used)}</span>` : ''}
-            ${cve}
-            <span class="finding-ts-meta">${ts}</span>
-          </div>
-        </div>
+    // Clean, uniform card — a scannable summary. Evidence, reproduction, senior
+    // review and PoC all live in the click-through detail view (openFinding).
+    return `<div class="finding-card sev-${f.severity}" onclick="openFinding('${esc(f.id)}')" title="Open full detail">
+      <div class="finding-card-top">
+        <span class="badge badge-${f.severity}">${f.severity}</span>${statusBadge}${triagedBadge}
+        <span class="finding-vs-right">${vsBadge}</span>
       </div>
-      ${impactHtml}
-      ${adjBlock}
+      <div class="finding-title">${esc(f.title)}${newBadge}</div>
       ${f.description ? `<div class="finding-desc">${esc(f.description)}</div>` : ''}
-      ${fixDetail}
-      <div class="finding-footer">
-        ${replayBtn}${fixBtn}${ghBtn}
-        ${f.evidence ? `<details ${isOpen?'open':''} data-id="${f.id}" style="width:100%;margin-top:${(replayBtn||fixBtn||ghBtn)?'0.4rem':'0'}">
-          <summary></summary>
-          <pre class="evidence">${esc(f.evidence)}</pre>
-        </details>` : ''}
+      <div class="finding-card-foot">
+        <span class="target">${esc(f.target)}</span>
+        ${f.tool_used ? `<span class="tool">${esc(f.tool_used)}</span>` : ''}
+        ${cve}
+        <span class="finding-ts-meta">${ts}</span>
       </div>
     </div>`;
   }

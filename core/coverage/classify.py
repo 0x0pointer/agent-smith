@@ -35,13 +35,52 @@ def _normalize_path(path: str) -> str:
     return path
 
 
-def _applicable_types(param_type: str, value_hint: str) -> list[str]:
-    """Return list of injection types applicable to a param."""
+def _refine_by_name(name: str, base_types: list[str]) -> list[str]:
+    """Narrow the type-based fan-out when a param NAME is unambiguously scoped.
+
+    Conservative (AR-B4): only narrow-intent names (redirect/url/file/command)
+    refine; generic content params keep the full fan-out. Intersects toward the
+    refinement so it can only narrow, never widen; never returns empty.
+    """
+    n = (name or "").strip().lower()
+    if not n:
+        return base_types
+    tokens = {t for t in re.split(r"[^a-z0-9]+", n) if t}
+    for needles, targeted in _tax.NAME_REFINEMENTS:
+        # exact token match, or a long compound needle appearing as a substring
+        if tokens & set(needles) or any(len(k) >= 5 and k in n for k in needles):
+            refined = [t for t in base_types if t in targeted]
+            return refined or base_types
+    return base_types
+
+
+def _applicable_types(param_type: str, value_hint: str, name: str = "") -> list[str]:
+    """Return list of injection types applicable to a param.
+
+    ``name`` (optional) enables name-aware refinement — passing it narrows the
+    set for unambiguously-scoped params; omitting it preserves prior behavior.
+    """
     key = f"{param_type}/{value_hint}" if value_hint else f"{param_type}/default"
     if key in _APPLICABILITY:
-        return list(_APPLICABILITY[key])
-    fallback = f"{param_type}/default"
-    return list(_APPLICABILITY.get(fallback, _APPLICABILITY["query/default"]))
+        base = list(_APPLICABILITY[key])
+    else:
+        fallback = f"{param_type}/default"
+        base = list(_APPLICABILITY.get(fallback, _APPLICABILITY["query/default"]))
+    return _refine_by_name(name, base)
+
+
+def endpoint_value_rank(path: str, params: list[dict] | None = None) -> int:
+    """Test-ordering value rank for an endpoint (WF-A1). Lower = tested earlier.
+
+    Ranked by the endpoint-type tag; an object-reference / identity / secret
+    param pulls an otherwise-plain endpoint forward (that's where authz bugs live).
+    """
+    rank = _tax.ENDPOINT_VALUE_RANK.get(classify_endpoint(path), _tax.ENDPOINT_VALUE_DEFAULT)
+    for p in params or []:
+        toks = {t for t in re.split(r"[^a-z0-9]+", str(p.get("name", "")).lower()) if t}
+        if toks & _tax.HIGH_VALUE_PARAM_TOKENS:
+            return min(rank, 3)
+    return rank
 
 
 def classify_endpoint(path: str) -> str | None:

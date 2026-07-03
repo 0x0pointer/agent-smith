@@ -43,7 +43,10 @@ def _escalation_lead_blockers(data: dict) -> list[str]:
     for f in data.get("findings", []):
         for lead in f.get("escalation_leads", []):
             if isinstance(lead, dict) and lead.get("status") == "pending":
-                pending_leads.append(f"{f['title']}: {lead['lead']}")
+                # AR-B9: finding titles + leads are target-derived — fence them
+                # so a reflected/crafted string can't inject into this directive.
+                from core.prompt_fence import fence as _fence
+                pending_leads.append(f"{_fence(f.get('title', ''))}: {_fence(lead.get('lead', ''))}")
     if not pending_leads:
         return []
     sample = "; ".join(pending_leads[:5])

@@ -27,9 +27,19 @@ enrichment never breaks the spider result.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import re
 from urllib.parse import urljoin, urlparse
+
+# SP-1: auth for the discovery re-fetch. The spider crawls WITH the operator's
+# session (cookies/token), but this layer's re-fetches (spec, JS, forms, live-
+# probe) previously ran anonymous — so on an auth-gated app they hit login walls
+# and the matrix collapsed to the public surface. discover_and_register() sets
+# this for the duration of a run; _fetch() attaches it. A ContextVar keeps it
+# async-safe (no signature churn across the 4 discovery helpers, no cross-run
+# bleed between concurrent spiders).
+_DISCOVERY_AUTH: contextvars.ContextVar = contextvars.ContextVar("discovery_auth", default=None)
 
 # ── bounds (enrichment must stay cheap relative to the spider itself) ──────────
 _MAX_OPS = 500          # cap operations expanded from one spec
@@ -248,12 +258,17 @@ def _spider_endpoints(urls: list[str]) -> list[dict]:
 
 async def _fetch(url: str) -> tuple[int, str]:
     import aiohttp
+    # SP-1: attach the crawl's auth (Bearer token / session cookies) so spec,
+    # JS, form and liveness fetches see the AUTHENTICATED surface, not a login wall.
+    _auth = _DISCOVERY_AUTH.get() or {}
+    _headers = _auth.get("headers") or None
+    _cookies = _auth.get("cookies") or None
     try:
         # ssl=False is intentional: a pentest tool must reach targets that use
         # self-signed / invalid certs, so cert validation is deliberately off.
         timeout = aiohttp.ClientTimeout(total=_FETCH_TIMEOUT)
         connector = aiohttp.TCPConnector(ssl=False)  # NOSONAR — see comment above (S4830)
-        async with aiohttp.ClientSession(connector=connector) as session:
+        async with aiohttp.ClientSession(connector=connector, headers=_headers, cookies=_cookies) as session:
             async with session.get(url, timeout=timeout, allow_redirects=True) as resp:
                 # content.read(n) returns only the first available chunk, which
                 # truncates a streamed/chunked body (a 50 KB spec arrived as a
@@ -304,13 +319,31 @@ async def _discover_spec(base: str, spider_urls: list[str]) -> list[dict] | None
     return None
 
 
+def _route_params(route: str) -> list[dict]:
+    """SP-2: infer params from a JS-mined route so it generates injection cells,
+    not just endpoint-level cells. Query params from ?a=b; path params from
+    numeric segments AND templatized {id}/:id placeholders (integer hint → the
+    IDOR/SQLi cells that matter on an object-reference route). A route with no
+    inferable params yields [] (endpoint-level cells only) as before."""
+    from urllib.parse import parse_qs, urlsplit
+    parts = urlsplit(route)
+    params = [{"name": n, "type": "query", "value_hint": "string"}
+              for n in parse_qs(parts.query) if not n.startswith("__")]
+    for i, seg in enumerate(parts.path.split("/")):
+        if seg.isdigit() or re.fullmatch(r"[:{]\w+}?", seg):
+            name = seg.strip(":{}") or f"id_{i}"
+            params.append({"name": name, "type": "path", "value_hint": "integer"})
+    return params
+
+
 async def _discover_js(spider_urls: list[str]) -> list[dict]:
     """Mine linked JS bundles for routes."""
     js_urls = [u for u in spider_urls if u.lower().split("?", 1)[0].endswith(".js")][:_MAX_JS_FILES]
     eps: list[dict] = []
     for res in await asyncio.gather(*(_fetch(u) for u in js_urls), return_exceptions=True):
         if isinstance(res, tuple) and res[0] and res[1]:
-            eps += [{"path": r, "method": "GET", "params": [], "discovered_by": "js-bundle"}
+            eps += [{"path": r, "method": "GET", "params": _route_params(r),
+                     "discovered_by": "js-bundle"}
                     for r in extract_js_routes(res[1])]
     return eps
 
@@ -379,8 +412,72 @@ async def _register_inventory(inventory: list[dict], auth_context: str) -> dict:
     return {"registered": registered, "cells": cells, "by_source": by_source}
 
 
-async def discover_and_register(target: str, spider_urls: list[str], auth_context: str = "none") -> dict:
+async def import_openapi(spec_url: str, auth: dict | None = None) -> dict:
+    """SM-4: fetch an OpenAPI/Swagger spec by URL and register EVERY operation as
+    coverage endpoints+cells in one call — vs the model hand-transcribing 50 ops
+    into 50 report(coverage) calls (a clerical task small models fumble). Reuses
+    the same parser + registration path as spider-driven discovery."""
+    token = _DISCOVERY_AUTH.set(auth)
+    try:
+        _status, text = await _fetch(spec_url)
+        spec = _parse_spec_text(text) if text else None
+        if not spec:
+            return {"registered": 0, "cells": 0,
+                    "error": f"no valid OpenAPI/Swagger document at {spec_url}"}
+        ops = parse_openapi(spec)
+        result = await _register_inventory(ops, "jwt" if (auth or {}).get("headers", {}).get("Authorization") else "none")
+        result["operations"] = len(ops)
+        return result
+    finally:
+        _DISCOVERY_AUTH.reset(token)
+
+
+_GRAPHQL_INTROSPECTION = (
+    '{"query":"query{__schema{queryType{name fields{name args{name}}} '
+    'mutationType{name fields{name args{name}}}}}"}'
+)
+
+
+async def import_graphql(url: str, auth: dict | None = None) -> dict:
+    """SP-3: POST an introspection query and register the /graphql endpoint with
+    every query/mutation field ARG as a body param — so the injectable surface
+    (per-arg cells) is in the matrix and the graphql gate fires. GraphQL has one
+    transport URL, so args (not per-field URLs) are the honest injection targets."""
+    import aiohttp
+    headers = {"Content-Type": "application/json"}
+    headers.update((auth or {}).get("headers") or {})
+    try:
+        timeout = aiohttp.ClientTimeout(total=_FETCH_TIMEOUT)
+        connector = aiohttp.TCPConnector(ssl=False)  # NOSONAR (S4830) — pentest target
+        async with aiohttp.ClientSession(connector=connector, cookies=(auth or {}).get("cookies")) as s:
+            async with s.post(url, data=_GRAPHQL_INTROSPECTION, headers=headers, timeout=timeout) as r:
+                data = json.loads(await r.text())
+    except Exception as exc:
+        return {"registered": 0, "cells": 0, "error": f"introspection failed: {exc}"}
+    schema = (data.get("data") or {}).get("__schema") or {}
+    args: list[str] = []
+    for root in ("queryType", "mutationType"):
+        for field in ((schema.get(root) or {}).get("fields") or []):
+            args += [a.get("name") for a in (field.get("args") or []) if a.get("name")]
+    if not args:
+        return {"registered": 0, "cells": 0, "error": "introspection returned no fields (may be disabled)"}
+    params = [{"name": n, "type": "body_json", "value_hint": "string"} for n in dict.fromkeys(args)]
+    from urllib.parse import urlparse
+    result = await _register_inventory(
+        [{"path": urlparse(url).path or "/graphql", "method": "POST", "params": params,
+          "discovered_by": "graphql-introspection"}], "none")
+    result["fields_args"] = len(params)
+    return result
+
+
+async def discover_and_register(target: str, spider_urls: list[str], auth_context: str = "none",
+                                auth: dict | None = None) -> dict:
     """Enrich spider output with spec/JS/form discovery and auto-register everything.
+
+    ``auth`` (SP-1): ``{"headers": {...}, "cookies": {...}}`` — the crawl's session,
+    attached to every discovery re-fetch so auth-gated specs/routes/forms are seen.
+    When present, ``auth_context`` is upgraded from ``none`` to the real form so the
+    matrix cells aren't mislabeled unauthenticated.
 
     Returns ``{"registered", "cells", "by_source", "spec_found", "inventory"}``.
     Fail-soft: any fetch/parse error is swallowed; partial results still register.
@@ -388,16 +485,26 @@ async def discover_and_register(target: str, spider_urls: list[str], auth_contex
     parsed_t = urlparse(target)
     base = f"{parsed_t.scheme}://{parsed_t.netloc}"
 
-    inventory: list[dict] = list(_spider_endpoints(spider_urls))
-    spec_ops = await _discover_spec(base, spider_urls)
-    if spec_ops:
-        inventory += spec_ops
-    inventory += await _discover_js(spider_urls)
-    inventory += await _discover_forms(spider_urls)
+    if auth and auth_context == "none":
+        if (auth.get("headers") or {}).get("Authorization"):
+            auth_context = "jwt"
+        elif auth.get("cookies"):
+            auth_context = "cookie"
 
-    inventory, dropped = await _verify_live(base, inventory)
+    token = _DISCOVERY_AUTH.set(auth)
+    try:
+        inventory: list[dict] = list(_spider_endpoints(spider_urls))
+        spec_ops = await _discover_spec(base, spider_urls)
+        if spec_ops:
+            inventory += spec_ops
+        inventory += await _discover_js(spider_urls)
+        inventory += await _discover_forms(spider_urls)
 
-    result = await _register_inventory(inventory, auth_context)
+        inventory, dropped = await _verify_live(base, inventory)
+
+        result = await _register_inventory(inventory, auth_context)
+    finally:
+        _DISCOVERY_AUTH.reset(token)
     result["spec_found"] = spec_ops is not None
     result["inventory"] = len(inventory)
     result["unverified_dropped"] = dropped

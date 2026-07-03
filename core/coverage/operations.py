@@ -14,7 +14,13 @@ import uuid
 from datetime import datetime, timezone
 
 import core.coverage as _cov
-from .classify import _APPLICABILITY, _applicable_types, _normalize_path, classify_endpoint
+from .classify import (
+    _APPLICABILITY,
+    _applicable_types,
+    _normalize_path,
+    classify_endpoint,
+    endpoint_value_rank,
+)
 from .validation import (
     _integrity_warning_for_status,
     _validate_artifact,
@@ -97,7 +103,7 @@ async def add_endpoint(
             p_name = _sanitize_registered(param.get("name", ""), 128)  # AS-08
             p_type = param.get("type", "query")
             p_hint = param.get("value_hint", "")
-            for inj_type in _applicable_types(p_type, p_hint):
+            for inj_type in _applicable_types(p_type, p_hint, p_name):
                 cell = {
                     "id": f"cell-{uuid.uuid4().hex[:12]}",
                     "endpoint_id": ep_id,
@@ -321,9 +327,11 @@ def _endpoint_closed_count(matrix: list, endpoint_id: str) -> int:
               if c.get("endpoint_id") == endpoint_id and c.get("status") in _cov.ADDRESSED_STATUSES)
 
 
-def _choose_focus_endpoint(pending: list, matrix: list, ep_order: dict) -> str:
-    """Pick the endpoint to focus on: one already started (has a closed or
-    in_progress cell) before opening new ground, tie-broken by registration order."""
+def _choose_focus_endpoint(pending: list, matrix: list, ep_order: dict,
+                           endpoints_by_id: dict | None = None) -> str:
+    """Pick the endpoint to focus on: finish one already started (has a closed or
+    in_progress cell) before opening new ground; when opening NEW ground, prefer
+    the highest-value endpoint (WF-A1) before falling back to registration order."""
     candidates = list({c["endpoint_id"] for c in pending})
 
     def _started(eid: str) -> bool:
@@ -331,7 +339,14 @@ def _choose_focus_endpoint(pending: list, matrix: list, ep_order: dict) -> str:
             return True
         return any(c["endpoint_id"] == eid and c["status"] == "in_progress" for c in pending)
 
-    candidates.sort(key=lambda eid: (0 if _started(eid) else 1, ep_order.get(eid, 1 << 30)))
+    def _value(eid: str) -> int:
+        ep = (endpoints_by_id or {}).get(eid, {})
+        return endpoint_value_rank(ep.get("path", ""), ep.get("params"))
+
+    # Depth-first: finish started endpoints first; among unstarted, highest-value
+    # first; registration order only as the final tie-break.
+    candidates.sort(key=lambda eid: (0 if _started(eid) else 1, _value(eid),
+                                     ep_order.get(eid, 1 << 30)))
     return candidates[0]
 
 
@@ -359,7 +374,7 @@ def select_next_batch(data: dict, count: int = 10, endpoint_id: str | None = Non
         return {"batch": [], "endpoint_focus": None, "remaining": 0,
                 "progress": {"endpoint": "0/0", "overall": f"{overall_closed}/{overall_total}"}}
 
-    focus_id = endpoint_id or _choose_focus_endpoint(pending, matrix, ep_order)
+    focus_id = endpoint_id or _choose_focus_endpoint(pending, matrix, ep_order, endpoints_by_id)
     ep = endpoints_by_id.get(focus_id, {})
 
     def _prio(cell: dict) -> int:

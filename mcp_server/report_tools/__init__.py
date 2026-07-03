@@ -72,6 +72,7 @@ from .coverage import (
     _do_coverage_auto_crosscutting,
     _do_coverage_next_batch,
     _do_coverage_list,
+    _do_coverage_sweep,
     _emit_coverage_event,
 )
 
@@ -122,12 +123,14 @@ async def report(action: str, data: Any) -> str:
       — records a PROVEN exploit chain: every step's transition_artifact_id must
       exist on disk (the artifact proving step N's output feeds step N+1), else the
       chain is rejected. Auto-renders a MITRE-labelled Mermaid kill-chain diagram.
+      • data={type:'suggest'} — returns GRAPH-DERIVED candidate chains (from the
+        knowledge graph of findings/creds/hosts) for you to prove and then file.
 
     dashboard data:
       port=7777
 
     coverage data:
-      type: endpoint | tested | bulk_tested | reset
+      type: endpoint | tested | bulk_tested | sweep | reset
 
       endpoint — register an endpoint and auto-generate test cells:
         path, method, params=[{name, type, value_hint}], discovered_by=spider, auth_context=none
@@ -137,6 +140,17 @@ async def report(action: str, data: Any) -> str:
 
       bulk_tested — mark multiple cells:
         updates=[{cell_id, status, notes=, finding_id=}]
+
+      sweep — SERVER-SIDE probe + evaluate for pending injection cells
+        (ssti/xss/cmdi/traversal/sqli): options max_cells=25, endpoint_id=. The
+        server runs each probe, stores the artifact, AUTO-CLOSES confident-clean
+        cells, and returns oracle-positive cells as CANDIDATES for you to confirm,
+        file a finding, and close vulnerable. Use this to close injection coverage
+        fast instead of hand-running every probe — then handle the candidates.
+
+      import_openapi / import_graphql — register EVERY operation of a schema in
+        ONE call (vs hand-transcribing each): data.url = the spec URL (OpenAPI/
+        Swagger) or the /graphql endpoint. Auth is pulled from known_assets.
 
       reset — clear the entire matrix (no additional fields)
     """

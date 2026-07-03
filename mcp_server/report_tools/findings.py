@@ -209,7 +209,7 @@ async def _do_finding(data):
         pass
 
     # ── Auto-trigger gates based on finding content ──────────────────────────
-    gates_triggered = _auto_trigger_finding_gates(title, severity, data.get("description", ""))
+    gates_triggered = _auto_trigger_finding_gates(title, severity, data.get("description", ""), data.get("cve", ""))
     msg = f"Finding logged: [{severity.upper()}] {title}"
     if linked_cell:
         msg += f"\n\nMATRIX UPDATED: cell {linked_cell} auto-marked vulnerable (linked to this finding)."

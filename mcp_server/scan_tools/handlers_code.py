@@ -5,14 +5,14 @@ from core import logger as log
 from mcp_server._app import _clip, _record, _run
 
 
-async def _handle_semgrep(target, flags, options):
+async def _handle_semgrep(target, flags, _options):
     _record("semgrep")
     raw = await _run("semgrep", path=target, flags=flags)
     from mcp_server.scan_engine import wrap
     return wrap("semgrep", raw, {"path": target})
 
 
-async def _handle_trufflehog(target, flags, options):
+async def _handle_trufflehog(target, flags, _options):
     _record("trufflehog")
     raw = await _run("trufflehog", path=target, flags=flags)
     from mcp_server.scan_engine import wrap

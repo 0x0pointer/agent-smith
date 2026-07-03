@@ -142,7 +142,7 @@
   let lastOk     = null;
   let _steeringData = null;
   let _sessionData  = null;
-  let _activeTab = 'findings';
+  let _activeTab = 'overview';
   let _logLines  = [];
 
   // ── Notification system ───────────────────────────────────────────────────
@@ -198,18 +198,24 @@
   }
 
   // ── Tab switching ─────────────────────────────────────────────────────────
-  const TAB_NAMES = ['findings', 'topology', 'components', 'coverage', 'skills', 'activity', 'threat-model', 'metrics', 'setup-gates', 'logs'];
+  // Order MUST match the .tab-btn DOM order in index.html's sidebar (switchTab maps by index).
+  const TAB_NAMES = ['overview', 'findings', 'topology', 'components', 'coverage', 'skills', 'activity', 'world-model', 'threat-model', 'metrics', 'setup-gates', 'logs'];
 
   function switchTab(name) {
     _activeTab = name;
     document.querySelectorAll('.tab-btn').forEach((b, i) => {
       b.classList.toggle('active', TAB_NAMES[i] === name);
     });
+    // The command center (Instruct Smith + Complete/Force-stop) lives on Overview
+    // only — on the detail tabs it just clutters. HIR alerts stay visible everywhere.
+    const cmd = document.getElementById('cmd-center');
+    if (cmd) cmd.style.display = (name === 'overview') ? '' : 'none';
     document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
     document.getElementById(`tab-${name}`).classList.add('active');
     if (name === 'topology')      renderTopology(allData.diagrams || []);
     if (name === 'components')    renderComponentMap(allData.findings || []);
     if (name === 'coverage')      pollCoverage();
+    if (name === 'world-model')   pollWorldModel();
     if (name === 'skills')        pollSkills();
     if (name === 'activity') {
       // Immediately paint whatever data we already have so the tab is not

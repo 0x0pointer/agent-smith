@@ -112,11 +112,14 @@
   setInterval(pollMetrics,       POLL_MS * 6);
   setInterval(() => { if (!scanDone && lastOk && _activeTab === 'findings') renderFindings(); }, 1000);
   setInterval(() => { if (!scanDone && _activeTab === 'logs') pollLogs(); }, 3000);
+  setInterval(() => { if (_activeTab === 'overview') pollOverview(); }, POLL_MS);
+  setInterval(() => { if (_activeTab === 'world-model') pollWorldModel(); }, POLL_MS);
 
   // Request browser notification permission on load
   _requestNotifPermission();
 
   // Initial load
+  pollOverview();
   pollFindings();
   pollSession();
   pollIntervention();
