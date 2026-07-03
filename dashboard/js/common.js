@@ -206,6 +206,10 @@
     document.querySelectorAll('.tab-btn').forEach((b, i) => {
       b.classList.toggle('active', TAB_NAMES[i] === name);
     });
+    // The command center (Instruct Smith + Complete/Force-stop) lives on Overview
+    // only — on the detail tabs it just clutters. HIR alerts stay visible everywhere.
+    const cmd = document.getElementById('cmd-center');
+    if (cmd) cmd.style.display = (name === 'overview') ? '' : 'none';
     document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
     document.getElementById(`tab-${name}`).classList.add('active');
     if (name === 'topology')      renderTopology(allData.diagrams || []);

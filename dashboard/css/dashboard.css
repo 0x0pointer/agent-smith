@@ -57,9 +57,11 @@
     .tunnel-btn:hover { color: var(--green); border-color: var(--green); }
 
     #status {
-      font-size: 0.76rem; color: var(--text-dim); margin-bottom: 0.75rem;
+      font-size: 0.76rem; color: var(--text-dim); margin-bottom: 1.1rem;
       font-family: 'IBM Plex Mono', monospace;
     }
+    /* Breathing room above the filter chips / tab content on non-overview tabs. */
+    #stats { margin-top: 0.25rem; }
     #status .dot {
       display: inline-block; width: 7px; height: 7px; border-radius: 50%;
       background: var(--green); margin-right: 5px; animation: blink 2s infinite;
@@ -385,7 +387,7 @@
     .sidebar-brand h1 { font-size: 1rem; margin: 0; line-height: 1.1; }
     .main {
       flex: 1 1 auto; min-width: 0; box-sizing: border-box;
-      padding: 1rem 1.5rem 2rem; max-width: 1500px;
+      padding: 1.75rem 2.25rem 2.5rem; max-width: 1500px;
     }
 
     /* ── Sidebar nav (grouped destinations) ── */
@@ -596,14 +598,50 @@
     }
 
     /* ── Finding cards ── */
-    .finding-cards { display: flex; flex-direction: column; gap: 0.75rem; }
+    /* Severity-grouped sections, each a responsive grid of uniform cards. */
+    .finding-section { margin-bottom: 1.4rem; }
+    .finding-section-head {
+      display: flex; align-items: center; gap: 0.5rem; font-family: 'IBM Plex Mono', monospace;
+      font-size: 0.72rem; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+      color: var(--text-muted); margin: 0 0 0.6rem;
+    }
+    .finding-section-head .fs-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-dim); }
+    .finding-section-head.sev-critical .fs-dot { background: #ff4d4f; }
+    .finding-section-head.sev-high     .fs-dot { background: #fa8c16; }
+    .finding-section-head.sev-medium   .fs-dot { background: #faad14; }
+    .finding-section-head.sev-low      .fs-dot { background: var(--green); }
+    .finding-section-head.sev-info     .fs-dot { background: var(--purple); }
+    .finding-section-head .fs-count {
+      background: var(--bg-raised); color: var(--text-muted); border-radius: 10px;
+      padding: 0 0.5rem; font-size: 0.66rem; line-height: 1.4;
+    }
+    .finding-cards {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+      gap: 0.8rem; align-items: stretch;
+    }
     .finding-card {
       background: linear-gradient(135deg, rgba(45,43,85,0.45), rgba(26,24,64,0.85));
       border: 1px solid var(--border); border-radius: 8px;
-      padding: 1rem 1.15rem; position: relative; overflow: hidden;
-      transition: border-color .2s;
+      padding: 0.85rem 1rem; position: relative; overflow: hidden;
+      transition: border-color .2s, transform .1s; cursor: pointer;
+      display: flex; flex-direction: column; gap: 0.5rem; min-height: 150px;
     }
-    .finding-card:hover { border-color: rgba(123,120,255,0.45); }
+    .finding-card:hover { border-color: rgba(123,120,255,0.5); transform: translateY(-1px); }
+    .finding-card-top { display: flex; align-items: center; gap: 0.4rem; }
+    .finding-vs-right { margin-left: auto; }
+    .finding-card .finding-title {
+      font-size: 0.9rem; font-weight: 600; line-height: 1.3; color: var(--text);
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+    }
+    .finding-card .finding-desc {
+      font-size: 0.76rem; color: var(--text-muted); line-height: 1.4; margin: 0;
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+    }
+    .finding-card-foot {
+      display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;
+      margin-top: auto; padding-top: 0.5rem; font-size: 0.68rem;
+    }
+    .finding-card-foot .finding-ts-meta { margin-left: auto; color: var(--text-dim); }
     .finding-card.sev-critical { border-left: 3px solid #ff4d4f; }
     .finding-card.sev-high     { border-left: 3px solid #fa8c16; }
     .finding-card.sev-medium   { border-left: 3px solid #faad14; }
@@ -1118,3 +1156,46 @@
 .fd-id { font-family:'IBM Plex Mono',monospace; font-size:0.68rem; color:#58a6ff; }
 .fd-poc { font-family:'IBM Plex Mono',monospace; font-size:0.66rem; color:#58a6ff; word-break:break-all; margin:0.2rem 0; }
 .fd-view .finding-adjudication { margin-top:0; }
+
+/* ── Overview tab (at-a-glance landing) ────────────────────────────────────── */
+.ov-kpis { display: flex; flex-wrap: wrap; gap: 0.7rem; margin-bottom: 1.1rem; }
+.ov-kpi { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px;
+  padding: 0.7rem 0.9rem; min-width: 120px; flex: 1 1 120px; }
+.ov-kpi-val { font-size: 1.6rem; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; color: var(--text); }
+.ov-kpi-frac { font-size: 0.72rem; font-weight: 400; color: var(--text-dim); }
+.ov-kpi-label { font-family: 'IBM Plex Mono', monospace; font-size: 0.62rem; text-transform: uppercase;
+  letter-spacing: 0.06em; color: var(--text-dim); margin-top: 0.5rem; }
+.ov-kpi-crit .ov-kpi-val { color: #ff4d4f; }
+.ov-kpi-high .ov-kpi-val { color: #fa8c16; }
+.ov-kpi-status .ov-kpi-val { font-size: 1rem; text-transform: capitalize; }
+.ov-kpi-bar { height: 4px; background: var(--bg-deep); border-radius: 2px; margin-top: 0.5rem; overflow: hidden; }
+.ov-kpi-bar-fill { height: 100%; background: var(--green); border-radius: 2px; }
+
+.ov-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem; }
+@media (max-width: 900px) { .ov-grid { grid-template-columns: 1fr; } }
+.ov-panel { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 0.9rem 1.05rem; }
+.ov-h { font-size: 0.82rem; font-weight: 600; color: var(--text); margin: 0 0 0.7rem; }
+.ov-sub { font-family: 'IBM Plex Mono', monospace; font-size: 0.6rem; text-transform: uppercase;
+  letter-spacing: 0.06em; color: var(--text-dim); font-weight: 400; margin-left: 0.4rem; }
+.ov-empty { color: var(--text-dim); font-size: 0.76rem; padding: 0.3rem 0; }
+
+.ov-attention { display: flex; flex-direction: column; gap: 0.4rem; }
+.ov-att { display: flex; align-items: center; gap: 0.55rem; font-size: 0.76rem; color: var(--text);
+  background: var(--bg-raised); border: 1px solid var(--border-subtle); border-left: 3px solid var(--text-dim);
+  border-radius: 5px; padding: 0.4rem 0.6rem; }
+.ov-att-icon { flex: 0 0 auto; }
+.ov-att-gate { border-left-color: #ff4d4f; }
+.ov-att-hir  { border-left-color: #f97316; }
+.ov-att-lead { border-left-color: #d29922; }
+
+.ov-chain { display: flex; align-items: center; gap: 0.5rem; padding: 0.4rem 0; border-bottom: 1px solid var(--border-subtle); }
+.ov-chain:last-child { border-bottom: none; }
+.ov-chain-steps { font-size: 0.74rem; color: var(--text); }
+
+.ov-list { display: flex; flex-direction: column; gap: 0.2rem; }
+.ov-row { display: flex; align-items: center; gap: 0.5rem; font-size: 0.76rem; padding: 0.28rem 0.4rem;
+  border-radius: 4px; cursor: pointer; }
+.ov-row:hover { background: var(--bg-raised); }
+.ov-row-label { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ov-pending { font-family: 'IBM Plex Mono', monospace; font-size: 0.62rem; background: var(--bg-raised);
+  color: var(--text-muted); border-radius: 3px; padding: 0.05rem 0.35rem; min-width: 1.4rem; text-align: center; }
