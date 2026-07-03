@@ -412,6 +412,64 @@ async def _register_inventory(inventory: list[dict], auth_context: str) -> dict:
     return {"registered": registered, "cells": cells, "by_source": by_source}
 
 
+async def import_openapi(spec_url: str, auth: dict | None = None) -> dict:
+    """SM-4: fetch an OpenAPI/Swagger spec by URL and register EVERY operation as
+    coverage endpoints+cells in one call — vs the model hand-transcribing 50 ops
+    into 50 report(coverage) calls (a clerical task small models fumble). Reuses
+    the same parser + registration path as spider-driven discovery."""
+    token = _DISCOVERY_AUTH.set(auth)
+    try:
+        _status, text = await _fetch(spec_url)
+        spec = _parse_spec_text(text) if text else None
+        if not spec:
+            return {"registered": 0, "cells": 0,
+                    "error": f"no valid OpenAPI/Swagger document at {spec_url}"}
+        ops = parse_openapi(spec)
+        result = await _register_inventory(ops, "jwt" if (auth or {}).get("headers", {}).get("Authorization") else "none")
+        result["operations"] = len(ops)
+        return result
+    finally:
+        _DISCOVERY_AUTH.reset(token)
+
+
+_GRAPHQL_INTROSPECTION = (
+    '{"query":"query{__schema{queryType{name fields{name args{name}}} '
+    'mutationType{name fields{name args{name}}}}}"}'
+)
+
+
+async def import_graphql(url: str, auth: dict | None = None) -> dict:
+    """SP-3: POST an introspection query and register the /graphql endpoint with
+    every query/mutation field ARG as a body param — so the injectable surface
+    (per-arg cells) is in the matrix and the graphql gate fires. GraphQL has one
+    transport URL, so args (not per-field URLs) are the honest injection targets."""
+    import aiohttp
+    headers = {"Content-Type": "application/json"}
+    headers.update((auth or {}).get("headers") or {})
+    try:
+        timeout = aiohttp.ClientTimeout(total=_FETCH_TIMEOUT)
+        connector = aiohttp.TCPConnector(ssl=False)  # NOSONAR (S4830) — pentest target
+        async with aiohttp.ClientSession(connector=connector, cookies=(auth or {}).get("cookies")) as s:
+            async with s.post(url, data=_GRAPHQL_INTROSPECTION, headers=headers, timeout=timeout) as r:
+                data = json.loads(await r.text())
+    except Exception as exc:
+        return {"registered": 0, "cells": 0, "error": f"introspection failed: {exc}"}
+    schema = (data.get("data") or {}).get("__schema") or {}
+    args: list[str] = []
+    for root in ("queryType", "mutationType"):
+        for field in ((schema.get(root) or {}).get("fields") or []):
+            args += [a.get("name") for a in (field.get("args") or []) if a.get("name")]
+    if not args:
+        return {"registered": 0, "cells": 0, "error": "introspection returned no fields (may be disabled)"}
+    params = [{"name": n, "type": "body_json", "value_hint": "string"} for n in dict.fromkeys(args)]
+    from urllib.parse import urlparse
+    result = await _register_inventory(
+        [{"path": urlparse(url).path or "/graphql", "method": "POST", "params": params,
+          "discovered_by": "graphql-introspection"}], "none")
+    result["fields_args"] = len(params)
+    return result
+
+
 async def discover_and_register(target: str, spider_urls: list[str], auth_context: str = "none",
                                 auth: dict | None = None) -> dict:
     """Enrich spider output with spec/JS/form discovery and auto-register everything.

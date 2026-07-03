@@ -127,6 +127,28 @@ async def _do_coverage_reset(cov: Any) -> str:
     return "Coverage matrix reset."
 
 
+async def _do_coverage_import(cov_type: str, data):
+    """SM-4/SP-3: register EVERY operation of an OpenAPI/Swagger spec (or every
+    GraphQL introspected field arg) as coverage cells in ONE call, so the model
+    doesn't hand-transcribe a 50-op spec into 50 registrations. Auth is pulled
+    from known_assets so an auth-gated schema is fetched under the session."""
+    url = (data.get("url") or data.get("spec_url") or "").strip()
+    if not url:
+        return f"{cov_type} needs a 'url' (the spec URL for import_openapi, the /graphql endpoint for import_graphql)."
+    from mcp_server.scan_engine import discovery
+    # reuse the spider's auth-assembly so an auth-gated schema is reachable
+    from mcp_server.scan_tools.spider import _spider_discovery_auth
+    auth = _spider_discovery_auth(None)
+    fn = discovery.import_openapi if cov_type == "import_openapi" else discovery.import_graphql
+    res = await fn(url, auth=auth)
+    if res.get("error"):
+        return f"{cov_type} from {url}: {res['error']}"
+    extra = res.get("operations") or res.get("fields_args") or 0
+    return (f"📥 {cov_type}: registered {res.get('registered', 0)} endpoint(s) / "
+            f"{res.get('cells', 0)} coverage cell(s) from {extra} operation(s) at {url}. "
+            "The matrix is your test plan — move to per-cell testing (or report(coverage type='sweep')).")
+
+
 async def _do_coverage_sweep(data, cov):
     """SM-5/SM-10: server-side probe → evaluate → auto-close-clean / flag-candidates
     for pending INJECTION cells (ssti/xss/cmdi/traversal/sqli), so the model
@@ -246,11 +268,13 @@ async def _do_coverage(data):
         return await _do_coverage_next_batch(data, cov)
     if cov_type == "sweep":
         return await _do_coverage_sweep(data, cov)
+    if cov_type in ("import_openapi", "import_graphql"):
+        return await _do_coverage_import(cov_type, data)
     if cov_type == "auto_crosscutting":
         return await _do_coverage_auto_crosscutting(data, cov)
     return (
         f"Unknown coverage type '{cov_type}'. Use: endpoint, tested, bulk_tested, list, next_batch, "
-        f"sweep, auto_crosscutting, reset. "
+        f"sweep, import_openapi, import_graphql, auto_crosscutting, reset. "
         f"Example: report(action='coverage', data={{type:'endpoint', path:'/login', method:'GET', "
         f"params:[{{name:'user', type:'query', value_hint:'string'}}]}})"
     )

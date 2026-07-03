@@ -146,6 +146,10 @@ async def report(action: str, data: Any) -> str:
         file a finding, and close vulnerable. Use this to close injection coverage
         fast instead of hand-running every probe — then handle the candidates.
 
+      import_openapi / import_graphql — register EVERY operation of a schema in
+        ONE call (vs hand-transcribing each): data.url = the spec URL (OpenAPI/
+        Swagger) or the /graphql endpoint. Auth is pulled from known_assets.
+
       reset — clear the entire matrix (no additional fields)
     """
     try:
