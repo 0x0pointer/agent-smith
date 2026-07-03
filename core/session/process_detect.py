@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 
 import core.session as _sess
+from core.client_patterns import classify_client
 
 # MCP SSE listen port — must match start-mcp-server.sh. The caller-detection
 # helper below uses this to identify the Smith client across the TCP socket.
@@ -129,30 +130,14 @@ def _resolve_client_for_pid(pid: int) -> str | None:
         return None
     try:
         proc = psutil.Process(pid)
-        cmd = " ".join(proc.cmdline()).lower()
+        cmd = " ".join(proc.cmdline())
     except (psutil.NoSuchProcess, psutil.AccessDenied, ValueError, OSError):
         return None
     if not cmd:
         return None
-    # claude: dashboard-spawned uses --dangerously-skip-permissions; the older
-    # `-p` shorthand exists for completeness, and the bare `claude` TUI is
-    # disambiguated by a separate substring check below.
-    if "claude" in cmd and ("dangerously-skip-permissions" in cmd or " -p " in cmd):
-        return "claude"
-    # opencode is commonly invoked as `node /Users/<u>/.opencode/bin/opencode run …`
-    # or `node …/opencode/dist/index.js`. The .opencode/bin/opencode anchor catches
-    # both shapes plus the direct binary form. Also accept the dashboard's literal
-    # `opencode run …` invocation, raw `opencode` TUI, and any cmdline mentioning
-    # /opencode/ as a directory component (the dist path of npm installs).
-    if (".opencode/bin/opencode" in cmd
-            or "/opencode/dist" in cmd
-            or "opencode run" in cmd
-            or "/opencode" in cmd
-            or cmd.startswith("opencode")):
-        return "opencode"
-    if "codex" in cmd and ("run" in cmd or "mcp" in cmd):
-        return "codex"
-    return None
+    # Per-client cmdline signatures live in core.client_patterns (the single
+    # place a new client is added). classify_client is case-insensitive.
+    return classify_client(cmd)
 
 
 def _persist_smith_caller(info: dict) -> None:
