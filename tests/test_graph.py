@@ -100,6 +100,32 @@ class TestViews:
         assert ranked[0]["label"] == "RCE" and ranked[0]["score"] > ranked[1]["score"]
 
 
+class TestGraphSteer:
+    def test_add_graph_steer_pushes_finding_and_target(self, monkeypatch):
+        import core.graph as cg
+        from mcp_server.scan_engine import planner
+        monkeypatch.setattr(cg, "build_graph", lambda: object())
+        monkeypatch.setattr(cg, "rank_findings",
+                            lambda g: [{"label": "RCE via upload", "severity": "critical", "why": "critical"}])
+        monkeypatch.setattr(cg, "next_targets",
+                            lambda g, limit=1: [{"path": "/admin", "pending_cells": 4}])
+        rec: list[str] = []
+        planner._add_graph_steer(rec)
+        assert any("RCE via upload" in r for r in rec)
+        assert any("/admin" in r for r in rec)
+
+    def test_add_graph_steer_failsoft(self, monkeypatch):
+        import core.graph as cg
+        from mcp_server.scan_engine import planner
+
+        def boom():
+            raise RuntimeError("no graph")
+        monkeypatch.setattr(cg, "build_graph", boom)
+        rec: list[str] = []
+        planner._add_graph_steer(rec)  # must not raise
+        assert rec == []
+
+
 class TestBuildProjection:
     def test_build_from_stores(self, monkeypatch):
         import core.graph.build as gb

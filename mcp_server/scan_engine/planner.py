@@ -133,7 +133,35 @@ def compute_next(tool: str, state: dict) -> dict:
         recommended.append("Create architecture diagram: report(action='diagram', data={title, mermaid})")
         recommended.append("Complete scan: session(action='complete')")
 
+    # Graph-derived steering (Phase 2): push the highest-value finding to deepen +
+    # the highest-value untested endpoint into the per-turn recommendations, so the
+    # world-model actively STEERS the loop instead of only informing recovery.
+    if phase in ("testing", "validation"):
+        _add_graph_steer(recommended)
+
     return {"required": required, "recommended": recommended, "warnings": warnings}
+
+
+def _add_graph_steer(recommended: list[str]) -> None:
+    """Append graph-ranked next actions (WF-A5 / value ranking). Fail-soft +
+    fenced (finding/endpoint text is target-derived)."""
+    try:
+        from core.graph import build_graph, next_targets, rank_findings
+        g = build_graph()
+        ranked = rank_findings(g)
+        if ranked:
+            top = ranked[0]
+            recommended.append(
+                f"Deepen the highest-value finding: {_fence(top['label'])} "
+                f"[{top['severity']}] — {top['why']}. Chain it: report(action='chain', data={{type:'suggest'}})")
+        tgts = next_targets(g, limit=1)
+        if tgts:
+            recommended.append(
+                f"Highest-value untested endpoint: {_fence(tgts[0]['path'])} "
+                f"({tgts[0]['pending_cells']} pending cell(s)) — sweep it: "
+                "report(action='coverage', data={type:'sweep'})")
+    except Exception:
+        pass
 
 
 def _add_testing_actions(required: list[str], recommended: list[str], target: str) -> None:

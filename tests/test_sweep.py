@@ -94,3 +94,13 @@ def test_medium_enforces_coverage():
     from mcp_server.scan_engine import budget
     assert budget.MODEL_PROFILES["medium"]["enforce_coverage"] is True
     assert budget.MODEL_PROFILES["small"]["enforce_coverage"] is False  # still advisory
+
+
+@pytest.mark.asyncio
+async def test_oob_sweep_noop_without_listener(running_session, monkeypatch):
+    # CH-9: with no OOB listener active, the OOB path is a clean no-op.
+    from core.session import assets as sess_assets
+    from mcp_server.report_tools import coverage as cov_mod
+    monkeypatch.setattr(sess_assets, "get_oob_listener", lambda: None)
+    note = await cov_mod._sweep_oob_ssrf("http://t", {"matrix": []}, {}, None, 25, [])
+    assert note == ""

@@ -149,6 +149,83 @@ async def _do_coverage_import(cov_type: str, data):
             "The matrix is your test plan — move to per-cell testing (or report(coverage type='sweep')).")
 
 
+async def _sweep_oob_ssrf(target, matrix, eps, ep_filter, max_cells, candidates) -> str:
+    """CH-9: fire OOB-bearing blind-SSRF probes at pending ssrf cells and confirm
+    via collaborator callback. No-op (returns '') when no OOB listener is active.
+    Best-effort poll; confirmed → candidate, un-confirmed → surfaced to re-poll."""
+    import json as _json
+    import uuid
+    from datetime import datetime, timezone
+
+    from core import oob as _oob
+    from core.session import assets as _sess_assets
+    from mcp_server.http_tools import http_probe
+    from mcp_server.scan_engine.artifacts import store_artifact
+    from mcp_server.scan_engine.planner import _resolve_url
+
+    listener = _sess_assets.get_oob_listener()
+    if not listener:
+        return ""
+    base, mode = listener.get("base_domain", ""), listener.get("mode", "interactsh")
+    if not base:
+        return ""
+    ssrf_cells = [c for c in matrix.get("matrix", [])
+                  if c.get("status") == "pending" and c.get("injection_type") == "ssrf"
+                  and (not ep_filter or c.get("endpoint_id") == ep_filter)][:max_cells]
+    if not ssrf_cells:
+        return ""
+
+    fired = []  # (cell, correlation_id)
+    for c in ssrf_cells:
+        ep = eps.get(c["endpoint_id"], {})
+        cid = uuid.uuid4().hex[:12]
+        callback = (_oob.mint_http_callback(base, cid) if mode == "http"
+                    else _oob.mint_subdomain(base, cid))
+        _sess_assets.update_known_assets("oob_interactions", [{
+            "subdomain": callback, "correlation_id": cid, "linked_cell_id": c["id"],
+            "minted_at": datetime.now(timezone.utc).isoformat(), "polled": False, "hits": 0}])
+        url = _resolve_url(target, ep.get("path", ""), c.get("param", ""),
+                           c.get("param_type", "query"), f"http://{callback}/")
+        try:
+            resp = await http_probe(url, ep.get("method", "GET"))
+            store_artifact("sweep_oob", _json.dumps(resp)[:8000])
+        except Exception:
+            pass
+        fired.append((c, cid))
+
+    # Best-effort poll (callbacks lag; earlier cells have had time by now).
+    confirmed = pending = 0
+    from tools import kali_runner
+    for c, cid in fired:
+        try:
+            if mode == "http":
+                purl = _oob.http_poll_url(listener.get("poll_url", ""), cid)
+                raw = await kali_runner.exec_command(_oob.build_http_poll_command(purl), timeout=20) if purl else ""
+                hits = _oob.parse_http_hits(raw, cid) if raw else []
+            else:
+                raw = await kali_runner.exec_command(
+                    _oob.build_poll_command(listener.get("out_file", _oob.OOB_OUT_FILE)), timeout=20)
+                hits = _oob.parse_interactions(raw, cid)
+        except Exception:
+            hits = []
+        _sess_assets.mark_oob_polled(cid, len(hits))
+        if hits:
+            aid = store_artifact("oob_interaction", _json.dumps(hits, indent=2))
+            ep = eps.get(c["endpoint_id"], {})
+            candidates.append({"cell_id": c["id"], "injection": "ssrf",
+                               "endpoint": ep.get("path", ""), "param": c.get("param", ""),
+                               "artifact_id": aid,
+                               "basis": "OOB callback received — blind SSRF CONFIRMED"})
+            confirmed += 1
+        else:
+            pending += 1
+    note = f"OOB blind-SSRF: fired {len(fired)} probe(s), {confirmed} confirmed via callback"
+    if pending:
+        note += (f", {pending} awaiting a callback (they lag — re-run the sweep or "
+                 "session(action='oob_poll') to re-check; no callback = not reaching an SSRF sink)")
+    return note + "."
+
+
 async def _do_coverage_sweep(data, cov):
     """SM-5/SM-10: server-side probe → evaluate → auto-close-clean / flag-candidates
     for pending INJECTION cells (ssti/xss/cmdi/traversal/sqli), so the model
@@ -223,11 +300,19 @@ async def _do_coverage_sweep(data, cov):
 
     applied = await cov.bulk_update(closures) if closures else {"updated": 0}
 
+    # CH-9: blind SSRF via OOB. When a collaborator is active, fire OOB-bearing
+    # payloads at pending ssrf cells (which the in-band oracle can't see) and
+    # confirm via callback — automating the mint→embed→fire→poll chain the model
+    # otherwise hand-runs and drops. Fail-soft; appends OOB candidates + a note.
+    oob_note = await _sweep_oob_ssrf(target, m, eps, ep_filter, max_cells, candidates)
+
     lines = [
         f"🧹 SWEEP: probed {len(cells)} pending cell(s) — "
         f"{applied.get('updated', 0)} auto-closed tested_clean, {len(candidates)} candidate(s), "
         f"{blocked} auth-blocked, {inconclusive} inconclusive."
     ]
+    if oob_note:
+        lines.append(oob_note)
     if blocked:
         lines.append("Auth-blocked cells stayed pending — re-run the sweep once authenticated.")
     if candidates:
