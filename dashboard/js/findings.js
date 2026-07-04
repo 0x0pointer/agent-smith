@@ -1,4 +1,16 @@
+  const _FINDINGS_CACHE_KEY = 'smith_findings_cache';
+
   async function pollFindings() {
+    // On (re)load — e.g. returning from a /finding/<id> detail page — paint the
+    // last findings from sessionStorage IMMEDIATELY so the list isn't blank for a
+    // whole poll cycle (~5s) while the fetch below is in flight. The live fetch
+    // refreshes it (and the NEW badges) a moment later.
+    if (!(allData.findings || []).length) {
+      try {
+        const cached = sessionStorage.getItem(_FINDINGS_CACHE_KEY);
+        if (cached) { allData = JSON.parse(cached); renderFindings(); }
+      } catch { /* ignore malformed/absent cache */ }
+    }
     try {
       const r = await fetch(`/api/findings?_=${Date.now()}`);
       if (!r.ok) throw new Error('not found');
@@ -10,12 +22,17 @@
       });
       allData = data;
       lastOk  = new Date();
+      try { sessionStorage.setItem(_FINDINGS_CACHE_KEY, JSON.stringify(data)); } catch { /* quota */ }
       renderFindings();
     } catch {
       document.getElementById('status').innerHTML =
         '<span class="dot" style="background:#f85149"></span>Waiting for data…';
     }
   }
+
+  // Returning via the browser's back/forward cache doesn't re-run init, so the
+  // next interval poll can be up to 5s away — refresh findings right on restore.
+  window.addEventListener('pageshow', (e) => { if (e.persisted) pollFindings(); });
 
   function renderFindings() {
     const findings = allData.findings || [];
@@ -343,6 +360,7 @@
         freshIds = new Set();
         filter   = 'all';
         _logLines = [];
+        try { sessionStorage.removeItem(_FINDINGS_CACHE_KEY); } catch { /* ignore */ }
 
         // ── Status bar ───────────────────────────────────────────────────
         document.getElementById('status').innerHTML =
