@@ -1,17 +1,23 @@
 <div id="tab-world-model" class="tab-content">
   <div id="wm-stats" class="wm-stats"></div>
+
+  <!-- Kill-chains are the payoff of the graph — give them the full width. -->
+  <section class="wm-panel wm-chains-panel">
+    <h3 class="wm-h">Proposed kill-chains <span class="wm-sub">graph-derived — prove &amp; file</span></h3>
+    <div id="wm-chains" class="wm-chains"></div>
+  </section>
+
   <div class="wm-grid">
-    <section class="wm-panel">
-      <h3 class="wm-h">Proposed kill-chains <span class="wm-sub">graph-derived — prove &amp; file</span></h3>
-      <div id="wm-chains" class="wm-chains"></div>
-    </section>
     <section class="wm-panel">
       <h3 class="wm-h">Deepen next <span class="wm-sub">highest-value findings</span></h3>
       <div id="wm-findings" class="wm-list"></div>
-      <h3 class="wm-h wm-h-mt">High-value untested <span class="wm-sub">value-ranked endpoints</span></h3>
+    </section>
+    <section class="wm-panel">
+      <h3 class="wm-h">High-value untested <span class="wm-sub">value-ranked endpoints</span></h3>
       <div id="wm-targets" class="wm-list"></div>
     </section>
   </div>
+
   <section class="wm-panel wm-graph-panel">
     <h3 class="wm-h">World model <span class="wm-sub">hosts · endpoints · params · findings · principals</span></h3>
     <div id="wm-graph" class="wm-graph"></div>

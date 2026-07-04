@@ -50,6 +50,23 @@
   function renderStats(findings) {
     const c = { all: findings.length, critical:0, high:0, medium:0, low:0, info:0 };
     findings.forEach(f => { if (c[f.severity] !== undefined) c[f.severity]++; });
+
+    // Overview: a slim severity-distribution bar — the risk profile at a glance.
+    const ov = document.getElementById('findings-overview');
+    if (ov) {
+      const total = c.all || 0;
+      const segs = ['critical','high','medium','low','info']
+        .filter(s => c[s] > 0)
+        .map(s => `<span class="sevbar-seg sevbar-${s}" style="flex:${c[s]}" title="${s}: ${c[s]}"></span>`)
+        .join('');
+      ov.innerHTML = total
+        ? `<div class="fx-overview">
+             <div class="fx-ov-count"><span class="fx-ov-num">${total}</span> finding${total===1?'':'s'}</div>
+             <div class="sevbar">${segs}</div>
+           </div>`
+        : '';
+    }
+
     document.getElementById('stats').innerHTML =
       ['all','critical','high','medium','low','info'].map(s =>
         `<span class="stat stat-${s}${filter===s?' active':''}" onclick="setFilter('${s}')">
@@ -69,38 +86,65 @@
       ).join('');
   }
 
+  const SEV_GROUPS = ['critical', 'high', 'medium', 'low', 'info'];
+
   function renderFindingsTable(findings) {
-    // Detail view takes over the pane when a finding is open (progressive disclosure).
-    if (_openFindingId) {
-      const wrapEl = document.getElementById('findings-wrap');
-      const f = (findings || []).find(x => x.id === _openFindingId);
-      if (f && wrapEl) { wrapEl.innerHTML = renderFindingDetail(f); return; }
-      _openFindingId = null;  // finding vanished (cleared) → fall back to the grid
-    }
     let filtered = filter === 'all' ? findings : findings.filter(f => f.severity === filter);
     if (vfilter !== 'all') filtered = filtered.filter(f => f.verification_status === vfilter);
+
     const wrap = document.getElementById('findings-wrap');
     if (!filtered.length) {
       wrap.innerHTML = '<div class="empty-placeholder">No findings' +
-        (filter !== 'all' || vfilter !== 'all' ? ` matching current filters` : ' yet — run a scan.') + '</div>';
+        (filter !== 'all' || vfilter !== 'all' ? ' matching current filters' : ' yet — run a scan.') + '</div>';
       return;
     }
-    // Group into severity SECTIONS (critical → info); within a section, order by
-    // verification (unverified first — needs attention) then newest first. Each
-    // section is a responsive grid of uniform, scannable cards.
-    const SEVS = ['critical', 'high', 'medium', 'low', 'info'];
-    const bySev = {};
-    filtered.forEach(f => { (bySev[f.severity] = bySev[f.severity] || []).push(f); });
-    wrap.innerHTML = SEVS.filter(s => bySev[s] && bySev[s].length).map(s => {
-      const cards = bySev[s].sort((a, b) =>
-        ((VS_ORDER[a.verification_status] ?? 9) - (VS_ORDER[b.verification_status] ?? 9))
-        || (new Date(b.timestamp) - new Date(a.timestamp))
-      ).map(f => cardHTML(f)).join('');
-      return `<div class="finding-section">
-        <div class="finding-section-head sev-${s}"><span class="fs-dot"></span>${s.toUpperCase()}<span class="fs-count">${bySev[s].length}</span></div>
-        <div class="finding-cards">${cards}</div>
-      </div>`;
+
+    // Group by severity, most severe first; within a group order by verification
+    // confidence, then newest. Reads like a triage board.
+    const groups = {};
+    filtered.forEach(f => { (groups[f.severity] = groups[f.severity] || []).push(f); });
+    const html = SEV_GROUPS.filter(s => groups[s] && groups[s].length).map(s => {
+      const items = groups[s].sort((a, b) => {
+        const vd = (VS_ORDER[a.verification_status]??9) - (VS_ORDER[b.verification_status]??9);
+        return vd !== 0 ? vd : new Date(b.timestamp) - new Date(a.timestamp);
+      });
+      return `<section class="fx-section">
+        <div class="fx-section-head fx-head-${s}">
+          <span class="fx-head-dot"></span>
+          <span class="fx-head-name">${s}</span>
+          <span class="fx-head-count">${items.length}</span>
+        </div>
+        <div class="fx-grid">${items.map(tileHTML).join('')}</div>
+      </section>`;
     }).join('');
+    wrap.innerHTML = html;
+  }
+
+  // Compact finding tile — the whole tile is a same-tab link to the dossier.
+  function tileHTML(f) {
+    const isNew = freshIds.has(f.id);
+    const vs    = f.verification_status || 'unverified';
+    const ts    = new Date(f.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const newBadge = isNew ? '<span class="new-badge">NEW</span>' : '';
+    const fpBadge  = f.status === 'false_positive'
+      ? '<span class="badge" style="background:rgba(107,104,144,.2);color:var(--text-dim)">FP</span>' : '';
+    const line = f.business_impact || f.description || '';
+    const foot = [
+      f.target    ? `<span class="meta-chip chip-target">${esc(f.target)}</span>` : '',
+      f.tool_used ? `<span class="meta-chip chip-tool">${esc(f.tool_used)}</span>` : '',
+      f.cve       ? `<span class="meta-chip chip-cve">${esc(f.cve)}</span>` : '',
+      f.adjudication?.rationale ? '<span class="fx-triaged" title="Senior-reviewed">⚖</span>' : '',
+    ].filter(Boolean).join('');
+    return `<a class="fx-tile sev-${f.severity}" href="/finding/${encodeURIComponent(f.id)}">
+      <div class="fx-tile-top">
+        <span class="badge badge-${f.severity}"><span class="sev-dot"></span>${f.severity}</span>${fpBadge}
+        <span class="fx-grow"></span>
+        <span class="vbadge vbadge-${vs}" title="Verification: ${vs.replace(/_/g,' ')}">${VS_LABELS[vs] || vs}</span>
+      </div>
+      <div class="fx-tile-title">${esc(f.title)}${newBadge}</div>
+      ${line ? `<div class="fx-tile-line">${esc(line)}</div>` : ''}
+      <div class="fx-tile-foot">${foot}<span class="fx-grow"></span><span class="fx-time">${ts}</span></div>
+    </a>`;
   }
 
   const SEV_RANK = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
@@ -134,101 +178,18 @@
       </div>`;
   }
 
-  // ── Full finding detail view (progressive disclosure: card → click → detail) ──
-  let _openFindingId = null;
-
-  function openFinding(id) {
-    _openFindingId = id;
-    renderFindingsTable(allData.findings || []);
-    window.scrollTo(0, 0);
-  }
-  function closeFinding() {
-    _openFindingId = null;
-    renderFindingsTable(allData.findings || []);
-  }
-  function copyEvidence(btn, findingId) {
-    const f = (allData.findings || []).find(x => x.id === findingId);
-    if (!f?.evidence) return;
-    navigator.clipboard.writeText(f.evidence).then(() => {
-      const t = btn.textContent; btn.textContent = 'Copied!';
-      setTimeout(() => { btn.textContent = t; }, 1500);
-    });
+  // Open a finding's detail page in the SAME tab. Bound to the whole card;
+  // bail out when the click landed on an interactive child (button / link) so
+  // those keep their own behaviour and we don't navigate twice.
+  function openFinding(ev, id) {
+    if (ev && ev.target && ev.target.closest('button, a')) return;
+    window.location.assign('/finding/' + encodeURIComponent(id));
   }
 
-  function _rail(label, val) {
-    return `<div class="fd-rail-k">${esc(label)}</div><div class="fd-rail-v">${val}</div>`;
-  }
-
-  function renderFindingDetail(f) {
-    const vs = f.verification_status || 'unverified';
-    const ts = f.timestamp ? new Date(f.timestamp).toLocaleString() : '—';
-    const triaged = f.adjudication?.rationale ? `<span class="triaged-badge">⚖ Triaged</span>` : '';
-    const sevVal  = `<span class="badge badge-${esc(f.severity)}">${esc(f.severity)}</span>`;
-    const idCopy  = `<span class="fd-id">${esc(f.id)}</span>` +
-                    `<button class="fd-copy" onclick="copyFindingId(this,'${esc(f.id)}')">copy</button>`;
-    const evidence = f.evidence ? `
-      <div class="fd-sec-head">Evidence <button class="fd-copy" onclick="copyEvidence(this,'${esc(f.id)}')">Copy evidence</button></div>
-      <pre class="evidence">${esc(f.evidence)}</pre>` : '';
-    const repro = f.reproduction?.command ? `
-      <div class="fd-sec-head">Reproduction <button class="fd-copy" onclick="copyReplay(this,'${esc(f.id)}')">▸ Copy command</button></div>
-      <pre class="evidence">${esc(f.reproduction.command)}</pre>
-      ${f.reproduction.expected ? `<div class="fd-expected">expected: ${esc(f.reproduction.expected)}</div>` : ''}` : '';
-    const seniorReview = f.adjudication?.rationale ? _adjudicationBlock(f.adjudication) : '';
-    const pocs = (f.poc_files && f.poc_files.length)
-      ? `<div class="fd-rail-box"><div class="fd-rail-title">PoC files</div>${
-          f.poc_files.map(p => `<div class="fd-poc">${esc(p)}</div>`).join('')}</div>` : '';
-    const remediation = f.remediation ? `<div class="fd-block">${buildFixDetail(f).replace('display:none', 'display:block')}</div>` : '';
-    const impact = f.business_impact ? `
-      <div class="finding-impact"><span class="finding-impact-icon">&#9888;</span>
-      <span class="finding-impact-label">Business impact&nbsp;&nbsp;</span>
-      <span class="finding-impact-text">${esc(f.business_impact)}</span></div>` : '';
-
-    return `<div class="fd-view">
-      <button class="fd-back" onclick="closeFinding()">← All findings</button>
-      <div class="fd-hero sev-${esc(f.severity)}">
-        <div class="fd-hero-badges">${sevVal}<span class="vbadge vbadge-${vs}">${VS_LABELS[vs] || vs}</span>${triaged}</div>
-        <h2 class="fd-title">${esc(f.title)}</h2>
-        <div class="fd-hero-meta"><span class="target">${esc(f.target)}</span>
-          ${f.tool_used ? `<span class="tool">${esc(f.tool_used)}</span>` : ''}
-          <span class="finding-ts-meta">first seen ${ts}</span></div>
-      </div>
-      <div class="fd-body">
-        <div class="fd-main">
-          ${f.description ? `<div class="fd-sec-head">Description</div><div class="finding-desc">${esc(f.description)}</div>` : ''}
-          ${impact}
-          ${evidence}
-          ${repro}
-          ${remediation}
-        </div>
-        <aside class="fd-rail">
-          <div class="fd-rail-box fd-rail-grid">
-            ${_rail('Severity', sevVal)}
-            ${_rail('Verification', `<span class="vbadge vbadge-${vs}">${VS_LABELS[vs] || vs}</span>`)}
-            ${_rail('Target', esc(f.target))}
-            ${_rail('Tool', esc(f.tool_used || '—'))}
-            ${_rail('Status', esc(f.status || 'confirmed'))}
-            ${_rail('First seen', esc(ts))}
-            ${_rail('Finding ID', idCopy)}
-            ${f.cve ? _rail('CVE', esc(f.cve)) : ''}
-          </div>
-          ${seniorReview}
-          ${pocs}
-        </aside>
-      </div>
-    </div>`;
-  }
-
-  function copyFindingId(btn, id) {
-    navigator.clipboard.writeText(id).then(() => {
-      const t = btn.textContent; btn.textContent = 'copied'; setTimeout(() => { btn.textContent = t; }, 1500);
-    });
-  }
-
-  function cardHTML(f) {
+  function cardHTML(f, openIds) {
     const isNew    = freshIds.has(f.id);
     const ts       = new Date(f.timestamp).toLocaleTimeString();
     const newBadge = isNew ? '<span class="new-badge">NEW</span>' : '';
-    const cve      = f.cve ? `<span class="cve">CVE: ${esc(f.cve)}</span>` : '';
     const statusBadge = f.status === 'false_positive'
       ? `<span class="badge" style="background:rgba(107,104,144,.2);color:var(--text-dim);margin-left:.4rem">false positive</span>`
       : '';
@@ -237,20 +198,47 @@
       : '';
     const vs = f.verification_status || 'unverified';
     const vsBadge = `<span class="vbadge vbadge-${vs}" title="Verification status: ${vs.replace(/_/g,' ')}">${VS_LABELS[vs] || vs}</span>`;
-    // Clean, uniform card — a scannable summary. Evidence, reproduction, senior
-    // review and PoC all live in the click-through detail view (openFinding).
-    return `<div class="finding-card sev-${f.severity}" onclick="openFinding('${esc(f.id)}')" title="Open full detail">
-      <div class="finding-card-top">
-        <span class="badge badge-${f.severity}">${f.severity}</span>${statusBadge}${triagedBadge}
-        <span class="finding-vs-right">${vsBadge}</span>
+    const ghBtn = f.gh_issue
+      ? `<button class="copy-gh-btn" data-id="${esc(f.id)}" onclick="copyGhIssue(this,this.dataset.id)" title="Copy GitHub issue">
+           <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+             <path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"/><path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"/>
+           </svg>
+           GH Issue
+         </button>`
+      : '';
+    const replayBtn = f.reproduction?.command
+      ? `<button class="replay-btn" data-id="${esc(f.id)}" onclick="copyReplay(this,this.dataset.id)" title="Copy reproduction command">&#9654; Replay</button>`
+      : '';
+    const detailHref = '/finding/' + encodeURIComponent(f.id);
+    const metaChips = [
+      f.target    ? `<span class="meta-chip chip-target">${esc(f.target)}</span>` : '',
+      f.tool_used ? `<span class="meta-chip chip-tool">${esc(f.tool_used)}</span>` : '',
+      f.cve       ? `<span class="meta-chip chip-cve">${esc(f.cve)}</span>` : '',
+    ].filter(Boolean).join('');
+    // One body line, scannable: lead with the "so what" (business impact) when we
+    // have it, else the technical description. Both live in full on the dossier.
+    const body = f.business_impact
+      ? `<div class="fc-body fc-body-impact"><span class="fc-impact-tag">&#9888; Impact</span>${esc(f.business_impact)}</div>`
+      : (f.description ? `<div class="fc-body">${esc(f.description)}</div>` : '');
+    return `<div class="finding-card sev-${f.severity}" onclick="openFinding(event,'${esc(f.id)}')" title="Open finding detail">
+      <div class="fc-top">
+        <div class="fc-top-left">
+          <span class="badge badge-${f.severity}"><span class="sev-dot"></span>${f.severity}</span>${statusBadge}
+        </div>
+        <div class="fc-top-right">
+          ${triagedBadge}${vsBadge}
+          <span class="finding-ts-meta">${ts}</span>
+          <span class="finding-open-cue" aria-hidden="true">&#8594;</span>
+        </div>
       </div>
-      <div class="finding-title">${esc(f.title)}${newBadge}</div>
-      ${f.description ? `<div class="finding-desc">${esc(f.description)}</div>` : ''}
-      <div class="finding-card-foot">
-        <span class="target">${esc(f.target)}</span>
-        ${f.tool_used ? `<span class="tool">${esc(f.tool_used)}</span>` : ''}
-        ${cve}
-        <span class="finding-ts-meta">${ts}</span>
+      <a class="finding-title-link" href="${detailHref}">
+        <h3 class="finding-title">${esc(f.title)}${newBadge}</h3>
+      </a>
+      ${metaChips ? `<div class="finding-meta-row">${metaChips}</div>` : ''}
+      ${body}
+      <div class="finding-footer">
+        ${replayBtn}${ghBtn}
+        <a class="detail-link" href="${detailHref}">View detail &#8594;</a>
       </div>
     </div>`;
   }

@@ -28,6 +28,41 @@ async def api_findings() -> JSONResponse:
     return JSONResponse(data)
 
 
+@router.get("/api/findings/{finding_id}")
+async def api_finding(finding_id: str) -> JSONResponse:
+    """One finding + any exploit chains that reference it — feeds the standalone
+    /finding/<id> detail page. Chain mermaid is pre-rendered server-side (same as
+    api_findings) so the dossier's kill-chain matches the topology theme. Falls
+    back to the archived list so a deleted finding's URL still resolves."""
+    data = _api._read_json(_api._FINDINGS_FILE)
+    finding = next((f for f in data.get("findings", []) if f.get("id") == finding_id), None)
+    archived = False
+    if finding is None:
+        finding = next((f for f in data.get("archived", []) if f.get("id") == finding_id), None)
+        archived = finding is not None
+    if finding is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+
+    related = []
+    for c in data.get("chains", []):
+        steps = c.get("steps", []) or []
+        touches = any(
+            s.get("from_finding_id") == finding_id or s.get("to_finding_id") == finding_id
+            for s in steps
+        )
+        if not touches:
+            continue
+        if c.get("mermaid") and "svg" not in c:
+            wrapped = f"```mermaid\n{c['mermaid']}\n```"
+            svgs = _api._render_mermaid_svgs(wrapped)
+            c = {**c, "svg": svgs.get("0", "")}
+        related.append(c)
+
+    return JSONResponse(
+        {"finding": finding, "chains": related, "archived": archived, "meta": data.get("meta", {})}
+    )
+
+
 @router.get("/api/session")
 async def api_session() -> JSONResponse:
     data = _api._read_json(_api._SESSION_FILE)

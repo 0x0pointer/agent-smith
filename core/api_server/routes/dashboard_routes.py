@@ -18,6 +18,16 @@ async def dashboard_ui(request: Request):
     return _api.templates.TemplateResponse(request, "index.html")
 
 
+@router.get("/finding/{finding_id}")
+async def finding_detail(request: Request, finding_id: str):
+    """Standalone per-finding 'dossier' page, opened from a finding card.
+    finding.js reads the id from data-finding-id and fetches /api/findings/<id>.
+    Jinja autoescapes finding_id into the attribute."""
+    return _api.templates.TemplateResponse(
+        request, "finding.html", {"finding_id": finding_id}
+    )
+
+
 @router.get("/healthz")
 async def healthz() -> JSONResponse:
     """Unauthenticated liveness probe used by serve() to detect a healthy
