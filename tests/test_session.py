@@ -512,6 +512,46 @@ def test_pending_gates_empty_without_session():
     assert core.session.pending_gates() == []
 
 
+# ── enforce-properly: skill-chain gates need real WORK, not just declaration ──
+
+def test_skill_worked_false_on_bare_declaration():
+    core.session.start("example.com")
+    core.session.set_skill("api-security")  # declared, no tool work yet
+    assert core.session.skill_worked("api-security") is False
+
+
+def test_skill_worked_true_after_a_tool_call():
+    core.session.start("example.com")
+    core.session.set_skill("api-security")
+    core.session.add_tool_called("http")   # a tool fired while api-security is active
+    assert core.session.skill_worked("api-security") is True
+
+
+def test_reconcile_worked_gates_only_satisfies_worked_skills():
+    core.session.start("example.com")
+    core.session.trigger_gate("api_coverage", "api discovered", ["api-security"])
+    # Declared but not worked → gate stays pending after reconcile.
+    core.session.set_skill("api-security")
+    core.session.reconcile_worked_gates()
+    assert any(g["id"] == "api_coverage" and g["status"] == "pending"
+               for g in core.session.get()["gates"])
+    # Now it does work → reconcile satisfies the gate.
+    core.session.add_tool_called("http")
+    core.session.reconcile_worked_gates()
+    assert all(g["status"] == "satisfied"
+               for g in core.session.get()["gates"] if g["id"] == "api_coverage")
+
+
+# ── context meter resets at the compaction/recovery boundary ──────────────────
+
+def test_reset_context_meter_drops_to_fixed_overhead():
+    core.session.start("example.com")
+    core.session.charge_context(500_000)   # simulate a long run pegging the meter
+    assert core.session.get()["context_chars_sent"] > 400_000
+    core.session.reset_context_meter()
+    assert core.session.get()["context_chars_sent"] == core.session._fixed_context_overhead_chars()
+
+
 def test_gates_persisted_to_file(tmp_path, monkeypatch):
     import json
     monkeypatch.setattr(core.session, "_SESSION_FILE", tmp_path / "session.json")

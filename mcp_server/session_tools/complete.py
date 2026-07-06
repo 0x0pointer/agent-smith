@@ -63,11 +63,59 @@ async def _autoclose_crosscutting_best_effort() -> None:
         log.note("auto_crosscutting (pre-complete) failed — non-fatal")
 
 
+def _thorough_keep_working_response(current: dict) -> str:
+    """Directive returned to the AGENT when it calls complete() in thorough mode —
+    thorough is OPERATOR-TERMINATED, so the agent never ends the scan; it keeps
+    working until the operator clicks Complete Scan. Points at concrete next work."""
+    lines = [
+        "THOROUGH MODE — the scan does NOT auto-complete; only the OPERATOR ends it "
+        "(the dashboard 'Complete Scan' button). Do NOT call session(action='complete') "
+        "again — there are no cost/time/call limits; keep testing until the operator stops you:",
+    ]
+    try:
+        from core.coverage import get_matrix
+        pending = sum(1 for c in get_matrix().get("matrix", []) if c.get("status") == "pending")
+        if pending:
+            lines.append(
+                f"  • {pending} coverage cells still pending — burn them down: "
+                "report(action='coverage', data={type:'sweep', max_cells:60}) repeatedly, then "
+                "report(action='coverage', data={type:'auto_crosscutting'}), then next_batch/bulk_tested.")
+    except Exception:
+        pass
+    gates = [g for g in (current.get("gates") or []) if g.get("status") == "pending"]
+    missing = sorted({s for g in gates
+                      for s in (set(g.get("required_skills", [])) - set(g.get("satisfied_skills", [])))})
+    if missing:
+        lines.append(f"  • Skills not yet run: {', '.join(missing)} — chain each applicable one.")
+    lines.append("  • Adjudicate each high/critical finding, then go DEEPER — chain confirmed findings "
+                 "to maximum impact and re-test at escalating aggression.")
+    lines.append("Keep going. The operator will complete the scan when satisfied.")
+    return "\n".join(lines)
+
+
 def _do_complete():
+    current0 = _st.scan_session.get() or {}
+    # THOROUGH = OPERATOR-TERMINATED. In thorough depth the AGENT can never end the
+    # scan — it keeps working until the operator clicks Complete Scan (POST /api/complete
+    # → scan_session.complete() directly, unaffected by this gate). We short-circuit
+    # BEFORE counting an attempt, so this never trips HIR_FORCE_COMPLETE either.
+    if str(current0.get("depth", "")).lower() == "thorough":
+        return _thorough_keep_working_response(current0)
     _st._complete_attempts += 1
 
     data = findings_store._load()
     current = _persist_completion_counters()
+
+    # Skill-chain gates must be EVALUATED honestly at completion:
+    #  - restore_gates() un-defers gates the per-response throttle parked, so a
+    #    deferred gate can no longer leak past the terminal check (they were both
+    #    non-blocking AND invisible to recovery).
+    #  - reconcile_worked_gates() satisfies each gate whose required skills actually
+    #    DID work — a merely-declared skill (set_skill without running the workflow)
+    #    does not clear its gate. Together: thorough mode genuinely requires the
+    #    applicable skills to run before it can complete.
+    _st.scan_session.restore_gates()
+    _st.scan_session.reconcile_worked_gates()
 
     effective = _st._effective_tools()
     blockers = _st._collect_completion_blockers(data, effective)

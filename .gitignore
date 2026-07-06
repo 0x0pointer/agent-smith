@@ -52,6 +52,7 @@ report_generator.py
 *.swo
 *~
 steering_queue.json
+wishlist_queue.json
 recovery_latest.json
 pentest_metrics.jsonl
 

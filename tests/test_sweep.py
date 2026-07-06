@@ -76,6 +76,44 @@ async def test_sweep_leaves_auth_blocked_pending(coverage_file, running_session,
     assert all(s == "pending" for s in statuses)  # never auto-closed clean under auth block
 
 
+@pytest.mark.asyncio
+async def test_sweep_self_heals_401_by_retrying_with_known_auth(coverage_file, monkeypatch):
+    """A probe that hits 401/403 must be RETRIED with the session's captured auth
+    (Bearer token / cookies) so the cell is tested under auth — not recorded as a
+    permanent auth-block (wish-aa4da3d6)."""
+    monkeypatch.setattr(_artifacts, "_ARTIFACTS_DIR", core.coverage._ARTIFACTS_DIR)
+    scan_session._current = {
+        "status": "running", "target": "http://t.test",
+        "known_assets": {"auth_tokens": [{"type": "jwt", "value": "TOK123"}]},
+    }
+    try:
+        await core.coverage.add_endpoint(
+            "/a", "GET", [{"name": "q", "type": "query", "value_hint": ""}])
+        seen = {"authed": False}
+
+        async def fake_probe(url, method="GET", headers=None, body=None, timeout=20):
+            if headers and headers.get("Authorization") == "Bearer TOK123":
+                seen["authed"] = True
+                return {"status": 200, "headers": {}, "body": "nothing interesting here"}
+            return {"status": 401, "headers": {}, "body": "unauthorized"}
+
+        async def fake_kali(cmd, *a, **k):
+            return "all tested parameters do not appear to be injectable"
+
+        monkeypatch.setattr(http_tools, "http_probe", fake_probe)
+        monkeypatch.setattr(kali_runner, "exec_command", fake_kali)
+
+        await rt._do_coverage_sweep({"max_cells": 50}, core.coverage)
+
+        assert seen["authed"] is True  # retried WITH the captured token after the 401
+        statuses = {c["injection_type"]: c["status"]
+                    for c in core.coverage.get_matrix()["matrix"] if c["param"] == "q"}
+        assert statuses.get("xss") == "tested_clean"   # tested under auth, not auth-blocked
+        assert statuses.get("cmdi") == "tested_clean"
+    finally:
+        scan_session._current = None
+
+
 async def _async_ret(v):
     return v
 
@@ -90,10 +128,13 @@ async def test_sweep_no_target():
         scan_session._current = None
 
 
-def test_medium_enforces_coverage():
+def test_local_profiles_coverage_advisory():
+    # small is merged into medium on the capability axis — both advisory for weak local
+    # models; only the full (capable cloud) profile hard-enforces coverage + skill gates.
     from mcp_server.scan_engine import budget
-    assert budget.MODEL_PROFILES["medium"]["enforce_coverage"] is True
-    assert budget.MODEL_PROFILES["small"]["enforce_coverage"] is False  # still advisory
+    assert budget.MODEL_PROFILES["medium"]["enforce_coverage"] is False
+    assert budget.MODEL_PROFILES["small"]["enforce_coverage"] is False
+    assert budget.MODEL_PROFILES["full"]["enforce_coverage"] is True
 
 
 @pytest.mark.asyncio

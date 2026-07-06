@@ -21,10 +21,10 @@ def clean_env(monkeypatch):
     ("claude-opus-4-8", "full"),
     ("gpt-4o", "full"),
     ("gemini-2.0-flash", "full"),
-    ("qwen2.5:32b", "small"),
-    ("qwen3-27b-instruct", "small"),
-    ("llama3.1:8b", "small"),
-    ("mistral-7b", "small"),
+    ("qwen2.5:32b", "medium"),        # 'small' merged into 'medium' on the capability axis
+    ("qwen3-27b-instruct", "medium"),
+    ("llama3.1:8b", "medium"),
+    ("mistral-7b", "medium"),
     ("llama-3.1-70b", "medium"),
     ("qwen2.5:72b", "medium"),
 ])
@@ -53,18 +53,18 @@ def test_smith_override_env(clean_env, monkeypatch):
 
 def test_opencode_model_classified(clean_env, monkeypatch):
     monkeypatch.setenv("OPENCODE_MODEL", "qwen3-27b")
-    assert md.detect_profile(None)[0] == "small"
+    assert md.detect_profile(None)[0] == "medium"   # local floors to medium
 
 
 def test_client_var_beats_global_openai(clean_env, monkeypatch):
     monkeypatch.setenv("OPENAI_MODEL", "gpt-4o")        # frontier
     monkeypatch.setenv("OLLAMA_MODEL", "qwen2.5:32b")   # local — checked first
-    assert md.detect_profile(None)[0] == "small"
+    assert md.detect_profile(None)[0] == "medium"   # local floors to medium
 
 
 def test_ollama_host_bare_signal(clean_env, monkeypatch):
     monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
-    assert md.detect_profile(None)[0] == "small"
+    assert md.detect_profile(None)[0] == "medium"   # local runtime floors to medium
 
 
 def test_no_signal_defaults_full(clean_env):

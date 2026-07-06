@@ -19,7 +19,14 @@ def _do_artifact(opts):
     mode = opts.get("mode", "summary")
     max_chars = opts.get("max_chars", 4000)
     pattern = opts.get("pattern", "")
-    return retrieve_artifact(artifact_id, mode=mode, max_chars=max_chars, pattern=pattern)
+    result = retrieve_artifact(artifact_id, mode=mode, max_chars=max_chars, pattern=pattern)
+    # Make the context meter honest: artifact retrieval bypasses the wrap() path, so
+    # without this the pressure gauge is blind to (now-bounded) pulls into the window.
+    try:
+        _st.scan_session.charge_context(len(result))
+    except Exception:
+        pass
+    return result
 
 
 
@@ -78,7 +85,11 @@ def _manage_skill_gates(skill_name: str, result: dict) -> list[str]:
     """Satisfy gates requiring skill_name, defer others. Returns list of satisfied gate IDs."""
     satisfied_gates: list[str] = []
     for gate in result.get("gates", []):
-        if gate["status"] == "pending" and skill_name in gate["required_skills"]:
+        # Satisfy only when the skill has actually done work — a bare set_skill
+        # declaration must NOT clear a completion gate (enforce-properly). The
+        # completion path also runs reconcile_worked_gates() as the backstop.
+        if (gate["status"] == "pending" and skill_name in gate["required_skills"]
+                and _st.scan_session.skill_worked(skill_name)):
             _st.scan_session.satisfy_gate(gate["id"], skill_name)
             satisfied_gates.append(gate["id"])
 

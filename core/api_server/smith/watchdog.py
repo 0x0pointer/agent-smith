@@ -76,7 +76,28 @@ async def _watchdog_respawn_flow(now: float) -> None:
     if ok:
         _api._watchdog_last_restart_ts = now
         _api._watchdog_restart_count_window.append(now)
+        _smith._last_spawn_failure = ""   # live respawn — clear any prior failure reason
         _log.info("watchdog: spawned pid=%d", int(result) if isinstance(result, int) else 0)
+    else:
+        # Record the child's own exit reason so the no-progress HIR can report the
+        # REAL cause (out-of-usage / credit / auth) instead of the generic
+        # "agent keeps exiting without testing".
+        _smith._last_spawn_failure = str(result)
+        # The child died on launch (bad/empty auth, "Credit balance is too low",
+        # missing binary). Count it against the min-gap so we don't hot-loop, and
+        # surface the child's REAL exit reason to the operator — otherwise the
+        # no-progress fingerprint would relabel a billing/auth failure as a coverage
+        # dead-end (HIR_NO_PROGRESS) and hide the actual fix.
+        _api._watchdog_last_restart_ts = now
+        _log.warning("watchdog: respawn failed to stay alive — %s", result)
+        _smith._watchdog_notify(
+            "Smith respawn failed to start",
+            f"Watchdog relaunched {client} but it exited immediately: {result}. "
+            "If this says 'Credit balance is too low', the headless respawn is billing an "
+            "API key (from .env) instead of your Claude subscription — unset ANTHROPIC_API_KEY "
+            "for the server, add API credit, or set SMITH_SPAWN_USE_API_KEY=1 intentionally.",
+            "WATCHDOG_RESPAWN_FAILED",
+        )
 
 
 def _kill_stalled_or_hung(hung_pid, stalled_pid) -> None:

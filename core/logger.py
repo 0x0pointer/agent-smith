@@ -79,10 +79,14 @@ _log = logging.getLogger("pentest")
 _log.setLevel(logging.DEBUG)
 _log.addHandler(_fh)
 
-# Write session boundary so multiple restarts are easy to distinguish
-_session_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-_log.info("=" * 80)
-_log.info("SESSION_START  %s", _session_ts)
+def log_session_boundary() -> None:
+    """Write a SESSION_START banner to pentest.log so server restarts are easy to tell
+    apart. Called EXPLICITLY by the long-running server entry points — NOT at import —
+    so short-lived imports (the test suite, tooling, in-process probes/subprocesses)
+    don't churn the scan log with phantom session boundaries indistinguishable from a
+    real scan start."""
+    _log.info("=" * 80)
+    _log.info("SESSION_START  %s", datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
 
 
 # ---------------------------------------------------------------------------

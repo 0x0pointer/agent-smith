@@ -179,6 +179,42 @@ def _check_core_skill_chain(entries: list[dict], session_data: dict,
     return alerts
 
 
+def _check_post_exploit_depth(session_data: dict) -> list[dict]:
+    """Once a confirmed RCE / container / internal-reachability gate has opened, nudge
+    the DEEP post-exploitation skills that turn 'command execution proven' into a real
+    shell / container escape / actual pivot — the run_2 gap where RCE never became
+    shell access. Non-blocking (the gates themselves enforce at completion on the full
+    profile); this surfaces it mid-scan so the model chains it WHILE it still holds the
+    access. Fires per gate only when that gate is pending AND actually requires the
+    skill AND the skill has not run."""
+    gates = session_data.get("gates", [])
+    skills_run = {e.get("skill") for e in session_data.get("skill_history", [])}
+    checks = [
+        ("post_exploit_rce", "reverse-shell", "SHELL_ESCALATION",
+         "RCE is confirmed but /reverse-shell has NOT run — command execution is not a "
+         "session. Escalate the exec primitive to an interactive/persistent shell (bash "
+         "/dev/tcp to a listener, SSH key, cron, or a msfvenom payload); if egress is "
+         "blocked, document why and record what a shell would enable."),
+        ("container_k8s", "container-k8s-security", "CONTAINER_ESCAPE",
+         "RCE is inside a container but /container-k8s-security has NOT run — assess "
+         "container escape (Docker socket, privileged caps, host mounts, SA token, "
+         "kernel)."),
+        ("internal_network", "lateral-movement", "LATERAL_MOVEMENT",
+         "Internal hosts are reachable WITH code execution but /lateral-movement has NOT "
+         "run — turn reachability into real movement (land access on the second host); "
+         "do not stop at a topology map."),
+    ]
+    alerts: list[dict] = []
+    for gid, skill, code, msg in checks:
+        g = next((x for x in gates if x.get("id") == gid), None)
+        if (g and g.get("status") == "pending"
+                and skill in g.get("required_skills", [])
+                and skill not in skills_run):
+            alerts.append({"code": f"MISSING_{code}", "urgency": "high", "blocking": False,
+                           "message": msg})
+    return alerts
+
+
 def _check_missing_skill(coverage_data: dict, session_data: dict) -> list[dict]:
     """Flag when a discovered endpoint type requires a skill that has never been invoked."""
     try:

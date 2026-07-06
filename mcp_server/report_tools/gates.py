@@ -32,16 +32,38 @@ def _maybe_trigger_cve_gate(text: str, cve: str, speculative: bool, severity: st
     return "analyze_cve"
 
 
-def _maybe_trigger_rce_gate(text: str, title: str, severity: str, speculative: bool) -> str | None:
-    """RCE-class finding → post-exploit is mandatory — but ONLY when code execution
-    is actually confirmed. A speculative mention ("appears to support SSTI", ${7*7}
-    merely reflected) is not RCE, so it must not impose the gate."""
-    if (severity in ("critical", "high")
+def _maybe_trigger_rce_gate(text: str, title: str, severity: str, speculative: bool) -> list[str]:
+    """RCE-class finding → obligate the FULL post-exploitation escalation, ONLY when
+    code execution is actually confirmed (a speculative "appears to support SSTI" /
+    reflected ${7*7} is not RCE and imposes nothing).
+
+    Command execution is NOT the finish line — run_2 proved COPY-TO/FROM-PROGRAM code
+    exec (output via an error oracle) and stopped there, never getting an interactive
+    shell, never escaping the container. So a confirmed RCE now requires:
+      • post-exploit   — enumerate + escalate over the exec primitive
+      • reverse-shell  — turn one-shot command exec into a real interactive/persistent
+                         session (the missing "shell access")
+      • container-k8s-security — WHEN the RCE is inside a container (Docker/K8s markers),
+                         assess container escape.
+    These obligate the ATTEMPT (satisfied by the skill running + documenting the
+    outcome — an egress-blocked target that can't yield a shell still satisfies by
+    recording why), so they never become an unsatisfiable wall."""
+    if not (severity in ("critical", "high")
             and any(kw in text for kw in _RCE_KEYWORDS)
             and not speculative):
-        scan_session.trigger_gate("post_exploit_rce", f"RCE confirmed: {title}", ["post-exploit"])
-        return "post_exploit_rce"
-    return None
+        return []
+    triggered: list[str] = []
+    scan_session.trigger_gate(
+        "post_exploit_rce", f"RCE confirmed: {title}", ["post-exploit", "reverse-shell"])
+    triggered.append("post_exploit_rce")
+    # Detect container context from the RCE finding ITSELF (uid=999 in-container,
+    # "Docker Container" title, /.dockerenv) — not only from a later note, which is
+    # why run_2's DB-container RCE never opened the escape gate.
+    if any(kw in text for kw in _K8S_KEYWORDS):
+        scan_session.trigger_gate(
+            "container_k8s", f"RCE inside a container: {title}", ["container-k8s-security"])
+        triggered.append("container_k8s")
+    return triggered
 
 
 def _maybe_trigger_auth_gate(text: str, title: str, severity: str) -> str | None:
@@ -72,12 +94,15 @@ def _auto_trigger_finding_gates(title: str, severity: str, description: str, cve
         return []
 
     speculative = any(m in text for m in _SPECULATION_MARKERS)
-    candidates = (
-        _maybe_trigger_cve_gate(text, cve, speculative, severity),
-        _maybe_trigger_rce_gate(text, title, severity, speculative),
-        _maybe_trigger_auth_gate(text, title, severity),
-    )
-    return [g for g in candidates if g]
+    triggered: list[str] = []
+    cve_gate = _maybe_trigger_cve_gate(text, cve, speculative, severity)
+    if cve_gate:
+        triggered.append(cve_gate)
+    triggered.extend(_maybe_trigger_rce_gate(text, title, severity, speculative))  # returns a list
+    auth_gate = _maybe_trigger_auth_gate(text, title, severity)
+    if auth_gate:
+        triggered.append(auth_gate)
+    return triggered
 
 
 def _auto_trigger_note_gates(message: str) -> list[str]:
@@ -109,10 +134,17 @@ def _auto_trigger_note_gates(message: str) -> list[str]:
         triggered.append("cloud_pivot")
 
     if any(kw in text for kw in _INTERNAL_NET_KEYWORDS):
+        # network-assess maps the topology; but once we ALSO have code execution,
+        # internal reachability must be turned into actual MOVEMENT, not just a
+        # topology diagram — obligate lateral-movement too. (run_2 proved the app
+        # container was 'reachable' but never moved into it.) Both are attempt-gates:
+        # satisfied by the skill running, so a genuinely un-pivotable target still
+        # closes them by documenting why.
+        net_skills = ["network-assess"] + (["lateral-movement"] if rce_gate_exists else [])
         scan_session.trigger_gate(
             "internal_network",
-            "Internal network reachable",
-            ["network-assess"],
+            "Internal network reachable" + (" — with code execution" if rce_gate_exists else ""),
+            net_skills,
         )
         triggered.append("internal_network")
 

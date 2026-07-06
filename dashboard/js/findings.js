@@ -34,13 +34,23 @@
   // next interval poll can be up to 5s away — refresh findings right on restore.
   window.addEventListener('pageshow', (e) => { if (e.persisted) pollFindings(); });
 
-  function renderFindings() {
-    const findings = allData.findings || [];
-    const target   = allData.meta?.target || '';
+  // The "last updated Ns ago" freshness line. Lives in the shared #status header
+  // (above every tab panel), so it must tick on ALL tabs — not just findings.
+  // Skipped while an HIR is active so it doesn't overwrite the "Scan paused" banner.
+  function updateFreshness() {
+    if (_hirActive) return;
+    const el = document.getElementById('status');
+    if (!el) return;
+    const target = allData.meta?.target || '';
     const ago = lastOk ? Math.round((Date.now() - lastOk) / 1000) + 's ago' : '';
-    document.getElementById('status').innerHTML =
+    el.innerHTML =
       `<span class="dot"></span>Live · refreshes every 5 s · last updated ${ago}` +
       (target ? ` · <strong style="color:#c9d1d9">${target}</strong>` : '');
+  }
+
+  function renderFindings() {
+    const findings = allData.findings || [];
+    updateFreshness();
     renderStats(findings);
     renderFindingsTable(findings);
     if (_activeTab === 'topology')   renderTopology(allData.diagrams || []);

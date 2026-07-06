@@ -52,14 +52,18 @@ MODEL_PROFILES: dict[str, dict] = {
     },
     "medium": {
         "enforce_budget": True,
-        # SM-5: with the server-side sweep (report coverage type='sweep') a medium
-        # model can now honestly close injection cells without hand-running every
-        # probe, so coverage is a hard completion gate again. `small` stays
-        # advisory until the sweep is proven on a real 27B run (a hard gate on the
-        # smallest window risks the "spun on a 700-cell matrix and stalled" failure).
-        "enforce_coverage": True,
+        # LOCAL / weak-model tier (small is merged into this on the capability axis —
+        # model_detect no longer returns 'small'; it floors at 'medium'). Coverage is
+        # ADVISORY, not a hard gate: a local model is weaker at honestly closing a
+        # 700-900 cell matrix, so a hard floor drives game-then-stall (false
+        # tested_clean, then HIR_NO_PROGRESS) — the exact regression seen twice. The
+        # floor % stays visible in status/recovery as guidance; the closure-INTEGRITY
+        # guards (artifact-backed, auth-block, suspect-N/A) stay ON for every profile.
+        # enforce_coverage=True is ALSO what makes the skill-chain gates hard-block
+        # (completion_gates), so False here keeps those advisory for local too.
+        "enforce_coverage": False,
         "budget_multiplier": 1.0,    # base budgets as-is
-        "context_budget_chars": 160_000,  # ~40K tokens
+        "context_budget_chars": 160_000,  # ~40K tokens (overridden by SMITH_CONTEXT_WINDOW when known)
         "recovery_cells_shown": 10,
         "execute_next_in_summary": True,
         "condensed_directives": True,
@@ -80,13 +84,39 @@ MODEL_PROFILES: dict[str, dict] = {
 }
 
 
+def _window_scaled_budget() -> int | None:
+    """``context_budget_chars`` scaled from the model's REAL context window
+    (SMITH_CONTEXT_WINDOW, in tokens), or None when the window is unknown.
+
+    The per-profile default is a static number (full = 400K chars ≈ 100K tokens),
+    so a 200K- or 1M-token Claude/Qwen is throttled to a fraction of its real window
+    and the context-pressure meter fires far too early. When the true window is known
+    (the opencode installer exports it; an operator can export it for cloud Claude
+    too), derive the budget from it: ~3.5 chars/token, 75% headroom so pressure warns
+    before the client's own compaction fires."""
+    try:
+        from core.model_detect import _detected_context_window
+        win = _detected_context_window()
+        if win and win > 0:
+            return int(win * 3.5 * 0.75)
+    except Exception:
+        pass
+    return None
+
+
 def get_profile(profile_name: str | None = None) -> dict:
-    """Get model profile. Reads from session if not specified."""
+    """Get model profile. Reads from session if not specified. When the model's real
+    context window is known, context_budget_chars is scaled from it (see
+    _window_scaled_budget) instead of the profile's static default."""
     if profile_name is None:
         from core import session as scan_session
         current = scan_session.get()
         profile_name = (current or {}).get("model_profile", "full")
-    return MODEL_PROFILES.get(profile_name, MODEL_PROFILES["full"])
+    base = MODEL_PROFILES.get(profile_name, MODEL_PROFILES["full"])
+    scaled = _window_scaled_budget()
+    if scaled is not None:
+        return {**base, "context_budget_chars": scaled}
+    return base
 
 
 # ---------------------------------------------------------------------------

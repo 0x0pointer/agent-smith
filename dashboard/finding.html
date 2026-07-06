@@ -16,7 +16,8 @@
 
 <div class="dossier-shell" data-finding-id="{{ finding_id }}">
   <header class="dossier-topbar">
-    <a class="dossier-back" href="/">&#8592; All findings</a>
+    <a class="dossier-back" href="/"
+       onclick="if (window.history.length > 1) { window.history.back(); return false; }">&#8592; All findings</a>
     <div class="dossier-brand">
       <img class="dossier-logo" src="/logo.png" alt="NullPointer Studio" onerror="this.style.display='none'">
       <span>Pentest <span class="h1-accent">Dashboard</span></span>

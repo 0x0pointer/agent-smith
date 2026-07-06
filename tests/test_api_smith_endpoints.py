@@ -1129,6 +1129,77 @@ class TestSpawnSmith:
         # subprocess should NEVER be called when the binary is missing
         spawn.assert_not_called()
 
+    def test_claude_respawn_strips_api_key_to_use_subscription(self, spawn_env, monkeypatch):
+        """A headless `claude -p` respawn must NOT inherit ANTHROPIC_API_KEY — with it,
+        the child bills the API pay-as-you-go account ('Credit balance is too low' when
+        empty) instead of the operator's Claude subscription (the interactive run's
+        auth). Regression guard for the watchdog credit dead-end."""
+        env = spawn_env
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-should-be-stripped")
+        monkeypatch.delenv("SMITH_SPAWN_USE_API_KEY", raising=False)
+        captured: dict = {}
+
+        async def _cap(*args, **kw):
+            captured.update(kw)
+            m = MagicMock(); m.pid = 24680
+            return m  # MagicMock.wait() is non-awaitable → probe assumes alive
+
+        with patch.dict("sys.modules", {"core.steering": env["steering_module"]}), \
+             patch("core.session.load_from_disk"), \
+             patch("core.session.get", return_value={}), \
+             patch("shutil.which", return_value="/usr/bin/claude"), \
+             patch("asyncio.create_subprocess_exec", side_effect=_cap):
+            ok, _ = asyncio.get_event_loop().run_until_complete(
+                api._spawn_smith("claude", source="test")
+            )
+
+        assert ok is True
+        assert "ANTHROPIC_API_KEY" not in captured["env"]
+        assert "ANTHROPIC_AUTH_TOKEN" not in captured["env"]
+
+    def test_claude_respawn_keeps_api_key_when_opted_in(self, spawn_env, monkeypatch):
+        """SMITH_SPAWN_USE_API_KEY=1 preserves API-key billing for subscription-less boxes."""
+        env = spawn_env
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-keep-me")
+        monkeypatch.setenv("SMITH_SPAWN_USE_API_KEY", "1")
+        captured: dict = {}
+
+        async def _cap(*args, **kw):
+            captured.update(kw)
+            m = MagicMock(); m.pid = 24681
+            return m
+
+        with patch.dict("sys.modules", {"core.steering": env["steering_module"]}), \
+             patch("core.session.load_from_disk"), \
+             patch("core.session.get", return_value={}), \
+             patch("shutil.which", return_value="/usr/bin/claude"), \
+             patch("asyncio.create_subprocess_exec", side_effect=_cap):
+            asyncio.get_event_loop().run_until_complete(
+                api._spawn_smith("claude", source="test")
+            )
+
+        assert captured["env"].get("ANTHROPIC_API_KEY") == "sk-keep-me"
+
+    def test_child_dying_on_launch_is_not_booked_as_respawn(self, spawn_env):
+        """A child that exits within the liveness window (credit/auth failure) must
+        return (False, reason) — NOT a phantom successful respawn that the watchdog's
+        no-progress fingerprint would then launder into a generic HIR_NO_PROGRESS."""
+        env = spawn_env
+        dead = MagicMock(); dead.pid = 99999
+        dead.wait = AsyncMock(return_value=1)  # exits immediately, rc=1
+
+        with patch.dict("sys.modules", {"core.steering": env["steering_module"]}), \
+             patch("core.session.load_from_disk"), \
+             patch("core.session.get", return_value={}), \
+             patch("shutil.which", return_value="/usr/bin/claude"), \
+             patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=dead)):
+            ok, result = asyncio.get_event_loop().run_until_complete(
+                api._spawn_smith("claude", source="test")
+            )
+
+        assert ok is False
+        assert "exited on launch" in result
+
     def test_posix_uses_start_new_session(self, spawn_env):
         """On macOS/Linux _spawn_smith must pass start_new_session=True to
         detach the child from the dashboard's process group."""
@@ -2194,3 +2265,14 @@ async def test_watchdog_tick_no_respawn_when_running_and_not_exited(tmp_path, mo
     monkeypatch.setattr(api, "_spawn_smith", _fake_spawn)
     await smith._watchdog_tick(10_000.0)
     assert spawned == []   # healthy run left alone
+
+
+# ── HIR no-progress: real spawn-failure reason surfaced (billing/usage/auth) ──
+
+def test_classify_spawn_failure_detects_usage_credit_auth():
+    from core.api_server.smith.progress import _classify_spawn_failure
+    assert _classify_spawn_failure("You're out of extra usage · resets 1:30pm")[0] == "usage"
+    assert _classify_spawn_failure("Credit balance is too low")[0] == "credit"
+    assert _classify_spawn_failure("Please run /login")[0] == "auth"
+    assert _classify_spawn_failure("normal agent exit") is None
+    assert _classify_spawn_failure("") is None

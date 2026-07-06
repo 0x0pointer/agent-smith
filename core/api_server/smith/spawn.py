@@ -16,6 +16,11 @@ import core.api_server.smith as _smith
 
 from ._common import _log, _SPAWN_SOURCE_TAGS
 
+# A healthy `claude -p` / `opencode run` agent runs for minutes. A child that
+# exits within this window died on startup (bad/empty auth, missing binary,
+# "Credit balance is too low") and must NOT be booked as a successful respawn.
+_SPAWN_LIVENESS_SECONDS = 8
+
 
 def _spawn_source_tag(source: str) -> str:
     """Map a _spawn_smith() source argument to its audit-log tag."""
@@ -153,11 +158,54 @@ def _build_spawn_args(binary: str, client: str, resume_sid: str | None, prompt: 
     return [binary, "run", "--dangerously-skip-permissions", prompt]
 
 
-def _build_spawn_kwargs(log_fh) -> dict:
+def _spawn_child_env(client: str) -> dict:
+    """Environment for the respawned client — matching the AUTH CONTEXT the operator's
+    interactive run used.
+
+    The dashboard/MCP-server process loads the repo ``.env`` (mcp_server._app._load_dotenv),
+    which commonly sets ``ANTHROPIC_API_KEY`` for server-side LLM features (QA agent,
+    adjudication). But a detached ``claude -p`` that inherits that key bills against the
+    API pay-as-you-go account instead of the operator's Claude subscription — and when
+    that API account is empty the child dies instantly with "Credit balance is too low"
+    (the exact HIR_NO_PROGRESS dead end seen in the wild). The operator's interactive TUI
+    ran on their subscription precisely because their shell had no such key. So for a
+    ``claude`` respawn we drop the API-key vars, letting the headless child fall back to
+    the same logged-in subscription. Opt back into API-key billing with
+    ``SMITH_SPAWN_USE_API_KEY=1`` (e.g. a subscription-less CI box).
+    """
+    import os as _os
+    env = _os.environ.copy()
+    _use_api_key = _os.environ.get("SMITH_SPAWN_USE_API_KEY", "").lower() in ("1", "true", "yes")
+    if client == "claude" and not _use_api_key:
+        env.pop("ANTHROPIC_API_KEY", None)
+        env.pop("ANTHROPIC_AUTH_TOKEN", None)
+    return env
+
+
+def _tail_spawn_log(log_path, max_chars: int = 240) -> str:
+    """Last non-empty line of the spawn log — carries the child's own exit reason
+    (e.g. 'Credit balance is too low') so a startup failure is diagnosable."""
+    try:
+        lines = [ln.strip() for ln in log_path.read_text(errors="replace").splitlines() if ln.strip()]
+        for ln in reversed(lines):
+            if ln.startswith("=== ["):  # skip our own audit banner
+                continue
+            return ln[:max_chars]
+    except Exception:
+        pass
+    return ""
+
+
+def _build_spawn_kwargs(log_fh, client: str) -> dict:
     """Build create_subprocess_exec kwargs, detaching the child so signals to the
     dashboard process don't reach it. POSIX uses os.setsid() via start_new_session;
-    Windows uses the CREATE_NEW_PROCESS_GROUP creationflag — same intent, different API."""
-    spawn_kwargs: dict = {"stdout": log_fh, "stderr": log_fh, "cwd": str(_api._REPO_ROOT)}
+    Windows uses the CREATE_NEW_PROCESS_GROUP creationflag — same intent, different API.
+    ``env`` is set explicitly so the child's billing/auth matches the operator's run
+    (see _spawn_child_env)."""
+    spawn_kwargs: dict = {
+        "stdout": log_fh, "stderr": log_fh, "cwd": str(_api._REPO_ROOT),
+        "env": _spawn_child_env(client),
+    }
     import sys as _sys
     if _sys.platform == "win32":
         # CREATE_NEW_PROCESS_GROUP is only defined on Windows CPython; the literal
@@ -224,9 +272,33 @@ async def _spawn_smith(client: str, source: str = "api") -> tuple[bool, int | st
         args = _build_spawn_args(binary, client, resume_sid, prompt)
 
         log_fh = await loop.run_in_executor(None, lambda: log_path.open("a"))
-        spawn_kwargs = _build_spawn_kwargs(log_fh)
+        spawn_kwargs = _build_spawn_kwargs(log_fh, client)
 
         proc = await asyncio.create_subprocess_exec(*args, **spawn_kwargs)
+
+        # Liveness probe: a healthy agent runs for minutes, so proc.wait() times out
+        # (good). A child that exits within the window died on startup — most often
+        # "Credit balance is too low" (API-key billing on an empty account). Do NOT
+        # book that as a successful respawn: return the child's own last log line so
+        # the watchdog surfaces the REAL cause instead of laundering it into a generic
+        # HIR_NO_PROGRESS coverage dead-end.
+        try:
+            rc = await asyncio.wait_for(proc.wait(), timeout=_SPAWN_LIVENESS_SECONDS)
+        except asyncio.TimeoutError:
+            rc = None  # still alive after the probe → healthy
+        except Exception as _probe_err:
+            # Never fail a real spawn because the liveness probe itself errored
+            # (e.g. a non-awaitable proc stub) — assume alive and proceed.
+            _log.debug("spawn_smith: liveness probe error, assuming alive: %s", _probe_err)
+            rc = None
+        if rc is not None:
+            reason = await loop.run_in_executor(None, lambda: _tail_spawn_log(log_path))
+            _log.warning(
+                "spawn_smith: %s exited rc=%s within %ss of launch — not a live respawn: %s",
+                client, rc, _SPAWN_LIVENESS_SECONDS, reason or "(no output)",
+            )
+            return False, f"{client} exited on launch (rc={rc}): {reason or 'no output'}"
+
         _api._SMITH_PID_FILE.write_text(str(proc.pid))
         _api._SMITH_CLIENT_FILE.write_text(client)
 

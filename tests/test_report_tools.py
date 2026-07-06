@@ -18,12 +18,31 @@ class _FakeSession:
     def __init__(self, depth="thorough"):
         self.depth = depth
         self.triggered = []
+        self.trigger_calls = []
 
     def trigger_gate(self, gate_id, reason, skills):
         self.triggered.append(gate_id)
+        self.trigger_calls.append((gate_id, list(skills)))
 
     def get(self):
         return {"depth": self.depth}
+
+
+def test_finding_gates_rce_obligates_shell_and_container_escape(monkeypatch):
+    """A confirmed RCE inside a container must obligate the ESCALATION — reverse-shell
+    (get a real session) + container-k8s-security (escape) — not just post-exploit.
+    This closes the run_2 gap where RCE proved command-exec and stopped there."""
+    from mcp_server.report_tools import gates as gmod
+    sess = _FakeSession()
+    monkeypatch.setattr(gmod, "scan_session", sess)
+    out = _auto_trigger_finding_gates(
+        "RCE via PostgreSQL COPY TO PROGRAM (postgres superuser) - Docker Container",
+        "critical", "confirmed command execution uid=999(postgres) inside docker container")
+    assert "post_exploit_rce" in out and "container_k8s" in out
+    calls = dict(sess.trigger_calls)
+    assert "reverse-shell" in calls["post_exploit_rce"]        # obligate a real shell
+    assert "post-exploit" in calls["post_exploit_rce"]
+    assert calls["container_k8s"] == ["container-k8s-security"]
 
 
 def test_finding_gates_skip_benign(monkeypatch):

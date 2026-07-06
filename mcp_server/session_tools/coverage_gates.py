@@ -12,6 +12,38 @@ from .integrity_gates import _integrity_blockers
 # being reused to "close" 36 different injection cells).
 _COVERAGE_FLOOR_PCT = 40
 
+# Cross-cutting cell types that are fanned out for EVERY endpoint (taxonomy.py)
+# but have NO automated closer anywhere — not the injection sweep (sweep.py) nor
+# the cross-cutting auto-closer (autoclose.py handles only cors/csrf/
+# security_headers/cache). Each can only be closed by a bespoke authenticated
+# request, so on a 55-endpoint app they alone add 5×55=275 pure-manual cells and
+# dominate the matrix. Counting them in the FLOOR denominator makes 40% demand
+# hundreds of hand-tests the pipeline can't assist with, so the floor becomes
+# practically unreachable and the model rationally abandons it. Exclude them from
+# the floor's denominator (they still exist in the matrix and stay visible as
+# advisory gaps + are honestly closable by hand) so the floor measures the work
+# the automated closers (sweep + auto_crosscutting) CAN actually drive to done.
+_NO_AUTOCLOSER_TYPES = {"rate_limit", "method_tampering", "jwt", "race", "bfla"}
+
+
+def _floor_view(cov: dict, total: int, addressed: int) -> tuple[int, int, float]:
+    """Recompute (total, addressed, pct) for the coverage FLOOR over only the cells
+    the pipeline can help close — i.e. excluding _NO_AUTOCLOSER_TYPES. Falls back to
+    the raw numbers when the matrix list isn't materialised (stub/partial matrices),
+    so it never inflates coverage on a matrix it can't see."""
+    matrix = cov.get("matrix", [])
+    _addressed_states = ("tested_clean", "vulnerable", "not_applicable")
+    excl_total = sum(1 for c in matrix if c.get("injection_type") in _NO_AUTOCLOSER_TYPES)
+    excl_addr = sum(
+        1 for c in matrix
+        if c.get("injection_type") in _NO_AUTOCLOSER_TYPES
+        and c.get("status") in _addressed_states
+    )
+    c_total = max(0, total - excl_total)
+    c_addr = max(0, addressed - excl_addr)
+    c_pct = (c_addr / c_total * 100) if c_total else 100.0
+    return c_total, c_addr, c_pct
+
 
 def _low_coverage_blocker(cov: dict, total: int, addressed: int, pct: float) -> str | None:
     """Block completion while the coverage matrix is substantially unworked.
@@ -31,16 +63,24 @@ def _low_coverage_blocker(cov: dict, total: int, addressed: int, pct: float) -> 
     stuck-completion HIR (_MAX_COMPLETE_ATTEMPTS) is the safety valve when the model
     genuinely can't reach the floor, so this can't hard-stall.
     """
-    if pct >= _COVERAGE_FLOOR_PCT:
+    # Judge the floor over the cells the automated closers can actually drive to
+    # done — not the auto-fanned manual-only cross-cutting cells that inflate the
+    # denominator into an unreachable wall.
+    f_total, f_addr, f_pct = _floor_view(cov, total, addressed)
+    if f_pct >= _COVERAGE_FLOOR_PCT:
         return None
     pending = sum(1 for c in cov.get("matrix", []) if c.get("status", "pending") == "pending")
     return (
-        f"SCAN NOT COMPLETE — the coverage matrix is the deliverable and it is only {pct:.0f}% worked "
-        f"({addressed}/{total} cells; {pending} still untested). Working the matrix IS the remaining "
-        f"job, not optional bookkeeping — you do NOT finish by finding some bugs while most cells are "
-        f"untested. Get the next cells + their exact requests with report(action='coverage', "
-        f"data={{type:'next_batch'}}), test them with REAL probes (sqlmap / nuclei / targeted "
-        f"payloads — never canned filler), then close each with its artifact via "
+        f"SCAN NOT COMPLETE — the coverage matrix is the deliverable and it is only {f_pct:.0f}% worked "
+        f"({f_addr}/{f_total} closeable cells; {pending} still untested). Working the matrix IS the "
+        f"remaining job, not optional bookkeeping — you do NOT finish by finding some bugs while most "
+        f"cells are untested. Close cells FAST with the mechanized closers, not one-by-one: "
+        f"(1) report(action='coverage', data={{type:'sweep', max_cells:60}}) repeatedly — it probes + "
+        f"auto-closes pending injection cells (sqli/xss/ssti/cmdi/traversal) and hands you oracle-"
+        f"positive candidates to confirm+file; (2) report(action='coverage', data={{type:'auto_"
+        f"crosscutting'}}) to bulk-close app-wide CORS / security-header / CSRF / cache cells in one "
+        f"call. For what remains, report(action='coverage', data={{type:'next_batch'}}) → test with "
+        f"REAL probes (sqlmap / nuclei / targeted payloads — never canned filler) → close via "
         f"report(action='coverage', data={{type:'bulk_tested', updates:[...]}}). Mark a cell "
         f"not_applicable ONLY when the injection type is genuinely irrelevant to that param (with a "
         f"specific reason) — do NOT bulk-N/A to clear the count. Keep working the matrix; if you are "

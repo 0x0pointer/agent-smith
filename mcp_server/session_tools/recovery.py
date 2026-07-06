@@ -160,6 +160,17 @@ def _do_recovery():
             ),
         }, indent=2)
 
+    # A running-session recovery IS the compaction boundary — the client just
+    # compacted its window and is re-orienting. Re-seed the context meter to the
+    # fixed resident overhead so pressure reflects the CURRENT window, not the
+    # lifetime-cumulative total (which would peg at Tier-3 forever and make the
+    # agent believe it is permanently out of context).
+    scan_session.reset_context_meter()
+    # Un-defer skill-chain gates so the recovery brief SURFACES the full remaining
+    # skill chain — the per-response throttle otherwise hides deferred gates here,
+    # so a re-oriented agent never learns which skills it still must run.
+    scan_session.restore_gates()
+
     # Coverage matrix: in_progress and pending cells
     from core.coverage import get_matrix
     cov = get_matrix()
@@ -177,7 +188,16 @@ def _do_recovery():
         if c["status"] == "in_progress"
     ]
 
-    pending_count = sum(1 for c in cov.get("matrix", []) if c["status"] == "pending")
+    # Count only CLOSEABLE pending cells for the exit-ramp — the no-autocloser
+    # cross-cutting types (rate_limit/method_tampering/jwt/race/bfla) are excluded
+    # from the coverage floor too, so telling the agent to "drain ALL pending" over
+    # cells nothing can close contradicts the gate and sends it chasing uncloseable
+    # work. Aligns recovery with coverage_gates._floor_view.
+    from mcp_server.session_tools.coverage_gates import _NO_AUTOCLOSER_TYPES
+    pending_count = sum(
+        1 for c in cov.get("matrix", [])
+        if c["status"] == "pending" and c.get("injection_type") not in _NO_AUTOCLOSER_TYPES
+    )
 
     # Findings with pending escalation leads
     data = findings_store._load()

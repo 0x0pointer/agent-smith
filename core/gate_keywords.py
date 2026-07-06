@@ -18,10 +18,15 @@ RCE_KEYWORDS = (
     "os command", "shell injection", "eval injection",
 )
 
-# Keywords in notes that indicate container/K8s environment — triggers container gate.
+# Keywords indicating a container/K8s execution context — triggers the container-escape
+# gate. Includes plain-DOCKER markers (not just K8s): a confirmed RCE inside any
+# container warrants an escape assessment, and run_2's postgres-container RCE never
+# fired this because it only matched kube/serviceaccount tokens.
 K8S_KEYWORDS = (
     "kubernetes", "kubepods", "/.dockerenv", "dockerenv",
     "sa token", "serviceaccount", "k8s", "containerd", "cri-o",
+    "docker container", "docker.sock", "docker socket", "container escape",
+    "inside a container", "in-container", "container runtime", "/proc/1/",
 )
 
 # Keywords in notes that indicate cloud metadata access — triggers cloud gate.

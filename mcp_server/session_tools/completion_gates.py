@@ -81,7 +81,14 @@ def _collect_completion_blockers(data: dict, effective: set) -> list[str]:
     """Run all completion gate checks and return the list of blocker strings."""
     blockers: list[str] = []
 
-    blockers.extend(_st._gate_blockers())
+    # Skill-chain gates HARD-BLOCK completion only on the enforcing (full / capable
+    # cloud) profile. On local/weak profiles (medium+small, enforce_coverage=False)
+    # they are ADVISORY — still surfaced in recovery/status, but not a completion wall
+    # — because a weak model that already exploited the domains shouldn't be wedged for
+    # not formally running each skill workflow (the game-then-stall failure).
+    from mcp_server.scan_engine.budget import get_profile
+    if get_profile().get("enforce_coverage", True):
+        blockers.extend(_st._gate_blockers())
     blockers.extend(_st._qa_blockers())
     blockers.extend(_st._escalation_lead_blockers(data))
 

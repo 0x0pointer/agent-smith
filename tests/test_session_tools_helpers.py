@@ -954,16 +954,19 @@ class TestDoComplete:
             or "complete" in result.lower()
         )
 
-    def test_thorough_depth_no_blockers_adds_iteration_gate(self, tmp_path, monkeypatch):
+    def test_thorough_is_operator_terminated_agent_never_completes(self, tmp_path, monkeypatch):
+        # THOROUGH is OPERATOR-TERMINATED: the agent's complete() never ends the scan —
+        # it is told to keep working until the operator clicks Complete Scan, and it must
+        # NOT count as a complete() attempt (so it can't trip HIR_FORCE_COMPLETE).
         import mcp_server.session_tools as st
-        monkeypatch.setattr(st, "_analysis_passes", 0)
+        monkeypatch.setattr(st, "_complete_attempts", 0)
         self._setup_session(tmp_path, monkeypatch, depth="thorough")
         with patch("mcp_server.session_tools._effective_tools", return_value=set()), \
-             patch("mcp_server.session_tools._collect_completion_blockers", return_value=[]), \
-             patch("mcp_server.session_tools._is_whitebox_scan", return_value=False), \
-             patch("mcp_server.session_tools._deepen_brief", return_value="ITERATION GATE: pass 1"):
+             patch("mcp_server.session_tools._collect_completion_blockers", return_value=[]):
             result = _do_complete()
-        assert "ITERATION GATE" in result or "complete BLOCKED" in result
+        assert "does NOT auto-complete" in result
+        assert "operator" in result.lower() and "keep" in result.lower()
+        assert st._complete_attempts == 0  # not counted as an attempt
 
     def test_multiple_blockers_full_profile_shows_all(self, tmp_path, monkeypatch):
         """Full profile (large context, ``condensed_directives=False``) gets the
@@ -1332,6 +1335,29 @@ def test_low_coverage_blocker_fires_below_floor_even_when_findings_rich():
 def test_low_coverage_blocker_passes_above_floor():
     cov = {"matrix": []}
     assert _low_coverage_blocker(cov, total=100, addressed=50, pct=50.0) is None
+
+
+def test_low_coverage_floor_excludes_no_autocloser_types():
+    # 10 injection cells fully worked + 90 pending rate_limit cells (no automated
+    # closer). Raw pct = 10/100 = 10%, but the floor must judge only the 10
+    # CLOSEABLE cells (100% worked) so it does NOT block on manual-only cruft.
+    matrix = (
+        [{"id": f"i{i}", "status": "tested_clean", "injection_type": "sqli"} for i in range(10)]
+        + [{"id": f"x{i}", "status": "pending", "injection_type": "rate_limit"} for i in range(90)]
+    )
+    assert _low_coverage_blocker({"matrix": matrix}, total=100, addressed=10, pct=10.0) is None
+
+
+def test_low_coverage_floor_still_blocks_when_closeable_cells_unworked():
+    # 50 unworked sqli (closeable) + 50 pending jwt (no closer). Closeable = 0/50 → blocks,
+    # and the message must point at the mechanized closers (sweep + auto_crosscutting).
+    matrix = (
+        [{"id": f"i{i}", "status": "pending", "injection_type": "sqli"} for i in range(50)]
+        + [{"id": f"j{i}", "status": "pending", "injection_type": "jwt"} for i in range(50)]
+    )
+    b = _low_coverage_blocker({"matrix": matrix}, total=100, addressed=0, pct=0.0)
+    assert b is not None and "SCAN NOT COMPLETE" in b
+    assert "sweep" in b and "auto_crosscutting" in b
 
 
 # ---------------------------------------------------------------------------

@@ -168,6 +168,12 @@ def _summarize_http_request(raw: str, ctx: dict) -> SummaryResult:
         "status": status,
         "content_type": headers.get("Content-Type", ""),
         "body_preview": body[:500],
+        # Capture JWTs from the FULL body, not just the 500-char preview — a real
+        # login response often carries the token deeper than 500 chars, and the auth
+        # asset capture (envelope/assets.py) would otherwise miss it, starving the
+        # sweep's auth self-heal of a token to replay.
+        "jwt_hits": __import__("re").findall(
+            r"eyJ[A-Za-z0-9_-]{4,}\.eyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]+", body)[:5],
         # CH-2: surface Set-Cookie so the envelope can capture a session cookie
         # into known_assets for reuse (the majority of classic web apps are
         # cookie-session, not JWT).
