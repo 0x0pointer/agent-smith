@@ -172,7 +172,7 @@ async def report(action: str, data: Any) -> str:
     elif action == "diagram":
         return await _do_diagram(data)
     elif action == "note":
-        return _do_note(data)
+        return await _do_note(data)
     elif action == "dashboard":
         return await _do_dashboard(data)
     elif action == "coverage":

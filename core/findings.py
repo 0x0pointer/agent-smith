@@ -90,6 +90,7 @@ async def add_finding(
     business_impact: str = "",
     trace: list[dict] | None = None,
     evidence_artifact_id: str = "",
+    capabilities: dict | None = None,
 ) -> dict:
     """Append a vulnerability finding. Returns the stored entry.
 
@@ -117,6 +118,14 @@ async def add_finding(
         entry["escalation_leads"] = escalation_leads
     if trace:
         entry["trace"] = trace
+    if capabilities:
+        # Compositional-chaining primitives this finding PROVIDES / is blocked REQUIRING.
+        # Validated (drop-unknown) at the report_tools boundary; stored flat so
+        # core.graph.build reads f["provides"]/f["requires"] directly.
+        if capabilities.get("provides"):
+            entry["provides"] = list(capabilities["provides"])
+        if capabilities.get("requires"):
+            entry["requires"] = list(capabilities["requires"])
     if evidence_artifact_id:
         # The proof artifact from the tool call that produced this finding.
         # Adjudication reuses it so the model never re-runs the attack just to
@@ -133,6 +142,7 @@ _UPDATABLE_FIELDS = {
     "severity", "title", "description", "evidence", "status",
     "gh_issue", "remediation", "reproduction", "escalation_leads", "business_impact",
     "poc_files", "adjudication", "trace", "evidence_artifact_id",
+    "provides", "requires",  # compositional-chaining primitives (back-fillable at the dead-end)
 }
 
 

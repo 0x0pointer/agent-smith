@@ -31,6 +31,10 @@ RESUME_REQUIRED  = "RESUME_REQUIRED"
 CHAIN_REQUIRED   = "CHAIN_REQUIRED"
 RESUME_TESTING   = "RESUME_TESTING"
 POC_REQUIRED     = "POC_REQUIRED"
+# Compositional-chaining bridge push. A DISTINCT code (not RESUME_TESTING) so its
+# add_directive dedup slot (keyed on code+skill) is independent — otherwise the five
+# existing RESUME_TESTING/skill=None checks would silently suppress the bridge nudge.
+COMPOSE_REQUIRED = "COMPOSE_REQUIRED"
 
 
 @dataclass

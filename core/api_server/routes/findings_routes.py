@@ -142,9 +142,15 @@ async def api_graph() -> JSONResponse:
         g = build_graph()
         return JSONResponse({
             "stats": g.stats(),
+            # Labeled-property-graph shape: each node/edge carries its full property bag
+            # (attrs) so the dashboard can inspect it Neo4j-style. Flat src/dst/severity
+            # kept for backward-compat with an older cached frontend.
             "nodes": [{"id": n.id, "kind": n.kind, "label": n.label,
-                       "severity": n.attrs.get("severity", "")} for n in list(g.nodes.values())[:400]],
-            "edges": [{"src": e.src, "dst": e.dst, "kind": e.kind} for e in g.edges[:800]],
+                       "severity": n.attrs.get("severity", ""),
+                       "properties": dict(n.attrs)} for n in list(g.nodes.values())[:500]],
+            "edges": [{"id": f"e{i}", "source": e.src, "target": e.dst,
+                       "src": e.src, "dst": e.dst, "kind": e.kind,
+                       "properties": dict(e.attrs)} for i, e in enumerate(g.edges[:1000])],
             "candidate_chains": candidate_chains(g)[:10],
             "ranked_findings": rank_findings(g)[:10],
             "next_targets": next_targets(g, limit=8),

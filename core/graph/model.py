@@ -23,6 +23,7 @@ CREDENTIAL = "credential"
 TOKEN = "token"
 TECH = "tech"
 FINDING = "finding"
+PRIMITIVE = "primitive"        # an attack capability (file_read, code_exec, network_reach, …)
 
 # ── Edge kinds ──────────────────────────────────────────────────────────────
 HOSTS = "hosts"                # host --hosts--> endpoint/service
@@ -33,6 +34,8 @@ AUTHENTICATES = "authenticates"  # credential/token --authenticates--> host/endp
 FOUND_ON = "found_on"          # finding --found_on--> endpoint/host
 LEAKS = "leaks"                # finding --leaks--> credential/token
 ESCALATES_TO = "escalates_to"  # finding --escalates_to--> (terminal, via edge attr)
+PROVIDES = "provides"          # finding --provides--> primitive (this bug HANDS YOU the capability)
+REQUIRES = "requires"          # finding --requires--> primitive (this bug is BLOCKED needing it)
 
 
 @dataclass

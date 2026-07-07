@@ -122,6 +122,72 @@ def _check_chain_correlation(findings_data: dict) -> dict | None:
     }
 
 
+def _chain_finding_ids(chain: dict) -> set:
+    """All finding ids referenced by a recorded chain's steps."""
+    ids: set = set()
+    for s in chain.get("steps", []) or []:
+        if isinstance(s, dict):
+            ids.add(s.get("from_finding_id", ""))
+            ids.add(s.get("to_finding_id", ""))
+    return ids
+
+
+def _check_composition_obligation(findings_data: dict) -> dict | None:
+    """OBLIGATE layer: a provable-but-UNATTEMPTED cross-finding bridge — finding B
+    PROVIDES the primitive finding A is blocked on (REQUIRES) — must be attempted
+    before completion (the VulnBank SQLi-file-read↔Werkzeug-PIN miss).
+
+    Discharge is ATTEMPT-satisfiable and structured — a recorded chain covering the
+    pair (artifact-gated) OR a done/dismissed escalation lead on the blocked finding
+    (documented dead-end). It NEVER requires the primitive to actually be produced, so
+    it can't become an unsatisfiable stall; and the completion block rides the existing
+    profile-gated _qa_blockers (advisory on medium/small)."""
+    try:
+        from core.graph import build_graph, candidate_chains
+        bridges = [c for c in candidate_chains(build_graph()) if c.get("kind") == "primitive_unblock"]
+    except Exception:
+        return None
+    if not bridges:
+        return None
+    findings = {f.get("id"): f for f in findings_data.get("findings", [])}
+    chains = findings_data.get("chains", []) or []
+
+    def _covered(pid: str, bid: str) -> bool:
+        return any(pid in ids and bid in ids for ids in (_chain_finding_ids(c) for c in chains))
+
+    def _dismissed(fid: str) -> bool:
+        leads = (findings.get(fid, {}) or {}).get("escalation_leads") or []
+        return any(isinstance(l, dict) and l.get("status") in ("done", "dismissed") for l in leads)
+
+    unattempted = [b for b in bridges
+                   if not _covered(b.get("provider_id", ""), b.get("blocked_id", ""))
+                   and not _dismissed(b.get("blocked_id", ""))]
+    if not unattempted:
+        return None
+    top = unattempted[0]
+    if not _qa._has_pending_directives():
+        from core.steering import steering_queue, COMPOSE_REQUIRED
+        steering_queue.add_directive(
+            code=COMPOSE_REQUIRED,
+            message=(
+                f"Provable bridge UNATTEMPTED: finding '{top.get('provider_id')}' PROVIDES "
+                f"{top.get('primitive')}, which '{top.get('blocked_id')}' is blocked needing. "
+                "Attempt it and file report(action='chain', ...) with the transition artifact; "
+                "if it genuinely can't be proven, add a dismissed escalation_lead to the blocked "
+                "finding documenting why — either discharges this."
+            ),
+            priority="high", skill=None, trigger="COMPOSITION_UNATTEMPTED",
+        )
+    return {
+        "code": "COMPOSITION_UNATTEMPTED", "urgency": "high", "blocking": True,
+        "message": (
+            f"{len(unattempted)} provable cross-finding bridge(s) unattempted — e.g. finding "
+            f"'{top.get('provider_id')}' provides {top.get('primitive')} for '{top.get('blocked_id')}'. "
+            "Prove the chain (report(action='chain')) or document a dismissed lead on the blocked finding."
+        ),
+    }
+
+
 def _check_oob_unpolled(session_data: dict) -> dict | None:
     """Nudge Smith to poll a fired-but-unchecked OOB callback.
 

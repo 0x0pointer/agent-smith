@@ -111,15 +111,115 @@ async def _do_chain(data):
     return f"Exploit chain saved: '{name}' — {len(steps)} proven step(s), diagram rendered."
 
 
-def _do_note(data):
+def _providers_of(g, prims: set) -> list:
+    """Findings that PROVIDE any primitive in `prims`, as (finding_node, primitive)."""
+    from core.graph import model as m
+    from core.graph.chains import _sev
+    out = []
+    for p in prims:
+        for e in g.in_edges(f"prim:{p}", m.PROVIDES):
+            fn = g.nodes.get(e.src)
+            if fn is not None:
+                out.append((fn, p))
+    out.sort(key=lambda pr: _sev(pr[0]), reverse=True)
+    return out
+
+
+def _blocked_finding_for(g, note_text: str, exclude_id: str, host: str | None):
+    """Conservatively pick the FINDING the dead-end note refers to: a non-provider
+    finding (same host as the provider, if known) whose title shares a distinctive
+    word with the note. Returns bare finding id or None (skip back-fill if unsure —
+    a wrong attachment is worse than none)."""
+    from core.graph import model as m
+    from core.graph.chains import _host
+    best, best_hits = None, 0
+    words = {w for w in note_text.replace("/", " ").split() if len(w) >= 5}
+    for fn in g.of_kind(m.FINDING):
+        if fn.id == exclude_id:
+            continue
+        if host and _host(g, fn.id) and _host(g, fn.id) != host:
+            continue
+        title = (fn.label or "").lower()
+        hits = sum(1 for w in words if w in title)
+        if hits > best_hits:
+            best, best_hits = fn, hits
+    if best and best_hits >= 1:
+        return best.id.replace("finding:", "", 1)
+    return None
+
+
+async def _maybe_push_composition_bridge(message: str) -> str | None:
+    """SURFACE layer: when a NOTE declares a dead-end blocked on a missing primitive,
+    and another confirmed finding already PROVIDES it, (1) back-fill the `requires`
+    primitive onto the blocked finding so OBLIGATE + the metric have a persisted signal
+    (the failing agent won't self-declare it), and (2) push ONE COMPOSE_REQUIRED steer
+    naming the provider. Gated on a real graph-matched provider — a stray 'blocked'
+    phrase with no provider yields nothing."""
+    from core.gate_keywords import BLOCKED_MARKERS
+    text = message.lower()
+    if not any(mk in text for mk in BLOCKED_MARKERS):
+        return None
+    from core.graph import primitives as prim
+    blocked_prims = prim.classify_requires(message, "")
+    if not blocked_prims:
+        return None
+    try:
+        from core.graph import build_graph
+        from core.graph.chains import _host
+        g = build_graph()
+    except Exception:
+        return None
+    providers = _providers_of(g, blocked_prims)
+    if not providers:
+        return None
+    provider, primitive = providers[0]
+
+    # Back-fill `requires` onto the blocked finding so the signal persists.
+    blocked_fid = _blocked_finding_for(g, text, provider.id, _host(g, provider.id))
+    if blocked_fid:
+        try:
+            existing = next((f.get("requires", []) for f in findings_store._load().get("findings", [])
+                             if f.get("id") == blocked_fid), [])
+            merged = sorted(set(list(existing) + [primitive]))
+            await findings_store.update_finding(blocked_fid, requires=merged)
+        except Exception:
+            pass
+
+    try:
+        from core.steering import steering_queue, COMPOSE_REQUIRED
+        pushed = steering_queue.add_directive(
+            code=COMPOSE_REQUIRED,
+            message=(
+                f"COMPOSITIONAL BRIDGE — you noted a dead-end blocked on '{primitive}'. "
+                f"Finding '{provider.label}' already PROVIDES {primitive} — use it to unblock the "
+                f"step (e.g. a Postgres SQLi's pg_read_server_file gives file_read to leak a "
+                f"Werkzeug PIN), then file report(action='chain', ...) with the transition artifact. "
+                f"If it genuinely doesn't work, record why via update_finding so the block is documented."
+            ),
+            priority="high", trigger="BLOCKED_PRIMITIVE_BRIDGE",
+        )  # COMPOSE_REQUIRED is a distinct dedup slot — won't be suppressed by RESUME_TESTING
+        if pushed:
+            return f"'{provider.label}' provides {primitive}"
+    except Exception:
+        pass
+    return None
+
+
+async def _do_note(data):
     message = data.get("message", "")
     log.note(message)
 
     # ── Auto-trigger gates based on note content ─────────────────────────────
     gates_triggered = _auto_trigger_note_gates(message)
+    # ── Compositional bridge: dead-end note + a finding that provides the primitive ──
+    bridge = await _maybe_push_composition_bridge(message)
+
+    parts = ["Logged."]
     if gates_triggered:
-        return f"Logged.\n\nGATE(S) TRIGGERED: {', '.join(gates_triggered)}. These skills are now mandatory before completion."
-    return "Logged."
+        parts.append(f"GATE(S) TRIGGERED: {', '.join(gates_triggered)}. These skills are now mandatory before completion.")
+    if bridge:
+        parts.append(f"COMPOSITIONAL BRIDGE available — {bridge}. A steer was queued: use that finding's primitive to unblock this dead-end, then file report(action='chain').")
+    return "\n\n".join(parts)
 
 
 # Single source of truth for the dashboard port. Match the launchd plist,

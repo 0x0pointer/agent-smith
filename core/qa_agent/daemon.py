@@ -20,6 +20,7 @@ import core.qa_agent as _qa
 from core import store as _store
 from .checks_depth import (
     _check_chain_correlation,
+    _check_composition_obligation,
     _check_depth_after_finding,
     _check_oob_unpolled,
     _check_premature_complete,
@@ -86,6 +87,7 @@ _CHECKS: list[tuple] = [
     # Depth enforcement
     (_check_depth_after_finding,   ("entries", "findings_data")),
     (_check_chain_correlation,     ("findings_data",)),
+    (_check_composition_obligation, ("findings_data",)),
     (_check_oob_unpolled,          ("session_data",)),
     (_check_whitebox_passes,       ("entries", "session_data")),
     # Stall detection

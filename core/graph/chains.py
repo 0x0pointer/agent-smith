@@ -85,6 +85,58 @@ def _chains_from_creds_plus_finding(g: m.Graph, findings: list) -> list[dict]:
     return props
 
 
+def _chains_from_primitive_bridge(g: m.Graph) -> list[dict]:
+    """(4) Finding B PROVIDES the primitive Finding A is BLOCKED on (REQUIRES) →
+    'use B's <primitive> to unblock A'. THE compositional bridge the model never
+    self-assembles (Postgres SQLi file-read → Werkzeug console PIN → RCE).
+
+    Expressed as the two-hop pattern (provider)-[:PROVIDES]->(primitive)<-[:REQUIRES]-
+    (blocked) over the existing paths.match_chain matcher. SAME-HOST guarded (mirrors
+    rule 2) so a provider on host X can't 'unblock' a finding on host Y — the free
+    _host helper kills that combinatorial cross-host spam. Capped to keep a common
+    primitive (file_read) from flooding the proposal list."""
+    from . import paths
+    pattern = [
+        paths.NodeM(m.FINDING, var="provider"),
+        paths.Rel(m.PROVIDES),
+        paths.NodeM(m.PRIMITIVE, var="prim"),
+        paths.Rel(m.REQUIRES, direction="in"),
+        paths.NodeM(m.FINDING, var="blocked"),
+    ]
+    props: list[dict] = []
+    seen: set[tuple] = set()
+    for match in paths.match_chain(g, pattern):
+        provider, blocked, primn = (match.vars.get("provider"),
+                                    match.vars.get("blocked"), match.vars.get("prim"))
+        if not (provider and blocked and primn) or provider.id == blocked.id:
+            continue  # a bug can't unblock itself
+        ph, bh = _host(g, provider.id), _host(g, blocked.id)
+        if ph and bh and ph != bh:
+            continue  # cross-host bridge is physically impossible — drop it
+        key = (provider.id, primn.label, blocked.id)
+        if key in seen:
+            continue
+        seen.add(key)
+        props.append({
+            "steps": [provider.label,
+                      f"use its {primn.label} primitive to unblock the next step",
+                      blocked.label],
+            "terminal": blocked.label,
+            "combined_severity": max((provider.attrs.get("severity", "medium"),
+                                      blocked.attrs.get("severity", "medium")),
+                                     key=lambda s: _SEV_RANK.get(s, 0)),
+            "rationale": f"'{provider.label}' PROVIDES {primn.label}, which "
+                         f"'{blocked.label}' is blocked needing — bridge them.",
+            "kind": "primitive_unblock",
+            "provider_id": provider.id.replace("finding:", "", 1),
+            "blocked_id": blocked.id.replace("finding:", "", 1),
+            "primitive": primn.label,
+            "_score": _sev(provider) + _sev(blocked) + 2,  # +2: an exact-primitive match beats co-location noise
+        })
+    props.sort(key=lambda p: p["_score"], reverse=True)
+    return props[:20]  # cap the rule's own output
+
+
 def candidate_chains(g: m.Graph) -> list[dict]:
     """Propose multi-step chains from the graph. Each proposal:
     ``{steps: [str], terminal: str, combined_severity: str, rationale: str}``.
@@ -93,7 +145,8 @@ def candidate_chains(g: m.Graph) -> list[dict]:
     findings = g.of_kind(m.FINDING)
     props = (_chains_from_escalation_leads(g, findings)
              + _chains_from_cred_leaks(g, findings)
-             + _chains_from_creds_plus_finding(g, findings))
+             + _chains_from_creds_plus_finding(g, findings)
+             + _chains_from_primitive_bridge(g))
 
     props.sort(key=lambda p: p.pop("_score", 0), reverse=True)
     # de-dup identical step sequences

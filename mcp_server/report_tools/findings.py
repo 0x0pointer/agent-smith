@@ -171,6 +171,13 @@ async def _do_finding(data):
     if not evidence_artifact_id:
         evidence_artifact_id = (scan_session.get() or {}).get("last_artifact_id", "") or ""
 
+    # Compositional-chaining primitives: explicit provides/requires, validated
+    # drop-unknown so a taxonomy typo never rejects a good finding.
+    from core.graph import primitives as _prim
+    capabilities = {
+        "provides": _prim.coerce_primitive_list(data.get("provides")),
+        "requires": _prim.coerce_primitive_list(data.get("requires")),
+    }
     entry = await findings_store.add_finding(
         title=title, severity=severity, target=target,
         description=data.get("description", ""),
@@ -182,6 +189,7 @@ async def _do_finding(data):
         escalation_leads=data.get("escalation_leads"),
         trace=data.get("trace"),
         evidence_artifact_id=evidence_artifact_id,
+        capabilities=capabilities,
     )
     log.finding(severity, title, target)
 

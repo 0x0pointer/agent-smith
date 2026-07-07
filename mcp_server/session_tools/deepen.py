@@ -61,7 +61,12 @@ def _deepen_steps_pass1(
             f"({titles}{'...' if len(unchained) > 3 else ''}): "
             "SQLi → dump all tables → crack hashes → use creds everywhere; "
             "SSRF → scan internal network → hit cloud metadata → exfil IAM keys; "
-            "RCE → establish reverse shell → run LinPEAS → escalate to root."
+            "RCE → establish reverse shell → run LinPEAS → escalate to root. "
+            "LOOK SIDEWAYS, not just forward: when a chain step is blocked on a missing "
+            "primitive (file-read, a secret/PIN, internal reach), check whether ANOTHER "
+            "confirmed finding already PROVIDES it — e.g. a Postgres SQLi's "
+            "pg_read_server_file gives the file-read a PIN-locked Werkzeug console needs. "
+            "Call report(action='chain', data={type:'suggest'}) for graph-derived bridges."
         )
     return steps
 
