@@ -923,6 +923,14 @@
     .ql-type.SPIDER   { color: var(--green); }
     .ql-type.FINDING  { color: #ff4d6d; }
     .ql-type.COVERAGE { color: #ffd166; }
+    /* kali command preview + timeout signal in the activity feed */
+    .ql-cmd { font-family: var(--font-mono); font-size: 0.66rem; color: var(--text-muted);
+              background: var(--bg-deep); border: 1px solid var(--border-subtle); border-radius: 4px;
+              padding: 0.03rem 0.35rem; max-width: 60ch; overflow: hidden; text-overflow: ellipsis;
+              white-space: nowrap; display: inline-block; vertical-align: middle; }
+    .ql-timeout { font-family: var(--font-mono); font-size: 0.6rem; font-weight: 700; color: var(--sev-high);
+                  background: rgba(250,140,22,.14); border: 1px solid rgba(250,140,22,.32); border-radius: 4px;
+                  padding: 0.03rem 0.35rem; margin-left: 0.3rem; }
 
     /* ── QA cycle history (embedded in QA tab) ── */
     #cycle-history-wrap {

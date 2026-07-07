@@ -27,8 +27,38 @@ def _build_quick_log_entry(
 
     entry: dict = {"type": "TOOL", "name": tool, "target": target}
     _enrich_http_request_entry(entry, tool, result, ctx)
+    _enrich_kali_entry(entry, tool, result, ctx)
     _mark_tool_error(entry, tool, result)
     return entry
+
+
+_KALI_TOOLS = ("kali", "kali_sqlmap")
+
+
+def _redact_cmd(cmd: str, limit: int = 220) -> str:
+    """One-line, secret-redacted preview of a kali command for the activity feed."""
+    import re
+    c = re.sub(r"\s+", " ", cmd).strip()
+    c = re.sub(r"(Bearer\s+)[A-Za-z0-9._-]{16,}", r"\1<redacted>", c)
+    c = re.sub(r"eyJ[A-Za-z0-9._-]{16,}", "<jwt>", c)          # bare JWTs
+    return (c[: limit - 1] + "…") if len(c) > limit else c
+
+
+def _enrich_kali_entry(entry: dict, tool: str, result: Any, ctx: dict | None) -> None:
+    """Surface WHAT a kali call ran + its outcome, so the dashboard shows
+    'kali · curl …/x → …' instead of a bare 'kali'. All fields optional — the display
+    degrades gracefully for older bare entries."""
+    if tool not in _KALI_TOOLS or not ctx:
+        return
+    cmd = (ctx.get("command") or "").strip()
+    if cmd:
+        entry["command"] = _redact_cmd(cmd)
+    if ctx.get("timed_out"):
+        entry["timed_out"] = True
+    ev = (result.evidence or {}) if result is not None else {}
+    aid = ev.get("artifact_id")
+    if aid:
+        entry["artifact_id"] = aid
 
 
 def _enrich_http_request_entry(

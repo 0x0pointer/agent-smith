@@ -111,12 +111,29 @@ async def ensure_running() -> tuple[bool, str]:
                     timeout=aiohttp.ClientTimeout(total=1),
                 ) as r:
                     if r.status == 200:
+                        await _seed_curl_defaults()
                         return True, "started"
         except Exception:
             pass
         await asyncio.sleep(1)
 
     return False, "container started but /health never responded — check: docker logs pentest-kali"
+
+
+async def _seed_curl_defaults() -> None:
+    """Write /root/.curlrc into the running container so EVERY curl is bounded by default
+    (connect-timeout 5s, max-time 30s). A hung request then can't silently block a tool
+    call for minutes. Runtime seed → applies without an image rebuild; the Dockerfile
+    bakes the same file for clean rebuilds. Best-effort — never fail container startup."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            docker_executable(), "exec", KALI_CONTAINER, "sh", "-c",
+            "printf 'connect-timeout = 5\\nmax-time = 30\\n' > /root/.curlrc",
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+        )
+        await proc.wait()
+    except Exception:
+        pass
 
 
 async def stop() -> str:
