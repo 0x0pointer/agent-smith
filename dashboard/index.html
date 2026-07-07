@@ -8,14 +8,16 @@
        required by the existing inline onclick handlers, so this is not the
        primary XSS control — output escaping/sanitization in the JS is; tightening
        to remove 'unsafe-inline' needs those handlers refactored first. -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'">
   <title>Pentest Dashboard</title>
   <link rel="icon" type="image/vnd.microsoft.icon" href="/favicon.ico">
   <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
   <link rel="shortcut icon" type="image/vnd.microsoft.icon" href="/favicon.ico">
-  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/marked@9/marked.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/cytoscape@3.30.2/dist/cytoscape.min.js"></script>
+  <!-- Vendored locally (dashboard/js/vendor/) — the dashboard is fully self-contained
+       and works air-gapped; no runtime CDN dependency. See vendor/README.md for versions. -->
+  <script src="/static/js/vendor/mermaid.min.js"></script>
+  <script src="/static/js/vendor/marked.min.js"></script>
+  <script src="/static/js/vendor/cytoscape.min.js"></script>
   <link rel="stylesheet" href="/static/css/dashboard.css?v=10">
 </head>
 <body>
