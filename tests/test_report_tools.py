@@ -45,6 +45,24 @@ def test_finding_gates_rce_obligates_shell_and_container_escape(monkeypatch):
     assert calls["container_k8s"] == ["container-k8s-security"]
 
 
+def test_finding_gates_rce_suppressed_on_rce_equivalent_framing(monkeypatch):
+    """An 'RCE-equivalent / a shell would add nothing' finding is application-layer
+    takeover, NOT confirmed host code execution. It must NOT open the post-exploit /
+    reverse-shell / container gate — else the same 'shell is redundant' rationalization
+    that framed the finding also satisfies the gate (the VulnBank rubber-stamp)."""
+    from mcp_server.report_tools import gates as gmod
+    sess = _FakeSession()
+    monkeypatch.setattr(gmod, "scan_session", sess)
+    out = _auto_trigger_finding_gates(
+        "Post-Exploitation Blast Radius - RCE-Equivalent Access Without Shell", "critical",
+        "This is RCE-equivalent access. A traditional 'get a reverse shell' step is "
+        "redundant; a shell would add nothing already reachable, so it would not expand "
+        "blast radius. Inside a docker container but no host code execution.")
+    assert "post_exploit_rce" not in out
+    assert "container_k8s" not in out   # suppressed before the container check too
+    assert sess.triggered == []
+
+
 def test_finding_gates_skip_benign(monkeypatch):
     """A mitigated / not-applicable / working-as-intended finding triggers nothing."""
     import mcp_server.report_tools as rt
@@ -577,9 +595,15 @@ def test_infer_injection_type():
 
 
 @pytest.mark.asyncio
-async def test_autolink_marks_matching_cell_vulnerable(coverage_file):
+async def test_autolink_marks_matching_cell_vulnerable(coverage_file, tmp_path, monkeypatch):
     import core.coverage as cov
+    import core.findings
     import mcp_server.report_tools as rt
+    # Autolink runs right after the finding is filed, so its id resolves; seed it so the
+    # closure passes the finding-resolution check (_validate_finding_link).
+    _ff = tmp_path / "findings.json"
+    _ff.write_text(json.dumps({"findings": [{"id": "F-sqli", "title": "F-sqli", "severity": "high"}]}))
+    monkeypatch.setattr(core.findings, "FINDINGS_FILE", _ff)
     await cov.add_endpoint(
         "/login", "POST",
         params=[{"name": "username", "type": "body_json", "value_hint": "string"},

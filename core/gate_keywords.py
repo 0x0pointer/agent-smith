@@ -70,6 +70,24 @@ GATE_BENIGN_MARKERS = (
     "no user input", "out of scope", "out-of-scope",
 )
 
+# "RCE-equivalent" / app-takeover framing — NOT confirmed host code execution. A finding
+# that frames itself as *equivalent to* a shell/RCE, or argues a shell is *redundant*, is
+# application-layer takeover, not actual command execution on the host. These must NOT open
+# the post-exploit / reverse-shell / container-escape gate (which exists to escalate a REAL
+# host exec primitive into a shell) — otherwise the gate fires on app-layer takeover and then
+# gets "satisfied" by the very "a shell would add nothing" rationalization that framed it,
+# exactly as observed on the VulnBank run (post_exploit_rce opened on an app-takeover finding
+# with no confirmed host RCE, then a reverse-shell skip closed it). Confirmed host RCE won't
+# carry this framing — it reports real command output, uid=, or a written file.
+RCE_EQUIVALENT_MARKERS = (
+    "rce-equivalent", "rce equivalent", "equivalent to rce", "equivalent to a shell",
+    "shell-equivalent", "shell equivalent", "without a shell", "without shell",
+    "shell is redundant", "shell would be redundant", "shell would add nothing",
+    "shell adds nothing", "reverse shell' step is redundant", "would not expand blast",
+    "not a true rce", "not actual code execution", "not host code execution",
+    "no actual code execution",
+)
+
 # Speculation markers — an UNCONFIRMED finding ("the username appears to support
 # SSTI; ${7*7} was reflected") must not impose the mandatory post-exploit gate.
 # RCE/post-exploit is expensive and only makes sense once code execution is

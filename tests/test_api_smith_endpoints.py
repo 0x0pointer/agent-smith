@@ -1053,10 +1053,13 @@ class TestSpawnSmith:
         monkeypatch.setattr(api, "_SMITH_PID_FILE", logs_dir / "smith.pid")
         monkeypatch.setattr(api, "_SMITH_CLIENT_FILE", logs_dir / "smith.client")
         monkeypatch.setattr(api, "_REPO_ROOT", tmp_path)
-        # Default: no resumable opencode session → cold start (keeps the existing
-        # spawn tests on the cold path and stops them shelling out to real opencode).
-        # Resume tests override this.
+        # Default: no resumable session → cold start (keeps the existing spawn tests
+        # on the cold path and stops them touching the real opencode CLI / the real
+        # ~/.claude/projects dir). Resume tests override these.
         monkeypatch.setattr(api, "_latest_opencode_session", lambda *a, **k: None)
+        monkeypatch.setattr(api, "_recorded_claude_session", lambda *a, **k: None)
+        # No model override unless a test opts in (keeps default argv assertions clean).
+        monkeypatch.delenv("SMITH_SPAWN_MODEL", raising=False)
 
         # Steering queue — return no active directives
         steering_mock = MagicMock()
@@ -1472,9 +1475,9 @@ class TestSpawnSmith:
         assert "Recover the active pentest scan" in prompt
         assert "resuming your OWN pentest session" not in prompt
 
-    def test_claude_respawn_never_uses_session_flag(self, spawn_env):
-        """Resume is opencode-only; claude must never get --session even if a
-        resolver would return one (it isn't consulted for claude)."""
+    def _capture_claude_argv(self, env, resolver):
+        """Run _spawn_smith('claude') with the claude session resolver patched in;
+        return argv. Mirrors _capture_opencode_argv for the claude resume path."""
         fake_proc = MagicMock(); fake_proc.pid = 88888
         captured: list = []
 
@@ -1482,18 +1485,93 @@ class TestSpawnSmith:
             captured.append(list(args))
             return fake_proc
 
-        # Resolver returns an id, but claude branch must ignore it entirely.
-        with patch.dict("sys.modules", {"core.steering": spawn_env["steering_module"]}), \
+        with patch.dict("sys.modules", {"core.steering": env["steering_module"]}), \
              patch("core.session.load_from_disk"), \
              patch("core.session.get", return_value={}), \
-             patch.object(api, "_latest_opencode_session", lambda *_a, **_k: "ses_x"), \
+             patch.object(api, "_recorded_claude_session", resolver), \
              patch("shutil.which", return_value="/opt/homebrew/bin/claude"), \
              patch("asyncio.create_subprocess_exec", side_effect=_record_spawn):
             ok, _ = asyncio.get_event_loop().run_until_complete(
                 api._spawn_smith("claude", source="watchdog")
             )
         assert ok is True
-        assert "--session" not in captured[0]
+        return captured[0]
+
+    def test_claude_respawn_resumes_session_when_resolved(self, spawn_env):
+        # claude now resumes its OWN session (like opencode) so it keeps context and
+        # presents a continuation of authorized work — not a fresh cold request.
+        argv = self._capture_claude_argv(spawn_env, lambda *_a, **_k: "cs_RESUME1")
+        assert "--resume" in argv
+        assert argv[argv.index("--resume") + 1] == "cs_RESUME1"
+        assert "--dangerously-skip-permissions" in argv
+        assert argv[-2:] == ["-p", argv[-1]]  # prompt passed via -p, last
+        prompt = argv[-1]
+        assert "resuming your OWN pentest session" in prompt
+        assert "Recover the active pentest scan" not in prompt
+
+    def test_claude_respawn_cold_starts_when_no_session(self, spawn_env):
+        # No recorded session → cold start, which MINTS an explicit --session-id (so the
+        # next respawn resumes it) and uses the cold recovery prompt. Never --resume.
+        argv = self._capture_claude_argv(spawn_env, lambda *_a, **_k: None)
+        assert "--resume" not in argv
+        assert "--session-id" in argv
+        assert "-p" in argv and "--dangerously-skip-permissions" in argv
+        prompt = argv[-1]
+        assert "Recover the active pentest scan" in prompt
+        assert "resuming your OWN pentest session" not in prompt
+
+    def test_claude_respawn_uses_resume_not_opencode_session_flag(self, spawn_env):
+        """claude resumes via --resume; it must never emit opencode's --session."""
+        argv = self._capture_claude_argv(spawn_env, lambda *_a, **_k: "cs_x")
+        assert "--session" not in argv
+        assert "--resume" in argv
+
+    def test_spawn_model_env_adds_model_flag_for_claude(self, spawn_env, monkeypatch):
+        """SMITH_SPAWN_MODEL is the hard lever when a model keeps getting refused."""
+        monkeypatch.setenv("SMITH_SPAWN_MODEL", "claude-sonnet-4-5")
+        argv = self._capture_claude_argv(spawn_env, lambda *_a, **_k: None)
+        assert "--model" in argv
+        assert argv[argv.index("--model") + 1] == "claude-sonnet-4-5"
+
+    def test_respawn_prompts_carry_authorized_engagement_framing(self, spawn_env):
+        # Both cold and resume prompts must lead with the authorized-engagement framing
+        # so a headless claude request isn't Usage-Policy refused before it runs a tool.
+        cold = self._capture_claude_argv(spawn_env, lambda *_a, **_k: None)[-1]
+        resume = self._capture_claude_argv(spawn_env, lambda *_a, **_k: "cs_1")[-1]
+        for prompt in (cold, resume):
+            assert "AUTHORIZED" in prompt and "operator-initiated" in prompt
+
+    def test_claude_cold_start_mints_and_records_session_id(self, spawn_env):
+        """Safety: a cold claude start mints a fresh --session-id AND records it (via
+        set_smith_session_id) so the NEXT respawn resumes exactly that scan-owned session
+        — never a directory-scanned transcript (which could be the operator's own
+        interactive Claude Code conversation)."""
+        import uuid as _uuid
+        fake_proc = MagicMock(); fake_proc.pid = 55501
+        captured: list = []
+        recorded: list = []
+
+        async def _record_spawn(*args, **kw):
+            captured.append(list(args))
+            return fake_proc
+
+        with patch.dict("sys.modules", {"core.steering": spawn_env["steering_module"]}), \
+             patch("core.session.load_from_disk"), \
+             patch("core.session.get", return_value={}), \
+             patch.object(api, "_recorded_claude_session", lambda *_a, **_k: None), \
+             patch("core.session.set_smith_proc"), \
+             patch("core.session.set_smith_session_id", side_effect=lambda sid: recorded.append(sid)), \
+             patch("shutil.which", return_value="/opt/homebrew/bin/claude"), \
+             patch("asyncio.create_subprocess_exec", side_effect=_record_spawn):
+            ok, _ = asyncio.get_event_loop().run_until_complete(
+                api._spawn_smith("claude", source="watchdog")
+            )
+        assert ok is True
+        argv = captured[0]
+        assert "--resume" not in argv
+        minted = argv[argv.index("--session-id") + 1]
+        _uuid.UUID(minted)                 # raises if not a valid uuid
+        assert recorded == [minted]        # the minted id is exactly what got persisted
 
 
 # ---------------------------------------------------------------------------
@@ -1547,6 +1625,31 @@ class TestLatestOpencodeSession:
             raise subprocess.TimeoutExpired(cmd="opencode", timeout=10)
         monkeypatch.setattr(subprocess, "run", _boom)
         assert api._latest_opencode_session("/Users/gibson/agent-smith") is None
+
+
+# ---------------------------------------------------------------------------
+# _recorded_claude_session — resume ONLY the scan's own minted session
+# ---------------------------------------------------------------------------
+
+class TestRecordedClaudeSession:
+    """Returns the scan's OWN recorded claude session id (minted with --session-id on a
+    prior cold start). It must NEVER directory-scan ~/.claude/projects — in a dev repo the
+    largest transcript is often the operator's interactive Claude Code session, and
+    resuming that headless with --dangerously-skip-permissions is unsafe."""
+
+    def test_returns_recorded_session_id(self, monkeypatch):
+        monkeypatch.setattr("core.session.get_smith_session_id", lambda: "cs_MINTED")
+        assert api._recorded_claude_session() == "cs_MINTED"
+
+    def test_none_when_nothing_recorded(self, monkeypatch):
+        monkeypatch.setattr("core.session.get_smith_session_id", lambda: None)
+        assert api._recorded_claude_session() is None
+
+    def test_none_on_exception(self, monkeypatch):
+        def _boom():
+            raise RuntimeError("boom")
+        monkeypatch.setattr("core.session.get_smith_session_id", _boom)
+        assert api._recorded_claude_session() is None
 
 
 # ---------------------------------------------------------------------------

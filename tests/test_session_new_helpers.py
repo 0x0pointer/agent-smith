@@ -161,8 +161,27 @@ class TestValidateFindingLink:
         msg = cov._validate_finding_link("vulnerable", "   ")
         assert "REJECTED" in msg
 
-    def test_vulnerable_with_real_id_passes(self):
+    def test_vulnerable_with_resolvable_id_passes(self, tmp_path, monkeypatch):
+        import core.findings
+        ff = tmp_path / "findings.json"
+        ff.write_text(json.dumps({"findings": [{"id": "finding-123"}]}))
+        monkeypatch.setattr(core.findings, "FINDINGS_FILE", ff)
         assert cov._validate_finding_link("vulnerable", "finding-123") == ""
+
+    def test_vulnerable_with_unresolvable_id_rejects(self, tmp_path, monkeypatch):
+        import core.findings
+        ff = tmp_path / "findings.json"
+        ff.write_text(json.dumps({"findings": [{"id": "real-abc-1234"}]}))
+        monkeypatch.setattr(core.findings, "FINDINGS_FILE", ff)
+        msg = cov._validate_finding_link("vulnerable", "ghost-9999")
+        assert "REJECTED" in msg and "does not resolve" in msg
+
+    def test_vulnerable_link_fails_open_when_findings_unreadable(self, monkeypatch):
+        # If findings can't be read (_finding_ids_on_disk returns None), never block a
+        # real closure — fail open, matching how _validate_artifact treats unreadable art.
+        import core.coverage.validation as _val
+        monkeypatch.setattr(_val, "_finding_ids_on_disk", lambda: None)
+        assert _val._validate_finding_link("vulnerable", "anything") == ""
 
 
 # ---------------------------------------------------------------------------

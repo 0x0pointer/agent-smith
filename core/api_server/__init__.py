@@ -298,6 +298,7 @@ from .smith import (  # noqa: E402
     _escalate_no_progress_hir,
     _kill_hung_smith,
     _latest_opencode_session,
+    _recorded_claude_session,
     _ensure_mcp_sse_alive,
     _live_pid_from_pid_file,
     _live_pid_from_process_scan,

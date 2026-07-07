@@ -82,6 +82,7 @@ from .progress import (  # noqa: E402,F401
 from .spawn import (  # noqa: E402,F401
     _spawn_source_tag,
     _latest_opencode_session,
+    _recorded_claude_session,
     _cold_recovery_prompt,
     _resume_prompt,
     _spawn_smith,
