@@ -1,6 +1,25 @@
 <div id="tab-world-model" class="tab-content">
   <div id="wm-stats" class="wm-stats"></div>
 
+  <!-- The interactive labeled-property graph is the centerpiece. -->
+  <section class="wm-panel wm-graph-panel">
+    <h3 class="wm-h">World model graph
+      <span class="wm-sub">labeled property graph — drag &amp; zoom · click a node/edge to inspect its properties</span></h3>
+    <div class="wm-graph-toolbar">
+      <div id="wm-legend" class="wm-legend"></div>
+      <div class="wm-graph-controls">
+        <button class="wm-btn" id="wm-bridges-btn" onclick="wmToggleBridges()"
+                title="Highlight compositional PROVIDES / REQUIRES capability bridges">◆ Bridges</button>
+        <button class="wm-btn" onclick="wmRelayout()" title="Re-run force layout">⟳ Layout</button>
+        <button class="wm-btn" onclick="wmFit()" title="Fit graph to view">⤢ Fit</button>
+      </div>
+    </div>
+    <div class="wm-graph-stage">
+      <div id="wm-graph" class="wm-graph"></div>
+      <div id="wm-inspector" class="wm-inspector wm-inspector-empty">Click a node or relationship to inspect its properties.</div>
+    </div>
+  </section>
+
   <!-- Kill-chains are the payoff of the graph — give them the full width. -->
   <section class="wm-panel wm-chains-panel">
     <h3 class="wm-h">Proposed kill-chains <span class="wm-sub">graph-derived — prove &amp; file</span></h3>
@@ -17,9 +36,4 @@
       <div id="wm-targets" class="wm-list"></div>
     </section>
   </div>
-
-  <section class="wm-panel wm-graph-panel">
-    <h3 class="wm-h">World model <span class="wm-sub">hosts · endpoints · params · findings · principals</span></h3>
-    <div id="wm-graph" class="wm-graph"></div>
-  </section>
 </div>

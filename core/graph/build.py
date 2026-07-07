@@ -82,7 +82,8 @@ _CRED_LEAK_MARKERS = ("credential", "password", "token leak", "secret", "api key
 
 
 def _add_finding_nodes(g, root_host) -> None:
-    """Findings → FOUND_ON host, LEAKS (credential material), ESCALATES_TO edges."""
+    """Findings → FOUND_ON host, LEAKS (credential material), ESCALATES_TO, and
+    PROVIDES/REQUIRES primitive edges (the substrate for compositional chaining)."""
     from core import findings as findings_store
     for f in findings_store._load().get("findings", []):
         fid = f"finding:{f.get('id','')}"
@@ -93,12 +94,32 @@ def _add_finding_nodes(g, root_host) -> None:
         if fhost:
             g.add_node(f"host:{fhost}", m.HOST, fhost)  # materialize so the edge isn't dangling
             g.add_edge(fid, f"host:{fhost}", m.FOUND_ON)
-        text = f"{f.get('title','')} {f.get('description','')}".lower()
+        title, desc = f.get("title", ""), f.get("description", "")
+        text = f"{title} {desc}".lower()
         if fhost and any(k in text for k in _CRED_LEAK_MARKERS):
             g.add_edge(fid, f"host:{fhost}", m.LEAKS, what="credential-material")
         for lead in f.get("escalation_leads", []) or []:
             if isinstance(lead, dict) and lead.get("status") == "pending":
                 g.add_edge(fid, fid, m.ESCALATES_TO, lead=lead.get("lead", ""))
+        _add_primitive_edges(g, fid, f)
+
+
+def _add_primitive_edges(g, fid: str, f: dict) -> None:
+    """Emit finding→primitive PROVIDES/REQUIRES edges (the compositional-chaining
+    substrate). Explicit ``provides``/``requires`` fields (set via
+    report(action='finding'/'update_finding')) union with the text classifier.
+    Fail-soft: a classifier raise never breaks the caller's finding loop."""
+    from core.graph import primitives as prim
+    try:
+        title, desc = f.get("title", ""), f.get("description", "")
+        provides = set(prim.coerce_primitive_list(f.get("provides"))) | prim.classify_provides(title, desc, f.get("cve", ""))
+        requires = set(prim.coerce_primitive_list(f.get("requires"))) | prim.classify_requires(title, desc)
+        for kind, prims in ((m.PROVIDES, provides), (m.REQUIRES, requires)):
+            for p in prims:
+                g.add_node(f"prim:{p}", m.PRIMITIVE, p)
+                g.add_edge(fid, f"prim:{p}", kind)
+    except Exception:
+        pass
 
 
 def build_graph() -> m.Graph:

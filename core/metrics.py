@@ -194,6 +194,9 @@ def _compute(
     # ── Time per skill (from quick_log SKILL events) ──────────────────────────
     time_per_skill = _compute_time_per_skill(quick_log_entries)
 
+    # ── Compositional chaining (VERIFY layer) ─────────────────────────────────
+    comp = _compute_composition(findings_data)
+
     return {
         # Identity
         "run_id":   session.get("id", ""),
@@ -231,6 +234,14 @@ def _compute(
         "false_positive_count":    false_positives,
         "escalation_completion_rate_pct": esc_rate,
 
+        # Compositional chaining (VERIFY): the headline is blocked_then_bridged_rate_pct
+        # — findings that declared a REQUIRES primitive AND landed in a multi-finding
+        # chain. Hard to game (needs a prior block). multi_finding_chains is secondary
+        # (rules 2/3 already emit multi-finding chains, so it isn't ≈0 at baseline).
+        "proven_chains_total":            comp["proven_chains_total"],
+        "multi_finding_chains":           comp["multi_finding_chains"],
+        "blocked_then_bridged_rate_pct":  comp["blocked_then_bridged_rate_pct"],
+
         # Context health
         "resume_events":            resume_events,
         "duplicate_tool_calls":     duplicate_calls,
@@ -255,6 +266,44 @@ def _duration_minutes(session: dict) -> float:
         return round((finished - started).total_seconds() / 60, 1)
     except Exception:
         return 0.0
+
+
+def _compute_composition(findings_data: dict) -> dict:
+    """Compositional-chaining counters (VERIFY layer). Degrades to 0/None when the
+    sibling fields (chains[], findings[].requires) are absent, so it ships safely.
+
+    ``blocked_then_bridged_rate_pct`` is the headline: of findings that declared a
+    REQUIRES primitive (a blocker), the % that landed in a multi-finding recorded chain
+    — the direct "we bridged a blocked finding" signal, hard to game (needs a prior
+    block). ``multi_finding_chains`` is secondary (rules 2/3 already emit multi-finding
+    chains, so it is NOT ≈0 at baseline)."""
+    findings = findings_data.get("findings", []) or []
+    chains = findings_data.get("chains", []) or []
+
+    def _ids(ch: dict) -> set:
+        s: set = set()
+        for st in ch.get("steps", []) or []:
+            if isinstance(st, dict):
+                s.add(st.get("from_finding_id", ""))
+                s.add(st.get("to_finding_id", ""))
+        s.discard("")
+        return s
+
+    bridged_ids: set = set()
+    multi = 0
+    for c in chains:
+        ids = _ids(c)
+        if len(ids) >= 2:
+            multi += 1
+            bridged_ids |= ids
+    blocked = [f for f in findings if f.get("requires")]
+    bridged_blocked = sum(1 for f in blocked if f.get("id") in bridged_ids)
+    rate = round(100.0 * bridged_blocked / len(blocked), 1) if blocked else None
+    return {
+        "proven_chains_total": len(chains),
+        "multi_finding_chains": multi,
+        "blocked_then_bridged_rate_pct": rate,
+    }
 
 
 def _compute_time_per_skill(entries: list[dict]) -> dict[str, float]:

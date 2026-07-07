@@ -1671,7 +1671,6 @@
       border:1px solid rgba(123,120,255,.28); border-radius:5px; padding:0.08rem 0.4rem; min-width:1.6rem; text-align:center; }
 
     /* graph */
-    .wm-graph { overflow-x:auto; padding-top:0.3rem; }
     .wm-svg { min-width:1040px; font-family:var(--font-mono); }
     .wm-col-title { fill:var(--text-dim); font-size:11px; text-transform:uppercase; letter-spacing:0.08em; font-weight:600; }
     .wm-node rect { fill:var(--surface-2); stroke:var(--border); stroke-width:1; }
@@ -1690,7 +1689,50 @@
     .wm-edge-leaks { stroke:var(--sev-medium); stroke-width:1.5; opacity:1; }
     .wm-edge-escalates_to { stroke:var(--sev-critical); stroke-width:1.5; opacity:1; }
     .wm-edge-authenticates { stroke:var(--green); stroke-dasharray:3 2; opacity:1; }
+    .wm-edge-provides { stroke:var(--green); stroke-width:2; opacity:1; }
+    .wm-edge-requires { stroke:var(--sev-high); stroke-width:2; stroke-dasharray:4 3; opacity:1; }
+    .wm-node-primitive rect { fill:color-mix(in srgb, #ff5ccd 18%, var(--surface)); stroke:#ff5ccd; }
     .wm-more { fill:var(--text-dim); font-size:11px; }
+
+    /* ── Interactive labeled-property graph (cytoscape) ───────────────────────── */
+    .wm-graph-toolbar { display:flex; justify-content:space-between; align-items:center; gap:1rem;
+                        flex-wrap:wrap; margin-bottom:0.7rem; }
+    .wm-legend { display:flex; flex-wrap:wrap; gap:0.35rem; }
+    .wm-lg { display:inline-flex; align-items:center; gap:0.32rem; cursor:pointer; user-select:none;
+             font-family:var(--font-mono); font-size:0.64rem; color:var(--text-muted);
+             background:var(--bg-deep); border:1px solid var(--border-subtle); border-radius:12px;
+             padding:0.14rem 0.55rem; transition:border-color .12s, opacity .12s; }
+    .wm-lg:hover { border-color:var(--purple); color:var(--text); }
+    .wm-lg-off { opacity:0.4; text-decoration:line-through; }
+    .wm-lg-dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
+    .wm-lg b { color:var(--text); font-weight:700; }
+    .wm-graph-controls { display:flex; gap:0.35rem; }
+    .wm-btn { font-family:var(--font-mono); font-size:0.66rem; color:var(--text-muted); cursor:pointer;
+              background:var(--bg-deep); border:1px solid var(--border-subtle); border-radius:6px;
+              padding:0.26rem 0.6rem; transition:border-color .12s, color .12s, background .12s; }
+    .wm-btn:hover { border-color:var(--purple); color:var(--text); }
+    .wm-btn-on { background:color-mix(in srgb, #ff5ccd 16%, var(--bg-deep)); border-color:#ff5ccd; color:#ff9ee6; }
+    .wm-graph-stage { display:grid; grid-template-columns:1fr 264px; gap:0.75rem; }
+    @media (max-width:900px){ .wm-graph-stage { grid-template-columns:1fr; } }
+    .wm-graph { height:540px; border:1px solid var(--border); border-radius:10px; overflow:auto;
+                background:radial-gradient(circle at 50% 38%, rgba(123,120,255,0.06), transparent 68%), var(--bg-deep); }
+    .wm-graph .wm-empty { padding:2rem; text-align:center; }
+    .wm-inspector { height:540px; overflow-y:auto; background:var(--surface); border:1px solid var(--border);
+                    border-radius:10px; padding:0.9rem; font-size:0.78rem; }
+    .wm-inspector-empty { color:var(--text-dim); display:flex; align-items:center; justify-content:center;
+                          text-align:center; line-height:1.55; }
+    .wm-insp-head { display:flex; align-items:center; gap:0.5rem; margin-bottom:0.75rem; flex-wrap:wrap;
+                    padding-bottom:0.6rem; border-bottom:1px solid var(--border-subtle); }
+    .wm-insp-kind { font-family:var(--font-mono); font-size:0.6rem; font-weight:700; text-transform:uppercase;
+                    letter-spacing:0.05em; padding:0.16rem 0.5rem; border-radius:5px; border:1px solid; }
+    .wm-insp-title { font-weight:600; color:var(--text); word-break:break-word; min-width:0; }
+    .wm-props { width:100%; border-collapse:collapse; }
+    .wm-props td { padding:0.3rem 0.4rem; border-bottom:1px solid var(--border-subtle); vertical-align:top; }
+    .wm-pk { font-family:var(--font-mono); font-size:0.66rem; color:var(--text-dim); white-space:nowrap; }
+    .wm-pv { font-family:var(--font-mono); font-size:0.68rem; color:var(--text); word-break:break-word; }
+    .wm-bridge-tag { font-family:var(--font-mono); font-size:0.6rem; font-weight:700; color:#ff9ee6;
+                     background:color-mix(in srgb, #ff5ccd 16%, transparent); border:1px solid #ff5ccd66;
+                     border-radius:5px; padding:0.1rem 0.4rem; margin-left:0.4rem; }
 
     /* ══════════════════════════════════════════════════════════════════════════
        TAB REDESIGN — every non-Findings tab brought to one readable, pretty system.

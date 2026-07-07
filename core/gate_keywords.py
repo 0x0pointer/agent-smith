@@ -88,6 +88,20 @@ RCE_EQUIVALENT_MARKERS = (
     "no actual code execution",
 )
 
+# Dead-end / blocked-on-a-missing-primitive phrasing in a NOTE. When the agent types
+# one of these ("blocked, no LFI", "PIN un-derivable") it is declaring a chain step
+# blocked on a capability it lacks — the exact moment to check whether ANOTHER confirmed
+# finding already PROVIDES that capability (compositional-chaining bridge). Deliberately
+# blocker-shaped so ordinary progress notes don't trip it; the bridge push is additionally
+# gated on a real graph-matched provider existing, so a stray phrase yields nothing.
+BLOCKED_MARKERS = (
+    "blocked on", "blocked by lack", "no lfi", "no file-read", "no file read",
+    "cannot read", "could not read", "unable to read", "need file-read", "need a file-read",
+    "requires file read", "pin un-derivable", "pin cannot be derived", "un-derivable",
+    "no read primitive", "lack of file-read", "lack of a file-read", "dead-end", "dead end",
+    "cannot forge", "without the signing key", "requires internal reach", "no way to reach",
+)
+
 # Speculation markers — an UNCONFIRMED finding ("the username appears to support
 # SSTI; ${7*7} was reflected") must not impose the mandatory post-exploit gate.
 # RCE/post-exploit is expensive and only makes sense once code execution is

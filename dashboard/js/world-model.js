@@ -1,8 +1,14 @@
-// World Model tab — renders the Phase-2 knowledge graph: graph-derived kill-chain
-// proposals, finding/target rankings, and a dependency-free SVG of the world model
-// (hosts · endpoints · params · findings · principals). No CDN libs (CSP-safe).
+// World Model tab — an interactive Labeled-Property-Graph (LPG) of the knowledge
+// graph (Neo4j-style: Nodes = entities, Relationships = typed edges, Properties =
+// key/value attrs), plus graph-derived kill-chains and finding/target rankings.
+// Rendered with cytoscape.js (force layout + a graph stylesheet); degrades to a
+// dependency-free columnar SVG if the CDN library is unavailable.
 
 let _wmData = null;
+let _wmCy = null;               // cytoscape instance
+let _wmSig = null;              // element-set signature — rebuild only on change
+let _wmHiddenKinds = new Set(); // legend toggles
+let _wmBridges = false;         // "◆ Bridges" highlight mode
 
 function wmEsc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, c =>
@@ -39,16 +45,17 @@ function wmRenderChains() {
   if (!el) return;
   const chains = (_wmData && _wmData.candidate_chains) || [];
   if (!chains.length) {
-    el.innerHTML = `<div class="wm-empty">No chains proposable yet — need ≥2 related findings, an escalation lead, or a credential leak.</div>`;
+    el.innerHTML = `<div class="wm-empty">No chains proposable yet — need ≥2 related findings, an escalation lead, a credential leak, or a capability bridge.</div>`;
     return;
   }
   el.innerHTML = chains.map(c => {
     const steps = (c.steps || []).map((s, i) =>
       `<span class="wm-step">${wmEsc(s)}</span>${i < c.steps.length - 1 ? '<span class="wm-arrow">→</span>' : ''}`
     ).join('');
+    const bridge = c.kind === 'primitive_unblock' ? `<span class="wm-bridge-tag" title="Compositional capability bridge">◆ ${wmEsc(c.primitive || 'bridge')}</span>` : '';
     return `<div class="wm-chain">
       <span class="wm-sev wm-sev-${wmEsc(c.combined_severity || 'medium')}">${wmEsc(c.combined_severity || '?')}</span>
-      <div class="wm-chain-body"><div class="wm-steps">${steps}</div>
+      <div class="wm-chain-body"><div class="wm-steps">${steps}${bridge}</div>
       <div class="wm-terminal">terminal: ${wmEsc(c.terminal || '')}</div>
       <div class="wm-rationale">${wmEsc(c.rationale || '')}</div></div></div>`;
   }).join('');
@@ -73,65 +80,255 @@ function wmRenderRankings() {
   }
 }
 
-// ── SVG world-model graph (columnar, dependency-free) ───────────────────────
+// ── Interactive LPG (cytoscape) ──────────────────────────────────────────────
+const WM_KIND_COLOR = {
+  host: '#a371f7', endpoint: '#4f8cff', param: '#6b7681', credential: '#e3b341',
+  token: '#d29922', tech: '#3fb950', primitive: '#ff5ccd', finding: '#7b78ff',
+};
+const WM_SEV_COLOR = {
+  critical: '#f85149', high: '#fa8c16', medium: '#d29922', low: '#5bf29b', info: '#7b78ff',
+};
+const WM_EDGE = {
+  provides:     { color: '#3fb950', style: 'solid',  width: 3 },
+  requires:     { color: '#ff7b3d', style: 'dashed', width: 3 },
+  leaks:        { color: '#e3b341', style: 'solid',  width: 2 },
+  escalates_to: { color: '#f85149', style: 'solid',  width: 2 },
+  found_on:     { color: '#3d444d', style: 'solid',  width: 1 },
+};
+function wmEdgeStyle(k) { return WM_EDGE[k] || { color: '#30363d', style: 'solid', width: 1 }; }
+function wmNodeColor(n) {
+  return n.kind === 'finding' ? (WM_SEV_COLOR[n.severity] || WM_SEV_COLOR.info)
+                              : (WM_KIND_COLOR[n.kind] || '#8b98a5');
+}
+
+function wmElements(data) {
+  const nodes = (data.nodes || []).filter(n => !_wmHiddenKinds.has(n.kind)).map(n => ({
+    data: {
+      id: n.id, label: (n.label || n.id), kind: n.kind, color: wmNodeColor(n),
+      props: n.properties || (n.severity ? { severity: n.severity } : {}),
+    },
+  }));
+  const ids = new Set(nodes.map(n => n.data.id));
+  const edges = (data.edges || [])
+    .map((e, i) => ({ e, i, s: e.source || e.src, t: e.target || e.dst }))
+    .filter(x => ids.has(x.s) && ids.has(x.t) && x.s !== x.t)   // skip dangling + self-loops
+    .map(x => {
+      const st = wmEdgeStyle(x.e.kind);
+      return {
+        data: {
+          id: x.e.id || ('e' + x.i), source: x.s, target: x.t, kind: x.e.kind,
+          ecolor: st.color, estyle: st.style, ewidth: st.width, props: x.e.properties || {},
+        },
+      };
+    });
+  return [...nodes, ...edges];
+}
+
+function wmStyle() {
+  return [
+    { selector: 'node', style: {
+      'background-color': 'data(color)', 'label': 'data(label)', 'color': '#c9d1d9',
+      'font-size': '9px', 'font-family': 'ui-monospace, SFMono-Regular, monospace',
+      'text-valign': 'bottom', 'text-halign': 'center', 'text-margin-y': 3,
+      'text-wrap': 'ellipsis', 'text-max-width': '96px',
+      'width': 20, 'height': 20, 'border-width': 1.5, 'border-color': '#0d1117',
+      'text-outline-width': 2, 'text-outline-color': '#0d1117',
+    } },
+    { selector: 'node[kind="finding"]',   style: { 'shape': 'ellipse', 'width': 30, 'height': 30, 'font-size': '10px' } },
+    { selector: 'node[kind="primitive"]', style: { 'shape': 'diamond', 'width': 32, 'height': 32, 'color': '#ff9ee6', 'font-weight': 'bold' } },
+    { selector: 'node[kind="host"]',      style: { 'shape': 'round-rectangle', 'width': 36, 'height': 24 } },
+    { selector: 'node[kind="credential"], node[kind="token"]', style: { 'shape': 'hexagon' } },
+    { selector: 'node[kind="param"]',     style: { 'width': 14, 'height': 14 } },
+    { selector: 'edge', style: {
+      'width': 'data(ewidth)', 'line-color': 'data(ecolor)', 'line-style': 'data(estyle)',
+      'target-arrow-color': 'data(ecolor)', 'target-arrow-shape': 'triangle',
+      'curve-style': 'bezier', 'arrow-scale': 0.85, 'opacity': 0.7,
+      'label': 'data(kind)', 'font-size': '7px', 'color': '#8b949e',
+      'text-rotation': 'autorotate', 'text-opacity': 0, 'text-background-color': '#0d1117',
+      'text-background-opacity': 0.85, 'text-background-padding': 1,
+    } },
+    { selector: '.wm-dim',   style: { 'opacity': 0.1, 'text-opacity': 0 } },
+    { selector: '.wm-hi',    style: { 'opacity': 1, 'text-opacity': 1, 'z-index': 20 } },
+    { selector: '.wm-bridge', style: { 'opacity': 1, 'text-opacity': 1, 'width': 4, 'z-index': 25 } },
+    { selector: 'node:selected', style: { 'border-width': 3, 'border-color': '#58a6ff', 'z-index': 30 } },
+    { selector: 'edge:selected', style: { 'line-color': '#58a6ff', 'target-arrow-color': '#58a6ff', 'opacity': 1, 'text-opacity': 1, 'width': 4 } },
+  ];
+}
+
+function wmLayoutOpts(animate) {
+  return { name: 'cose', animate: !!animate, animationDuration: 500, randomize: false,
+           nodeRepulsion: 9000, idealEdgeLength: 78, edgeElasticity: 120, gravity: 0.6,
+           padding: 24, nodeDimensionsIncludeLabels: true };
+}
+
+function wmRenderGraph() {
+  const host = document.getElementById('wm-graph');
+  if (!host) return;
+  if (typeof cytoscape === 'undefined') { wmRenderGraphSvgFallback(); return; }
+  const data = _wmData || {};
+  if (!(data.nodes || []).length) {
+    if (_wmCy) { _wmCy.destroy(); _wmCy = null; _wmSig = null; }
+    host.innerHTML = '<div class="wm-empty">World model is empty — it fills in as the scan discovers surface and files findings.</div>';
+    return;
+  }
+  const els = wmElements(data);
+  const sig = els.map(e => e.data.id).sort().join('|') + '#' + [..._wmHiddenKinds].sort().join(',');
+  if (_wmCy && sig === _wmSig) return;   // structure unchanged — preserve the user's view
+  _wmSig = sig;
+
+  if (!_wmCy) {
+    host.innerHTML = '';
+    _wmCy = cytoscape({
+      container: host, elements: els, style: wmStyle(),
+      wheelSensitivity: 0.2, minZoom: 0.12, maxZoom: 3.5,
+    });
+    wmBindGraphEvents();
+    const lay = _wmCy.layout(wmLayoutOpts(false));      // cose is async → fit on stop
+    lay.one('layoutstop', () => { _wmCy.fit(undefined, 30); if (_wmBridges) wmApplyBridges(); });
+    lay.run();
+  } else {
+    const pan = _wmCy.pan(), zoom = _wmCy.zoom();       // preserve the user's viewport
+    _wmCy.batch(() => { _wmCy.elements().remove(); _wmCy.add(els); });
+    const lay = _wmCy.layout(wmLayoutOpts(false));
+    lay.one('layoutstop', () => { _wmCy.pan(pan); _wmCy.zoom(zoom); if (_wmBridges) wmApplyBridges(); });
+    lay.run();
+  }
+  wmRenderLegend();
+}
+
+function wmBindGraphEvents() {
+  _wmCy.on('tap', 'node', ev => wmInspect(ev.target));
+  _wmCy.on('tap', 'edge', ev => wmInspect(ev.target));
+  _wmCy.on('tap', ev => {
+    if (ev.target !== _wmCy) return;                 // background tap only
+    if (!_wmBridges) _wmCy.elements().removeClass('wm-dim wm-hi');
+    wmInspectClear();
+  });
+  _wmCy.on('mouseover', 'node', ev => wmHighlight(ev.target));
+  _wmCy.on('mouseout', 'node', () => { _wmBridges ? wmApplyBridges() : _wmCy.elements().removeClass('wm-dim wm-hi'); });
+}
+
+function wmHighlight(node) {
+  const nb = node.closedNeighborhood();
+  _wmCy.elements().addClass('wm-dim').removeClass('wm-hi');
+  nb.removeClass('wm-dim').addClass('wm-hi');
+}
+
+function wmInspect(ele) {
+  const el = document.getElementById('wm-inspector');
+  if (!el) return;
+  el.classList.remove('wm-inspector-empty');
+  const isNode = ele.isNode();
+  const d = ele.data();
+  const kindColor = isNode ? (WM_KIND_COLOR[d.kind] || '#8b98a5') : ((WM_EDGE[d.kind] || {}).color || '#8b98a5');
+  const props = d.props || {};
+  const rows = Object.entries(props)
+    .filter(([, v]) => v !== '' && v != null)
+    .map(([k, v]) => `<tr><td class="wm-pk">${wmEsc(k)}</td><td class="wm-pv">${wmEsc(typeof v === 'object' ? JSON.stringify(v) : v)}</td></tr>`)
+    .join('');
+  const title = isNode ? wmEsc(d.label)
+    : `${wmEsc(_wmCy.getElementById(d.source).data('label') || d.source)} <span class="wm-arrow">→</span> ${wmEsc(_wmCy.getElementById(d.target).data('label') || d.target)}`;
+  el.innerHTML =
+    `<div class="wm-insp-head">
+       <span class="wm-insp-kind" style="background:${kindColor}22;color:${kindColor};border-color:${kindColor}66">${wmEsc(d.kind)}</span>
+       <span class="wm-insp-title">${title}</span>
+     </div>` +
+    (rows ? `<table class="wm-props"><tbody>${rows}</tbody></table>` : `<div class="wm-empty">no properties</div>`);
+}
+
+function wmInspectClear() {
+  const el = document.getElementById('wm-inspector');
+  if (el) { el.classList.add('wm-inspector-empty'); el.innerHTML = 'Click a node or relationship to inspect its properties.'; }
+}
+
+function wmRenderLegend() {
+  const el = document.getElementById('wm-legend');
+  if (!el) return;
+  const counts = {};
+  (_wmData.nodes || []).forEach(n => { counts[n.kind] = (counts[n.kind] || 0) + 1; });
+  const order = ['finding', 'primitive', 'host', 'endpoint', 'param', 'credential', 'token', 'tech'];
+  el.innerHTML = order.filter(k => counts[k]).map(k => {
+    const off = _wmHiddenKinds.has(k);
+    const c = WM_KIND_COLOR[k] || '#8b98a5';
+    return `<span class="wm-lg${off ? ' wm-lg-off' : ''}" onclick="wmToggleKind('${k}')" title="Show/hide ${k} nodes">
+      <span class="wm-lg-dot" style="background:${c}"></span>${wmEsc(k)} <b>${counts[k]}</b></span>`;
+  }).join('');
+}
+
+function wmToggleKind(k) {
+  if (_wmHiddenKinds.has(k)) _wmHiddenKinds.delete(k); else _wmHiddenKinds.add(k);
+  _wmSig = null;              // force a rebuild with the new filter
+  wmRenderGraph();
+}
+
+function wmToggleBridges() {
+  _wmBridges = !_wmBridges;
+  const btn = document.getElementById('wm-bridges-btn');
+  if (btn) btn.classList.toggle('wm-btn-on', _wmBridges);
+  if (!_wmCy) return;
+  if (_wmBridges) wmApplyBridges();
+  else _wmCy.elements().removeClass('wm-dim wm-hi wm-bridge');
+}
+
+function wmApplyBridges() {
+  if (!_wmCy) return;
+  const bridges = _wmCy.edges('[kind="provides"], [kind="requires"]');
+  const prims = _wmCy.nodes('[kind="primitive"]');
+  const keep = bridges.union(bridges.connectedNodes()).union(prims);
+  _wmCy.elements().addClass('wm-dim').removeClass('wm-hi wm-bridge');
+  keep.removeClass('wm-dim');
+  bridges.addClass('wm-bridge');
+}
+
+function wmRelayout() { if (_wmCy) _wmCy.layout(wmLayoutOpts(true)).run(); }
+function wmFit() { if (_wmCy) _wmCy.fit(undefined, 30); }
+
+// ── Dependency-free SVG fallback (used only if cytoscape didn't load) ────────
 const _WM_COLS = [
   { kinds: ['host', 'tech'], title: 'host / tech' },
   { kinds: ['endpoint'], title: 'endpoints' },
   { kinds: ['param'], title: 'params' },
   { kinds: ['finding'], title: 'findings' },
+  { kinds: ['primitive'], title: 'capabilities' },
   { kinds: ['credential', 'token'], title: 'principals' },
 ];
 const _WM_CAP = 18;
 
-function wmRenderGraph() {
+function wmRenderGraphSvgFallback() {
   const el = document.getElementById('wm-graph');
   if (!el) return;
   const nodes = (_wmData && _wmData.nodes) || [];
   const edges = (_wmData && _wmData.edges) || [];
-  if (!nodes.length) { el.innerHTML = `<div class="wm-empty">World model is empty — it fills in as the scan discovers surface and files findings.</div>`; return; }
-
+  if (!nodes.length) { el.innerHTML = `<div class="wm-empty">World model is empty — it fills in as the scan runs.</div>`; return; }
   const colOf = k => _WM_COLS.findIndex(c => c.kinds.includes(k));
   const byCol = _WM_COLS.map(() => []);
   for (const n of nodes) { const c = colOf(n.kind); if (c >= 0) byCol[c].push(n); }
-
-  const COLW = 210, ROWH = 26, PADX = 12, PADY = 34, BOXW = 180, BOXH = 20;
-  const pos = {};                 // node id -> {x, y}
+  const COLW = 200, ROWH = 26, PADX = 12, PADY = 34, BOXW = 172, BOXH = 20;
+  const pos = {};
   const rows = Math.max(1, ...byCol.map(c => Math.min(c.length, _WM_CAP)));
-  const height = PADY + rows * ROWH + 20;
-  const width = _WM_COLS.length * COLW;
-
+  const height = PADY + rows * ROWH + 20, width = _WM_COLS.length * COLW;
   let svg = `<svg viewBox="0 0 ${width} ${height}" width="100%" preserveAspectRatio="xMinYMin meet" class="wm-svg">`;
-  // column headers
-  _WM_COLS.forEach((c, i) => {
-    svg += `<text x="${i * COLW + PADX}" y="18" class="wm-col-title">${wmEsc(c.title)}</text>`;
-  });
-  // place + draw nodes
-  byCol.forEach((list, ci) => {
-    list.slice(0, _WM_CAP).forEach((n, ri) => {
-      const x = ci * COLW + PADX, y = PADY + ri * ROWH;
-      pos[n.id] = { x: x + BOXW, y: y + BOXH / 2, xl: x, yc: y + BOXH / 2 };
-    });
-  });
-  // edges first (under nodes) — only between placed nodes, skip self-loops
+  _WM_COLS.forEach((c, i) => { svg += `<text x="${i * COLW + PADX}" y="18" class="wm-col-title">${wmEsc(c.title)}</text>`; });
+  byCol.forEach((list, ci) => list.slice(0, _WM_CAP).forEach((n, ri) => {
+    const x = ci * COLW + PADX, y = PADY + ri * ROWH;
+    pos[n.id] = { x: x + BOXW, xl: x, yc: y + BOXH / 2 };
+  }));
   edges.forEach(e => {
-    const a = pos[e.src], b = pos[e.dst];
-    if (!a || !b || e.src === e.dst) return;
+    const a = pos[e.source || e.src], b = pos[e.target || e.dst];
+    if (!a || !b || (e.source || e.src) === (e.target || e.dst)) return;
     svg += `<line x1="${a.x}" y1="${a.yc}" x2="${b.xl}" y2="${b.yc}" class="wm-edge wm-edge-${wmEsc(e.kind)}"/>`;
   });
-  // nodes
   byCol.forEach((list, ci) => {
     list.slice(0, _WM_CAP).forEach((n, ri) => {
       const x = ci * COLW + PADX, y = PADY + ri * ROWH;
       const cls = n.kind === 'finding' ? `wm-node wm-node-finding wm-sevfill-${wmEsc(n.severity || 'info')}` : `wm-node wm-node-${wmEsc(n.kind)}`;
-      const label = (n.label || n.id).slice(0, 26);
       svg += `<g class="${cls}"><rect x="${x}" y="${y}" width="${BOXW}" height="${BOXH}" rx="3"/>` +
-        `<text x="${x + 6}" y="${y + 14}"><title>${wmEsc(n.label || n.id)}</title>${wmEsc(label)}</text></g>`;
+        `<text x="${x + 6}" y="${y + 14}"><title>${wmEsc(n.label || n.id)}</title>${wmEsc((n.label || n.id).slice(0, 24))}</text></g>`;
     });
     if (list.length > _WM_CAP) {
       const x = ci * COLW + PADX, y = PADY + _WM_CAP * ROWH;
       svg += `<text x="${x + 6}" y="${y + 12}" class="wm-more">+${list.length - _WM_CAP} more</text>`;
     }
   });
-  svg += `</svg>`;
-  el.innerHTML = svg;
+  el.innerHTML = svg + `</svg>`;
 }
