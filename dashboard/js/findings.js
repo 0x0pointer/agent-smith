@@ -1,4 +1,16 @@
+  const _FINDINGS_CACHE_KEY = 'smith_findings_cache';
+
   async function pollFindings() {
+    // On (re)load — e.g. returning from a /finding/<id> detail page — paint the
+    // last findings from sessionStorage IMMEDIATELY so the list isn't blank for a
+    // whole poll cycle (~5s) while the fetch below is in flight. The live fetch
+    // refreshes it (and the NEW badges) a moment later.
+    if (!(allData.findings || []).length) {
+      try {
+        const cached = sessionStorage.getItem(_FINDINGS_CACHE_KEY);
+        if (cached) { allData = JSON.parse(cached); renderFindings(); }
+      } catch { /* ignore malformed/absent cache */ }
+    }
     try {
       const r = await fetch(`/api/findings?_=${Date.now()}`);
       if (!r.ok) throw new Error('not found');
@@ -10,6 +22,7 @@
       });
       allData = data;
       lastOk  = new Date();
+      try { sessionStorage.setItem(_FINDINGS_CACHE_KEY, JSON.stringify(data)); } catch { /* quota */ }
       renderFindings();
     } catch {
       document.getElementById('status').innerHTML =
@@ -17,13 +30,27 @@
     }
   }
 
-  function renderFindings() {
-    const findings = allData.findings || [];
-    const target   = allData.meta?.target || '';
+  // Returning via the browser's back/forward cache doesn't re-run init, so the
+  // next interval poll can be up to 5s away — refresh findings right on restore.
+  window.addEventListener('pageshow', (e) => { if (e.persisted) pollFindings(); });
+
+  // The "last updated Ns ago" freshness line. Lives in the shared #status header
+  // (above every tab panel), so it must tick on ALL tabs — not just findings.
+  // Skipped while an HIR is active so it doesn't overwrite the "Scan paused" banner.
+  function updateFreshness() {
+    if (_hirActive) return;
+    const el = document.getElementById('status');
+    if (!el) return;
+    const target = allData.meta?.target || '';
     const ago = lastOk ? Math.round((Date.now() - lastOk) / 1000) + 's ago' : '';
-    document.getElementById('status').innerHTML =
+    el.innerHTML =
       `<span class="dot"></span>Live · refreshes every 5 s · last updated ${ago}` +
       (target ? ` · <strong style="color:#c9d1d9">${target}</strong>` : '');
+  }
+
+  function renderFindings() {
+    const findings = allData.findings || [];
+    updateFreshness();
     renderStats(findings);
     renderFindingsTable(findings);
     if (_activeTab === 'topology')   renderTopology(allData.diagrams || []);
@@ -343,6 +370,7 @@
         freshIds = new Set();
         filter   = 'all';
         _logLines = [];
+        try { sessionStorage.removeItem(_FINDINGS_CACHE_KEY); } catch { /* ignore */ }
 
         // ── Status bar ───────────────────────────────────────────────────
         document.getElementById('status').innerHTML =

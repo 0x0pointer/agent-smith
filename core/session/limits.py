@@ -84,6 +84,23 @@ def charge_context(chars: int) -> None:
         _sess._flush()
 
 
+def reset_context_meter() -> None:
+    """Re-seed the context meter to the fixed resident overhead — call at the
+    compaction/recovery boundary.
+
+    ``context_chars_sent`` is otherwise monotonic (seeded once at start, only ever
+    incremented by charge_context), so on a long scan it climbs past the model's
+    real window and get_context_pressure() pegs at 1.0 (Tier-3) and STAYS there —
+    the agent is told it's out of context for the rest of the run and stops, even
+    though the client actually compacts its window periodically. The client's
+    session(action='recovery') call IS that compaction boundary: afterwards the
+    resident context is back to the fixed overhead, so the meter must drop to match
+    and re-accumulate from there. Best-effort; never raises into the recovery path."""
+    if _sess._current is not None:
+        _sess._current["context_chars_sent"] = _fixed_context_overhead_chars()
+        _sess._flush()
+
+
 def charge_skill_context(skill_name: str) -> None:
     """SM-1: add a loaded skill's byte size to the context meter. A skill can be
     30-44 KB — on a small window that's most of the budget, and the meter must

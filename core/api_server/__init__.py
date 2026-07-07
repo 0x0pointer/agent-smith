@@ -108,7 +108,18 @@ async def _require_dashboard_token(request: Request, call_next):
             supplied = hdr[7:].strip() if hdr[:7].lower() == "bearer " else ""
             if not dashboard_auth.verify(supplied):
                 return JSONResponse({"error": "unauthorized"}, status_code=401)
-    return await call_next(request)
+    resp = await call_next(request)
+    # Force the browser to REVALIDATE dashboard assets on every load instead of
+    # serving a heuristically-cached stale copy. Without this, the un-versioned
+    # scripts (common.js / main.js / shared.js / …) and the header-less index.html
+    # get pinned in the browser cache, so a JS fix on disk never reaches the user
+    # (the recurring "findings blank for 5s / stale dashboard" bug). StaticFiles
+    # already emits ETag + Last-Modified, so "no-cache" means: store it, but
+    # revalidate first — a cheap 304 when unchanged, a fresh 200 the moment the file
+    # changes. Kills the whole stale-asset class without per-file ?v= bookkeeping.
+    if path == "/" or path.startswith("/static/") or path.endswith((".html", ".js", ".css")):
+        resp.headers["Cache-Control"] = "no-cache"
+    return resp
 
 
 # Dashboard UI: a Jinja2-rendered index.html that {% include %}s one HTML

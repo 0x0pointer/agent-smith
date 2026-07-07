@@ -234,7 +234,8 @@
   function renderMissing() {
     if (statusEl) statusEl.innerHTML = '<span class="dot" style="background:#f85149;box-shadow:0 0 6px #f85149"></span>Not found';
     root.innerHTML = `<div class="empty-placeholder">This finding was not found — it may have been cleared or archived.
-      <div style="margin-top:1rem"><a class="detail-link" href="/">&#8592; Back to all findings</a></div></div>`;
+      <div style="margin-top:1rem"><a class="detail-link" href="/"
+        onclick="if (window.history.length > 1) { window.history.back(); return false; }">&#8592; Back to all findings</a></div></div>`;
     document.title = 'Finding not found · Pentest Dashboard';
   }
 

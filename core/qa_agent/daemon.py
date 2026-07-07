@@ -48,6 +48,7 @@ from .checks_skills import (
     _check_core_skill_chain,
     _check_missing_skill,
     _check_no_spider_after_httpx,
+    _check_post_exploit_depth,
 )
 
 _log = logging.getLogger(__name__)
@@ -93,6 +94,8 @@ _CHECKS: list[tuple] = [
     (_check_no_spider_after_httpx, ("entries",)),
     (_check_core_skill_chain,      ("entries", "session_data", "coverage_data")),
     (_check_missing_skill,         ("coverage_data", "session_data")),
+    # Deep post-exploitation: RCE→shell, container escape, real lateral movement
+    (_check_post_exploit_depth,    ("session_data",)),
 ]
 
 

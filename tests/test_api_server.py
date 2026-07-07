@@ -37,6 +37,16 @@ def test_dashboard_returns_html():
     assert "text/html" in response.headers["content-type"]
 
 
+def test_html_and_static_assets_sent_no_cache():
+    """The dashboard HTML + static JS/CSS must carry Cache-Control: no-cache so the
+    browser revalidates and never serves a stale copy of an un-versioned script
+    (the recurring 'findings blank / stale dashboard' bug)."""
+    assert client.get("/").headers.get("cache-control") == "no-cache"
+    js = client.get("/static/js/common.js")
+    assert js.status_code == 200
+    assert js.headers.get("cache-control") == "no-cache"
+
+
 # ── GET /api/findings ─────────────────────────────────────────────────────────
 
 def test_api_findings_returns_json(tmp_path, monkeypatch):

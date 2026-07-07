@@ -170,14 +170,22 @@ def _concrete_next_call(target: str, tools_run: set, in_progress: list, pending_
         return f"scan(tool='nuclei', target='{target}')"
     if pending_count > 0:
         # Concrete next action so a respawned/recovered model doesn't flounder
-        # (it kept looking for in_progress work, found none, and idled). Give a
-        # specific high-value probe AND the finish-up path — never a vague nudge.
+        # (it kept looking for in_progress work, found none, and idled). Drive the
+        # MECHANIZED closers in a loop — NOT a "finish if exploitation is done" exit
+        # ramp, which is exactly what let a findings-rich run stop at ~20% coverage.
+        # Finishing comes only AFTER the pending queue is drained (or a human approves
+        # the gaps via the stuck-completion HIR).
         return (
-            f"{pending_count} cells still pending. Do ONE of these now — do NOT idle: "
-            f"(A) test a high-value endpoint: {_next_pending_probe(target)}; or "
-            "(B) if exploitation is done, FINISH — adjudicate each high/critical finding "
-            "(report(action='update_finding', data={id, adjudication:{reproducible, rationale, "
-            "artifact_id}})), then session(action='complete')."
+            f"{pending_count} cells still pending — do NOT idle and do NOT stop to summarise. "
+            f"Burn them down in a loop, cheapest first: "
+            f"(1) report(action='coverage', data={{type:'sweep', max_cells:60}}) — repeat until it "
+            f"returns no more candidates, confirming + filing each oracle-positive cell; "
+            f"(2) report(action='coverage', data={{type:'auto_crosscutting'}}) to bulk-close app-wide "
+            f"CORS / security-header / CSRF / cache cells in one call; "
+            f"(3) for what remains, {_next_pending_probe(target)} then close it via "
+            f"report(action='coverage', data={{type:'bulk_tested', updates:[...]}}). "
+            f"ONLY once pending is drained: adjudicate each high/critical finding "
+            f"(report(action='update_finding', ...)), then session(action='complete')."
         )
     return "session(action='complete', options={\"notes\": \"all testing complete\"})"
 

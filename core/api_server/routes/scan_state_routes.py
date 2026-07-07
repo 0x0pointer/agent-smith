@@ -116,6 +116,26 @@ async def api_intervention_respond(request: Request) -> JSONResponse:
         scan_session.load_from_disk(force=True)
         scan_session.resolve_intervention(choice, message)
         human_instruction = f"Human resolved HIR — choice='{choice}'" + (f": {message}" if message else "")
+
+        # Consume the operator's TERMINAL choices. resolve_intervention only RECORDS
+        # the choice and returns the scan to 'running' — so without this, ACCEPT_PARTIAL
+        # / ABORT just bounce the agent back into the same blockers and re-fire the HIR
+        # (the write-only-resolution loop). Terminal choices must actually end the scan.
+        choice_u = choice.upper().replace(" ", "_")
+        if choice_u in ("ACCEPT_PARTIAL", "FORCE_COMPLETE", "COMPLETE", "ABORT"):
+            aborted = choice_u == "ABORT"
+            scan_session.complete(
+                notes=(message or (
+                    "operator ABORT — scan stopped with current findings"
+                    if aborted else
+                    "operator ACCEPT_PARTIAL — completed with documented coverage gaps")),
+                stop_reason=("operator_abort" if aborted else "operator_accept_partial"),
+                quality_gate="failed",  # honest: distinguishes a force-complete from a clean one
+            )
+            return JSONResponse({"ok": True, "completed": True, "instruction": human_instruction})
+
+        # Non-terminal choices (CONTINUE / GUIDE / EXTEND / REDUCE_SCOPE / SKIP_CELLS):
+        # resume and let the agent act on the operator's instruction on its next call.
         steering_queue.add_directive(
             code=RESUME_REQUIRED,
             message=(

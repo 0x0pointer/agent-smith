@@ -252,6 +252,38 @@ async def _sweep_oob_ssrf(target, matrix, eps, ep_filter, max_cells, candidates)
     return note + "."
 
 
+def _sweep_auth_headers() -> dict:
+    """Auth material to RETRY a probe with when it hits 401/403 — the freshest captured
+    JWT (``Authorization: Bearer``) and/or session cookies from known_assets. Empty when
+    the scan holds no auth (an unauthenticated run stays unauthenticated)."""
+    headers: dict = {}
+    try:
+        from core import session as scan_session
+        ka = (scan_session.get() or {}).get("known_assets") or {}
+        toks = ka.get("auth_tokens") or []
+        if toks and isinstance(toks[-1], dict) and toks[-1].get("value"):
+            headers["Authorization"] = f"Bearer {toks[-1]['value']}"
+        pairs = [f"{c['name']}={c.get('value', '')}"
+                 for c in (ka.get("session_cookies") or [])
+                 if isinstance(c, dict) and c.get("name")]
+        if pairs:
+            headers["Cookie"] = "; ".join(pairs)
+    except Exception:
+        pass
+    return headers
+
+
+def _sqlmap_auth_blocked(body: str) -> bool:
+    """True when sqlmap's own output shows it never got past auth (HTTP 401/403), so a
+    'not injectable' verdict is a false negative — the payload never reached the DB
+    layer. Specific to sqlmap's HTTP-error reporting to avoid false 'inconclusive'."""
+    b = (body or "").lower()
+    return any(s in b for s in (
+        "error code (401)", "error code (403)",
+        "401 (unauthorized)", "403 (forbidden)",
+    ))
+
+
 async def _run_sweep_probe(c, ep, target):
     """Build + run the probe for one cell, store the artifact, evaluate it.
     Returns (artifact_id, verdict_dict) — or None when the probe couldn't run
@@ -269,13 +301,43 @@ async def _run_sweep_probe(c, ep, target):
         return None
     try:
         if probe["kind"] == "http":
-            resp = await http_probe(probe["url"], probe["method"])
+            base = probe.get("headers") or {}
+            resp = await http_probe(probe["url"], probe["method"], headers=base or None)
+            # Self-heal auth: a 401/403 means auth blocked the payload before it reached
+            # the code path under test — so RETRY once with the session's captured auth
+            # (Bearer token and/or session cookies from known_assets), testing the cell
+            # UNDER auth instead of recording a permanent auth-block. The sweep adds auth
+            # itself when it sees the gate, rather than leaving hundreds of cells stuck.
+            if resp.get("status") in (401, 403):
+                auth = _sweep_auth_headers()
+                if auth:
+                    healed = await http_probe(probe["url"], probe["method"], headers={**base, **auth})
+                    if healed.get("status") not in (401, 403):
+                        resp = healed
             status, body = resp.get("status", 0), resp.get("body", "")
             content = _json.dumps(resp)[:20_000]
         else:  # kali — sqlmap runs its own oracle
             from tools import kali_runner
-            body = await kali_runner.exec_command(probe["cmd"])
+            import shlex as _shlex
+            cmd = probe["cmd"]
+            # Thread session auth into sqlmap so it tests UNDER auth. Otherwise it hits
+            # 401/403, reports "not injectable", and the sweep records a FALSE
+            # tested_clean — the kali branch sets status=0, which bypasses the 401/403
+            # rejection guard that protects the http branch. Mirrors the http self-heal.
+            auth = _sweep_auth_headers()
+            if auth.get("Authorization"):
+                cmd += f" --header={_shlex.quote('Authorization: ' + auth['Authorization'])}"
+            if auth.get("Cookie"):
+                cmd += f" --cookie={_shlex.quote(auth['Cookie'])}"
+            # Bound the sub-probe: one sqlmap cell must not burn the default 600s and
+            # stall the whole sweep (the model then hand-calls sweep in a loop).
+            body = await kali_runner.exec_command(cmd, timeout=90)
             status, content = 0, body[:20_000]
+            # Never let an auth-blocked sqlmap run masquerade as tested_clean: if the
+            # output shows it never got past auth, it's inconclusive, not clean.
+            if _sqlmap_auth_blocked(body):
+                log.note(f"sweep: sqlmap on cell {c['id']} appears auth-blocked — inconclusive, not clean")
+                return None
     except Exception as exc:  # fail-soft — one dead probe never aborts the sweep
         log.note(f"sweep probe error on cell {c['id']}: {exc}")
         return None

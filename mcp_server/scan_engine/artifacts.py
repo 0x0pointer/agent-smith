@@ -42,6 +42,24 @@ def artifact_exists(artifact_id: str) -> bool:
     return (_ARTIFACTS_DIR / f"{artifact_id.strip()}.txt").exists()
 
 
+# Bounds for a SINGLE artifact retrieval, so one pull can't dominate/overflow the
+# model window (a max_chars=1_000_000 'full' pull previously returned ~1MB inline).
+_ARTIFACT_ABS_CEILING = 120_000   # never return more than ~30K tokens in one call
+_ARTIFACT_ABS_FLOOR = 20_000      # always allow at least this much
+
+
+def _artifact_ceiling() -> int:
+    """Upper clamp for one retrieval — ~30% of the model's context budget, bounded by
+    sane absolutes. Scales with the profile/window so a small-window model gets a
+    smaller cap; falls back safely when the profile can't be resolved."""
+    try:
+        from mcp_server.scan_engine.budget import get_profile
+        budget = int(get_profile().get("context_budget_chars") or 400_000)
+    except Exception:
+        budget = 400_000
+    return max(_ARTIFACT_ABS_FLOOR, min(int(budget * 0.30), _ARTIFACT_ABS_CEILING))
+
+
 def retrieve_artifact(
     artifact_id: str,
     mode: str = "summary",
@@ -66,10 +84,19 @@ def retrieve_artifact(
     raw = path.read_text(encoding="utf-8")
     total = len(raw)
 
+    # Clamp the caller-supplied max_chars to the safe, profile-scaled ceiling.
+    try:
+        requested = max(1, int(max_chars))
+    except (TypeError, ValueError):
+        requested = 4000
+    ceiling = _artifact_ceiling()
+    eff_max = min(requested, ceiling)
+    clamped = eff_max < requested
+
     if mode in ("summary", "head"):
-        content = raw[:max_chars]
+        content = raw[:eff_max]
     elif mode == "tail":
-        content = raw[-max_chars:] if total > max_chars else raw
+        content = raw[-eff_max:] if total > eff_max else raw
     elif mode == "grep":
         if not pattern:
             return json.dumps({"error": "grep mode requires a pattern"})
@@ -79,9 +106,21 @@ def retrieve_artifact(
         except re.error as e:
             return json.dumps({"error": f"Invalid regex: {e}"})
         matches = [line for line in raw.splitlines() if regex.search(line)]
-        content = "\n".join(matches)[:max_chars]
+        content = "\n".join(matches)[:eff_max]
     elif mode == "full":
-        content = raw[:max_chars]
+        if total > eff_max:
+            # Keep the START and END (where scan results usually sit) and tell the
+            # model exactly how to fetch the rest — bounded, never a silent loss.
+            head = (eff_max * 2) // 3
+            tail = eff_max - head
+            content = (
+                raw[:head]
+                + f"\n\n… [{total - eff_max} of {total} chars omitted — narrow with "
+                  "mode='grep' pattern='<term>', or mode='tail'/'head' for the ends] …\n\n"
+                + raw[-tail:]
+            )
+        else:
+            content = raw[:eff_max]
     else:
         return json.dumps({"error": f"Unknown mode: {mode}. Use: summary, head, tail, grep, full"})
 
@@ -91,6 +130,8 @@ def retrieve_artifact(
         "chars_returned": len(content),
         "total_chars": total,
         "truncated": len(content) < total,
+        "clamped": clamped,          # max_chars was capped to the safe ceiling
+        "ceiling": ceiling,
         "content": content,
     })
 

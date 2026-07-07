@@ -73,7 +73,7 @@ def classify_model(name: str) -> tuple[str | None, str]:
         if b is not None and b >= _MEDIUM_PARAM_THRESHOLD_B:
             return "medium", f"large local model '{name}' (~{b:g}B) -> medium"
         size = f" (~{b:g}B)" if b is not None else ""
-        return "small", f"local model '{name}'{size} -> small (conservative)"
+        return "medium", f"local model '{name}'{size} -> medium ('small' merged into medium)"
     return None, f"unrecognised model '{name}'"
 
 
@@ -107,10 +107,13 @@ def detect_profile(explicit: str | None = None) -> tuple[str, str]:
     # A detected window drives the profile directly, ranking ABOVE the name match.
     win = _detected_context_window()
     if win:
-        if win <= 49_152:      # ≤ ~48k tokens
-            return "small", f"detected context window {win} -> small"
+        # 'small' is merged into 'medium' on the capability axis — a small window
+        # floors at medium (advisory gates + condensed directives), never the broken
+        # small tier. The window ITSELF still scales the context budget (budget.py
+        # _window_scaled_budget), so a genuinely tiny window gets a small budget while
+        # keeping medium's gentle gate behaviour.
         if win <= 131_072:     # ≤ ~128k tokens
-            return "medium", f"detected context window {win} -> medium"
+            return "medium", f"detected context window {win} -> medium (local floor)"
         return "full", f"detected context window {win} -> full"
 
     for var in _MODEL_ENV_VARS:
@@ -121,6 +124,6 @@ def detect_profile(explicit: str | None = None) -> tuple[str, str]:
                 return profile, f"{var}={val}: {reason}"
 
     if os.environ.get("OLLAMA_HOST", "").strip():
-        return "small", "OLLAMA_HOST set (local runtime) -> small (conservative)"
+        return "medium", "OLLAMA_HOST set (local runtime) -> medium (local floor)"
 
     return "full", "no model signal -> full (default)"

@@ -183,6 +183,7 @@ from .limits import (  # noqa: E402
     check_limits,
     get_context_pressure,
     remaining,
+    reset_context_meter,
 )
 from .intervention import (  # noqa: E402
     get_intervention,
@@ -194,10 +195,12 @@ from .gates import (  # noqa: E402
     defer_gates,
     open_trigger_gate,
     pending_gates,
+    reconcile_worked_gates,
     restore_gates,
     satisfy_gate,
     set_skill,
     set_step,
+    skill_worked,
     trigger_gate,
 )
 from .assets import (  # noqa: E402

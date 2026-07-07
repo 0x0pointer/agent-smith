@@ -136,6 +136,10 @@ _phase("LOADING .env  →  mcp_server._app._load_dotenv")
 try:
     from mcp_server._app import _load_dotenv
     _load_dotenv()
+    # Mark a real server-start boundary in pentest.log (no longer emitted at import
+    # time, so tests/tooling/in-process probes don't churn phantom SESSION_STARTs).
+    from core import logger as _logger
+    _logger.log_session_boundary()
     _phase(".env loaded OK")
 except BaseException:
     _phase("FAILED during _load_dotenv")

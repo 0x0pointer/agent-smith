@@ -25,9 +25,15 @@ from mcp.server.fastmcp import Context
 
 _background_tasks: set[asyncio.Task] = set()  # keeps fire-and-forget tasks alive
 
-# Track completion attempts — after _MAX_COMPLETE_ATTEMPTS the scan escalates to HIR
+# Track completion attempts — after _MAX_COMPLETE_ATTEMPTS the scan escalates to the
+# HIR_FORCE_COMPLETE human-override valve. Kept low (4) so a genuinely-stuck scan
+# reaches a human quickly with the accept-gaps / skip-cells options, instead of the
+# agent silently giving up long before the valve (the observed failure: a findings-rich
+# run stopped at complete_attempts=2 and never escalated). The progress-aware refund
+# below means legitimate one-blocker-at-a-time fixing does NOT accumulate attempts, so
+# a low ceiling only bites truly non-progressing retries.
 _complete_attempts = 0
-_MAX_COMPLETE_ATTEMPTS = 8
+_MAX_COMPLETE_ATTEMPTS = 4
 
 # Blocker count from the previous complete() attempt. Under condensed (small/
 # medium) profiles, blockers are surfaced ONE AT A TIME, so a model legitimately

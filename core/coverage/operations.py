@@ -488,8 +488,22 @@ async def list_cells(
 
 
 async def reset() -> None:
-    """Clear the entire coverage matrix."""
+    """Clear the entire coverage matrix (archiving a non-empty one first)."""
     async with _cov._lock:
+        # Archive-before-wipe: a target-less re-init through this path previously
+        # DESTROYED a live matrix (900+ cells / findings) with no recovery. Copy any
+        # non-empty matrix to logs/ before blanking so the forensic record survives.
+        try:
+            cov_file = _cov.COVERAGE_FILE
+            existing = _cov._load()
+            if cov_file.exists() and (existing.get("matrix") or existing.get("endpoints")):
+                import shutil
+                ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+                arch_dir = cov_file.parent / "logs"
+                arch_dir.mkdir(exist_ok=True)
+                shutil.copy2(cov_file, arch_dir / f"coverage_matrix_{ts}.json")
+        except Exception:
+            pass
         _cov._save({
             "meta": {
                 "created": datetime.now(timezone.utc).isoformat(),

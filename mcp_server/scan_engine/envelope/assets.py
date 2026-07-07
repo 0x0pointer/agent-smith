@@ -58,17 +58,25 @@ _JWT_RE = __import__("re").compile(r"eyJ[A-Za-z0-9_-]{4,}\.eyJ[A-Za-z0-9_-]{4,}\
 _AUTH_PATH_HINTS = ("login", "signin", "auth", "token", "session")
 
 
-def _update_jwt_tokens(scan_session: Any, req_headers: dict, body_prev: str, url: str) -> None:
-    """Scan response body + auth-y request headers for JWT strings and persist any found."""
+def _update_jwt_tokens(scan_session: Any, req_headers: dict, body_prev: str, url: str,
+                       body_jwts: list | None = None) -> None:
+    """Scan response body + auth-y request headers for JWT strings and persist any found.
+
+    ``body_jwts`` (pre-extracted from the FULL response body by the summarizer) is
+    preferred over the truncated body_prev so a token deeper than 500 chars is still
+    captured — otherwise the sweep's auth self-heal has no token to replay."""
     from datetime import datetime, timezone
     haystack = body_prev
     for k, v in req_headers.items():
         if isinstance(v, str) and "auth" in k.lower():
             haystack += " " + v
+    found = list(body_jwts or []) + _JWT_RE.findall(haystack)
+    seen: set = set()
+    uniq = [m for m in found if not (m in seen or seen.add(m))]
     tokens = [
         {"type": "jwt", "value": m,
          "obtained_at": datetime.now(timezone.utc).isoformat(), "source_url": url}
-        for m in _JWT_RE.findall(haystack)
+        for m in uniq
     ]
     if tokens:
         scan_session.update_known_assets("auth_tokens", tokens)
@@ -86,6 +94,16 @@ def _update_credentials(
         req_data = json.loads(req_body) if req_body.lstrip().startswith("{") else None
     except Exception:
         req_data = None
+    if not isinstance(req_data, dict):
+        # Form-urlencoded login (username=x&password=y) — the classic HTML-form case
+        # the JSON-only path was silently dropping, so form-auth apps captured no creds.
+        if "=" in req_body:
+            from urllib.parse import parse_qs
+            try:
+                req_data = {k: v[0] for k, v in
+                            parse_qs(req_body, keep_blank_values=True).items() if v}
+            except Exception:
+                req_data = None
     if not isinstance(req_data, dict):
         return
     uname = req_data.get("username") or req_data.get("user") or req_data.get("email")
@@ -154,7 +172,8 @@ def _persist_http_auth_assets(scan_session: Any, evidence: dict, ctx: dict) -> N
     req_body    = ctx.get("body", "") or ""
     req_headers = ctx.get("headers") or {}
 
-    _update_jwt_tokens(scan_session, req_headers, body_prev, url)
+    _update_jwt_tokens(scan_session, req_headers, body_prev, url,
+                       body_jwts=evidence.get("jwt_hits"))
     _update_credentials(scan_session, url, method, status, req_body)
     _update_session_cookies(scan_session, evidence, url)
     _update_rate_limits(scan_session, evidence, url)

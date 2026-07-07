@@ -135,9 +135,65 @@ def set_skill(
             "reason":       reason,
             "chained_from": chained_from or None,
             "timestamp":    datetime.now(timezone.utc).isoformat(),
+            # A skill-chain gate is satisfied only once the skill has actually DONE
+            # WORK (a tool call fired while it was active), not on mere declaration —
+            # set by add_tool_called, checked by skill_worked/reconcile_worked_gates.
+            "worked":       False,
         })
     _sess._flush()
     return _sess._current
+
+
+_SUBSTANTIVE_WORK_MIN_TOOLS = 3
+
+
+def _scan_has_substantive_work() -> bool:
+    """True when THIS session has done real work — measured session-locally (so it is
+    correctly sandboxed and never reads another scan's disk files). The agent typically
+    EXPLOITS FIRST and only declares skills afterward, so 'a tool fired while this skill
+    was active' under-counts real work; a scan that ran several distinct tools and then
+    acknowledged the skill has genuinely done the work. A fresh/empty session (no tool
+    activity) still fails, so a bare declaration on an empty scan is NOT satisfied."""
+    cur = _sess._current or {}
+    ti = cur.get("tool_invocations", 0)
+    inv_count = len(ti) if isinstance(ti, (list, dict)) else (ti or 0)
+    return inv_count >= _SUBSTANTIVE_WORK_MIN_TOOLS or \
+        len(cur.get("tools_called", [])) >= _SUBSTANTIVE_WORK_MIN_TOOLS
+
+
+def skill_worked(skill_name: str) -> bool:
+    """True when ``skill_name`` was DECLARED (set_skill) AND real work was done.
+
+    Real work = a tool fired while the skill was active (the strong signal), OR the
+    scan produced substantive results (findings / addressed cells). The fallback
+    matters because the agent routinely exploits a target before formally declaring
+    the covering skills — requiring 'work while active' alone left the gates
+    permanently unsatisfiable and stalled productive scans. A bare declaration on an
+    EMPTY scan (no findings, no coverage) still does NOT satisfy — the rubber-stamp
+    is rejected."""
+    if _sess._current is None:
+        return False
+    declared = any(e.get("skill") == skill_name
+                   for e in _sess._current.get("skill_history", []))
+    if not declared:
+        return False
+    if any(e.get("skill") == skill_name and e.get("worked")
+           for e in _sess._current.get("skill_history", [])):
+        return True
+    return _scan_has_substantive_work()
+
+
+def reconcile_worked_gates() -> None:
+    """Satisfy each gate whose required skills have all done real work (see
+    skill_worked). Called at completion-evaluation time so a legitimately-worked
+    skill chain closes its gates, while a merely-declared one does not."""
+    _sess._reconcile_if_external_write()
+    if _sess._current is None:
+        return
+    for gate in _sess._current.get("gates", []):
+        for skill in gate.get("required_skills", []):
+            if skill_worked(skill) and skill not in gate.get("satisfied_skills", []):
+                satisfy_gate(gate["id"], skill)
 
 
 def set_step(step: str) -> dict | None:
@@ -150,11 +206,36 @@ def set_step(step: str) -> dict | None:
     return _sess._current
 
 
+def _mark_active_skill_worked() -> bool:
+    """Flag the current active skill's history entry as having done work. Returns True
+    if it changed anything (so the caller knows to flush)."""
+    active = _sess._current.get("skill")
+    if not active:
+        return False
+    for e in reversed(_sess._current.get("skill_history", [])):
+        if e.get("skill") == active:
+            if not e.get("worked"):
+                e["worked"] = True
+                return True
+            return False
+    return False
+
+
 def add_tool_called(tool_name: str) -> None:
-    """Persist a tool name to the tools_called list in session.json."""
+    """Persist a tool name to the tools_called list in session.json.
+
+    Also marks the ACTIVE skill as having done work (worked=True) — a tool call
+    fired while it was current — which is what lets its skill-chain gate be satisfied
+    (skill_worked/reconcile_worked_gates), rather than a bare set_skill declaration."""
     _sess._reconcile_if_external_write()
-    if _sess._current and _sess._current["status"] == "running":
-        tools = _sess._current.setdefault("tools_called", [])
-        if tool_name not in tools:
-            tools.append(tool_name)
-            _sess._flush()
+    if not (_sess._current and _sess._current["status"] == "running"):
+        return
+    tools = _sess._current.setdefault("tools_called", [])
+    changed = False
+    if tool_name not in tools:
+        tools.append(tool_name)
+        changed = True
+    if _mark_active_skill_worked():
+        changed = True
+    if changed:
+        _sess._flush()

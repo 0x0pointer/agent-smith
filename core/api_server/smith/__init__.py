@@ -26,6 +26,10 @@ from __future__ import annotations
 # object the submodules mutate via ``_smith.<name>``.
 _watchdog_last_progress: tuple | None = None
 _watchdog_no_progress_count = 0
+# Last respawn-failure reason (the child's own exit line, e.g. an out-of-usage /
+# credit / auth message) so the no-progress HIR can report the REAL cause instead
+# of the generic "agent keeps exiting without testing". Cleared on a live respawn.
+_last_spawn_failure: str = ""
 # Restart throttle for the MCP SSE self-heal — reset by tests on this facade.
 _mcp_sse_last_restart_ts: float = 0.0
 

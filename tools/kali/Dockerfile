@@ -123,14 +123,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends --fix-missing \
     && rm -rf /var/lib/apt/lists/*
 
 # Layer 7: SMB / Windows / AD
-# rpcclient is bundled inside smbclient; ldapdomaindump is pip-only
+# rpcclient is bundled inside smbclient.
 # certipy-ad — ADCS enumeration and exploitation (ESC1-ESC8)
-# bloodhound — BloodHound ingestor for AD attack path mapping
+# bloodhound.py — BloodHound ingestor for AD attack path mapping
+# ldapdomaindump / certipy-ad / bloodhound.py all live in the Kali repos now, so
+# install them from apt rather than pip. The old `pip3 install certipy-ad==5.0.4`
+# tail pulled dnspython~=2.7.0 and pip cannot uninstall the apt-managed dnspython
+# 2.8.0 (no RECORD file) → `uninstall-no-record-file` aborted the ENTIRE image
+# build — even though apt had already installed all three tools on this same line.
 RUN apt-get update && apt-get install -y --no-install-recommends --fix-missing \
     smbmap smbclient samba-common-bin impacket-scripts \
     enum4linux-ng netexec ldap-utils python3-pip \
-    && rm -rf /var/lib/apt/lists/* \
-    && pip3 install --no-cache-dir ldapdomaindump==0.9.4 certipy-ad==5.0.4 bloodhound==1.9.0 --break-system-packages
+    certipy-ad bloodhound.py python3-ldapdomaindump \
+    && rm -rf /var/lib/apt/lists/*
 
 # Layer 8: service enumeration
 # snmpwalk is bundled in the snmp package; snmp-check not available on arm64

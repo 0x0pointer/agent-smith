@@ -77,9 +77,18 @@ def _na_untooled_blocker(cells: list[dict], bypass_types: dict) -> str | None:
 
 
 def _injection_breadth_blocker(cells: list[dict], coverage_enforced: bool) -> str | None:
-    """Return a blocker if text params have sqli cells but no xss/ssti/ssrf/cmdi cells."""
+    """Return a blocker if text params have sqli cells but no xss/ssti/ssrf/cmdi cells.
+
+    'path' is deliberately EXCLUDED: the taxonomy never generates an ssrf cell for a
+    path param (core/taxonomy.py — path/integer=[sqli,idor,traversal],
+    path/string=[sqli,xss,ssti,traversal,cmdi,idor]), so demanding the full breadth
+    set for a sqli-bearing path param is structurally unsatisfiable — every complete()
+    then re-hits this wall and burns the attempt/context budget (verified deadlock on
+    'account_number'). Path params get their own idor/traversal coverage; the
+    xss/ssti/ssrf/cmdi breadth push is for query/body params, which the taxonomy
+    fans out fully."""
     _BREADTH_REQUIRED = {"xss", "ssti", "ssrf", "cmdi"}
-    _TEXT_PARAM_TYPES = {"query", "body_form", "body_json", "path", "header", "cookie"}
+    _TEXT_PARAM_TYPES = {"query", "body_form", "body_json", "header", "cookie"}
     from collections import defaultdict
     by_param: dict[tuple, set] = defaultdict(set)
     for c in cells:

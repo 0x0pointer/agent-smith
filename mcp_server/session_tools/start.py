@@ -27,6 +27,16 @@ def _start_response(cfg: dict, classification: dict, target: str, scan_mode: str
         else "Pentest (human-in-the-loop for exploitation decisions)"
     )
     first_move = _start_first_move(classification, target)
+    # Freshly minted in _do_start(); the token rides the URL *fragment* so it
+    # never hits an HTTP access log. Surface the whole link here so the operator
+    # can open the dashboard even if the agent runs report(action='dashboard')
+    # silently (the failure the operator hit: dashboard started, token never shown).
+    try:
+        from core import dashboard_auth
+        _tok = dashboard_auth.read_token()
+    except Exception:
+        _tok = None
+    dash_url = f"http://localhost:7777/#k={_tok}" if _tok else "http://localhost:7777/"
     lines = [
         "Scan started.",
         f"  Target: {target} | Depth: {cfg['depth_label']} | Mode: {mode_label} | Limits: {cost_str}/{time_str}/{call_limit_str}",
@@ -36,6 +46,13 @@ def _start_response(cfg: dict, classification: dict, target: str, scan_mode: str
         f"  Model profile: {cfg.get('model_profile', 'full')} "
         f"({cfg.get('model_profile_reason', 'default')}) — scopes context/output budgets. "
         f"Override with options={{model_profile: 'full|medium|small'}} or env SMITH_MODEL_PROFILE.",
+        "",
+        "  ┌─ DASHBOARD ─────────────────────────────────────────────────────────",
+        f"  │  {dash_url}",
+        "  │  Open in a browser to watch this scan live. The #k=… token is the",
+        "  │  dashboard key — it is REQUIRED to load data, and a new scan mints a",
+        "  │  new one. Show this link to the operator before you go silent.",
+        "  └─────────────────────────────────────────────────────────────────────",
         "",
     ]
     if scan_mode == "benchmark":
@@ -62,7 +79,8 @@ def _start_response(cfg: dict, classification: dict, target: str, scan_mode: str
     except Exception:
         pass
     lines += [
-        "EXECUTE NOW (do not ask questions, do not output text):",
+        "EXECUTE NOW (do not ask questions): first give the operator the DASHBOARD",
+        "link shown above, then continue silently from here.",
         "  report(action='dashboard', data={'port': 7777})",
         first_move if not is_resume else "  Continue from recovery state above — follow EXECUTE_NOW field.",
         "",
@@ -143,6 +161,11 @@ def _do_start(opts):
             "Respond via session(action='resume', options={choice: '...', message: '...'}) "
             "before starting a new scan."
         )
+    # Capture persisted completion progress BEFORE the reset so a same-target RESUME
+    # (e.g. after an MCP daemon restart zeroed these process-global counters) keeps its
+    # attempt/pass progress instead of silently starting the thorough passes over.
+    _prev_complete_attempts = existing.get("complete_attempts", 0) or 0
+    _prev_analysis_passes = existing.get("analysis_passes", 0) or 0
     _st._complete_attempts = 0
     _st._analysis_passes = 0
     _st._last_blocker_count = None
@@ -179,7 +202,20 @@ def _do_start(opts):
     # FastAPI middleware requires it as a bearer token on every /api/* call.
     try:
         from core import dashboard_auth
-        dashboard_auth.mint_token()
+        _tok = dashboard_auth.mint_token()
+        # Print the dashboard link (token in the URL *fragment*) to the MCP
+        # server's stderr — the operator's own console / `docker logs`. This is
+        # the one channel that does NOT depend on the agent choosing to relay the
+        # report(action='dashboard') result, which the EXECUTE-NOW block otherwise
+        # tells it to run silently. A fragment never reaches an HTTP access log
+        # (see dashboard_auth docstring); stderr is operator-facing by design.
+        import sys as _sys
+        print(
+            f"\n[agent-smith] Dashboard → http://localhost:7777/#k={_tok}\n"
+            "[agent-smith]   open in a browser; the #k=… token is required to load "
+            "scan data (a new scan mints a new token).\n",
+            file=_sys.stderr, flush=True,
+        )
     except Exception:
         pass
     # Deterministic target classification — an advisory PRIOR, never a gate. It
@@ -191,6 +227,13 @@ def _do_start(opts):
     _cur = scan_session.get()
     if _cur is not None:
         _cur["classifier"] = classification
+        # Same-target resume: restore the completion counters scan_session.start()
+        # just zeroed, so an MCP restart mid-thorough-scan doesn't lose pass progress.
+        if is_resume and (_prev_complete_attempts or _prev_analysis_passes):
+            _st._complete_attempts = _prev_complete_attempts
+            _st._analysis_passes = _prev_analysis_passes
+            _cur["complete_attempts"] = _prev_complete_attempts
+            _cur["analysis_passes"] = _prev_analysis_passes
         scan_session._flush()
     try:
         from core.adjunction.log import clear as _adj_log_clear
