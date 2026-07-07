@@ -306,11 +306,43 @@ fi
 
 echo ""
 
-printf "  Build Kali image? (~10 min - required for most skills) [Y/n]: "
+# Kali image (build) - modular: choose which tool domains to bake in.
+# core is always installed; each other domain is a --build-arg toggle.
+printf "  Build Kali image? (required for most skills) [Y/n]: "
 read -r _kali_answer || true
 if [[ "${_kali_answer:-Y}" =~ ^[Yy]$ ]]; then
+    echo ""
+    echo "  Choose Kali tool modules (core is always included). Build-time estimates"
+    echo "  are approximate and depend on your network speed:"
+    echo ""
+    echo "    core   (always)  MCP server, recon: nmap/nuclei/httpx/subfinder, wordlists  ~6 min"
+    echo "    web              web/API exploit, fuzzing, injection, JWT/OAuth, SSL, crawl  ~8 min"
+    echo "    infra            internal net, AD, credentials, service enum, pivoting       ~5 min"
+    echo "    mobile           Android/iOS reversing + Frida/objection dynamic analysis    ~4 min"
+    echo "    cloud            AWS/Azure/GCP CLIs, Prowler, ScoutSuite, trivy, kube-bench   ~7 min"
+    echo "    ai               LLM red-team: PyRIT, Garak, promptfoo (heaviest: torch)      ~12 min"
+    echo ""
+    _kali_build_args=()
+    _ask_kali_module() {  # args: name  build-arg  default(Y|N)
+        local _def="$3" _ans _hint
+        [ "$_def" = "Y" ] && _hint="Y/n" || _hint="y/N"
+        printf "    Include %-7s module? [%s]: " "$1" "$_hint"
+        read -r _ans || true
+        _ans="${_ans:-$_def}"
+        if [[ "$_ans" =~ ^[Yy]$ ]]; then
+            _kali_build_args+=(--build-arg "$2=1")
+        else
+            _kali_build_args+=(--build-arg "$2=0")
+        fi
+    }
+    _ask_kali_module web    INSTALL_WEB    Y
+    _ask_kali_module infra  INSTALL_INFRA  Y
+    _ask_kali_module mobile INSTALL_MOBILE N
+    _ask_kali_module cloud  INSTALL_CLOUD  N
+    _ask_kali_module ai     INSTALL_AI     N
+    echo ""
     echo "  Building pentest-agent/kali-mcp (this may take a while)..."
-    if docker build -t pentest-agent/kali-mcp "$REPO_DIR/tools/kali/" 2>&1 | tail -5; then
+    if docker build "${_kali_build_args[@]}" -t pentest-agent/kali-mcp "$REPO_DIR/tools/kali/" 2>&1 | tail -5; then
         ok "Kali image built: pentest-agent/kali-mcp"
     else
         warn "Kali build failed - run manually: docker build -t pentest-agent/kali-mcp $REPO_DIR/tools/kali/"

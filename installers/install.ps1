@@ -258,6 +258,14 @@ function Confirm-Yes {
     return ($ans -eq '' -or $ans -match '^[Yy]')
 }
 
+function Confirm-Default {
+    param([string]$Prompt, [bool]$Default = $true)
+    $hint = if ($Default) { '[Y/n]' } else { '[y/N]' }
+    $ans = Read-Host "$Prompt $hint"
+    if ($ans -eq '') { return $Default }
+    return ($ans -match '^[Yy]')
+}
+
 # Lightweight scanner images — pulled, not built
 $ScannerImages = @(
     'instrumentisto/nmap'
@@ -284,9 +292,31 @@ if (Confirm-Yes '  Pull lightweight scanner images? (~2 min)') {
 
 Write-Host ''
 $KaliCtx = Join-Path $RepoDir 'tools\kali\'
-if (Confirm-Yes '  Build Kali image? (~10 min — required for most skills)') {
+if (Confirm-Yes '  Build Kali image? (required for most skills)') {
+    Write-Host ''
+    Write-Host '  Choose Kali tool modules (core is always included). Build-time'
+    Write-Host '  estimates are approximate and depend on your network speed:'
+    Write-Host ''
+    Write-Host '    core   (always)  MCP server, recon: nmap/nuclei/httpx/subfinder    ~6 min'
+    Write-Host '    web              web/API exploit, fuzzing, injection, JWT, SSL      ~8 min'
+    Write-Host '    infra            internal net, AD, credentials, service enum, pivot ~5 min'
+    Write-Host '    mobile           Android/iOS reversing + Frida dynamic analysis     ~4 min'
+    Write-Host '    cloud            AWS/Azure/GCP CLIs, Prowler, ScoutSuite, trivy      ~7 min'
+    Write-Host '    ai               LLM red-team: PyRIT, Garak, promptfoo (heaviest)   ~12 min'
+    Write-Host ''
+    $kaliArgs = @()
+    foreach ($m in @(
+        @{ Name = 'web';    Arg = 'INSTALL_WEB';    Def = $true  },
+        @{ Name = 'infra';  Arg = 'INSTALL_INFRA';  Def = $true  },
+        @{ Name = 'mobile'; Arg = 'INSTALL_MOBILE'; Def = $false },
+        @{ Name = 'cloud';  Arg = 'INSTALL_CLOUD';  Def = $false },
+        @{ Name = 'ai';     Arg = 'INSTALL_AI';     Def = $false }
+    )) {
+        $val = if (Confirm-Default ("    Include {0} module?" -f $m.Name) $m.Def) { '1' } else { '0' }
+        $kaliArgs += '--build-arg'; $kaliArgs += ('{0}={1}' -f $m.Arg, $val)
+    }
     Write-Host '  Building pentest-agent/kali-mcp (this may take a while)...'
-    docker build -t pentest-agent/kali-mcp $KaliCtx
+    docker build @kaliArgs -t pentest-agent/kali-mcp $KaliCtx
     if ($LASTEXITCODE -eq 0) {
         Write-Ok 'Kali image built: pentest-agent/kali-mcp'
     } else {
