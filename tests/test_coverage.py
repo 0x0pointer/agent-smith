@@ -14,6 +14,18 @@ def _make_artifact(tool: str = "sqlmap") -> str:
     return artifact_id
 
 
+def _seed_findings(monkeypatch, tmp_path, *ids: str):
+    """Register findings with the given ids so a 'vulnerable' cell closure resolves.
+    _validate_finding_link now rejects a finding_id that doesn't exist on record."""
+    import core.findings
+    path = tmp_path / "findings.json"
+    path.write_text(json.dumps(
+        {"findings": [{"id": i, "title": i, "severity": "high"} for i in ids]}
+    ))
+    monkeypatch.setattr(core.findings, "FINDINGS_FILE", path)
+    return path
+
+
 # ---------------------------------------------------------------------------
 # add_endpoint
 # ---------------------------------------------------------------------------
@@ -184,7 +196,8 @@ async def test_update_cell_warns_on_skip_in_progress(coverage_file):
 
 
 @pytest.mark.asyncio
-async def test_update_cell_vulnerable_with_finding(coverage_file):
+async def test_update_cell_vulnerable_with_finding(coverage_file, tmp_path, monkeypatch):
+    _seed_findings(monkeypatch, tmp_path, "finding-123")
     await core.coverage.add_endpoint(
         path="/login", method="POST",
         params=[{"name": "user", "type": "body_form", "value_hint": ""}],
@@ -202,6 +215,35 @@ async def test_update_cell_vulnerable_with_finding(coverage_file):
     assert ok is True
     data = json.loads(coverage_file.read_text())
     assert data["meta"]["vulnerable"] == 1
+
+
+@pytest.mark.asyncio
+async def test_vulnerable_rejected_when_finding_id_does_not_resolve(coverage_file, tmp_path, monkeypatch):
+    """A vulnerable closure whose finding_id matches no finding on record is REJECTED —
+    catches the transcribed-wrong UUID / literal 'auto' placeholder that left 22 dead
+    links on the VulnBank run. The cell must stay unclosed."""
+    _seed_findings(monkeypatch, tmp_path, "05f2130f-real-finding")
+    await core.coverage.add_endpoint(
+        path="/x", method="POST",
+        params=[{"name": "user", "type": "body_form", "value_hint": ""}],
+    )
+    data = json.loads(coverage_file.read_text())
+    cell = next(c for c in data["matrix"] if c["injection_type"] == "sqli")
+    await core.coverage.update_cell(cell["id"], "in_progress")
+    # 'auto' placeholder → rejected
+    res = await core.coverage.update_cell(
+        cell["id"], "vulnerable", finding_id="auto", artifact_id=_make_artifact("sqlmap"),
+    )
+    assert isinstance(res, str) and "does not resolve" in res
+    # a UUID-suffix transcription mismatch → rejected, and the message hints the real id
+    res2 = await core.coverage.update_cell(
+        cell["id"], "vulnerable", finding_id="05f2130f-WRONG-suffix",
+        artifact_id=_make_artifact("sqlmap"),
+    )
+    assert "does not resolve" in res2 and "05f2130f-real-finding" in res2
+    # cell never closed
+    data = json.loads(coverage_file.read_text())
+    assert data["meta"]["vulnerable"] == 0
 
 
 @pytest.mark.asyncio
@@ -399,7 +441,8 @@ async def test_get_matrix_returns_current_state(coverage_file):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_meta_counters_accurate(coverage_file):
+async def test_meta_counters_accurate(coverage_file, tmp_path, monkeypatch):
+    _seed_findings(monkeypatch, tmp_path, "finding-1")
     await core.coverage.add_endpoint(
         path="/test", method="GET",
         params=[{"name": "id", "type": "path", "value_hint": "integer"}],
@@ -995,10 +1038,11 @@ def test_parse_artifact_headers():
 
 
 @pytest.mark.asyncio
-async def test_bulk_update_allows_appwide_csrf_share_one_artifact(coverage_file):
+async def test_bulk_update_allows_appwide_csrf_share_one_artifact(coverage_file, tmp_path, monkeypatch):
     """csrf is now a response-property type exempt from the reuse cap — one
     app-wide artifact may close many csrf cells (the cap still blocks injection
     types). Without the exemption the 3rd csrf cell would be rejected."""
+    _seed_findings(monkeypatch, tmp_path, "F1")
     for p in ("/a", "/b", "/c"):
         await core.coverage.add_endpoint(
             path=p, method="POST",

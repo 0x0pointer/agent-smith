@@ -165,7 +165,9 @@ from .persistence import (  # noqa: E402
     _reconcile_if_external_write,
     _refresh_smith_pid_if_stale,
     get_scan_client,
+    get_smith_session_id,
     set_smith_proc,
+    set_smith_session_id,
 )
 from .lifecycle import (  # noqa: E402
     complete,

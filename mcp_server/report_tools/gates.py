@@ -13,6 +13,7 @@ from ._common import (
     _INTERNAL_NET_KEYWORDS,
     _K8S_KEYWORDS,
     _RCE_KEYWORDS,
+    _RCE_EQUIVALENT_MARKERS,
     _SPECULATION_MARKERS,
 )
 
@@ -51,6 +52,12 @@ def _maybe_trigger_rce_gate(text: str, title: str, severity: str, speculative: b
     if not (severity in ("critical", "high")
             and any(kw in text for kw in _RCE_KEYWORDS)
             and not speculative):
+        return []
+    # An "RCE-equivalent" / "shell is redundant" finding is application-layer takeover,
+    # NOT confirmed host code execution. Opening the host-escalation gate on it just lets
+    # the same rationalization ("a shell would add nothing") satisfy the gate — the exact
+    # rubber-stamp seen on VulnBank. Require a genuine host-exec claim, not an equivalence.
+    if any(m in text for m in _RCE_EQUIVALENT_MARKERS):
         return []
     triggered: list[str] = []
     scan_session.trigger_gate(

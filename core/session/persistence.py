@@ -67,6 +67,31 @@ def get_scan_client() -> str | None:
     return None
 
 
+def get_smith_session_id() -> str | None:
+    """The scan agent's OWN recorded claude session id, or None if none minted yet.
+
+    Set by core.api_server._spawn_smith when it cold-starts a claude child with an
+    explicit ``--session-id``; a later respawn resumes exactly that session. Stored in a
+    dedicated top-level field (NOT smith_proc, which is rewritten every spawn) so it
+    survives across respawns. This is what lets a claude respawn resume the SCAN's own
+    session instead of scanning ~/.claude/projects and possibly grabbing the operator's
+    unrelated interactive Claude Code conversation."""
+    if not _sess._current:
+        return None
+    sid = _sess._current.get("smith_claude_session_id")
+    return sid if isinstance(sid, str) and sid else None
+
+
+def set_smith_session_id(session_id: str) -> None:
+    """Record the scan agent's claude session id so respawns resume THAT session.
+    Idempotent and safe to call repeatedly; no-op when no session is loaded."""
+    _sess._reconcile_if_external_write()
+    if not _sess._current:
+        return
+    _sess._current["smith_claude_session_id"] = str(session_id)
+    _sess._flush()
+
+
 def _flush() -> None:
     if _sess._current:
         _store.save(_sess._SESSION_FILE, _sess._current)

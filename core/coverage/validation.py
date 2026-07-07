@@ -210,31 +210,66 @@ _AUTH_GATED_TYPES = _tax.AUTH_GATED_TYPES
 # Default severity inferred from injection_type when Smith doesn't file a
 # finding. These are reasonable defaults — Smith can later upgrade via
 # report(action='update_finding').
+def _finding_ids_on_disk() -> set[str] | None:
+    """Set of finding ids currently on record, or None if they can't be read.
+
+    None means "can't verify" — callers must FAIL OPEN (never block a legitimate
+    closure on a transient read error), matching how _validate_artifact treats an
+    oversized/unparseable artifact."""
+    try:
+        from core import findings as _f
+        data = _f._load()
+        return {
+            f.get("id") for f in data.get("findings", [])
+            if isinstance(f, dict) and f.get("id")
+        }
+    except Exception:
+        return None
+
+
 def _validate_finding_link(status: str, finding_id: str | None) -> str:
-    """Reject closing a cell as 'vulnerable' without a finding_id.
+    """Reject closing a cell as 'vulnerable' unless finding_id resolves to a REAL finding.
 
-    Replaces the old auto-file path: instead of creating a finding on
-    Smith's behalf (which produced per-cell-granularity duplicates for
-    app-wide misconfigs like security_headers/cors/rate_limit — 33×
-    inflation observed), force Smith to call report(action='finding')
-    first and pass the returned id back here.
+    Two failure modes this catches, both seen on the VulnBank run:
+      1. No finding_id at all — the old auto-file path created per-cell duplicates for
+         app-wide misconfigs (33× inflation), so Smith must file the finding first.
+      2. A finding_id that does NOT resolve — 22 vulnerable cells carried a UUID that
+         matched no finding (a transcribed-wrong suffix, or the literal placeholder
+         'auto'). The cell then claims a proven vuln whose link is dead, misleading any
+         auditor who follows it. Require the EXACT id report(action='finding') returned.
 
-    Tested_clean / not_applicable / skipped cells don't trigger this —
-    only vulnerable closures. If finding_id is already populated (Smith
-    is updating notes on an existing link), pass through unchanged.
+    Only vulnerable closures trigger this (tested_clean / N/A / skipped don't). Fails open
+    if findings can't be read, so a transient store error never blocks a real closure.
     """
     if status != "vulnerable":
         return ""
-    if finding_id and finding_id.strip():
-        return ""
+    if not (finding_id and finding_id.strip()):
+        return (
+            "REJECTED: closing a cell as 'vulnerable' requires a finding_id. "
+            "First call report(action='finding', data={title, severity, target, "
+            "description, evidence, tool_used, ...}) — capture the returned 'id' "
+            "from that response — then pass it back here as finding_id alongside "
+            "the artifact_id. This avoids creating duplicate findings for app-wide "
+            "misconfigs and keeps the finding/cell linkage honest. "
+            "Cell status will remain in_progress until the link exists."
+        )
+    fid = finding_id.strip()
+    known = _finding_ids_on_disk()
+    if known is None or fid in known:
+        return ""  # resolves, or can't verify → fail open
+    prefix = fid[:8]
+    near = sorted(k for k in known if isinstance(k, str) and k[:8] == prefix and k != fid)
+    hint = (
+        f" A real finding shares the 8-char prefix '{prefix}' ({near[0]}) — you likely "
+        f"transcribed the UUID suffix wrong; use that exact id."
+        if near else
+        " Call report(action='finding', ...) and pass back the EXACT 'id' it returns "
+        "(not a prefix, not 'auto', not a hand-typed UUID)."
+    )
     return (
-        "REJECTED: closing a cell as 'vulnerable' requires a finding_id. "
-        "First call report(action='finding', data={title, severity, target, "
-        "description, evidence, tool_used, ...}) — capture the returned 'id' "
-        "from that response — then pass it back here as finding_id alongside "
-        "the artifact_id. This avoids creating duplicate findings for app-wide "
-        "misconfigs and keeps the finding/cell linkage honest. "
-        "Cell status will remain in_progress until the link exists."
+        f"REJECTED: finding_id '{fid}' does not resolve to any finding on record. "
+        "A vulnerable cell must link to a REAL finding." + hint +
+        " Cell status remains in_progress until the link resolves."
     )
 
 
