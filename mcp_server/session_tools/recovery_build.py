@@ -29,11 +29,11 @@ def _recovery_auth_context(known_assets: dict) -> dict:
     auth_eps = known_assets.get("auth_endpoints", [])
     ctx: dict = {}
     if creds:
-        ctx["credentials"] = creds[-5:]          # most recent 5
+        ctx["credentials"] = creds[-3:]          # most recent 3
     if tokens:
-        ctx["jwt_tokens"] = tokens[-3:]          # most recent 3, keep brief compact
+        ctx["jwt_tokens"] = tokens[-2:]          # latest usable + one fallback (JWTs are big)
     if auth_eps:
-        ctx["login_endpoints"] = auth_eps[:3]
+        ctx["login_endpoints"] = auth_eps[:2]
     if ctx:
         ctx["how_to_use"] = (
             "When an endpoint returns 401/403, send the JWT as 'Authorization: Bearer <value>'. "
@@ -80,11 +80,25 @@ def _build_recovery_result(
     if iter_status:
         result["iteration_progress"] = iter_status
 
-    # Include known assets summary
+    # Known-assets SUMMARY — counts for every type + a small sample of non-secret lists.
+    # Previously this re-dumped v[:10] of EVERY asset type, incl. up to 10 full JWTs and
+    # 10 credentials — redundant with auth_context above and ~5-9KB per brief. Since the
+    # recovery brief is re-injected after every compaction, that bloat was the dominant
+    # driver of the ~6-min compaction thrash (context refills → compact → brief → repeat).
+    # Full creds/tokens live in auth_context; here we give counts + trimmed samples.
     known_assets = current.get("known_assets", {})
-    compact_assets = {k: v[:10] for k, v in known_assets.items() if v}
-    if compact_assets:
-        result["known_assets"] = compact_assets
+    asset_summary: dict = {}
+    for k, v in known_assets.items():
+        if not v:
+            continue
+        if k in ("credentials", "auth_tokens"):
+            asset_summary[k] = f"{len(v)} on record (usable ones in auth_context)"
+        elif isinstance(v, list):
+            asset_summary[k] = {"count": len(v), "sample": v[:3]} if len(v) > 3 else v
+        else:
+            asset_summary[k] = v
+    if asset_summary:
+        result["known_assets"] = asset_summary
 
     # Include recent tool invocations for context
     invocations = current.get("tool_invocations", [])
