@@ -59,3 +59,5 @@ pentest_metrics.jsonl
 # AS-REPUD detached signatures (never commit)
 *.sig
 SECURITY-REVIEW.md
+analysis/
+run_2/

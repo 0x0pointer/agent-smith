@@ -9,7 +9,7 @@ let _wmCy = null;               // cytoscape instance
 let _wmSig = null;              // element-set signature — rebuild only on change
 let _wmHiddenKinds = new Set(); // legend toggles
 let _wmBridges = false;         // "◆ Bridges" highlight mode
-let _wmLayout = 'tree';         // 'tree' | 'radial' | 'force'
+let _wmLayout = 'force';        // 'tree' | 'radial' | 'force' — Force is the default
 
 function wmEsc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, c =>
@@ -103,7 +103,10 @@ const WM_EDGE = {
   requires:     { color: '#ff7b3d', style: 'dashed', width: 3 },
   leaks:        { color: '#e3b341', style: 'solid',  width: 2 },
   escalates_to: { color: '#f85149', style: 'solid',  width: 2 },
-  found_on:     { color: '#3d444d', style: 'solid',  width: 1 },
+  // found_on is the PRIMARY structural link (finding -> the param/endpoint it was found
+  // on) — it was near-invisible (#3d444d/1px), which made findings look detached. Give it
+  // a visible mid-tone so every vulnerability reads as anchored to its component.
+  found_on:     { color: '#8b7bd8', style: 'solid',  width: 1.6 },
   // Pivot / discovery (magenta) — a finding on host A reached/discovered host B (SSRF,
   // XXE/file-leak, lateral cred-reuse, config leak). This is the edge that LINKS two
   // otherwise-separate host circles.
@@ -177,9 +180,10 @@ function wmRunLayout(animate) {
   if (!_wmCy) return null;
   if (_wmLayout === 'force') {
     return _wmCy.layout({
-      name: 'cose', animate: !!animate, animationDuration: 500, randomize: false,
-      nodeRepulsion: 9000, idealEdgeLength: 78, edgeElasticity: 120, gravity: 0.6,
-      padding: 24, nodeDimensionsIncludeLabels: true,
+      name: 'cose', animate: !!animate, animationDuration: 600, randomize: false,
+      nodeRepulsion: 17000, idealEdgeLength: 115, edgeElasticity: 100, gravity: 0.32,
+      nestingFactor: 1.1, componentSpacing: 130, numIter: 1300, nodeOverlap: 24,
+      padding: 30, nodeDimensionsIncludeLabels: true,
     });
   }
   if (_wmLayout === 'radial') {
@@ -192,12 +196,17 @@ function wmRunLayout(animate) {
   // → endpoints → params → findings fanning right). Undirected BFS so the semantic
   // arrow direction (finding --found_on--> endpoint) doesn't invert the tiers; the
   // x/y-swap transform turns cytoscape's top-down tree into a left-to-right fan.
-  const roots = _wmCy.nodes('[kind="host"]');
+  // Root on REAL target hosts only (not pivot-discovered ones) so the hierarchy reads
+  // host → endpoints → params → findings, with discovered hosts hanging as leaves off the
+  // finding that reached them. The x/y-swap transform turns cytoscape's top-down tree into
+  // a left-to-right horizontal fan.
+  let roots = _wmCy.nodes('[kind="host"][disc = 0]');
+  if (!roots.length) roots = _wmCy.nodes('[kind="host"]');
   const opts = {
     name: 'breadthfirst', directed: false, animate: !!animate, animationDuration: 450,
-    spacingFactor: 1.1, padding: 26, avoidOverlap: true, circle: false, grid: false,
+    spacingFactor: 1.35, padding: 30, avoidOverlap: true, circle: false, grid: false,
     nodeDimensionsIncludeLabels: true,
-    transform: (node, pos) => ({ x: pos.y, y: pos.x }),
+    transform: (node, pos) => ({ x: pos.y, y: pos.x }),   // top-down -> left-to-right
   };
   if (roots && roots.length) opts.roots = roots;
   return _wmCy.layout(opts);
@@ -242,35 +251,42 @@ function wmRadialPositions(cy) {
 }
 
 // Lay one connected component inside a circular region centred at (rx, ry).
+const WM_MIN_ARC = 48;   // min arc length between neighbours in a ring — keeps radial readable
+
 function wmLayoutComponent(comp, rx, ry, R, pos) {
-  const hosts = comp.filter('[kind="host"]');
-  const nH = hosts.length;
+  // Real target hosts are the circle CENTRES; pivot-discovered hosts (disc=1) are NOT
+  // centres — they ring out as leaves near the finding that reached them, like findings.
+  let centers = comp.filter('[kind="host"][disc = 0]');
+  if (!centers.length) centers = comp.filter('[kind="host"]');
+  const nH = centers.length;
   if (nH === 0) {                        // hostless island — ring its nodes round the centre
     const ns = comp.nodes();
+    const rad = Math.max(R * 0.5, (ns.length * WM_MIN_ARC) / (2 * Math.PI));
     ns.forEach((n, i) => {
       const a = (2 * Math.PI * i) / (ns.length || 1);
-      pos[n.id()] = { x: rx + R * 0.5 * Math.cos(a), y: ry + R * 0.5 * Math.sin(a) };
+      pos[n.id()] = { x: rx + rad * Math.cos(a), y: ry + rad * Math.sin(a) };
     });
     return;
   }
-  // One host sits at the region centre; several pivot-linked hosts share a small inner
-  // ring so their REACHES links stay short and the linkage reads at a glance.
-  const hostR = nH > 1 ? R * 0.36 : 0;
-  const ringGap = nH > 1 ? R * 0.16 : R / 3.2;
+  // One host at the region centre; several pivot-linked hosts share a small inner ring so
+  // their REACHES links stay short and the linkage reads at a glance.
+  const centerIds = new Set(centers.map(h => h.id()));
+  const hostR = nH > 1 ? R * 0.4 : 0;
+  const ringGap = nH > 1 ? R * 0.17 : R / 3;
   const center = {};
-  hosts.forEach((h, i) => {
+  centers.forEach((h, i) => {
     const a = (2 * Math.PI * i) / nH - Math.PI / 2;
     const c = { x: rx + hostR * Math.cos(a), y: ry + hostR * Math.sin(a), a };
     center[h.id()] = c;
     pos[h.id()] = { x: c.x, y: c.y };
   });
-  const owner = wmAssignToHosts(comp, hosts);   // each node → nearest host in this component
+  const owner = wmAssignToHosts(comp, centers);   // each node → nearest real host
   const byHostRing = {};
   comp.nodes().forEach(n => {
-    if (n.data('kind') === 'host') return;
+    if (centerIds.has(n.id())) return;            // centres placed; everything else rings out
     const hid = owner[n.id()];
     if (!hid) return;
-    const r = WM_RING_OF[n.data('kind')] ?? 3;
+    const r = WM_RING_OF[n.data('kind')] ?? 3;    // discovered-host / finding / primitive → outer
     if (!byHostRing[hid]) byHostRing[hid] = {};
     if (!byHostRing[hid][r]) byHostRing[hid][r] = [];
     byHostRing[hid][r].push(n.id());
@@ -278,8 +294,13 @@ function wmLayoutComponent(comp, rx, ry, R, pos) {
   Object.keys(byHostRing).forEach(hid => {
     const hc = center[hid];
     if (!hc) return;
-    Object.keys(byHostRing[hid]).forEach(r => {
-      const ids = byHostRing[hid][r], radius = Number(r) * ringGap;
+    let prevOuter = 0;
+    Object.keys(byHostRing[hid]).map(Number).sort((a, b) => a - b).forEach(r => {
+      const ids = byHostRing[hid][r];
+      // expand crowded rings (min arc between neighbours) and keep rings from colliding
+      const radius = Math.max(r * ringGap, (ids.length * WM_MIN_ARC) / (2 * Math.PI),
+                              prevOuter + ringGap * 0.9);
+      prevOuter = radius;
       ids.forEach((id, i) => {
         const ang = (2 * Math.PI * i) / ids.length + hc.a;
         pos[id] = { x: hc.x + radius * Math.cos(ang), y: hc.y + radius * Math.sin(ang) };
@@ -413,7 +434,12 @@ function wmApplyBridges() {
   if (!_wmCy) return;
   const bridges = _wmCy.edges('[kind="provides"], [kind="requires"]');
   const prims = _wmCy.nodes('[kind="primitive"]');
-  const keep = bridges.union(bridges.connectedNodes()).union(prims);
+  const findings = bridges.connectedNodes('[kind="finding"]');
+  // Keep each bridge finding's found_on edge + the endpoint it sits on, so a bridge reads
+  // as endpoint → finding → primitive rather than a pair of floating nodes.
+  const context = findings.connectedEdges('[kind="found_on"]');
+  const keep = bridges.union(bridges.connectedNodes()).union(prims)
+                      .union(context).union(context.connectedNodes());
   _wmCy.elements().addClass('wm-dim').removeClass('wm-hi wm-bridge');
   keep.removeClass('wm-dim');
   bridges.addClass('wm-bridge');

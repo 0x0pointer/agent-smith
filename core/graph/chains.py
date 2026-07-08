@@ -34,6 +34,7 @@ def _chains_from_escalation_leads(g: m.Graph, findings: list) -> list[dict]:
                     "terminal": lead,
                     "combined_severity": f.attrs.get("severity", "medium"),
                     "rationale": f"'{f.label}' has an unproven escalation lead — follow it to terminal impact.",
+                    "finding_ids": [f.id.split(":", 1)[1]],
                     "_score": _sev(f) + 1,
                 })
     return props
@@ -60,6 +61,7 @@ def _chains_from_cred_leaks(g: m.Graph, findings: list) -> list[dict]:
                                          key=lambda s: _SEV_RANK.get(s, 0)),
                 "rationale": f"'{lk.label}' leaks credential material on the same host as "
                              f"'{other.label}' — chain the leak into authenticated access.",
+                "finding_ids": [lk.id.split(":", 1)[1], other.id.split(":", 1)[1]],
                 "_score": _sev(lk) + _sev(other),
             })
     return props
@@ -80,6 +82,7 @@ def _chains_from_creds_plus_finding(g: m.Graph, findings: list) -> list[dict]:
                 "combined_severity": f.attrs.get("severity", "high"),
                 "rationale": f"'{f.label}' is high-severity and {len(creds)} principal(s) are "
                              "known — test cross-account/lateral reach.",
+                "finding_ids": [f.id.split(":", 1)[1]],
                 "_score": _sev(f),
             })
     return props
@@ -130,6 +133,7 @@ def _chains_from_primitive_bridge(g: m.Graph) -> list[dict]:
             "kind": "primitive_unblock",
             "provider_id": provider.id.replace("finding:", "", 1),
             "blocked_id": blocked.id.replace("finding:", "", 1),
+            "finding_ids": [provider.id.split(":", 1)[1], blocked.id.split(":", 1)[1]],
             "primitive": primn.label,
             "_score": _sev(provider) + _sev(blocked) + 2,  # +2: an exact-primitive match beats co-location noise
         })
@@ -137,11 +141,17 @@ def _chains_from_primitive_bridge(g: m.Graph) -> list[dict]:
     return props[:20]  # cap the rule's own output
 
 
-def candidate_chains(g: m.Graph) -> list[dict]:
+def candidate_chains(g: m.Graph, proven_fids: set | None = None) -> list[dict]:
     """Propose multi-step chains from the graph. Each proposal:
-    ``{steps: [str], terminal: str, combined_severity: str, rationale: str}``.
-    Ranked most-promising first. Heuristic and conservative — a proposal is a
-    lead to prove, not a claim."""
+    ``{steps: [str], terminal: str, combined_severity: str, rationale: str,
+    finding_ids: [str]}``. Ranked most-promising first. Heuristic and conservative —
+    a proposal is a lead to prove, not a claim.
+
+    ``proven_fids`` (optional): the set of finding-ids ALREADY worked into a proven/filed
+    ``report(action='chain')``. A proposal every one of whose findings is already chained
+    is DROPPED (the re-pairing of two done findings is not new work) — so this panel is a
+    live worklist that drains toward empty as chains get proven, instead of re-suggesting
+    compositions already realized. A proposal that reaches a NOT-yet-chained finding stays."""
     findings = g.of_kind(m.FINDING)
     props = (_chains_from_escalation_leads(g, findings)
              + _chains_from_cred_leaks(g, findings)
@@ -149,11 +159,16 @@ def candidate_chains(g: m.Graph) -> list[dict]:
              + _chains_from_primitive_bridge(g))
 
     props.sort(key=lambda p: p.pop("_score", 0), reverse=True)
-    # de-dup identical step sequences
+    proven = proven_fids or set()
+    # de-dup identical step sequences; drop proposals whose findings are all already chained
     seen, out = set(), []
     for p in props:
         key = tuple(p["steps"])
-        if key not in seen:
-            seen.add(key)
-            out.append(p)
+        if key in seen:
+            continue
+        fids = frozenset(p.get("finding_ids") or [])
+        if proven and fids and fids <= proven:
+            continue
+        seen.add(key)
+        out.append(p)
     return out
