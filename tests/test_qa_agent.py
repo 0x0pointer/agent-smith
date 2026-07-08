@@ -1571,6 +1571,55 @@ def test_auth_failure_escalates_to_hir_after_reauth_attempt():
         mock_trigger.assert_called_once()
 
 
+def _sqli_finding(**kw):
+    f = {"title": "Error-based SQL injection in /txn account param", "severity": "critical",
+         "description": "PostgreSQL error-based SQLi dumps the users table."}
+    f.update(kw)
+    return f
+
+
+def test_sqli_escalation_fires_when_unescalated(monkeypatch):
+    import core.qa_agent as _qa
+    from core.qa_agent import _check_sqli_privilege_escalation
+    monkeypatch.setattr(_qa, "_has_pending_directives", lambda: True)  # suppress directive side-effect
+    alert = _check_sqli_privilege_escalation({"findings": [_sqli_finding()]})
+    assert alert and alert["code"] == "SQLI_UNESCALATED" and alert["blocking"] is True
+
+
+def test_sqli_escalation_postgres_hint_is_copy_from_program(monkeypatch):
+    import core.qa_agent as _qa
+    from core.qa_agent import _check_sqli_privilege_escalation
+    calls = []
+    monkeypatch.setattr(_qa, "_has_pending_directives", lambda: False)
+    import core.steering as steering
+    monkeypatch.setattr(steering.steering_queue, "add_directive", lambda **kw: calls.append(kw))
+    _check_sqli_privilege_escalation({"findings": [_sqli_finding()]})
+    assert calls and "FROM PROGRAM" in calls[0]["message"] and calls[0]["trigger"] == "SQLI_UNESCALATED"
+
+
+def test_sqli_escalation_clears_only_at_rce_not_file_read(monkeypatch):
+    import core.qa_agent as _qa
+    from core.qa_agent import _check_sqli_privilege_escalation
+    monkeypatch.setattr(_qa, "_has_pending_directives", lambda: True)
+    # file-read alone is a stepping stone — still fires (push to RCE).
+    fr = _sqli_finding(title="SQLi → PostgreSQL superuser → pg_read_server_file arbitrary file read")
+    assert _check_sqli_privilege_escalation({"findings": [fr]}) is not None
+    # code_exec reached (RCE) → done → clears.
+    ce = _sqli_finding(title="SQLi → PostgreSQL superuser → COPY FROM PROGRAM remote code execution")
+    assert _check_sqli_privilege_escalation({"findings": [ce]}) is None
+
+
+def test_sqli_escalation_clears_on_dismissed_lead():
+    from core.qa_agent import _check_sqli_privilege_escalation
+    f = _sqli_finding(escalation_leads=[{"lead": "role is not superuser", "status": "dismissed"}])
+    assert _check_sqli_privilege_escalation({"findings": [f]}) is None
+
+
+def test_sqli_escalation_none_without_sqli():
+    from core.qa_agent import _check_sqli_privilege_escalation
+    assert _check_sqli_privilege_escalation({"findings": [{"title": "Reflected XSS", "severity": "high"}]}) is None
+
+
 def test_auth_failure_ignores_forbidden_endpoint(monkeypatch):
     # REGRESSION: session is alive (path /ok keeps returning 2xx) while Smith hammers a
     # legitimately access-controlled endpoint (/internal/config.json, ONLY ever 403).

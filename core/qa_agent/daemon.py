@@ -24,6 +24,7 @@ from .checks_depth import (
     _check_depth_after_finding,
     _check_oob_unpolled,
     _check_premature_complete,
+    _check_sqli_privilege_escalation,
     _check_stuck_on_target,
     _check_tool_inactivity,
     _check_whitebox_passes,
@@ -86,6 +87,7 @@ _CHECKS: list[tuple] = [
     (_check_na_abuse,              ("coverage_data",)),
     # Depth enforcement
     (_check_depth_after_finding,   ("entries", "findings_data")),
+    (_check_sqli_privilege_escalation, ("findings_data",)),
     (_check_chain_correlation,     ("findings_data",)),
     (_check_composition_obligation, ("findings_data",)),
     (_check_oob_unpolled,          ("session_data",)),
