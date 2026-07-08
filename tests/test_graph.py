@@ -166,6 +166,136 @@ class TestBuildProjection:
         scan_session._current = None
 
 
+class TestDiscoveredHosts:
+    """Generic pivot linking: a host that surfaces in a finding's evidence is
+    materialized as its OWN node linked back through the finding (REACHES), so the
+    radial view shows separate circles for isolated hosts and connected circles for
+    pivots. Not SSRF-specific — any provenance signal (SSRF, XXE/file-leak, lateral
+    cred-reuse, internal/cloud DNS) links two hosts."""
+
+    def _build(self, monkeypatch, findings, known_assets=None, matrix=None):
+        import core.graph.build as gb
+        import core.session as scan_session
+        scan_session._current = {"status": "running", "target": "http://t.test",
+                                 "known_assets": known_assets or {}}
+        monkeypatch.setattr("core.findings._load", lambda: {"findings": findings})
+        monkeypatch.setattr("core.coverage.get_matrix",
+                            lambda: matrix or {"endpoints": [], "matrix": []})
+        gb.invalidate_graph_cache()
+        g = gb.build_graph()
+        scan_session._current = None
+        return g
+
+    def _reached(self, g):
+        return {g.nodes[e.dst].label: e.attrs.get("via")
+                for e in g.edges if e.kind == gm.REACHES}
+
+    def _reaches(self, g):
+        return [e for e in g.edges if e.kind == gm.REACHES]
+
+    def test_ssrf_internal_ip_links_new_host(self, monkeypatch):
+        g = self._build(monkeypatch, [{
+            "id": "f1", "title": "SSRF in fetch param", "severity": "high",
+            "target": "http://t.test/api/fetch",
+            "description": "The url param let us reach the cloud metadata service at "
+                           "169.254.169.254 and read IAM creds."}])
+        reached = self._reached(g)
+        assert "169.254.169.254" in reached and reached["169.254.169.254"] == "ssrf"
+        host = next(n for n in g.of_kind(HOST) if n.label == "169.254.169.254")
+        assert host.attrs.get("discovered") is True
+
+    def test_k8s_service_dns_via_file_leak(self, monkeypatch):
+        g = self._build(monkeypatch, [{
+            "id": "f2", "title": "Arbitrary file read", "severity": "high",
+            "target": "http://t.test/download",
+            "description": "Path traversal leaked a config naming the DB host "
+                           "postgres.default.svc.cluster.local."}])
+        reached = self._reached(g)
+        assert "postgres.default.svc.cluster.local" in reached
+        assert reached["postgres.default.svc.cluster.local"] == "file-disclosure"
+
+    def test_root_host_mention_makes_no_pivot(self, monkeypatch):
+        g = self._build(monkeypatch, [{
+            "id": "f3", "title": "XSS", "severity": "medium",
+            "target": "http://t.test/search",
+            "description": "Reflected XSS on http://t.test/search — no pivot here."}])
+        assert not [e for e in g.edges if e.kind == gm.REACHES]
+
+    def test_external_fqdn_only_linked_when_a_known_asset(self, monkeypatch):
+        # An arbitrary external hostname in prose is NOT linked...
+        g = self._build(monkeypatch, [{
+            "id": "f4", "title": "note", "severity": "low",
+            "description": "docs at api.stripe.com were referenced."}])
+        assert not [e for e in g.edges if e.kind == gm.REACHES]
+        # ...but the same hostname IS linked once the scan recorded it as an asset.
+        g2 = self._build(monkeypatch, [{
+            "id": "f5", "title": "SSRF", "severity": "high",
+            "description": "Forged a request to internal-api.corp.example reaching it."}],
+            known_assets={"hosts": [{"value": "internal-api.corp.example"}]})
+        assert "internal-api.corp.example" in self._reached(g2)
+
+    # ── Regression guards (pre-commit review) ────────────────────────────────
+    def test_dot_local_filename_is_not_a_host(self, monkeypatch):
+        # File-read/traversal findings routinely name *.local FILES — never a host.
+        g = self._build(monkeypatch, [{
+            "id": "f6", "title": "Arbitrary file read", "severity": "high",
+            "description": "Path traversal retrieved /var/www/html/wp-config.local from disk."}])
+        assert not self._reaches(g)
+
+    def test_version_number_is_not_a_host(self, monkeypatch):
+        # A 4-part tool version is structurally an IP but must NOT become a host.
+        g = self._build(monkeypatch, [{
+            "id": "f7", "title": "SQLi", "severity": "high",
+            "description": "Confirmed with sqlmap 1.7.2.1 against the id param."}])
+        assert not self._reaches(g)
+
+    def test_short_asset_not_substring_matched(self, monkeypatch):
+        # A short recorded asset ('api') must not link via substring of unrelated prose.
+        g = self._build(monkeypatch, [{
+            "id": "f8", "title": "note", "severity": "low",
+            "description": "the request was rapid and the app capitalized the token."}],
+            known_assets={"hosts": [{"value": "api"}]})
+        assert not self._reaches(g)
+
+    def test_nested_meta_host_is_one_node_one_edge(self, monkeypatch):
+        # kubernetes.default ⊂ kubernetes.default.svc ⊂ …cluster.local — one host, not three.
+        g = self._build(monkeypatch, [{
+            "id": "f9", "title": "SSRF", "severity": "high",
+            "description": "Reached kubernetes.default.svc.cluster.local from the pod."}])
+        khosts = [n for n in g.of_kind(HOST) if "kubernetes" in n.label]
+        assert len(khosts) == 1 and len(self._reaches(g)) == 1
+
+    def test_bare_and_port_forms_collapse_to_one_host(self, monkeypatch):
+        g = self._build(monkeypatch, [{
+            "id": "f10", "title": "SSRF", "severity": "high",
+            "description": "Reached 10.0.0.5 and also 10.0.0.5:8080 internally."}])
+        hosts = [n for n in g.of_kind(HOST) if n.label.startswith("10.0.0.5")]
+        assert len(hosts) == 1
+
+    def test_two_findings_same_host_reuse_node_but_each_gets_an_edge(self, monkeypatch):
+        g = self._build(monkeypatch, [
+            {"id": "f11", "title": "SSRF in fetch", "severity": "high",
+             "description": "Reached internal host 10.0.0.9."},
+            {"id": "f12", "title": "SSRF in webhook", "severity": "high",
+             "description": "Also reached 10.0.0.9 via the webhook param."}])
+        hosts = [n for n in g.of_kind(HOST) if n.label == "10.0.0.9"]
+        assert len(hosts) == 1                    # one node reused
+        assert len(self._reaches(g)) == 2         # one REACHES edge per discovering finding
+
+    def test_endpoint_host_is_not_reflagged_discovered(self, monkeypatch):
+        # A host already modelled as a real target (absolute-URL endpoint) must stay a
+        # separate real target — no REACHES, not discovered — even when a finding names it.
+        g = self._build(monkeypatch, [{
+            "id": "f13", "title": "SSRF", "severity": "high",
+            "description": "Reached 10.0.0.9 internally."}],
+            matrix={"endpoints": [{"id": "e1", "path": "http://10.0.0.9/admin",
+                                   "method": "GET", "params": [{"name": "q", "type": "query"}]}],
+                    "matrix": []})
+        assert not self._reaches(g)
+        host = next(n for n in g.of_kind(HOST) if n.label == "10.0.0.9")
+        assert not host.attrs.get("discovered")
+
+
 class TestGraphCache:
     """build_graph() is memoized on the (mtime,size) of its three store files —
     it was re-projecting all three on every QA-daemon tick and report(note)."""

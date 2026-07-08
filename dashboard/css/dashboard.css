@@ -1714,7 +1714,9 @@
     .wm-lg-off { opacity:0.4; text-decoration:line-through; }
     .wm-lg-dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
     .wm-lg b { color:var(--text); font-weight:700; }
-    .wm-graph-controls { display:flex; gap:0.35rem; }
+    .wm-graph-controls { display:flex; gap:0.35rem; align-items:center; flex-wrap:wrap; }
+    .wm-layout-group { display:inline-flex; gap:0.2rem; padding-right:0.45rem; margin-right:0.1rem;
+                       border-right:1px solid var(--border-subtle); }
     .wm-btn { font-family:var(--font-mono); font-size:0.66rem; color:var(--text-muted); cursor:pointer;
               background:var(--bg-deep); border:1px solid var(--border-subtle); border-radius:6px;
               padding:0.26rem 0.6rem; transition:border-color .12s, color .12s, background .12s; }
