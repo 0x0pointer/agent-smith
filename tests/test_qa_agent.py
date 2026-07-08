@@ -1571,6 +1571,36 @@ def test_auth_failure_escalates_to_hir_after_reauth_attempt():
         mock_trigger.assert_called_once()
 
 
+def test_auth_failure_ignores_forbidden_endpoint(monkeypatch):
+    # REGRESSION: session is alive (path /ok keeps returning 2xx) while Smith hammers a
+    # legitimately access-controlled endpoint (/internal/config.json, ONLY ever 403).
+    # Those 403s are authz, not session expiry — must NOT fire (previously false-positived
+    # into HIR_AUTH_FAILURE, the /internal/config.json miss).
+    import core.qa_agent as _qa
+    monkeypatch.setattr(_qa, "_has_pending_directives", lambda: False)
+    entries = (
+        [_http_entry(status_code=200, target="https://t/ok")] * 4 +
+        [_http_entry(status_code=403, target="https://t/internal/config.json")] * 6
+    )
+    # even after a prior reauth steer, a forbidden endpoint must not escalate to a human
+    assert _check_auth_failure(entries, {"known_assets": {}}, [{"code": "AUTH_REAUTH"}]) is None
+
+
+def test_auth_failure_fires_on_degraded_authed_path(monkeypatch):
+    # A path that authed earlier (2xx) then degrades to 401 IS session expiry → still fires.
+    import core.qa_agent as _qa
+    monkeypatch.setattr(_qa, "_has_pending_directives", lambda: False)
+    import core.steering as steering
+    monkeypatch.setattr(steering.steering_queue, "add_directive", lambda **kw: None)
+    entries = (
+        [_http_entry(status_code=200, target="https://t/ok")] * 3 +
+        [_http_entry(status_code=401, target="https://t/ok")] * 7
+    )
+    with patch("core.session.trigger_intervention"):
+        alert = _check_auth_failure(entries, {"known_assets": {}}, [])
+    assert alert and alert["code"] == "AUTH_REAUTH"
+
+
 def test_auth_failure_403_first_detection_steers(monkeypatch):
     import core.qa_agent as _qa
     monkeypatch.setattr(_qa, "_has_pending_directives", lambda: True)  # skip add_directive side effect
