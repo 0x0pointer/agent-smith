@@ -20,28 +20,6 @@ def _persist_completion_counters() -> dict:
     return current
 
 
-def _apply_thorough_depth_gate(blockers: list, current: dict) -> list:
-    """Increment analysis pass counter when quality-clean and append iteration blocker if needed.
-
-    Returns the (possibly appended) blockers list.
-    """
-    depth = (scan_session.get() or {}).get("depth", "")
-    if blockers or depth != "thorough":
-        return blockers
-    _st._analysis_passes += 1
-    if current:
-        current["analysis_passes"] = _st._analysis_passes
-        scan_session._flush()
-    if _st._analysis_passes < _st._min_iterations():
-        brief = (
-            _st._deepen_brief_whitebox(_st._analysis_passes)
-            if _st._is_whitebox_scan()
-            else _st._deepen_brief(_st._analysis_passes)
-        )
-        blockers.append(brief)
-    return blockers
-
-
 async def _autoclose_crosscutting_best_effort() -> None:
     """Propagate app-wide cross-cutting verdicts to their cells before completion.
 
@@ -93,14 +71,54 @@ def _thorough_keep_working_response(current: dict) -> str:
     return "\n".join(lines)
 
 
+def _thorough_gate(current: dict) -> str:
+    """Thorough completion = 3 enforced re-run passes, THEN unlimited/operator-terminated.
+
+    Each complete() call in thorough mode advances ONE analysis pass. While fewer
+    than _min_iterations() passes are done (full=3), it hands back THAT pass's
+    escalating deepen brief and requires another complete() after the re-run work —
+    so the 3 phases are actually driven, not skipped. Only once the 3-pass floor is
+    met does thorough become purely operator-terminated: no auto-complete, no
+    cost/time/call caps — the operator ends it via the dashboard.
+
+    Root cause this fixes: _do_complete() used to short-circuit thorough BEFORE
+    _apply_thorough_depth_gate, making _THOROUGH_MIN_ITERATIONS dead code — thorough
+    enforced neither the 3 passes nor a coverage floor, and even told the agent not
+    to call complete() again, so a single call (or none) let the scan be treated as
+    finished. This restores the '3 phases + unlimited' contract."""
+    _st._analysis_passes += 1
+    current["analysis_passes"] = _st._analysis_passes
+    _st.scan_session._flush()
+    # Evaluate skill-chain gates honestly so unrun mandatory skills surface in the brief.
+    _st.scan_session.restore_gates()
+    _st.scan_session.reconcile_worked_gates()
+    min_passes = _st._min_iterations()
+    if _st._analysis_passes < min_passes:
+        brief = (
+            _st._deepen_brief_whitebox(_st._analysis_passes)
+            if _st._is_whitebox_scan()
+            else _st._deepen_brief(_st._analysis_passes)
+        )
+        return (
+            f"THOROUGH PASS {_st._analysis_passes}/{min_passes} — the scan is NOT done "
+            f"({min_passes - _st._analysis_passes} more mandatory pass(es) after this). "
+            "Execute EVERY step below (re-run tools + skills at escalating aggression, "
+            "burn down pending coverage, chain confirmed findings), THEN call "
+            "session(action='complete') again to advance to the next pass:\n\n" + brief
+        )
+    # 3-pass floor met — thorough is now unlimited + operator-terminated.
+    return _thorough_keep_working_response(current)
+
+
 def _do_complete():
     current0 = _st.scan_session.get() or {}
-    # THOROUGH = OPERATOR-TERMINATED. In thorough depth the AGENT can never end the
-    # scan — it keeps working until the operator clicks Complete Scan (POST /api/complete
-    # → scan_session.complete() directly, unaffected by this gate). We short-circuit
-    # BEFORE counting an attempt, so this never trips HIR_FORCE_COMPLETE either.
+    # THOROUGH = 3 mandatory re-run passes, THEN unlimited/operator-terminated. The
+    # AGENT can never end a thorough scan (only the operator's dashboard Complete Scan
+    # → scan_session.complete() does), but it MUST be driven through the 3 escalating
+    # passes first (_thorough_gate). We handle thorough separately and do NOT touch
+    # _complete_attempts, so this never trips HIR_FORCE_COMPLETE.
     if str(current0.get("depth", "")).lower() == "thorough":
-        return _thorough_keep_working_response(current0)
+        return _thorough_gate(current0)
     _st._complete_attempts += 1
 
     data = findings_store._load()
@@ -119,7 +137,6 @@ def _do_complete():
 
     effective = _st._effective_tools()
     blockers = _st._collect_completion_blockers(data, effective)
-    blockers = _apply_thorough_depth_gate(blockers, current)
 
     # Progress-aware HIR (condensed profiles): blockers are surfaced one at a
     # time, so a model clearing them across several complete() calls is making

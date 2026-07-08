@@ -954,19 +954,35 @@ class TestDoComplete:
             or "complete" in result.lower()
         )
 
-    def test_thorough_is_operator_terminated_agent_never_completes(self, tmp_path, monkeypatch):
-        # THOROUGH is OPERATOR-TERMINATED: the agent's complete() never ends the scan —
-        # it is told to keep working until the operator clicks Complete Scan, and it must
-        # NOT count as a complete() attempt (so it can't trip HIR_FORCE_COMPLETE).
+    def test_thorough_enforces_3_passes_then_operator_terminated(self, tmp_path, monkeypatch):
+        # THOROUGH = MY LAYOUT: 3 mandatory escalating re-run passes, THEN
+        # unlimited/operator-terminated. The first (_min_iterations()-1) complete()
+        # calls each hand back that pass's deepen brief and require another complete();
+        # only once the 3-pass floor is met does it flip to operator-terminated. The
+        # agent's complete() NEVER ends the scan and NEVER counts as a complete()
+        # attempt (so it can't trip HIR_FORCE_COMPLETE). Regression for the bug where
+        # thorough short-circuited BEFORE the pass gate, making the 3 passes dead code.
         import mcp_server.session_tools as st
         monkeypatch.setattr(st, "_complete_attempts", 0)
+        monkeypatch.setattr(st, "_analysis_passes", 0)
+        monkeypatch.setattr(st, "_min_iterations", lambda: 3)
+        monkeypatch.setattr(st, "_is_whitebox_scan", lambda: False)
+        monkeypatch.setattr(st, "_deepen_brief", lambda n: f"DEEPEN-BRIEF-PASS-{n}")
         self._setup_session(tmp_path, monkeypatch, depth="thorough")
-        with patch("mcp_server.session_tools._effective_tools", return_value=set()), \
-             patch("mcp_server.session_tools._collect_completion_blockers", return_value=[]):
-            result = _do_complete()
-        assert "does NOT auto-complete" in result
-        assert "operator" in result.lower() and "keep" in result.lower()
-        assert st._complete_attempts == 0  # not counted as an attempt
+
+        # Pass 1 and 2 → escalating pass brief, NOT done, still zero attempts.
+        r1 = _do_complete()
+        assert "THOROUGH PASS 1/3" in r1 and "DEEPEN-BRIEF-PASS-1" in r1
+        assert "does NOT auto-complete" not in r1
+        r2 = _do_complete()
+        assert "THOROUGH PASS 2/3" in r2 and "DEEPEN-BRIEF-PASS-2" in r2
+
+        # Pass 3 → 3-phase floor met → unlimited/operator-terminated message.
+        r3 = _do_complete()
+        assert "does NOT auto-complete" in r3
+        assert "operator" in r3.lower() and "keep" in r3.lower()
+
+        assert st._complete_attempts == 0  # thorough never counts a complete() attempt
 
     def test_multiple_blockers_full_profile_shows_all(self, tmp_path, monkeypatch):
         """Full profile (large context, ``condensed_directives=False``) gets the
