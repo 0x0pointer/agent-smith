@@ -1398,7 +1398,9 @@ def test_concrete_next_call_runs_missing_recon_first():
     assert _concrete_next_call("http://t", set(), [], 0).startswith("scan(tool='httpx'")
 
 
-def test_concrete_next_call_pending_offers_probe_and_finish():
+def test_concrete_next_call_pending_offers_probe_and_finish(monkeypatch):
+    import mcp_server.session_tools.recovery_build as rb
+    monkeypatch.setattr(rb, "_depth_resume_call", lambda: None)   # no bridge → breadth path
     out = _concrete_next_call(
         "http://t", tools_run={"httpx", "naabu", "spider", "nuclei"},
         in_progress=[], pending_count=12,
@@ -1407,6 +1409,32 @@ def test_concrete_next_call_pending_offers_probe_and_finish():
     assert "12 cells still pending" in out
     assert "do NOT idle" in out
     assert "session(action='complete')" in out
+
+
+def test_concrete_next_call_depth_resume_beats_breadth(monkeypatch):
+    # REGRESSION: after compaction, an unproven exploit bridge must hand back DEPTH, not a
+    # cell-burn order — otherwise every compaction resets the model to breadth (the
+    # compaction→breadth-reset→shallow-results loop).
+    import mcp_server.session_tools.recovery_build as rb
+    monkeypatch.setattr(rb, "_depth_resume_call",
+                        lambda: "RESUME DEPTH before breadth — prove the bridge X→Y")
+    out = _concrete_next_call(
+        "http://t", tools_run={"httpx", "naabu", "spider", "nuclei"},
+        in_progress=[], pending_count=12,
+    )
+    assert "RESUME DEPTH" in out and "cells still pending" not in out
+
+
+def test_depth_resume_call_none_without_bridge(monkeypatch):
+    import mcp_server.session_tools.recovery_build as rb
+    monkeypatch.setattr("core.graph.build_graph", lambda: object())
+    monkeypatch.setattr("core.graph.candidate_chains", lambda g: [{"kind": "cred_leak"}])
+    assert rb._depth_resume_call() is None            # only primitive_unblock bridges qualify
+    monkeypatch.setattr("core.graph.candidate_chains",
+                        lambda g: [{"kind": "primitive_unblock", "provider_id": "a",
+                                    "blocked_id": "b", "primitive": "file_read"}])
+    out = rb._depth_resume_call()
+    assert out and "RESUME DEPTH" in out and "file_read" in out
 
 
 def test_concrete_next_call_all_done_completes():

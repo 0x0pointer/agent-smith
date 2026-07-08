@@ -80,23 +80,8 @@ def _build_recovery_result(
     if iter_status:
         result["iteration_progress"] = iter_status
 
-    # Known-assets SUMMARY — counts for every type + a small sample of non-secret lists.
-    # Previously this re-dumped v[:10] of EVERY asset type, incl. up to 10 full JWTs and
-    # 10 credentials — redundant with auth_context above and ~5-9KB per brief. Since the
-    # recovery brief is re-injected after every compaction, that bloat was the dominant
-    # driver of the ~6-min compaction thrash (context refills → compact → brief → repeat).
-    # Full creds/tokens live in auth_context; here we give counts + trimmed samples.
-    known_assets = current.get("known_assets", {})
-    asset_summary: dict = {}
-    for k, v in known_assets.items():
-        if not v:
-            continue
-        if k in ("credentials", "auth_tokens"):
-            asset_summary[k] = f"{len(v)} on record (usable ones in auth_context)"
-        elif isinstance(v, list):
-            asset_summary[k] = {"count": len(v), "sample": v[:3]} if len(v) > 3 else v
-        else:
-            asset_summary[k] = v
+    # Known-assets SUMMARY — counts + a small sample of non-secret lists (see _asset_summary).
+    asset_summary = _asset_summary(current.get("known_assets", {}))
     if asset_summary:
         result["known_assets"] = asset_summary
 
@@ -159,6 +144,44 @@ def _build_recovery_result(
     return result
 
 
+def _asset_summary(known_assets: dict) -> dict:
+    """Counts + small non-secret samples of known assets for the recovery brief. Full
+    creds/tokens live in auth_context — re-dumping v[:10] of EVERY type (incl. 10 full JWTs)
+    here was the dominant recovery-brief bloat that drove the ~6-min compaction thrash."""
+    out: dict = {}
+    for k, v in known_assets.items():
+        if not v:
+            continue
+        if k in ("credentials", "auth_tokens"):
+            out[k] = f"{len(v)} on record (usable ones in auth_context)"
+        elif isinstance(v, list):
+            out[k] = {"count": len(v), "sample": v[:3]} if len(v) > 3 else v
+        else:
+            out[k] = v
+    return out
+
+
+def _depth_resume_call() -> str | None:
+    """A DEPTH-first next move for recovery: prove the deepest unfinished exploit (an
+    unproven compositional bridge) before breadth cell-burning — so a compaction hands the
+    model back the kill-chain instead of resetting it to breadth every cycle. Fail-soft."""
+    try:
+        from core.graph import build_graph, candidate_chains
+        bridges = [c for c in candidate_chains(build_graph()) if c.get("kind") == "primitive_unblock"]
+        if not bridges:
+            return None
+        b = bridges[0]
+        return (
+            f"RESUME DEPTH before breadth — an unproven exploit bridge is on the board: finding "
+            f"'{b.get('provider_id')}' PROVIDES {b.get('primitive')} that '{b.get('blocked_id')}' "
+            f"needs. Prove it end-to-end (e.g. superuser SQLi → file-read → derive the console PIN or "
+            f"COPY FROM PROGRAM → RCE), then file report(action='chain', ...). If it is genuinely "
+            f"blocked, add a dismissed escalation_lead documenting why. Do THIS before burning cells."
+        )
+    except Exception:
+        return None
+
+
 def _concrete_next_call(target: str, tools_run: set, in_progress: list, pending_count: int) -> str:
     """Return a single concrete tool call string the model should execute next."""
     if in_progress:
@@ -182,6 +205,14 @@ def _concrete_next_call(target: str, tools_run: set, in_progress: list, pending_
         return f"scan(tool='spider', target='{target}')"
     if "nuclei" not in tools_run:
         return f"scan(tool='nuclei', target='{target}')"
+    # DEPTH-FIRST resume: before falling back to breadth cell-burning, hand back the
+    # deepest unfinished exploit. Compaction fires every few minutes; if the brief always
+    # says "burn down cells" the model is RESET to breadth every cycle and loses the
+    # kill-chain it was on (the compaction→breadth-reset→shallow-results loop). Resume the
+    # unproven compositional bridge / unexploited primitive first.
+    depth = _depth_resume_call()
+    if depth:
+        return depth
     if pending_count > 0:
         # Concrete next action so a respawned/recovered model doesn't flounder
         # (it kept looking for in_progress work, found none, and idled). Drive the
