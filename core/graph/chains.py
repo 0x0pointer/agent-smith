@@ -22,6 +22,23 @@ def _host(g: m.Graph, fid: str) -> str | None:
     return es[0].dst if es else None
 
 
+def _owning_host(g: m.Graph, node_id: str | None) -> str | None:
+    """Resolve a FOUND_ON anchor UP to the ``host:`` node that owns it. Findings anchor
+    at heterogeneous depths (param → endpoint → host, see build._add_finding_nodes), so a
+    raw anchor comparison treats two findings on the SAME physical host as different hosts
+    (ep:… vs host:…) and the same-host bridge guard drops every intra-host bridge. Walk
+    param → endpoint (HAS_PARAM) → host (HOSTS) so the comparison is host-to-host."""
+    if not node_id:
+        return None
+    if node_id.startswith("host:"):
+        return node_id
+    for e in g.in_edges(node_id, m.HOSTS):       # endpoint → its host
+        return e.src
+    for e in g.in_edges(node_id, m.HAS_PARAM):   # param → its endpoint → host
+        return _owning_host(g, e.src)
+    return node_id                               # unknown shape: fall back to raw
+
+
 def _chains_from_escalation_leads(g: m.Graph, findings: list) -> list[dict]:
     """(1) A finding with a pending escalation lead → prove the lead to its terminal."""
     props: list[dict] = []
@@ -113,9 +130,9 @@ def _chains_from_primitive_bridge(g: m.Graph) -> list[dict]:
                                     match.vars.get("blocked"), match.vars.get("prim"))
         if not (provider and blocked and primn) or provider.id == blocked.id:
             continue  # a bug can't unblock itself
-        ph, bh = _host(g, provider.id), _host(g, blocked.id)
+        ph, bh = _owning_host(g, _host(g, provider.id)), _owning_host(g, _host(g, blocked.id))
         if ph and bh and ph != bh:
-            continue  # cross-host bridge is physically impossible — drop it
+            continue  # cross-host bridge is physically impossible — drop it (host-resolved)
         key = (provider.id, primn.label, blocked.id)
         if key in seen:
             continue

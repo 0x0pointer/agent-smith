@@ -13,6 +13,18 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import core.qa_agent
 import core.quick_log
+
+
+@pytest.fixture(autouse=True)
+def _isolate_composition_graph(monkeypatch):
+    """The composition-obligation check builds its graph from the live on-disk stores
+    (candidate_chains(build_graph())), independent of the findings_data fixture a test
+    passes. Point it at an empty graph so these checks run against the test's own inputs
+    and never pick up the repo's live findings.json (no QA test here exercises the
+    bridge/composition path — that lives in test_compositional_chaining.py)."""
+    import core.graph as _cg
+    from core.graph.model import Graph
+    monkeypatch.setattr(_cg, "build_graph", lambda: Graph())
 from core.qa_agent import (
     _session_is_running, _read_qa_state,
     _sanitize_history, QADaemon,
