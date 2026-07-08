@@ -7,6 +7,7 @@ the source of truth while the matrix remains authoritative.
 """
 from __future__ import annotations
 
+import re
 from urllib.parse import urlparse
 
 from . import model as m
@@ -20,6 +21,37 @@ def _host_of(url_or_target: str) -> str:
         return url_or_target
 
 
+def _clean_host(raw: str, root_host: str) -> str:
+    """Best-effort host from a freeform finding ``target`` string, falling back to
+    the scan's root host. Finding targets are human-written (e.g.
+    "http://localhost:5000 (JWT auth, /sup3r_s3cr3t_admin)"), so a naive
+    ``_host_of`` yields junk like ``localhost:5000 (JWT auth,`` — reject anything
+    that isn't a clean ``host[:port]`` and use the root host instead. This keeps
+    every finding anchored to the ONE target node rather than spawning duplicate,
+    disconnected host nodes (a cause of the 'loose nodes' the graph used to show)."""
+    if not raw:
+        return root_host
+    h = _host_of(raw)
+    if not h or any(c in h for c in " /()[]"):
+        return root_host
+    return h or root_host
+
+
+def _endpoint_host(path: str, root_host: str) -> str:
+    """The host an endpoint belongs to. Endpoint paths from the coverage matrix are
+    RELATIVE ("/login", "/api/v1/payments"), so they must anchor to the scan's root
+    host. Only override when the path is a genuine absolute URL to another host
+    (real netloc). The old code ran ``_host_of("/login")`` -> "/login" (a truthy
+    non-host), built an edge to a ``host:/login`` node that was never created, and
+    the dangling edge got dropped client-side — leaving every endpoint (and its
+    params) floating disconnected from the target."""
+    if "//" in path:
+        h = _host_of(path)
+        if h and "/" not in h and " " not in h:
+            return h
+    return root_host
+
+
 def _add_tech_nodes(g, ka, root_host) -> None:
     """Technologies / fingerprints → TECH nodes RUN by the host."""
     for tech in ka.get("technologies", []) or []:
@@ -28,27 +60,38 @@ def _add_tech_nodes(g, ka, root_host) -> None:
             g.add_edge(f"host:{root_host}", tid, m.RUNS)
 
 
-def _add_endpoint_nodes(g, matrix, root_host) -> dict:
-    """Endpoints + their params. Returns {endpoint_id: node_id} for cell wiring."""
+def _add_endpoint_nodes(g, matrix, root_host) -> tuple[dict, dict]:
+    """Endpoints + their params, anchored to the target host so the graph reads
+    target -> component -> param. Returns ({endpoint_id: node_id}, {path: node_id})
+    — the first wires coverage cells, the second lets findings attach to the
+    component they were found on."""
     ep_by_id: dict = {}
+    ep_by_path: dict = {}
     for ep in matrix.get("endpoints", []):
         eid = f"ep:{ep['id']}"
         ep_by_id[ep["id"]] = eid
-        g.add_node(eid, m.ENDPOINT, f"{ep.get('method','GET')} {ep.get('path','')}",
-                   path=ep.get("path", ""), method=ep.get("method", "GET"),
+        path = ep.get("path", "")
+        g.add_node(eid, m.ENDPOINT, f"{ep.get('method','GET')} {path}",
+                   path=path, method=ep.get("method", "GET"),
                    auth_context=ep.get("auth_context", "none"))
-        host = _host_of(ep.get("path", "")) or root_host
+        if path:
+            ep_by_path.setdefault(path, eid)
+        host = _endpoint_host(path, root_host)
         if host:
+            g.add_node(f"host:{host}", m.HOST, host)  # materialize so the edge isn't dangling
             g.add_edge(f"host:{host}", eid, m.HOSTS)
         for p in ep.get("params", []) or []:
             pid = f"param:{ep['id']}:{p.get('name','')}"
             g.add_node(pid, m.PARAM, p.get("name", ""), type=p.get("type", "query"))
             g.add_edge(eid, pid, m.HAS_PARAM)
-    return ep_by_id
+    return ep_by_id, ep_by_path
 
 
-def _add_cell_edges(g, matrix, ep_by_id) -> None:
-    """The coverage matrix cells, as endpoint→injection TESTED_FOR edges."""
+def _add_cell_edges(g, matrix, ep_by_id) -> dict:
+    """The coverage matrix cells, as endpoint→injection TESTED_FOR edges. Also
+    returns {finding_id: endpoint_node_id} so confirmed findings anchor to the
+    exact component whose cell they closed."""
+    fid_to_ep: dict = {}
     for cell in matrix.get("matrix", []):
         eid = ep_by_id.get(cell.get("endpoint_id"))
         if not eid:
@@ -56,6 +99,42 @@ def _add_cell_edges(g, matrix, ep_by_id) -> None:
         g.add_edge(eid, f"inj:{cell.get('injection_type')}", m.TESTED_FOR,
                    status=cell.get("status"), param=cell.get("param"),
                    finding_id=cell.get("finding_id"))
+        if cell.get("finding_id"):
+            fid_to_ep[cell["finding_id"]] = eid
+    return fid_to_ep
+
+
+# Endpoint paths whose handler MINTS auth material (a session/JWT) — the source
+# of the auth dataflow. Matched against the endpoint path.
+_AUTH_ISSUER_RE = re.compile(r"/(login|signin|sign-in|authenticate|auth|token|oauth|session)(/|$)", re.I)
+# auth_context values that mean "this component is gated by a token/session" — the
+# sinks of the auth dataflow.
+_PROTECTED_AUTH = {"jwt", "bearer", "token", "session", "cookie", "apikey", "api_key",
+                   "merchant", "merchantapikey", "oauth", "basic"}
+
+
+def _add_auth_flow(g, ep_by_id, root_host) -> None:
+    """Overlay the auth/token DATAFLOW: issuer endpoints (login/token) --issues-->
+    a session/token hub --grants--> every auth-gated endpoint. This is the 'how are
+    the components linked together' the flat node soup lacked — it shows the
+    credential a login mints flowing into each protected component."""
+    endpoints = g.of_kind(m.ENDPOINT)
+    issuers = [n for n in endpoints if _AUTH_ISSUER_RE.search(n.attrs.get("path", ""))]
+    protected = [n for n in endpoints
+                 if str(n.attrs.get("auth_context", "none")).lower() in _PROTECTED_AUTH]
+    if not issuers and not protected:
+        return
+    # Prefer a real captured token node as the hub; else a synthetic session node.
+    toks = g.of_kind(m.TOKEN)
+    hub = toks[0].id if toks else g.add_node(f"token:session:{root_host}", m.TOKEN, "session/JWT")
+    if root_host:
+        g.add_edge(hub, f"host:{root_host}", m.AUTHENTICATES)  # anchor the hub to the target
+    issuer_ids = {n.id for n in issuers}
+    for iss in issuers:
+        g.add_edge(iss.id, hub, m.ISSUES)
+    for pep in protected:
+        if pep.id not in issuer_ids:
+            g.add_edge(hub, pep.id, m.GRANTS)
 
 
 def _add_credential_nodes(g, ka, root_host) -> None:
@@ -81,22 +160,39 @@ def _add_credential_nodes(g, ka, root_host) -> None:
 _CRED_LEAK_MARKERS = ("credential", "password", "token leak", "secret", "api key", "api_key")
 
 
-def _add_finding_nodes(g, root_host) -> None:
-    """Findings → FOUND_ON host, LEAKS (credential material), ESCALATES_TO, and
-    PROVIDES/REQUIRES primitive edges (the substrate for compositional chaining)."""
+def _match_endpoint(text: str, ep_by_path: dict) -> str | None:
+    """Anchor a finding to the component it names. Longest path first so
+    "/admin/create_admin" wins over "/admin"."""
+    for path in sorted((p for p in ep_by_path if len(p) > 1), key=len, reverse=True):
+        if path in text:
+            return ep_by_path[path]
+    return None
+
+
+def _add_finding_nodes(g, root_host, ep_by_path, fid_to_ep) -> None:
+    """Findings → FOUND_ON their endpoint (falling back to the target host), LEAKS
+    (credential material), ESCALATES_TO, and PROVIDES/REQUIRES primitive edges (the
+    substrate for compositional chaining). Anchoring to the endpoint (not just the
+    host) is what makes a finding read as belonging to a component in the tree."""
     from core import findings as findings_store
     for f in findings_store._load().get("findings", []):
         fid = f"finding:{f.get('id','')}"
         g.add_node(fid, m.FINDING, f.get("title", ""),
                    severity=(f.get("severity") or "").lower(), target=f.get("target", ""),
                    status=(f.get("status") or "").lower())
-        fhost = _host_of(f.get("target", "")) or root_host
-        if fhost:
+        fhost = _clean_host(f.get("target", ""), root_host)
+        title, desc = f.get("title", ""), f.get("description", "")
+        text = f"{title} {desc} {f.get('target','')}"
+        # Prefer the exact endpoint (via the cell it closed, else a path match in
+        # its text); anchor to the host only when no component is identifiable.
+        anchor = fid_to_ep.get(f.get("id", "")) or _match_endpoint(text, ep_by_path)
+        if anchor:
+            g.add_edge(fid, anchor, m.FOUND_ON)
+        elif fhost:
             g.add_node(f"host:{fhost}", m.HOST, fhost)  # materialize so the edge isn't dangling
             g.add_edge(fid, f"host:{fhost}", m.FOUND_ON)
-        title, desc = f.get("title", ""), f.get("description", "")
-        text = f"{title} {desc}".lower()
-        if fhost and any(k in text for k in _CRED_LEAK_MARKERS):
+        if fhost and any(k in text.lower() for k in _CRED_LEAK_MARKERS):
+            g.add_node(f"host:{fhost}", m.HOST, fhost)
             g.add_edge(fid, f"host:{fhost}", m.LEAKS, what="credential-material")
         for lead in f.get("escalation_leads", []) or []:
             if isinstance(lead, dict) and lead.get("status") == "pending":
@@ -185,8 +281,9 @@ def _assemble() -> m.Graph:
         g.add_node(f"host:{root_host}", m.HOST, root_host)
 
     _add_tech_nodes(g, ka, root_host)
-    ep_by_id = _add_endpoint_nodes(g, matrix, root_host)
-    _add_cell_edges(g, matrix, ep_by_id)
+    ep_by_id, ep_by_path = _add_endpoint_nodes(g, matrix, root_host)
+    fid_to_ep = _add_cell_edges(g, matrix, ep_by_id)
     _add_credential_nodes(g, ka, root_host)
-    _add_finding_nodes(g, root_host)
+    _add_auth_flow(g, ep_by_id, root_host)
+    _add_finding_nodes(g, root_host, ep_by_path, fid_to_ep)
     return g
