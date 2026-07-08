@@ -122,8 +122,53 @@ def _add_primitive_edges(g, fid: str, f: dict) -> None:
         pass
 
 
+# Memoized (mtime, size) signature → built Graph. build_graph() was re-run on
+# every QA-daemon tick and every report(action='note') bridge, each time
+# re-reading and re-projecting all three stores. The projection is read-only and
+# consumers never mutate the returned graph, so a shared instance is reused until
+# an input changes.
+_GRAPH_CACHE: "tuple[tuple, m.Graph] | None" = None
+
+
+def _cache_key() -> tuple:
+    """Cheap version signature of the three stores build_graph reads. All three
+    flush to disk on every mutation (findings._save / coverage._save /
+    session._flush), so (mtime_ns, size) is an accurate change signal both
+    in-process and across the QA-daemon / dashboard processes — and no file is
+    read to compute it."""
+    from core import paths as _paths
+    sig = []
+    for p in (_paths.SESSION_FILE, _paths.FINDINGS_FILE, _paths.COVERAGE_FILE):
+        try:
+            st = p.stat()
+            sig.append((st.st_mtime_ns, st.st_size))
+        except OSError:
+            sig.append((0, 0))
+    return tuple(sig)
+
+
+def invalidate_graph_cache() -> None:
+    """Drop the memoized graph. The test harness calls this between tests (the
+    stores are monkeypatched in-memory there, so the mtime key can't observe the
+    change); also available to any caller that mutates a store out-of-band."""
+    global _GRAPH_CACHE
+    _GRAPH_CACHE = None
+
+
 def build_graph() -> m.Graph:
-    """Assemble the world-model graph from everything learned so far."""
+    """Assemble the world-model graph, memoized on the (mtime, size) of
+    session.json / findings.json / coverage_matrix.json (see _cache_key)."""
+    global _GRAPH_CACHE
+    key = _cache_key()
+    if _GRAPH_CACHE is not None and _GRAPH_CACHE[0] == key:
+        return _GRAPH_CACHE[1]
+    g = _assemble()
+    _GRAPH_CACHE = (key, g)
+    return g
+
+
+def _assemble() -> m.Graph:
+    """Project the world-model graph from everything learned so far."""
     from core import session as scan_session
     try:
         from core import coverage as cov

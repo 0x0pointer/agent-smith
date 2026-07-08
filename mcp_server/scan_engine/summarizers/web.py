@@ -131,12 +131,46 @@ def _parse_ffuf_text(raw: str) -> list[dict]:
     return paths
 
 
+def _parse_ffuf_bare_words(raw: str, base_url: str) -> list[dict]:
+    """Parse ffuf silent-mode (-s) output: one matched FUZZ payload per line, no
+    status/URL. scan(tool='ffuf') runs ``-of json -s``; ``-of json`` is inert
+    without ``-o`` so stdout is bare words, which neither the JSON nor the text
+    parser matches — this was the CH-6 auto-register no-op. Each word is joined
+    onto base_url to reconstruct the discovered endpoint."""
+    base = base_url.rstrip("/")
+    if not base:
+        return []
+    paths: list[dict] = []
+    for line in raw.strip().splitlines():
+        w = line.strip()
+        # A discovered payload is a single token; skip empties, ffuf chatter
+        # (banner/progress lines carry whitespace), comments, and http-prefixed
+        # lines (already handled by the text parser).
+        if not w or w.startswith(("#", "[", ":", "http")) or any(c.isspace() for c in w):
+            continue
+        paths.append({"url": f"{base}/{w.lstrip('/')}", "status": 0, "length": 0})
+    return paths
+
+
+def parse_ffuf_paths(raw: str, base_url: str = "") -> list[dict]:
+    """Single source of truth for ffuf output parsing across all three shapes it
+    emits — JSON (``-of json`` with ``-o``), the text result table, and bare
+    silent-mode words — returning ``[{url, status, length}, ...]``. Used by both
+    the summarizer and the handlers_net auto-register path so they can never
+    disagree about what ffuf found."""
+    js = _parse_ffuf_json(raw)
+    if js is not None:
+        return js
+    text = _parse_ffuf_text(raw)
+    if text:
+        return text
+    return _parse_ffuf_bare_words(raw, base_url)
+
+
 def _summarize_ffuf(raw: str, _ctx: dict) -> SummaryResult:
     """Parse ffuf output for discovered paths."""
     result = SummaryResult()
-    paths = _parse_ffuf_json(raw)
-    if paths is None:
-        paths = _parse_ffuf_text(raw)
+    paths = parse_ffuf_paths(raw, (_ctx or {}).get("url", ""))
 
     if paths:
         result.summary = f"ffuf found {len(paths)} path(s)"
