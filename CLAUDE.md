@@ -111,9 +111,12 @@ Scan lifecycle and infrastructure.
   - `action="elect"` — options: `{id, choice: now|defer|skip}`. **Mode-aware:** in interactive runs ASK the operator whether to set it up; headless, default to `defer` (the operator fulfills it on the dashboard). `skip` records the gap explicitly (mark dependent cells `skipped`, reason "operator declined manual setup"). A `requires_host` capability needs an explicit `now` at least once.
   - `action="check"` — options: `{id}` — run the capability's **readiness probe** (an allow-listed command, e.g. `frida-ps -U`) to PROVE the setup is live. A pass writes a proving artifact + a `devices` known-asset and marks the gate satisfied; a fail tells you what to fix. **Probe over trust** — never assume setup is done; verify with `check`. NON-BLOCKING: an unsatisfied gate never blocks `session(complete)` — do all autonomous/static work first, then elect/verify the manual parts.
 
-## Skill Logging (mandatory)
+## Skills: LOAD and FOLLOW them — `set_skill` is bookkeeping, not the work
 
-Before invoking **any** skill via the Skill tool, always call:
+Chaining a skill is **two steps, and the second is the real one**:
+
+1. `session(action="set_skill", options={...})` — **bookkeeping only.** Writes a `SKILL_START` / `SKILL_CHAIN` entry to `pentest.log` and records the decision in `session.json`'s `skill_history`. It does **not** run the skill and, on its own, does **not** satisfy a completion gate.
+2. **Actually invoke the skill and follow its workflow** — Claude Code: `Skill(name="<skill>")`; opencode: `skill({name:"<skill>"})`; Codex: follow the in-prompt workflow. Then **work its phases** (its real tool calls, per-technique probes, coverage closures). This is the step that does the assessment.
 
 ```
 session(action="set_skill", options={
@@ -121,9 +124,13 @@ session(action="set_skill", options={
   "reason": "<1–2 sentences explaining why you chose this skill>",
   "chained_from": "<parent skill name when chaining; omit for the first skill>"
 })
+# ...then immediately:
+Skill(name="<skill-name>")   # load the workflow and EXECUTE its phases
 ```
 
-This writes a `SKILL_START` or `SKILL_CHAIN` entry to `pentest.log` and enriches `session.json`'s `skill_history` with the decision context. It is mandatory — always call it immediately before the Skill tool invocation.
+**Do NOT rubber-stamp a gate.** Calling `set_skill` for a skill and then moving on (or jumping to `session(complete)`) without loading and running that skill is prohibited — you are skipping the assessment the gate exists to guarantee. A gate is now satisfied **only when the declared skill actually does work attributable to it** (a tool fires while that skill is the active skill; see `core/session/gates.py:skill_worked`). "The scan was busy overall" no longer clears a freshly-declared skill's gate. So the only way past a gate is to genuinely run the skill.
+
+You may legitimately **skip phases that don't apply** to the target (e.g. credential-audit's SSH/FTP/Kerberos phases on an HTTP-only app) — but skipping *inapplicable phases within a skill you are running* is different from *not running the skill at all*. Run the skill; execute every phase that applies; note which you skipped and why.
 
 ## Envelope signals to respect
 

@@ -164,3 +164,52 @@ class TestBuildProjection:
         assert any(n.kind == gm.ENDPOINT for n in g.nodes.values())
         assert any(e.kind == gm.TESTED_FOR for e in g.edges)
         scan_session._current = None
+
+
+class TestGraphCache:
+    """build_graph() is memoized on the (mtime,size) of its three store files —
+    it was re-projecting all three on every QA-daemon tick and report(note)."""
+
+    def test_memoizes_until_input_signature_changes(self, monkeypatch):
+        import core.graph.build as gb
+        calls = {"n": 0}
+        base = gb._assemble
+
+        def counting():
+            calls["n"] += 1
+            return base()
+
+        monkeypatch.setattr(gb, "_assemble", counting)
+        monkeypatch.setattr(gb, "_cache_key", lambda: ("sig-v1",))
+        gb.invalidate_graph_cache()
+
+        first = gb.build_graph()
+        second = gb.build_graph()
+        assert calls["n"] == 1              # second call served from cache
+        assert first is second             # same instance, not a rebuild
+
+        monkeypatch.setattr(gb, "_cache_key", lambda: ("sig-v2",))
+        third = gb.build_graph()
+        assert calls["n"] == 2              # input signature changed → rebuild
+        assert third is not first
+
+        gb.invalidate_graph_cache()
+        gb.build_graph()
+        assert calls["n"] == 3              # explicit invalidation forces a rebuild
+        gb.invalidate_graph_cache()
+
+    def test_cache_key_is_stable_and_read_free(self, monkeypatch, tmp_path):
+        """The key stats the three store files (mtime,size) — never reads them —
+        and a missing file degrades to (0,0) rather than raising."""
+        import core.graph.build as gb
+        import core.paths as paths
+        sess = tmp_path / "session.json"
+        sess.write_text("{}")
+        monkeypatch.setattr(paths, "SESSION_FILE", sess)
+        monkeypatch.setattr(paths, "FINDINGS_FILE", tmp_path / "missing_findings.json")
+        monkeypatch.setattr(paths, "COVERAGE_FILE", tmp_path / "missing_cov.json")
+        k1 = gb._cache_key()
+        assert k1[1] == (0, 0) and k1[2] == (0, 0)   # missing files → (0,0)
+        assert gb._cache_key() == k1                 # stable when nothing changes
+        sess.write_text('{"status": "running"}')     # bigger content → new size
+        assert gb._cache_key() != k1

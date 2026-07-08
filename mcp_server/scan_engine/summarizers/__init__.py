@@ -33,6 +33,8 @@ from .web import (
     _summarize_kali_sqlmap,
     _parse_ffuf_json,
     _parse_ffuf_text,
+    _parse_ffuf_bare_words,
+    parse_ffuf_paths,
     _summarize_ffuf,
     _STATIC_EXTENSIONS,
     _extract_url_params,

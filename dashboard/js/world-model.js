@@ -89,6 +89,15 @@ const WM_SEV_COLOR = {
   critical: '#f85149', high: '#fa8c16', medium: '#d29922', low: '#5bf29b', info: '#7b78ff',
 };
 const WM_EDGE = {
+  // Structural skeleton (faint) — target -> component -> param.
+  hosts:        { color: '#30363d', style: 'solid',  width: 1 },
+  has_param:    { color: '#30363d', style: 'solid',  width: 1 },
+  runs:         { color: '#30363d', style: 'solid',  width: 1 },
+  // Auth/token DATAFLOW (blue) — how a session/JWT moves between components.
+  issues:       { color: '#4f8cff', style: 'solid',  width: 3 },
+  grants:       { color: '#4f8cff', style: 'dashed', width: 2 },
+  authenticates:{ color: '#4f8cff', style: 'dashed', width: 2 },
+  // Exploit / escalation overlay (red/amber/green).
   provides:     { color: '#3fb950', style: 'solid',  width: 3 },
   requires:     { color: '#ff7b3d', style: 'dashed', width: 3 },
   leaks:        { color: '#e3b341', style: 'solid',  width: 2 },
@@ -156,9 +165,19 @@ function wmStyle() {
 }
 
 function wmLayoutOpts(animate) {
-  return { name: 'cose', animate: !!animate, animationDuration: 500, randomize: false,
-           nodeRepulsion: 9000, idealEdgeLength: 78, edgeElasticity: 120, gravity: 0.6,
-           padding: 24, nodeDimensionsIncludeLabels: true };
+  // Hierarchical (breadthfirst) rooted at the target host so the graph reads
+  // top-down: target -> components (endpoints) -> params, with findings/tokens
+  // tiered by their distance from the target. Undirected BFS so semantic arrow
+  // direction (e.g. finding --found_on--> endpoint) doesn't invert the tiers.
+  // Falls back to a plain BFS from arbitrary roots if no host node exists.
+  const roots = _wmCy ? _wmCy.nodes('[kind="host"]') : null;
+  const opts = {
+    name: 'breadthfirst', directed: false, animate: !!animate, animationDuration: 450,
+    spacingFactor: 1.15, padding: 26, avoidOverlap: true, circle: false, grid: false,
+    nodeDimensionsIncludeLabels: true,
+  };
+  if (roots && roots.length) opts.roots = roots;
+  return opts;
 }
 
 function wmRenderGraph() {

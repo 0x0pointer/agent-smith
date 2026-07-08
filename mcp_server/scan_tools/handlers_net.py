@@ -94,8 +94,13 @@ async def _handle_ffuf(target, flags, options):
     # model to hand-register each. Fail-soft — never break the ffuf result.
     try:
         from mcp_server.scan_engine.discovery import discover_and_register
+        from mcp_server.scan_engine.summarizers.web import parse_ffuf_paths
         from mcp_server.scan_tools.spider import _spider_discovery_auth
-        paths = [ln.strip() for ln in raw.splitlines() if ln.strip().startswith("http")]
+        # Reuse the summarizer's parser (json / text-table / bare silent-mode words)
+        # instead of a startswith('http') filter — ffuf runs with -s, so raw stdout
+        # is bare FUZZ words that never start with 'http'; the old filter yielded []
+        # and this auto-register was a silent no-op on every scan.
+        paths = [p["url"] for p in parse_ffuf_paths(raw, target) if p["url"].startswith("http")]
         if paths:
             enrich = await discover_and_register(target, paths, auth=_spider_discovery_auth(None))
             if enrich.get("registered"):

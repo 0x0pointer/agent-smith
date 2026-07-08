@@ -144,43 +144,27 @@ def set_skill(
     return _sess._current
 
 
-_SUBSTANTIVE_WORK_MIN_TOOLS = 3
-
-
-def _scan_has_substantive_work() -> bool:
-    """True when THIS session has done real work — measured session-locally (so it is
-    correctly sandboxed and never reads another scan's disk files). The agent typically
-    EXPLOITS FIRST and only declares skills afterward, so 'a tool fired while this skill
-    was active' under-counts real work; a scan that ran several distinct tools and then
-    acknowledged the skill has genuinely done the work. A fresh/empty session (no tool
-    activity) still fails, so a bare declaration on an empty scan is NOT satisfied."""
-    cur = _sess._current or {}
-    ti = cur.get("tool_invocations", 0)
-    inv_count = len(ti) if isinstance(ti, (list, dict)) else (ti or 0)
-    return inv_count >= _SUBSTANTIVE_WORK_MIN_TOOLS or \
-        len(cur.get("tools_called", [])) >= _SUBSTANTIVE_WORK_MIN_TOOLS
-
-
 def skill_worked(skill_name: str) -> bool:
-    """True when ``skill_name`` was DECLARED (set_skill) AND real work was done.
+    """True ONLY when ``skill_name`` was DECLARED (set_skill) AND a tool fired WHILE
+    IT WAS THE ACTIVE SKILL — the per-skill ``worked`` flag set by add_tool_called.
 
-    Real work = a tool fired while the skill was active (the strong signal), OR the
-    scan produced substantive results (findings / addressed cells). The fallback
-    matters because the agent routinely exploits a target before formally declaring
-    the covering skills — requiring 'work while active' alone left the gates
-    permanently unsatisfiable and stalled productive scans. A bare declaration on an
-    EMPTY scan (no findings, no coverage) still does NOT satisfy — the rubber-stamp
-    is rejected."""
+    A gate must not clear on bookkeeping. Declaring a skill's name is *not* running
+    its workflow: to satisfy the gate the skill has to actually execute (invoke the
+    Skill, work its phases, fire tools). Work must be attributable to THIS skill —
+    a tool fired while it was active — not "the scan did some work overall".
+
+    Previously this fell back to ``_scan_has_substantive_work()`` — true whenever the
+    WHOLE scan had fired >=3 tools total, regardless of whether this skill did
+    anything. That let a freshly-declared skill's gate clear instantly as long as
+    EARLIER skills had already run tools (recon almost always has), i.e. a pure
+    set_skill rubber-stamp cleared the gate. That fallback is removed: each skill now
+    earns its own gate by doing its own work. (add_tool_called marks the active
+    skill's history entry worked=True, so the proper flow — set_skill then run the
+    skill — satisfies it naturally; declare-then-complete does not.)"""
     if _sess._current is None:
         return False
-    declared = any(e.get("skill") == skill_name
-                   for e in _sess._current.get("skill_history", []))
-    if not declared:
-        return False
-    if any(e.get("skill") == skill_name and e.get("worked")
-           for e in _sess._current.get("skill_history", [])):
-        return True
-    return _scan_has_substantive_work()
+    return any(e.get("skill") == skill_name and e.get("worked")
+               for e in _sess._current.get("skill_history", []))
 
 
 def reconcile_worked_gates() -> None:

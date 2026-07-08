@@ -527,6 +527,25 @@ def test_skill_worked_true_after_a_tool_call():
     assert core.session.skill_worked("api-security") is True
 
 
+def test_skill_worked_false_for_freshly_declared_skill_even_after_prior_scan_work():
+    """The bookkeeping loophole: recon (and earlier skills) have already fired several
+    tools, then a NEW skill is declared with no work of its own. It must NOT be
+    considered worked just because the scan-as-a-whole was busy — otherwise a bare
+    set_skill on a live scan rubber-stamps the gate. Work must be attributable to the
+    declared skill."""
+    core.session.start("example.com")
+    core.session.set_skill("pentester")
+    for t in ("httpx", "naabu", "spider", "nuclei"):   # recon ran >=3 tools under pentester
+        core.session.add_tool_called(t)
+    core.session.set_skill("business-logic")            # declared, but does no work of its own
+    assert core.session.skill_worked("business-logic") is False
+    # pentester genuinely worked, so it stays satisfied.
+    assert core.session.skill_worked("pentester") is True
+    # Now business-logic actually runs a tool -> it earns its gate.
+    core.session.add_tool_called("http")
+    assert core.session.skill_worked("business-logic") is True
+
+
 def test_reconcile_worked_gates_only_satisfies_worked_skills():
     core.session.start("example.com")
     core.session.trigger_gate("api_coverage", "api discovered", ["api-security"])

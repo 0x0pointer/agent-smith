@@ -451,6 +451,13 @@ RUN [ "$INSTALL_AI" = "1" ] || { echo "[ai] skipped"; exit 0; }; \
     && npm config set strict-ssl false \
     && npm install -g promptfoo@0.121.2
 
+# Bound curl by DEFAULT so a hung request can never silently block a tool call for
+# minutes — a working injection payload (time-based-blind, SSRF-connect) routinely stalls
+# the response, and without a cap curl waits ~300s. The agent can still override --max-time
+# for deliberate time-based tests. (kali_runner also seeds this at container start, so it
+# applies even before a rebuild.)
+RUN printf 'connect-timeout = 5\nmax-time = 30\n' > /root/.curlrc
+
 EXPOSE 5000
 
 # kali-server-mcp is the Flask API component of mcp-kali-server.

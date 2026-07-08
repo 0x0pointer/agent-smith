@@ -102,7 +102,7 @@ from .blocker_response import (
 )
 from .complete import (
     _persist_completion_counters,
-    _apply_thorough_depth_gate,
+    _thorough_gate,
     _autoclose_crosscutting_best_effort,
     _do_complete,
     _record_metrics,

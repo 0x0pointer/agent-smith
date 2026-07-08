@@ -120,7 +120,15 @@
 
   function _qlDesc(e) {
     if (e.type === 'SKILL')    return `<span class="ql-type SKILL">${esc(e.name)}</span>${e.reason ? ' — ' + esc(e.reason) : ''}`;
-    if (e.type === 'TOOL')     return `<span class="ql-type TOOL">${esc(e.name)}</span>${e.target ? ' → ' + esc(e.target) : ''}${e.duration_s != null ? ' (' + e.duration_s + 's)' : ''}`;
+    if (e.type === 'TOOL') {
+      // kali entries now carry the actual command + outcome; others keep the target.
+      const detail = e.command
+        ? ` <code class="ql-cmd" title="${esc(e.command)}">${esc(e.command)}</code>`
+        : (e.target ? ' → ' + esc(e.target) : '');
+      const to  = e.timed_out ? ' <span class="ql-timeout" title="a request hit its time bound — possible time-based-blind / SSRF / slow endpoint">⏱ timed out</span>' : '';
+      const dur = e.duration_s != null ? ' (' + e.duration_s + 's)' : '';
+      return `<span class="ql-type TOOL">${esc(e.name)}</span>${detail}${to}${dur}`;
+    }
     if (e.type === 'SPIDER')   return `<span class="ql-type SPIDER">SPIDER</span> ${e.endpoints_found ?? '?'} endpoints found${e.target ? ' — ' + esc(e.target) : ''}`;
     if (e.type === 'FINDING')  return `<span class="ql-type FINDING">${esc(e.severity?.toUpperCase() || 'FINDING')}</span> ${esc(e.title || '')}`;
     if (e.type === 'COVERAGE') return `<span class="ql-type COVERAGE">COVERAGE</span> ${e.registered ?? '?'} endpoints · ${e.tested ?? 0} tested · ${e.pending ?? 0} pending`;

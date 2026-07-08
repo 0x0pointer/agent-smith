@@ -29,6 +29,18 @@ _mcp_tool_shim.start()
 
 
 @pytest.fixture(autouse=True)
+def _reset_graph_cache():
+    """build_graph() memoizes on the (mtime,size) of the three store files. Tests
+    monkeypatch those stores in-memory without touching disk, so the mtime key
+    can't see the change — invalidate before and after each test so a graph built
+    from one test's monkeypatched stores never leaks into the next."""
+    from core.graph import build as _gb
+    _gb.invalidate_graph_cache()
+    yield
+    _gb.invalidate_graph_cache()
+
+
+@pytest.fixture(autouse=True)
 def disable_dashboard_auth(monkeypatch, tmp_path):
     """Disable the per-session dashboard bearer-token gate for the suite.
 

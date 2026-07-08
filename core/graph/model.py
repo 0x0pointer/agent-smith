@@ -36,6 +36,8 @@ LEAKS = "leaks"                # finding --leaks--> credential/token
 ESCALATES_TO = "escalates_to"  # finding --escalates_to--> (terminal, via edge attr)
 PROVIDES = "provides"          # finding --provides--> primitive (this bug HANDS YOU the capability)
 REQUIRES = "requires"          # finding --requires--> primitive (this bug is BLOCKED needing it)
+ISSUES = "issues"              # endpoint --issues--> token/session (auth DATAFLOW: login mints a token)
+GRANTS = "grants"              # token/session --grants--> endpoint (auth DATAFLOW: token unlocks a protected component)
 
 
 @dataclass
