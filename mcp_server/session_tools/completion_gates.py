@@ -119,10 +119,12 @@ def _collect_completion_blockers(data: dict, effective: set) -> list[str]:
         # Three-phase: advance the phase to saturation first, then block completion until
         # SYNTHESIS (Phase C) so all three phases actually run — a run can't finish early in
         # the deep pass (A) and skip breadth (B) + synthesis (C). Dischargeable by progressing
-        # (each phase saturates); the operator's force-complete still bypasses it.
-        phase_blocker = _phase_completion_blocker()
-        if phase_blocker:
-            blockers.append(phase_blocker)
+        # (each phase saturates); the operator's force-complete still bypasses it. CTF/benchmark
+        # runs are exempt (single-flag goal — phase bookkeeping is overhead, same as coverage).
+        if not _st._has_ctf_flag(data):
+            phase_blocker = _phase_completion_blocker()
+            if phase_blocker:
+                blockers.append(phase_blocker)
     blockers.extend(_st._qa_blockers())
     blockers.extend(_st._escalation_lead_blockers(data))
 

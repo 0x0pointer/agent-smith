@@ -48,26 +48,41 @@ def _tools_run(sess: dict) -> set:
     return out
 
 
+# Any assessment skill whose attributable WORK means the deep hunt genuinely ran — web AND
+# non-web (network / AD / cloud / mobile / TLS / AI / code), so no target class gets pinned in
+# Phase A just because it never runs a web skill.
 _HUNT_SKILLS = frozenset({
-    "web-exploit", "api-security", "business-logic", "credential-audit",
-    "post-exploit", "ai-redteam", "param-fuzz",
+    "web-exploit", "api-security", "business-logic", "credential-audit", "param-fuzz",
+    "post-exploit", "reverse-shell", "ai-redteam", "network-assess", "lateral-movement",
+    "ad-assessment", "cloud-security", "container-k8s-security", "ssl-tls-audit",
+    "metasploit", "android-security", "ios-security", "osint", "codebase",
 })
+
+# Recon-class tools across ALL target types — any one means the surface is mapped enough to
+# judge depth (httpx=web, naabu/nmap=network, subfinder=host, mobsf=mobile, testssl=TLS,
+# fuzzyai/garak=AI, semgrep/trufflehog=code). Target-agnostic so non-web scans aren't stuck.
+_RECON_TOOLS = frozenset({
+    "httpx", "spider", "ffuf", "naabu", "nmap", "subfinder", "nuclei", "mobsf", "mobsfscan",
+    "testssl", "fuzzyai", "garak", "pyrit", "promptfoo", "semgrep", "trufflehog",
+})
+
+# Cell types with no auto-closer — expected to linger pending; must not pin Phase B (mirrors
+# mcp_server.session_tools.coverage_gates._NO_AUTOCLOSER_TYPES; duplicated so core stays free
+# of an mcp_server import).
+_NO_AUTOCLOSER_TYPES = frozenset({"rate_limit", "method_tampering", "jwt", "race", "bfla"})
 
 
 def _recon_done(sess: dict) -> bool:
-    """Surface is mapped enough to judge depth — httpx has fingerprinted and a crawl or
-    param-fuzz has run. (Kept lenient: recon adequacy, not a full tool checklist.)"""
-    t = _tools_run(sess)
-    return "httpx" in t and bool(t & {"spider", "ffuf"})
+    """Surface mapped enough to judge depth — ANY recon-class tool has run (not web-specific,
+    so non-web target classes aren't pinned in Phase A)."""
+    return bool(_tools_run(sess) & _RECON_TOOLS)
 
 
 def _hunt_attempted(sess: dict) -> bool:
-    """The deep hunt has actually run at least one exploitation skill. Prevents a hardened
-    target with no high-value findings from spinning in Phase A forever — once the hunt has
-    genuinely happened and turned up no un-pursued depth, the scan may advance to breadth."""
-    skills = {(s.get("skill") if isinstance(s, dict) else s)
-              for s in (sess or {}).get("skill_history", []) or []}
-    return bool(skills & _HUNT_SKILLS)
+    """The deep hunt genuinely ran — an assessment skill did attributable WORK (the `worked`
+    flag set by gates._mark_active_skill_worked), not merely a set_skill rubber-stamp."""
+    return any(isinstance(s, dict) and s.get("skill") in _HUNT_SKILLS and s.get("worked")
+               for s in (sess or {}).get("skill_history", []) or [])
 
 
 def _chain_fids(findings_data: dict) -> set:
@@ -141,9 +156,18 @@ def depth_saturated(sess: dict, findings_data: dict) -> bool:
 
 
 def coverage_saturated(matrix: dict) -> bool:
-    """B → C: the coverage matrix is drained (registered, and no pending cells)."""
+    """B → C: no CLOSEABLE cell is still open. A cell blocks the transition only if it's
+    testable-and-untested — pending OR in_progress (in_progress = started, not concluded) —
+    AND of a type that can be closed; no-autocloser types (rate_limit/jwt/race/…) are expected
+    to linger and are ignored, else Phase B could never saturate."""
     cells = matrix.get("matrix", []) if isinstance(matrix, dict) else []
-    return bool(cells) and not any(c.get("status") == "pending" for c in cells)
+    if not cells:
+        return False
+    return not any(
+        c.get("status") in ("pending", "in_progress")
+        and c.get("injection_type") not in _NO_AUTOCLOSER_TYPES
+        for c in cells
+    )
 
 
 def synthesis_saturated(findings_data: dict) -> bool:

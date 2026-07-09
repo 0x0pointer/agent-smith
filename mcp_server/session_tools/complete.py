@@ -44,12 +44,25 @@ async def _autoclose_crosscutting_best_effort() -> None:
 def _thorough_keep_working_response(current: dict) -> str:
     """Directive returned to the AGENT when it calls complete() in thorough mode —
     thorough is OPERATOR-TERMINATED, so the agent never ends the scan; it keeps
-    working until the operator clicks Complete Scan. Points at concrete next work."""
-    lines = [
-        "THOROUGH MODE — the scan does NOT auto-complete; only the OPERATOR ends it "
-        "(the dashboard 'Complete Scan' button). Do NOT call session(action='complete') "
-        "again — there are no cost/time/call limits; keep testing until the operator stops you:",
-    ]
+    working until the operator clicks Complete Scan. PHASE-AWARE: in Phase A it hands back the
+    deep hunt (not 'burn cells'), Phase B drains the matrix, Phase C composes — thorough is the
+    default depth, so the three-phase ordering must apply here too."""
+    from core import session as _sess
+    from core.session import phases as _phases
+    _sess.maybe_advance_phase()   # thorough progresses through the phases on each complete() call
+    phase = _phases.current_phase(_sess.get() or current)
+    header = (
+        "THOROUGH MODE — the scan does NOT auto-complete; only the OPERATOR ends it (the "
+        "dashboard 'Complete Scan' button). Do NOT call session(action='complete') again — no "
+        f"cost/time/call limits; keep working. Current phase: {_phases.phase_label(phase)}."
+    )
+    from .recovery_build import _exploit_hunt_call, _synthesis_call
+    if phase == _phases.EXPLOIT:
+        return header + "\n\n" + _exploit_hunt_call()
+    if phase == _phases.SYNTHESIS:
+        return header + "\n\n" + _synthesis_call()
+    # COVERAGE (Phase B) — drain the matrix.
+    lines = [header]
     try:
         from core.coverage import get_matrix
         pending = sum(1 for c in get_matrix().get("matrix", []) if c.get("status") == "pending")
@@ -89,6 +102,7 @@ def _thorough_gate(current: dict) -> str:
     _st._analysis_passes += 1
     current["analysis_passes"] = _st._analysis_passes
     _st.scan_session._flush()
+    _st.scan_session.maybe_advance_phase()   # thorough progresses through the phases too
     # Evaluate skill-chain gates honestly so unrun mandatory skills surface in the brief.
     _st.scan_session.restore_gates()
     _st.scan_session.reconcile_worked_gates()

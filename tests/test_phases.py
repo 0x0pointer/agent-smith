@@ -5,7 +5,7 @@ import core.session.phases as ph
 def _sess(**kw):
     base = {"scan_phase": "exploit",
             "tool_invocations": [{"tool": "httpx"}, {"tool": "spider"}],
-            "skill_history": [{"skill": "web-exploit"}]}   # hunt attempted
+            "skill_history": [{"skill": "web-exploit", "worked": True}]}   # hunt genuinely ran
     base.update(kw)
     return base
 
@@ -28,21 +28,29 @@ class TestDepthSaturation:
     def _fd(self, findings, chains=None):
         return {"findings": findings, "chains": chains or []}
 
-    def test_recon_not_done_never_saturates(self, monkeypatch):
+    def test_no_recon_no_hunt_never_saturates(self, monkeypatch):
         monkeypatch.setattr(ph, "open_bridges", lambda fd: 0)
-        s = {"scan_phase": "exploit", "tool_invocations": [{"tool": "nmap"}]}  # no httpx/crawl
+        s = {"scan_phase": "exploit", "tool_invocations": [], "skill_history": []}
         assert ph.depth_saturated(s, self._fd([_crit()])) is False
 
-    def test_no_hunt_yet_keeps_hunting(self, monkeypatch):
+    def test_hunt_rubber_stamp_does_not_count(self, monkeypatch):
+        # set_skill without attributable work (worked flag unset) must NOT count as the hunt.
         monkeypatch.setattr(ph, "open_bridges", lambda fd: 0)
-        s = _sess(skill_history=[])   # recon done but no exploitation skill run yet
+        s = _sess(skill_history=[{"skill": "web-exploit"}])   # declared, never worked
         assert ph.depth_saturated(s, self._fd([])) is False
 
     def test_hardened_target_saturates_once_hunt_ran(self, monkeypatch):
         monkeypatch.setattr(ph, "open_bridges", lambda fd: 0)
-        # recon + hunt ran, no high-value findings → depth exhausted → advance to breadth
-        # (must NOT spin in Phase A forever on a low-vuln target)
+        # recon + hunt genuinely ran, no high-value findings → depth exhausted → advance
         assert ph.depth_saturated(_sess(), self._fd([{"id": "x", "severity": "low"}])) is True
+
+    def test_non_web_target_can_saturate(self, monkeypatch):
+        # REGRESSION (blocker): a network/AD/cloud/mobile scan runs no httpx and no web skill —
+        # it must still be able to leave Phase A, not wedge forever.
+        monkeypatch.setattr(ph, "open_bridges", lambda fd: 0)
+        s = {"scan_phase": "exploit", "tool_invocations": [{"tool": "nmap"}],
+             "skill_history": [{"skill": "network-assess", "worked": True}]}
+        assert ph.depth_saturated(s, self._fd([_crit(title="RCE via code execution")])) is True
 
     def test_unpursued_high_blocks_saturation(self, monkeypatch):
         monkeypatch.setattr(ph, "open_bridges", lambda fd: 0)
@@ -70,10 +78,25 @@ class TestDepthSaturation:
 
 class TestCoverageSaturation:
     def test_pending_cells_not_saturated(self):
-        assert ph.coverage_saturated({"matrix": [{"status": "pending"}, {"status": "vulnerable"}]}) is False
+        assert ph.coverage_saturated({"matrix": [
+            {"status": "pending", "injection_type": "sqli"}, {"status": "vulnerable"}]}) is False
+
+    def test_in_progress_blocks_saturation(self):
+        # in_progress = started, not concluded → must NOT count as drained
+        assert ph.coverage_saturated({"matrix": [
+            {"status": "in_progress", "injection_type": "xss"}, {"status": "tested_clean"}]}) is False
 
     def test_all_closed_saturated(self):
-        assert ph.coverage_saturated({"matrix": [{"status": "tested_clean"}, {"status": "vulnerable"}]}) is True
+        assert ph.coverage_saturated({"matrix": [
+            {"status": "tested_clean", "injection_type": "sqli"}, {"status": "vulnerable"}]}) is True
+
+    def test_no_autocloser_pending_does_not_pin_phase_b(self):
+        # rate_limit/jwt/race/... have no autocloser and are expected to linger — must not
+        # prevent B→C, else coverage never saturates.
+        assert ph.coverage_saturated({"matrix": [
+            {"status": "pending", "injection_type": "rate_limit"},
+            {"status": "pending", "injection_type": "jwt"},
+            {"status": "tested_clean", "injection_type": "sqli"}]}) is True
 
     def test_empty_matrix_not_saturated(self):
         assert ph.coverage_saturated({"matrix": []}) is False   # nothing built yet
