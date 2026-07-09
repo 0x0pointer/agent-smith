@@ -212,6 +212,12 @@ def _do_recovery():
                 "pending_leads": [l.get("lead") for l in leads],
             })
 
+    # Saturation-driven phase transition (exploit → coverage → synthesis), then read the
+    # current phase so the next-call + brief are phase-aware.
+    scan_session.maybe_advance_phase()
+    from core.session import phases as _phases
+    phase = _phases.current_phase(scan_session.get() or current)
+
     tools_run = _st._effective_tools()
     resume_step = _determine_resume_step(current, tools_run)
     integrity_warnings = _check_coverage_integrity(cov.get("matrix", []), tools_run)
@@ -240,13 +246,14 @@ def _do_recovery():
         integrity_warnings, in_progress_cells, pending_escalations,
         resume_step, unsatisfied_gates,
     )
-    next_call = _concrete_next_call(target, tools_run, in_progress_cells, pending_count)
+    next_call = _concrete_next_call(target, tools_run, in_progress_cells, pending_count, phase)
 
     result = _build_recovery_result(
         current, cov, data, extra_cells,
         unsatisfied_gates, pending_escalations, integrity_warnings,
         target, tools_run, action_list, next_call, resume_step,
     )
+    result["scan_phase"] = _phases.phase_label(phase)
 
     # Manual-setup gates still open (capabilities.yaml prerequisites). Surfaced so
     # a deferred/failed gate survives compaction and the operator/agent can resume

@@ -9,9 +9,15 @@ import mcp_server.session_tools as _st
 from .blocker_response import _pending_steer_block
 
 
+def _phase_label(current: dict) -> str:
+    from core.session import phases as _phases
+    return _phases.phase_label(_phases.current_phase(current))
+
+
 def _do_status():
     summary = cost_tracker.get_summary()
     data = findings_store._load()
+    scan_session.maybe_advance_phase()   # saturation-driven exploit → coverage → synthesis
     current = scan_session.get() or {}
     remaining = scan_session.remaining(summary) if current else {}
     from core.coverage import get_matrix
@@ -47,6 +53,7 @@ def _build_status_base(
         "status": current.get("status", ""),
         "skill": current.get("skill"),
         "current_step": current.get("current_step"),
+        "scan_phase": _phase_label(current),
         "tools_run": all_tools,
         "findings_count": len(data.get("findings", [])),
         "diagrams_count": len(data.get("diagrams", [])),

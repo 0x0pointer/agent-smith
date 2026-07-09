@@ -1403,7 +1403,7 @@ def test_concrete_next_call_pending_offers_probe_and_finish(monkeypatch):
     monkeypatch.setattr(rb, "_depth_resume_call", lambda: None)   # no bridge → breadth path
     out = _concrete_next_call(
         "http://t", tools_run={"httpx", "naabu", "spider", "nuclei"},
-        in_progress=[], pending_count=12,
+        in_progress=[], pending_count=12, phase="coverage",   # Phase B = matrix drain
     )
     # Must be actionable: a concrete probe (A) AND the finish path (B), never idle.
     assert "12 cells still pending" in out
@@ -1411,16 +1411,36 @@ def test_concrete_next_call_pending_offers_probe_and_finish(monkeypatch):
     assert "session(action='complete')" in out
 
 
+def test_concrete_next_call_phase_a_hunts_not_burns(monkeypatch):
+    # Phase A hands back the DEEP HUNT — never a cell-burn order — even with pending cells.
+    import mcp_server.session_tools.recovery_build as rb
+    monkeypatch.setattr(rb, "_depth_resume_call", lambda: "RESUME DEPTH …")
+    out = _concrete_next_call(
+        "http://t", tools_run={"httpx", "naabu", "spider", "nuclei"},
+        in_progress=[], pending_count=12, phase="exploit",
+    )
+    assert "PHASE A" in out and "DEEP EXPLOITATION" in out and "cells still pending" not in out
+
+
+def test_concrete_next_call_phase_c_synthesis(monkeypatch):
+    import mcp_server.session_tools.recovery_build as rb
+    monkeypatch.setattr(rb, "_depth_resume_call", lambda: None)   # bridges done
+    out = _concrete_next_call(
+        "http://t", tools_run={"httpx", "naabu", "spider", "nuclei"},
+        in_progress=[], pending_count=0, phase="synthesis",
+    )
+    assert "PHASE C" in out and "SYNTHESIS" in out
+
+
 def test_concrete_next_call_depth_resume_beats_breadth(monkeypatch):
-    # REGRESSION: after compaction, an unproven exploit bridge must hand back DEPTH, not a
-    # cell-burn order — otherwise every compaction resets the model to breadth (the
-    # compaction→breadth-reset→shallow-results loop).
+    # REGRESSION: in coverage/synthesis, an unproven exploit bridge must hand back DEPTH, not a
+    # cell-burn order — otherwise every compaction resets the model to breadth.
     import mcp_server.session_tools.recovery_build as rb
     monkeypatch.setattr(rb, "_depth_resume_call",
                         lambda: "RESUME DEPTH before breadth — prove the bridge X→Y")
     out = _concrete_next_call(
         "http://t", tools_run={"httpx", "naabu", "spider", "nuclei"},
-        in_progress=[], pending_count=12,
+        in_progress=[], pending_count=12, phase="coverage",
     )
     assert "RESUME DEPTH" in out and "cells still pending" not in out
 
@@ -1437,10 +1457,12 @@ def test_depth_resume_call_none_without_bridge(monkeypatch):
     assert out and "RESUME DEPTH" in out and "file_read" in out
 
 
-def test_concrete_next_call_all_done_completes():
+def test_concrete_next_call_all_done_completes(monkeypatch):
+    import mcp_server.session_tools.recovery_build as rb
+    monkeypatch.setattr(rb, "_depth_resume_call", lambda: None)
     out = _concrete_next_call(
         "http://t", tools_run={"httpx", "naabu", "spider", "nuclei"},
-        in_progress=[], pending_count=0,
+        in_progress=[], pending_count=0, phase="coverage",
     )
     assert "session(action='complete'" in out
 
