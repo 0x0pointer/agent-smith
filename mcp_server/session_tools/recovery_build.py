@@ -174,9 +174,8 @@ def _depth_resume_call() -> str | None:
         return (
             f"RESUME DEPTH before breadth — an unproven exploit bridge is on the board: finding "
             f"'{b.get('provider_id')}' PROVIDES {b.get('primitive')} that '{b.get('blocked_id')}' "
-            f"needs. Prove it end-to-end (e.g. superuser SQLi → file-read → derive the console PIN or "
-            f"COPY FROM PROGRAM → RCE), then file report(action='chain', ...). If it is genuinely "
-            f"blocked, add a dismissed escalation_lead documenting why. Do THIS before burning cells."
+            f"needs. Prove it end-to-end and file report(action='chain', ...). If it is genuinely "
+            f"blocked, add a dismissed escalation_lead documenting why. Do THIS before burning down cells."
         )
     except Exception:
         return None
