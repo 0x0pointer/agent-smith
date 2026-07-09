@@ -190,6 +190,36 @@ def set_step(step: str) -> dict | None:
     return _sess._current
 
 
+def maybe_advance_phase() -> str | None:
+    """Saturation-driven three-phase transition (exploit → coverage → synthesis). Reads the
+    live findings + coverage matrix, and if the current phase's goal is genuinely done,
+    advances ONE step forward and persists it. Returns the new phase when it transitions,
+    else None. Safe to call on any checkpoint (status / recovery / after a finding or cell) —
+    it only moves forward and never budget/time-gates. See core/session/phases.py."""
+    from core.session import phases as _phases
+    _sess._reconcile_if_external_write()
+    if _sess._current is None or _sess._current.get("status") != "running":
+        return None
+    cur = _phases.current_phase(_sess._current)
+    try:
+        from core import findings as _findings, coverage as _cov
+        findings_data = _findings._load()
+        matrix = _cov.get_matrix()
+    except Exception:
+        return None
+    nxt = _phases.next_phase(cur, _sess._current, findings_data, matrix)
+    if not nxt or nxt == cur:
+        return None
+    _sess._current["scan_phase"] = nxt
+    _sess._flush()
+    try:
+        from core import logger as _log
+        _log.note(f"PHASE_ADVANCE {cur} → {nxt}: {_phases.phase_label(nxt)}")
+    except Exception:
+        pass
+    return nxt
+
+
 def _mark_active_skill_worked() -> bool:
     """Flag the current active skill's history entry as having done work. Returns True
     if it changed anything (so the caller knows to flush)."""

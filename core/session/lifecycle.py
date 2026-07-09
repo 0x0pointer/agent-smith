@@ -86,6 +86,9 @@ def start(
         ] if skill else [],
         "tools_called":  [],
         "current_step":  None,
+        # Three-phase scan model: exploit (deep, matrix-free) → coverage (matrix breadth)
+        # → synthesis (compose everything). Saturation-driven; see core/session/phases.py.
+        "scan_phase":    "exploit",
         "gates":         [],          # triggered gates that block completion
         "deferred_gates": [],         # gate IDs suppressed while a skill is active
         "setup_gates":   [],          # manual-setup prerequisites (capabilities.yaml) — NON-blocking, distinct from gates
