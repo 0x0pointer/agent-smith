@@ -8,9 +8,17 @@
     <div class="wm-graph-toolbar">
       <div id="wm-legend" class="wm-legend"></div>
       <div class="wm-graph-controls">
+        <span class="wm-layout-group" role="group" aria-label="Layout">
+          <button class="wm-btn" id="wm-layout-tree" onclick="wmSetLayout('tree')"
+                  title="Tree — horizontal hierarchy: host → endpoints → params → findings">⌗ Tree</button>
+          <button class="wm-btn" id="wm-layout-radial" onclick="wmSetLayout('radial')"
+                  title="Radial — each host is its own circle with its components/findings around it">◎ Radial</button>
+          <button class="wm-btn wm-btn-on" id="wm-layout-force" onclick="wmSetLayout('force')"
+                  title="Force — physics-based layout (default)">✦ Force</button>
+        </span>
         <button class="wm-btn" id="wm-bridges-btn" onclick="wmToggleBridges()"
                 title="Highlight compositional PROVIDES / REQUIRES capability bridges">◆ Bridges</button>
-        <button class="wm-btn" onclick="wmRelayout()" title="Re-run force layout">⟳ Layout</button>
+        <button class="wm-btn" onclick="wmRelayout()" title="Re-run the current layout">⟳</button>
         <button class="wm-btn" onclick="wmFit()" title="Fit graph to view">⤢ Fit</button>
       </div>
     </div>

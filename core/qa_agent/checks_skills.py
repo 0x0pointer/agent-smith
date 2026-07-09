@@ -203,6 +203,11 @@ def _check_post_exploit_depth(session_data: dict) -> list[dict]:
          "Internal hosts are reachable WITH code execution but /lateral-movement has NOT "
          "run — turn reachability into real movement (land access on the second host); "
          "do not stop at a topology map."),
+        ("cloud_pivot", "cloud-security", "CLOUD_PIVOT",
+         "A cloud-metadata / IMDS reach is confirmed but /cloud-security has NOT run — pull "
+         "the IAM/instance-profile or service-account credentials and enumerate what they "
+         "grant (S3, secrets, assume-role); if the role is absent or IMDSv2 blocks it, "
+         "document that dead-end rather than leaving the pivot unexplored."),
     ]
     alerts: list[dict] = []
     for gid, skill, code, msg in checks:

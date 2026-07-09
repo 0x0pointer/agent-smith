@@ -87,11 +87,12 @@ def _add_endpoint_nodes(g, matrix, root_host) -> tuple[dict, dict]:
     return ep_by_id, ep_by_path
 
 
-def _add_cell_edges(g, matrix, ep_by_id) -> dict:
-    """The coverage matrix cells, as endpoint→injection TESTED_FOR edges. Also
-    returns {finding_id: endpoint_node_id} so confirmed findings anchor to the
-    exact component whose cell they closed."""
+def _add_cell_edges(g, matrix, ep_by_id) -> tuple[dict, dict]:
+    """The coverage matrix cells, as endpoint→injection TESTED_FOR edges. Returns
+    ({finding_id: endpoint_node}, {finding_id: param_node}) so a confirmed finding
+    anchors to the exact PARAM it closed (deepest) — falling back to its endpoint."""
     fid_to_ep: dict = {}
+    fid_to_param: dict = {}
     for cell in matrix.get("matrix", []):
         eid = ep_by_id.get(cell.get("endpoint_id"))
         if not eid:
@@ -99,9 +100,12 @@ def _add_cell_edges(g, matrix, ep_by_id) -> dict:
         g.add_edge(eid, f"inj:{cell.get('injection_type')}", m.TESTED_FOR,
                    status=cell.get("status"), param=cell.get("param"),
                    finding_id=cell.get("finding_id"))
-        if cell.get("finding_id"):
-            fid_to_ep[cell["finding_id"]] = eid
-    return fid_to_ep
+        fid = cell.get("finding_id")
+        if fid:
+            fid_to_ep[fid] = eid
+            if cell.get("param"):
+                fid_to_param[fid] = f"param:{cell.get('endpoint_id')}:{cell.get('param')}"
+    return fid_to_ep, fid_to_param
 
 
 # Endpoint paths whose handler MINTS auth material (a session/JWT) — the source
@@ -169,11 +173,28 @@ def _match_endpoint(text: str, ep_by_path: dict) -> str | None:
     return None
 
 
-def _add_finding_nodes(g, root_host, ep_by_path, fid_to_ep) -> None:
-    """Findings → FOUND_ON their endpoint (falling back to the target host), LEAKS
-    (credential material), ESCALATES_TO, and PROVIDES/REQUIRES primitive edges (the
-    substrate for compositional chaining). Anchoring to the endpoint (not just the
-    host) is what makes a finding read as belonging to a component in the tree."""
+def _leaked_cred_nodes(g, text: str) -> list[str]:
+    """Credential/token nodes whose identity (username, or token value snippet) is
+    named in a leak finding's text — so the leak edge points at the actual principal
+    it exposed, not just the host."""
+    low = text.lower()
+    out: list[str] = []
+    for n in g.of_kind(m.CREDENTIAL) + g.of_kind(m.TOKEN):
+        label = (n.label or "").lower()
+        if n.kind == m.CREDENTIAL and len(label) >= 4 and label in low:
+            out.append(n.id)
+        elif n.kind == m.TOKEN:
+            snippet = n.id.split(":", 1)[-1].lower()  # token:<value[:16]>
+            if len(snippet) >= 6 and snippet in low:
+                out.append(n.id)
+    return out
+
+
+def _add_finding_nodes(g, root_host, ep_by_path, fid_to_ep, fid_to_param) -> None:
+    """Findings → FOUND_ON the exact PARAM they closed (deepest; else endpoint, else
+    host), LEAKS the specific credential/token they exposed (else host), ESCALATES_TO,
+    and PROVIDES/REQUIRES primitive edges. Anchoring down to the param/component is what
+    makes a finding read as belonging where it was found, not piled on the host."""
     from core import findings as findings_store
     for f in findings_store._load().get("findings", []):
         fid = f"finding:{f.get('id','')}"
@@ -183,17 +204,25 @@ def _add_finding_nodes(g, root_host, ep_by_path, fid_to_ep) -> None:
         fhost = _clean_host(f.get("target", ""), root_host)
         title, desc = f.get("title", ""), f.get("description", "")
         text = f"{title} {desc} {f.get('target','')}"
-        # Prefer the exact endpoint (via the cell it closed, else a path match in
-        # its text); anchor to the host only when no component is identifiable.
-        anchor = fid_to_ep.get(f.get("id", "")) or _match_endpoint(text, ep_by_path)
+        # Deepest anchor: the exact PARAM its cell closed → else its endpoint → else a
+        # path match in the text → else the host.
+        param_anchor = fid_to_param.get(f.get("id", ""))
+        anchor = (param_anchor if param_anchor in g.nodes else None) \
+            or fid_to_ep.get(f.get("id", "")) or _match_endpoint(text, ep_by_path)
         if anchor:
             g.add_edge(fid, anchor, m.FOUND_ON)
         elif fhost:
             g.add_node(f"host:{fhost}", m.HOST, fhost)  # materialize so the edge isn't dangling
             g.add_edge(fid, f"host:{fhost}", m.FOUND_ON)
-        if fhost and any(k in text.lower() for k in _CRED_LEAK_MARKERS):
-            g.add_node(f"host:{fhost}", m.HOST, fhost)
-            g.add_edge(fid, f"host:{fhost}", m.LEAKS, what="credential-material")
+        # LEAKS → the specific credential/token exposed (where it lives), else the host.
+        if any(k in text.lower() for k in _CRED_LEAK_MARKERS):
+            leaked = _leaked_cred_nodes(g, text)
+            if leaked:
+                for cn in leaked:
+                    g.add_edge(fid, cn, m.LEAKS, what="credential-material")
+            elif fhost:
+                g.add_node(f"host:{fhost}", m.HOST, fhost)
+                g.add_edge(fid, f"host:{fhost}", m.LEAKS, what="credential-material")
         for lead in f.get("escalation_leads", []) or []:
             if isinstance(lead, dict) and lead.get("status") == "pending":
                 g.add_edge(fid, fid, m.ESCALATES_TO, lead=lead.get("lead", ""))
@@ -216,6 +245,146 @@ def _add_primitive_edges(g, fid: str, f: dict) -> None:
                 g.add_edge(fid, f"prim:{p}", kind)
     except Exception:
         pass
+
+
+# ── Generic host-discovery / pivot linking ──────────────────────────────────
+# A world model should show hosts as SEPARATE circles by default; two hosts get
+# LINKED only when there's evidence one was reached/discovered THROUGH the other.
+# That is the general pattern behind many exploits, not just SSRF: an XXE or LFI
+# leaks a DB host from a config, harvested creds authenticate on a second box
+# (lateral movement), a response leaks an internal service URL, a shell pivots
+# deeper, a cloud-metadata read exposes another resource. The unifying signal is
+# PROVENANCE — a host identifier that surfaces in the EVIDENCE of a finding anchored
+# on host A means "A reached B" — so we materialize B and draw
+# finding --reaches[via=…]--> B. Hosts already modelled as real targets (root / scope
+# / endpoint hosts) are left untouched, so genuinely separate machines with no chain
+# between them stay as separate circles.
+_IP_RE = re.compile(r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?::\d{1,5})?\.?(?![\w.])")
+# Internal / cloud / orchestration host names trusted as pivot targets on sight —
+# require a <label>. prefix AND a specific internal suffix. Bare 'local'/'svc' are
+# deliberately EXCLUDED: they collide with ordinary filenames (config.local, app.svc)
+# that appear in exactly the file-read/traversal findings this model keys on.
+_INTERNAL_NAME_RE = re.compile(
+    r"(?<![\w.-])[a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)*"
+    r"\.(?:svc\.cluster\.local|cluster\.local|internal|consul)\.?(?![\w.-])", re.I)
+_META_HOSTS = ("metadata.google.internal", "169.254.169.254", "169.254.170.2",
+               "kubernetes.default.svc.cluster.local", "kubernetes.default.svc",
+               "kubernetes.default")
+# How a host was reached — cosmetic label on the REACHES edge, best-effort from text.
+_MECHANISMS = (
+    (("ssrf", "server-side request forgery", "server side request"), "ssrf"),
+    (("xxe", "xml external entity"), "xxe"),
+    (("pass-the-hash", "pass the hash", "kerberoast", "ntlm relay", "lateral", "pivot"), "lateral"),
+    (("path traversal", "local file inclusion", "lfi", "file read", "file disclosure",
+      "/etc/", "arbitrary file"), "file-disclosure"),
+    (("connection string", "reused credential", "credential reuse", "hardcoded",
+      "leaked credential", "harvested"), "cred-reuse"),
+    (("open redirect", "gopher://", "dict://", "proxied", "proxy"), "proxy"),
+    (("subdomain", "certificate transparency", "dns record", "resolves to"), "recon"),
+)
+
+
+def _mechanism_of(text: str) -> str:
+    low = text.lower()
+    for markers, label in _MECHANISMS:
+        if any(mk in low for mk in markers):
+            return label
+    return "discovery"
+
+
+def _asset_host_values(ka) -> set:
+    """Hostnames/IPs the scan already recorded — used to confirm (denoise) external
+    FQDNs named in finding prose."""
+    out: set = set()
+    for key in ("ips", "hosts", "domains", "subdomains"):
+        for a in ka.get(key, []) or []:
+            v = a.get("value") if isinstance(a, dict) else a
+            if v:
+                out.add(str(v).strip().lower())
+    return out
+
+
+def _internal_ip(ip: str) -> bool:
+    """True for an RFC1918 / loopback / link-local / CGNAT address with valid octets —
+    the only IPs trusted from finding prose WITHOUT an asset record. A public dotted-quad
+    is indistinguishable from a 4-part software version ('sqlmap 1.7.2.1'), so public IPs
+    qualify only via the asset branch, not on sight."""
+    parts = ip.split(":", 1)[0].split(".")
+    if len(parts) != 4 or not all(p.isdigit() and 0 <= int(p) <= 255 for p in parts):
+        return False
+    a, b = int(parts[0]), int(parts[1])
+    return (a in (10, 127) or (a == 169 and b == 254) or (a == 172 and 16 <= b <= 31)
+            or (a == 192 and b == 168) or (a == 100 and 64 <= b <= 127))
+
+
+def _asset_hits(low: str, asset_hosts: set) -> set:
+    """Recorded asset hostnames named in the text — matched on a word boundary with a
+    length floor. A raw substring test links short names ('api') into unrelated prose
+    ('rapid'), mirroring the same defect _leaked_cred_nodes guards against."""
+    return {a for a in asset_hosts
+            if a and len(a) >= 4 and re.search(rf"(?<![\w.-]){re.escape(a)}(?![\w.-])", low)}
+
+
+def _collapse_ports(hosts: set) -> set:
+    """Drop a host:port form when its bare host is also present, so one host doesn't
+    become two circles (10.0.0.5 + 10.0.0.5:8080)."""
+    bare = {h.split(":")[0] for h in hosts}
+    return {h for h in hosts if ":" not in h or h.split(":")[0] not in bare}
+
+
+def _hosts_in_text(text: str, asset_hosts: set) -> set:
+    """Host identifiers named in a finding's evidence: INTERNAL IPs, internal/cloud DNS,
+    cloud-metadata endpoints, plus any hostname already on record as an asset. Public
+    dotted-quads are intentionally NOT trusted here (version-number false positives) —
+    they qualify only via the asset branch."""
+    low = text.lower()
+    # .rstrip('.') so a sentence-final host ("…10.0.0.9." / "…cluster.local.") normalizes.
+    out: set = {ip for ip in (mo.group(0).lower().rstrip(".") for mo in _IP_RE.finditer(text))
+                if _internal_ip(ip)}
+    out |= {mo.group(0).lower().rstrip(".") for mo in _INTERNAL_NAME_RE.finditer(text)}
+    # Cloud/k8s metadata hosts nest as substrings (kubernetes.default ⊂
+    # kubernetes.default.svc ⊂ …cluster.local) — keep only the maximal match so one host
+    # doesn't explode into several circles.
+    metas = [meta for meta in _META_HOSTS if meta in low]
+    out |= {mh for mh in metas if not any(mh != o and mh in o for o in metas)}
+    out |= _asset_hits(low, asset_hosts)
+    return _collapse_ports(out)
+
+
+def _add_discovered_hosts(g, root_host, ka) -> None:
+    """Link hosts discovered THROUGH a finding to that finding (generic pivot model —
+    see the comment above). Only NEW hosts (not already real target nodes) are
+    materialized, so separate in-scope machines remain separate circles; each
+    discovering finding contributes its own REACHES edge so multiple paths to the same
+    pivot are all visible."""
+    from core import findings as findings_store
+    existing: set = set()
+    for n in g.of_kind(m.HOST):
+        lab = (n.label or "").strip().lower()
+        if lab:
+            existing.add(lab)
+            existing.add(lab.split(":")[0])
+    if root_host:
+        existing.add(root_host.lower())
+        existing.add(root_host.lower().split(":")[0])
+    asset_hosts = _asset_host_values(ka)
+    discovered: dict = {}   # bare host -> node id, so bare+port forms across findings reuse ONE node
+    for f in findings_store._load().get("findings", []):
+        fid = f"finding:{f.get('id','')}"
+        if fid not in g.nodes:
+            continue
+        text = " ".join(str(f.get(k, "")) for k in ("title", "description", "evidence", "target"))
+        via = _mechanism_of(text)
+        for h in _hosts_in_text(text, asset_hosts):
+            h = h.strip().rstrip(".")
+            bare = h.split(":")[0]
+            if not h or h in existing or bare in existing:
+                continue
+            hn = discovered.get(bare)
+            if hn is None:
+                hn = g.add_node(f"host:{h}", m.HOST, h, discovered=True, via=via)
+                discovered[bare] = hn
+            g.add_edge(fid, hn, m.REACHES, via=via)   # one edge per discovering finding
 
 
 # Memoized (mtime, size) signature → built Graph. build_graph() was re-run on
@@ -282,8 +451,9 @@ def _assemble() -> m.Graph:
 
     _add_tech_nodes(g, ka, root_host)
     ep_by_id, ep_by_path = _add_endpoint_nodes(g, matrix, root_host)
-    fid_to_ep = _add_cell_edges(g, matrix, ep_by_id)
+    fid_to_ep, fid_to_param = _add_cell_edges(g, matrix, ep_by_id)
     _add_credential_nodes(g, ka, root_host)
     _add_auth_flow(g, ep_by_id, root_host)
-    _add_finding_nodes(g, root_host, ep_by_path, fid_to_ep)
+    _add_finding_nodes(g, root_host, ep_by_path, fid_to_ep, fid_to_param)
+    _add_discovered_hosts(g, root_host, ka)
     return g

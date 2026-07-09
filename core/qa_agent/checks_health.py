@@ -44,12 +44,12 @@ def _reauth_hint(session_data: dict | None) -> str:
 def _check_auth_failure(entries: list[dict], session_data: dict, previous_alerts: list[dict]) -> dict | None:
     """Recover expired session auth mid-scan — self-heal first, HIR only if that fails.
 
-    Fires when >60% of the last 10 non-auth http_request calls return 401/403 AND
-    there were earlier 2xx calls (auth worked before). On the FIRST detection it
-    steers Smith to re-authenticate itself (it usually holds creds / a login
-    bypass) and returns a non-blocking AUTH_REAUTH advisory — no human pause. Only
-    if a prior cycle already issued that steer and 401/403 still dominates does it
-    escalate to HIR_AUTH_FAILURE.
+    Fires when >60% of the last 10 non-auth http_request calls return 401/403 on paths
+    that PREVIOUSLY authenticated (session degraded from 2xx→401/403). On the FIRST
+    detection it steers Smith to re-authenticate itself (it usually holds creds / a login
+    bypass) and returns a non-blocking AUTH_REAUTH advisory — no human pause. Only if a
+    prior cycle already issued that steer and 401/403 still dominates does it escalate to
+    HIR_AUTH_FAILURE.
     """
     http_entries = [
         e for e in entries
@@ -58,10 +58,18 @@ def _check_auth_failure(entries: list[dict], session_data: dict, previous_alerts
     ]
     if len(http_entries) < 5:
         return None
-    # Check if auth ever worked (any 2xx in history)
-    ever_authed = any(200 <= e.get("status_code", 0) < 300 for e in http_entries)
-    if not ever_authed:
-        return None
+
+    def _path(e) -> str:
+        return (e.get("target") or "").split("?")[0]
+
+    # Session-expiry is a path DEGRADING from 2xx→401/403. A path that has ONLY ever
+    # returned 401/403 is access-controlled (a legitimately-forbidden endpoint like
+    # /internal/config.json — a finding), NOT session expiry. Count failures only on
+    # paths that authenticated at least once; otherwise probing a forbidden endpoint
+    # false-positives into an AUTH_FAILURE HIR while the session is actually fine.
+    authed_paths = {_path(e) for e in http_entries if 200 <= e.get("status_code", 0) < 300}
+    if not authed_paths:
+        return None  # nothing ever authed — no session to have expired
     # Exclude credential-validation attempts (entries flagged as auth_attempt
     # by the envelope — request body contained password/secret/api_key/etc.,
     # or URL matched a known auth endpoint). 401s on those are credential
@@ -71,7 +79,10 @@ def _check_auth_failure(entries: list[dict], session_data: dict, previous_alerts
     non_auth_recent = [e for e in recent if not e.get("auth_attempt")]
     if len(non_auth_recent) < 5:
         return None  # too few non-auth signals to judge session validity
-    auth_failures = [e for e in non_auth_recent if e.get("status_code") in (401, 403)]
+    # A failure only counts if it's on a previously-authed path (degradation), not on
+    # an endpoint that was forbidden all along.
+    auth_failures = [e for e in non_auth_recent
+                     if e.get("status_code") in (401, 403) and _path(e) in authed_paths]
     if len(auth_failures) / len(non_auth_recent) < 0.6:
         return None
     # Rebind `recent` for the message below so target/counts reflect the

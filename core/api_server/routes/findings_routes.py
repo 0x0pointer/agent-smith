@@ -137,9 +137,35 @@ async def api_graph() -> JSONResponse:
     try:
         from core import session as scan_session
         from core.graph import build_graph, candidate_chains, next_targets, rank_findings
+        from core.graph import model as gm
         if scan_session.get() is None:
             scan_session.load_from_disk()
         g = build_graph()
+
+        # Worklist semantics: "Proposed kill-chains" and "Deepen next" should DRAIN to
+        # empty as work is proven — mirroring "next_targets", which empties when 0 cells
+        # pend. Subtract chains already proven & filed via report(action='chain').
+        proven = _proven_fids()
+        cands = candidate_chains(g, proven)
+        # "Deepen next" = findings still in UNPROVEN work: source of an open candidate
+        # chain, or carrying a pending escalation lead. Everything worked → empty.
+        open_fids = {fid for c in cands for fid in (c.get("finding_ids") or [])}
+        open_fids |= {f.id.split(":", 1)[1] for f in g.of_kind(gm.FINDING)
+                      if g.out_edges(f.id, gm.ESCALATES_TO)}
+        ranked = [r for r in rank_findings(g) if r["finding_id"] in open_fids]
+
+        # Serialize the graph for the World Model tab. CRITICAL: keep only edges whose BOTH
+        # endpoints are real nodes BEFORE any cap. The matrix contributes 846 tested_for
+        # edges that point at injection-type PSEUDO-nodes the graph never materializes — the
+        # client drops them as dangling anyway, but if they're serialized first they eat the
+        # edge budget and the meaningful found_on / reaches / provides / requires / leaks edges
+        # (which come after) get truncated away — leaving findings, discovered hosts and
+        # primitives floating disconnected. Filter, THEN cap.
+        node_list = list(g.nodes.values())[:500]
+        node_ids = {n.id for n in node_list}
+        real_edges = [e for e in g.edges
+                      if e.src in node_ids and e.dst in node_ids and e.src != e.dst][:2000]
+
         return JSONResponse({
             "stats": g.stats(),
             # Labeled-property-graph shape: each node/edge carries its full property bag
@@ -147,17 +173,46 @@ async def api_graph() -> JSONResponse:
             # kept for backward-compat with an older cached frontend.
             "nodes": [{"id": n.id, "kind": n.kind, "label": n.label,
                        "severity": n.attrs.get("severity", ""),
-                       "properties": dict(n.attrs)} for n in list(g.nodes.values())[:500]],
+                       "properties": dict(n.attrs)} for n in node_list],
             "edges": [{"id": f"e{i}", "source": e.src, "target": e.dst,
                        "src": e.src, "dst": e.dst, "kind": e.kind,
-                       "properties": dict(e.attrs)} for i, e in enumerate(g.edges[:1000])],
-            "candidate_chains": candidate_chains(g)[:10],
-            "ranked_findings": rank_findings(g)[:10],
+                       "properties": dict(e.attrs)} for i, e in enumerate(real_edges)],
+            "candidate_chains": cands[:10],
+            "ranked_findings": ranked[:10],
             "next_targets": next_targets(g, limit=8),
         })
     except Exception:
         _log.exception("api_graph failed")
         return JSONResponse({**empty, "error": _api._ERR_REQUEST_FAILED})
+
+
+# A finding whose TITLE already reads as a proven chain narrative (Smith sometimes files
+# the chain as a finding instead of via report(action='chain')) — treat it as worked too.
+_PROVEN_CHAIN_TITLE = ("proven chain", "exploit chain proven", "full exploit chain",
+                       "chain proven")
+
+
+def _proven_fids() -> set:
+    """The flat set of finding-ids already worked into a proven chain — from the formal
+    findings.json 'chains' (steps → from/to_finding_id) AND from findings whose own title
+    reads as a proven chain. A candidate chain all of whose findings are in this set is
+    already done and drops off the worklist panel."""
+    out: set = set()
+    try:
+        data = _api._read_json(_api._FINDINGS_FILE)
+        for ch in data.get("chains", []) or []:
+            for s in ch.get("steps", []) or []:
+                for k in ("from_finding_id", "to_finding_id"):
+                    v = s.get(k)
+                    if v and v != "auto":
+                        out.add(v)
+        for f in data.get("findings", []) or []:
+            title = (f.get("title") or "").lower()
+            if f.get("id") and any(mk in title for mk in _PROVEN_CHAIN_TITLE):
+                out.add(f["id"])
+    except Exception:
+        pass
+    return out
 
 
 @router.get("/api/threat-model")

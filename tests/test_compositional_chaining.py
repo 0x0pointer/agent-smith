@@ -113,6 +113,28 @@ class TestBridgeRule:
         g.add_edge("finding:s", "prim:file_read", m.REQUIRES)  # provides AND requires same prim
         assert not [c for c in chains.candidate_chains(g) if c.get("kind") == "primitive_unblock"]
 
+    def test_intra_host_bridge_fires_across_heterogeneous_anchor_depths(self):
+        """REGRESSION: two findings on ONE host anchored at DIFFERENT depths (endpoint vs
+        param, not directly at host:) must still bridge. The old same-host guard compared
+        raw FOUND_ON anchors (ep:… vs param:…), saw them unequal, and dropped every
+        intra-host bridge as 'cross-host' — the bug that silently zeroed all bridges live."""
+        g = m.Graph()
+        g.add_node("host:H", m.HOST, "H")
+        # provider anchored at an ENDPOINT node (host --hosts--> ep)
+        g.add_node("ep:e1", m.ENDPOINT, "GET /txn", path="/txn"); g.add_edge("host:H", "ep:e1", m.HOSTS)
+        g.add_node("finding:sqli", m.FINDING, "Postgres SQLi", severity="critical")
+        g.add_edge("finding:sqli", "ep:e1", m.FOUND_ON)
+        g.add_node("prim:file_read", m.PRIMITIVE, "file_read")
+        g.add_edge("finding:sqli", "prim:file_read", m.PROVIDES)
+        # blocked anchored at a PARAM node on ANOTHER endpoint of the SAME host
+        g.add_node("ep:e2", m.ENDPOINT, "GET /console", path="/console"); g.add_edge("host:H", "ep:e2", m.HOSTS)
+        g.add_node("param:e2:pin", m.PARAM, "pin"); g.add_edge("ep:e2", "param:e2:pin", m.HAS_PARAM)
+        g.add_node("finding:wz", m.FINDING, "Werkzeug PIN-locked", severity="high")
+        g.add_edge("finding:wz", "param:e2:pin", m.FOUND_ON)
+        g.add_edge("finding:wz", "prim:file_read", m.REQUIRES)
+        bridges = [c for c in chains.candidate_chains(g) if c.get("kind") == "primitive_unblock"]
+        assert len(bridges) == 1 and bridges[0]["provider_id"] == "sqli" and bridges[0]["blocked_id"] == "wz"
+
 
 # ── QA obligation ────────────────────────────────────────────────────────────
 

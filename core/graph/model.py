@@ -38,6 +38,7 @@ PROVIDES = "provides"          # finding --provides--> primitive (this bug HANDS
 REQUIRES = "requires"          # finding --requires--> primitive (this bug is BLOCKED needing it)
 ISSUES = "issues"              # endpoint --issues--> token/session (auth DATAFLOW: login mints a token)
 GRANTS = "grants"              # token/session --grants--> endpoint (auth DATAFLOW: token unlocks a protected component)
+REACHES = "reaches"            # finding --reaches--> a host DISCOVERED through it (SSRF/pivot/leak/lateral) — links two host circles
 
 
 @dataclass
