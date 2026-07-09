@@ -182,10 +182,12 @@ def _depth_resume_call() -> str | None:
 
 
 def _exploit_hunt_call() -> str:
-    """Phase A next-move: deep, matrix-free hunting."""
+    """Phase A next-move: deep hunting; matrix may build but is not drained."""
     return (
-        "PHASE A — DEEP EXPLOITATION (matrix-free). Do NOT build or burn the coverage matrix "
-        "yet. Hunt the high-value surface and drive every confirmed finding to its TERMINAL: "
+        "PHASE A — DEEP EXPLOITATION. The coverage matrix may fill as you discover endpoints "
+        "(that's useful for Phase B/C), but do NOT sweep / bulk-test / auto-crosscut it yet — "
+        "that breadth work is Phase B and will be REFUSED here. "
+        "Hunt the high-value surface and drive every confirmed finding to its TERMINAL: "
         "chain the MANDATORY skills (RCE → /post-exploit, LLM/AI → /ai-redteam, creds/JWT → "
         "/credential-audit, financial/stateful → /business-logic), escalate each primitive as "
         "far as it goes (privilege, lateral, cloud/IMDS, data access, second-order), and file "

@@ -639,3 +639,35 @@ async def test_autolink_skips_without_artifact_or_injection(coverage_file):
     (cov._ARTIFACTS_DIR / f"{art}.txt").write_text('{"status":200,"headers":{},"body":"x"}')
     assert await rt._autolink_finding_to_cell(
         "F", "Missing Security Headers", "no CSP", "http://t/login", art) is None
+
+
+@pytest.mark.asyncio
+async def test_coverage_drain_deferred_in_phase_a(monkeypatch):
+    # Phase A: sweep/bulk_tested/next_batch/auto_crosscutting are REFUSED (breadth = Phase B).
+    from mcp_server.report_tools.coverage import _do_coverage
+    import core.session as sess
+    monkeypatch.setattr(sess, "get", lambda: {"scan_phase": "exploit"})
+    for t in ("sweep", "bulk_tested", "next_batch", "auto_crosscutting"):
+        out = await _do_coverage({"type": t})
+        assert "DEFERRED" in out and "PHASE A" in out, f"{t} not deferred in Phase A"
+
+
+@pytest.mark.asyncio
+async def test_coverage_build_allowed_in_phase_a(monkeypatch):
+    # Phase A: BUILD types (endpoint/import) are NOT deferred — discovery feeds later phases.
+    from mcp_server.report_tools.coverage import _do_coverage
+    import core.session as sess
+    monkeypatch.setattr(sess, "get", lambda: {"scan_phase": "exploit"})
+    # an endpoint registration must reach the real handler, not the Phase-A redirect
+    out = await _do_coverage({"type": "endpoint", "path": "/x", "method": "GET", "params": []})
+    assert "DEFERRED" not in out
+
+
+@pytest.mark.asyncio
+async def test_coverage_drain_allowed_in_coverage_phase(monkeypatch):
+    from mcp_server.report_tools.coverage import _do_coverage
+    import core.session as sess
+    monkeypatch.setattr(sess, "get", lambda: {"scan_phase": "coverage"})
+    # in Phase B the sweep is not gated (reaches the real handler → no DEFERRED redirect)
+    out = await _do_coverage({"type": "sweep"})
+    assert "DEFERRED" not in out
