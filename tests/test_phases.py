@@ -3,7 +3,9 @@ import core.session.phases as ph
 
 
 def _sess(**kw):
-    base = {"scan_phase": "exploit", "tool_invocations": [{"tool": "httpx"}, {"tool": "spider"}]}
+    base = {"scan_phase": "exploit",
+            "tool_invocations": [{"tool": "httpx"}, {"tool": "spider"}],
+            "skill_history": [{"skill": "web-exploit"}]}   # hunt attempted
     base.update(kw)
     return base
 
@@ -31,10 +33,16 @@ class TestDepthSaturation:
         s = {"scan_phase": "exploit", "tool_invocations": [{"tool": "nmap"}]}  # no httpx/crawl
         assert ph.depth_saturated(s, self._fd([_crit()])) is False
 
-    def test_no_high_findings_keeps_hunting(self, monkeypatch):
+    def test_no_hunt_yet_keeps_hunting(self, monkeypatch):
         monkeypatch.setattr(ph, "open_bridges", lambda fd: 0)
-        # only low findings → not saturated (don't fall back to breadth with nothing deep found)
-        assert ph.depth_saturated(_sess(), self._fd([{"id": "x", "severity": "low", "title": "hdr"}])) is False
+        s = _sess(skill_history=[])   # recon done but no exploitation skill run yet
+        assert ph.depth_saturated(s, self._fd([])) is False
+
+    def test_hardened_target_saturates_once_hunt_ran(self, monkeypatch):
+        monkeypatch.setattr(ph, "open_bridges", lambda fd: 0)
+        # recon + hunt ran, no high-value findings → depth exhausted → advance to breadth
+        # (must NOT spin in Phase A forever on a low-vuln target)
+        assert ph.depth_saturated(_sess(), self._fd([{"id": "x", "severity": "low"}])) is True
 
     def test_unpursued_high_blocks_saturation(self, monkeypatch):
         monkeypatch.setattr(ph, "open_bridges", lambda fd: 0)
@@ -82,3 +90,18 @@ class TestTransitions:
     def test_no_advance_when_unsaturated(self, monkeypatch):
         monkeypatch.setattr(ph, "depth_saturated", lambda s, fd: False)
         assert ph.next_phase("exploit", {}, {}, {}) is None
+
+
+class TestPhaseCompletionBlocker:
+    def test_blocks_before_synthesis(self, monkeypatch):
+        from mcp_server.session_tools.completion_gates import _phase_completion_blocker
+        import core.session as sess
+        monkeypatch.setattr(sess, "maybe_advance_phase", lambda: None)
+        monkeypatch.setattr(sess, "get", lambda: {"scan_phase": "exploit"})
+        assert "PHASE A" in _phase_completion_blocker()
+        monkeypatch.setattr(sess, "get", lambda: {"scan_phase": "coverage"})
+        assert "PHASE B" in _phase_completion_blocker()
+        monkeypatch.setattr(sess, "get", lambda: {"scan_phase": "synthesis"})
+        assert _phase_completion_blocker() is None
+        monkeypatch.setattr(sess, "get", lambda: None)
+        assert _phase_completion_blocker() is None    # no session → no block

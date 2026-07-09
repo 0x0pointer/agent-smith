@@ -48,11 +48,26 @@ def _tools_run(sess: dict) -> set:
     return out
 
 
+_HUNT_SKILLS = frozenset({
+    "web-exploit", "api-security", "business-logic", "credential-audit",
+    "post-exploit", "ai-redteam", "param-fuzz",
+})
+
+
 def _recon_done(sess: dict) -> bool:
     """Surface is mapped enough to judge depth — httpx has fingerprinted and a crawl or
     param-fuzz has run. (Kept lenient: recon adequacy, not a full tool checklist.)"""
     t = _tools_run(sess)
     return "httpx" in t and bool(t & {"spider", "ffuf"})
+
+
+def _hunt_attempted(sess: dict) -> bool:
+    """The deep hunt has actually run at least one exploitation skill. Prevents a hardened
+    target with no high-value findings from spinning in Phase A forever — once the hunt has
+    genuinely happened and turned up no un-pursued depth, the scan may advance to breadth."""
+    skills = {(s.get("skill") if isinstance(s, dict) else s)
+              for s in (sess or {}).get("skill_history", []) or []}
+    return bool(skills & _HUNT_SKILLS)
 
 
 def _chain_fids(findings_data: dict) -> set:
@@ -111,13 +126,14 @@ def depth_saturated(sess: dict, findings_data: dict) -> bool:
     high/critical finding has been pursued to a terminal or documented dead-end, and no
     provable exploit bridge is left unattempted. Returns False while any deep work remains,
     so Phase A keeps going (unbudgeted, like the lean early runs) until it's truly done."""
-    if not _recon_done(sess):
-        return False
+    if not _recon_done(sess) or not _hunt_attempted(sess):
+        return False  # the deep hunt hasn't genuinely run yet — keep hunting
     highs = [f for f in findings_data.get("findings", [])
              if f.get("severity") in ("high", "critical")
              and f.get("status", "confirmed") != "false_positive"]
-    if not highs:
-        return False  # nothing high-value found yet — keep hunting, don't fall back to breadth
+    # No un-pursued high-value finding AND no unattempted bridge → depth is exhausted. (When
+    # highs is empty and the hunt has run, this correctly saturates — a hardened target moves
+    # on to breadth rather than spinning in Phase A.)
     chain_fids = _chain_fids(findings_data)
     if not all(_pursued(f, chain_fids) for f in highs):
         return False
