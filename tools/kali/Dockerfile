@@ -148,6 +148,13 @@ RUN [ "$INSTALL_WEB" = "1" ] || { echo "[web] skipped"; exit 0; }; \
     zaproxy exploitdb php-cli wpscan \
     && rm -rf /var/lib/apt/lists/*
 
+# zap-cli — the Python CLI wrapper the spider's thorough mode calls to drive ZAP's
+# ajax-spider (zaproxy above is the daemon; scan_tools/spider.py invokes `zap-cli`).
+# Graceful (|| echo WARN): zapcli is old, so a build-time pip failure must not abort
+# the image — spider.py already guards `command -v zap-cli` and skips cleanly if absent.
+RUN [ "$INSTALL_WEB" = "1" ] || { echo "[web] skipped"; exit 0; }; \
+    pip3 install --no-cache-dir zapcli --break-system-packages || echo "WARN: pip install zapcli failed (continuing)"
+
 # Web fuzzing / content discovery.
 RUN [ "$INSTALL_WEB" = "1" ] || { echo "[web] skipped"; exit 0; }; \
     apt-get update && apt-get install -y --no-install-recommends --fix-missing \

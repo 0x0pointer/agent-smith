@@ -77,6 +77,33 @@ def _finding_quality_blockers(high_findings: list[dict]) -> str | None:
         f"Add evidence and reproduction steps before completing:\n    {sample}{more}"
     )
 
+def _phase_completion_blocker() -> str | None:
+    """Advance the scan phase to saturation, then return a completion blocker if the scan is
+    not yet in SYNTHESIS (Phase C). Ensures the deep pass (A) → coverage (B) → synthesis (C)
+    all run before completion, instead of finishing early in Phase A. None once in C."""
+    from core import session as _sess
+    from core.session import phases as _phases
+    _sess.maybe_advance_phase()   # catch the phase up before we judge completion
+    cur = _sess.get()
+    if not cur:
+        return None
+    ph = _phases.current_phase(cur)
+    if ph == _phases.SYNTHESIS:
+        return None
+    if ph == _phases.EXPLOIT:
+        return (
+            "PHASE A NOT COMPLETE — you can't finish yet. Drive EVERY high/critical finding to a "
+            "terminal (RCE / pivot / takeover) or a documented dead-end (dismissed escalation_lead), "
+            "and attempt every provable exploit bridge. The scan AUTO-ADVANCES to Phase B (coverage) "
+            "the moment depth saturates — keep hunting, don't stop to summarise."
+        )
+    return (
+        "PHASE B NOT COMPLETE — drain the pending coverage cells (report(action='coverage', "
+        "data={type:'sweep'}) / bulk_tested). The scan AUTO-ADVANCES to Phase C (synthesis) at 0 "
+        "pending, where you compose the final kill-chains and then complete."
+    )
+
+
 def _collect_completion_blockers(data: dict, effective: set) -> list[str]:
     """Run all completion gate checks and return the list of blocker strings."""
     blockers: list[str] = []
@@ -89,6 +116,15 @@ def _collect_completion_blockers(data: dict, effective: set) -> list[str]:
     from mcp_server.scan_engine.budget import get_profile
     if get_profile().get("enforce_coverage", True):
         blockers.extend(_st._gate_blockers())
+        # Three-phase: advance the phase to saturation first, then block completion until
+        # SYNTHESIS (Phase C) so all three phases actually run — a run can't finish early in
+        # the deep pass (A) and skip breadth (B) + synthesis (C). Dischargeable by progressing
+        # (each phase saturates); the operator's force-complete still bypasses it. CTF/benchmark
+        # runs are exempt (single-flag goal — phase bookkeeping is overhead, same as coverage).
+        if not _st._has_ctf_flag(data):
+            phase_blocker = _phase_completion_blocker()
+            if phase_blocker:
+                blockers.append(phase_blocker)
     blockers.extend(_st._qa_blockers())
     blockers.extend(_st._escalation_lead_blockers(data))
 

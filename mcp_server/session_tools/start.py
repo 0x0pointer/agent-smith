@@ -166,6 +166,7 @@ def _do_start(opts):
     # attempt/pass progress instead of silently starting the thorough passes over.
     _prev_complete_attempts = existing.get("complete_attempts", 0) or 0
     _prev_analysis_passes = existing.get("analysis_passes", 0) or 0
+    _prev_scan_phase = existing.get("scan_phase")   # preserve three-phase progress on resume
     _st._complete_attempts = 0
     _st._analysis_passes = 0
     _st._last_blocker_count = None
@@ -234,6 +235,10 @@ def _do_start(opts):
             _st._analysis_passes = _prev_analysis_passes
             _cur["complete_attempts"] = _prev_complete_attempts
             _cur["analysis_passes"] = _prev_analysis_passes
+        # Resume keeps its three-phase progress — a scan resumed mid-coverage/synthesis must
+        # not snap back to Phase A (which would restart the deep hunt and re-block completion).
+        if is_resume and _prev_scan_phase:
+            _cur["scan_phase"] = _prev_scan_phase
         scan_session._flush()
     try:
         from core.adjunction.log import clear as _adj_log_clear

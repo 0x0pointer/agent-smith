@@ -181,8 +181,44 @@ def _depth_resume_call() -> str | None:
         return None
 
 
-def _concrete_next_call(target: str, tools_run: set, in_progress: list, pending_count: int) -> str:
-    """Return a single concrete tool call string the model should execute next."""
+def _exploit_hunt_call() -> str:
+    """Phase A next-move: deep hunting; matrix may build but is not drained."""
+    return (
+        "PHASE A — DEEP EXPLOITATION. The coverage matrix may fill as you discover endpoints "
+        "(that's useful for Phase B/C), but do NOT sweep / bulk-test / auto-crosscut it yet — "
+        "that breadth work is Phase B and will be REFUSED here. "
+        "Hunt the high-value surface and drive every confirmed finding to its TERMINAL: "
+        "chain the MANDATORY skills (RCE → /post-exploit, LLM/AI → /ai-redteam, creds/JWT → "
+        "/credential-audit, structured params or generated tokens/IDs → /param-fuzz "
+        "(mass-assignment → privilege escalation, token/ID entropy → predictable-value account "
+        "takeover — these are chain PRIMITIVES, not breadth checkboxes; run it in Phase A after "
+        "the injection sweep, don't defer it to Phase B), financial/stateful → /business-logic), "
+        "escalate each primitive as "
+        "far as it goes (privilege, lateral, cloud/IMDS, data access, second-order), and file "
+        "report(action='chain', ...) for every proven kill-chain. When every high/critical "
+        "finding is either driven to a terminal or has a documented dead-end (dismissed "
+        "escalation_lead), the scan AUTO-ADVANCES to Phase B (systematic coverage) — you don't "
+        "call anything to switch phases."
+    )
+
+
+def _synthesis_call() -> str:
+    """Phase C next-move: compose everything."""
+    return (
+        "PHASE C — SYNTHESIS. Coverage is drained. Compose everything you've gathered: run "
+        "report(action='chain', data={type:'suggest'}) for graph-derived candidate chains, prove "
+        "each provable bridge end-to-end (or document a dismissed escalation_lead if blocked), and "
+        "push every held primitive to its maximal terminal. THEN adjudicate every high/critical "
+        "finding and session(action='complete')."
+    )
+
+
+def _concrete_next_call(target: str, tools_run: set, in_progress: list, pending_count: int,
+                        phase: str = "exploit") -> str:
+    """Return a single concrete tool call string the model should execute next — PHASE-AWARE:
+    in Phase A it hands back the deep hunt (never 'burn cells'); Phase B drains the matrix;
+    Phase C composes. This is what stops compaction from resetting the model to breadth."""
+    from core.session import phases as _phases
     if in_progress:
         cell = in_progress[0]
         # AS-08: the endpoint path and param name are scan-target-derived
@@ -204,14 +240,17 @@ def _concrete_next_call(target: str, tools_run: set, in_progress: list, pending_
         return f"scan(tool='spider', target='{target}')"
     if "nuclei" not in tools_run:
         return f"scan(tool='nuclei', target='{target}')"
-    # DEPTH-FIRST resume: before falling back to breadth cell-burning, hand back the
-    # deepest unfinished exploit. Compaction fires every few minutes; if the brief always
-    # says "burn down cells" the model is RESET to breadth every cycle and loses the
-    # kill-chain it was on (the compaction→breadth-reset→shallow-results loop). Resume the
-    # unproven compositional bridge / unexploited primitive first.
+    # PHASE A: hunt deep, never breadth cell-burning (the matrix isn't built yet).
+    if phase == _phases.EXPLOIT:
+        return _exploit_hunt_call()
+    # DEPTH-FIRST resume (B/C): before falling back to breadth cell-burning, hand back the
+    # deepest unfinished exploit — the unproven compositional bridge — so compaction doesn't
+    # reset the model to breadth mid-chain.
     depth = _depth_resume_call()
     if depth:
         return depth
+    if phase == _phases.SYNTHESIS:
+        return _synthesis_call()
     if pending_count > 0:
         # Concrete next action so a respawned/recovered model doesn't flounder
         # (it kept looking for in_progress work, found none, and idled). Drive the

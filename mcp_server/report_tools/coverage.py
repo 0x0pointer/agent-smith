@@ -445,6 +445,25 @@ async def _do_coverage(data):
     if not cov_type:
         cov_type = _infer_coverage_type(data)
 
+    # THREE-PHASE: Phase A (deep hunt) BUILDS the matrix freely (endpoint / import_openapi are
+    # discovery — useful for Phase B/C) but must NOT DRAIN it. The bulk breadth-testing types
+    # (sweep / bulk_tested / next_batch / auto_crosscutting) are Phase B work; in Phase A they
+    # redirect so the model drives findings to terminal instead of burning cells. Registration
+    # and single-cell 'tested' (linking a confirmed exploit to its cell) stay allowed.
+    if cov_type in ("sweep", "bulk_tested", "next_batch", "auto_crosscutting"):
+        from core import session as _sess
+        from core.session import phases as _phases
+        if _phases.current_phase(_sess.get()) == _phases.EXPLOIT:
+            return (
+                f"DEFERRED — '{cov_type}' is breadth cell-testing (Phase B work). You are in "
+                "PHASE A (deep exploitation): the coverage matrix is being built for later, but do "
+                "NOT sweep/drain it yet. Instead, drive every confirmed finding to its terminal "
+                "(RCE / pivot / full takeover), chain the mandatory skills, and file "
+                "report(action='chain', ...). The scan AUTO-ADVANCES to Phase B the moment depth "
+                "saturates (every high/critical driven to a terminal or a documented dead-end) — "
+                "run the sweep then."
+            )
+
     if cov_type == "endpoint":
         return await _do_coverage_endpoint(data, cov)
     if cov_type == "tested":

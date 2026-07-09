@@ -175,6 +175,16 @@ def _coverage_blockers(cov: dict, data: dict | None = None, ctf_mode: bool = Fal
     and so re-spidering picks up new endpoints later. CTF mode bypasses this because
     benchmarks have a single flag goal where matrix bookkeeping is overhead.
     """
+    # Phase A (deep exploitation) is MATRIX-FREE by design — the coverage matrix is built and
+    # drained in Phase B. So no coverage pressure while an ACTIVE session is in scan_phase ==
+    # exploit; otherwise the empty-matrix gate would wrongly demand matrix bookkeeping during
+    # the deep hunt. (No active session → run the normal logic.)
+    from core import session as _sess
+    from core.session import phases as _phases
+    _cur = _sess.get()
+    if _cur and _phases.current_phase(_cur) == _phases.EXPLOIT:
+        return []
+
     blockers: list[str] = []
     meta = cov.get("meta", {})
     total = meta.get("total_cells", 0)

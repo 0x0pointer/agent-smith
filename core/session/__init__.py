@@ -195,6 +195,7 @@ from .intervention import (  # noqa: E402
 from .gates import (  # noqa: E402
     add_tool_called,
     defer_gates,
+    maybe_advance_phase,
     open_trigger_gate,
     pending_gates,
     reconcile_worked_gates,
@@ -205,6 +206,7 @@ from .gates import (  # noqa: E402
     skill_worked,
     trigger_gate,
 )
+from . import phases  # noqa: E402  (three-phase scan model)
 from .assets import (  # noqa: E402
     _SPIDER_MAX_RETRIES,
     _update_dict_assets,
