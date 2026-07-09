@@ -1422,6 +1422,22 @@ def test_concrete_next_call_phase_a_hunts_not_burns(monkeypatch):
     assert "PHASE A" in out and "DEEP EXPLOITATION" in out and "cells still pending" not in out
 
 
+def test_concrete_next_call_phase_a_nudges_param_fuzz(monkeypatch):
+    # REGRESSION: /param-fuzz starved because the Phase A mandatory-chain nudge listed
+    # post-exploit/ai-redteam/credential-audit/business-logic but omitted param-fuzz — so
+    # the model was only ever pulled to it AFTER web-exploit "completed" (a handoff that
+    # never fires in a deep Phase A). It must appear in the Phase A hunt nudge itself.
+    import mcp_server.session_tools.recovery_build as rb
+    monkeypatch.setattr(rb, "_depth_resume_call", lambda: "RESUME DEPTH …")
+    out = _concrete_next_call(
+        "http://t", tools_run={"httpx", "naabu", "spider", "nuclei"},
+        in_progress=[], pending_count=12, phase="exploit",
+    )
+    assert "/param-fuzz" in out
+    # …and it's framed as a Phase-A depth primitive, not deferred to Phase B breadth.
+    assert "mass-assignment" in out and "Phase B" in out
+
+
 def test_concrete_next_call_phase_c_synthesis(monkeypatch):
     import mcp_server.session_tools.recovery_build as rb
     monkeypatch.setattr(rb, "_depth_resume_call", lambda: None)   # bridges done
