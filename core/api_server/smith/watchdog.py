@@ -63,6 +63,27 @@ async def _watchdog_respawn_flow(now: float) -> None:
             "WATCHDOG_RESPAWN_CAP",
         )
         return
+    # Cumulative per-scan cap — the per-hour window above resets each hour, so on an
+    # operator-terminated thorough scan (status stays 'running' forever) the watchdog
+    # would respawn ~MAX_PER_HOUR/hour indefinitely (the "40 agents overnight" runaway).
+    # Key a cumulative counter on the session id; once a single scan hits
+    # _WATCHDOG_MAX_PER_SCAN total auto-respawns, STOP and hand off to the operator.
+    sid = str((_api._read_json(_api._SESSION_FILE) or {}).get("id") or "")
+    if sid and sid != _smith._watchdog_scan_key:
+        _smith._watchdog_scan_key = sid      # new scan → reset the cumulative count
+        _smith._watchdog_scan_restarts = 0
+    if _smith._watchdog_scan_restarts >= _api._WATCHDOG_MAX_PER_SCAN:
+        _log.warning("watchdog suppressed: per-scan respawn cap %d reached for scan %s — "
+                     "auto-respawn stopped, awaiting operator",
+                     _api._WATCHDOG_MAX_PER_SCAN, sid[:8])
+        _smith._watchdog_notify(
+            "Smith auto-respawn cap reached for this scan",
+            f"The watchdog has auto-restarted Smith {_smith._watchdog_scan_restarts} times for this "
+            f"scan without it completing (cap {_api._WATCHDOG_MAX_PER_SCAN}). Auto-respawn is now "
+            "STOPPED to prevent a runaway. Resume from the dashboard, or complete the scan.",
+            "WATCHDOG_PER_SCAN_CAP",
+        )
+        return
     # No-progress backoff — escalate to a human instead of respawning into the
     # same dead end (the recovery→list→exit loop that burned the model every 2 min).
     if _api._watchdog_should_escalate_no_progress():
@@ -76,6 +97,7 @@ async def _watchdog_respawn_flow(now: float) -> None:
     if ok:
         _api._watchdog_last_restart_ts = now
         _api._watchdog_restart_count_window.append(now)
+        _smith._watchdog_scan_restarts += 1   # count toward the cumulative per-scan cap
         _smith._last_spawn_failure = ""   # live respawn — clear any prior failure reason
         _log.info("watchdog: spawned pid=%d", int(result) if isinstance(result, int) else 0)
     else:
