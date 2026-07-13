@@ -18,6 +18,13 @@ _INLINE_BODY_CHARS = 8_000
 # so the model can grep/page a large OpenAPI spec or JS bundle via
 # session(action='artifact'). ~1 MB bound guards against pathological downloads.
 _MAX_ARTIFACT_BODY = 1_000_000
+# aiohttp's default HTTP line/field parser limit is 8190 bytes, so a legitimately large
+# response line — a huge Set-Cookie / `token=<big JWT>` header, a verbose error page, or
+# data reflected into a header (e.g. exfiltration-via-header during exploitation) — raises
+# LineTooLong ("Got more than 8190 bytes when reading"), which the tool reports as a failure
+# and the QA health check then MISREADS as a target-reachability problem. Raise the client
+# parser limits so large-but-valid responses parse instead of erroring.
+_CLIENT_MAX_HDR = 256 * 1024
 
 
 def _write_text(path: str, content: str) -> None:
@@ -79,7 +86,8 @@ async def http_probe(url, method="GET", headers=None, body=None, timeout_s=20) -
     only reads responses to feed an oracle; it sends no secrets to protect."""
     import aiohttp
     try:
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(
+            max_line_size=_CLIENT_MAX_HDR, max_field_size=_CLIENT_MAX_HDR) as session:
             async with session.request(
                 method, url, headers=headers or {}, data=body,
                 timeout=aiohttp.ClientTimeout(total=timeout_s), ssl=False,  # NOSONAR S4830 — intentional: see docstring
@@ -101,7 +109,8 @@ async def _do_request(url, method, headers, body, opts):
     call_id = cost_tracker.start("http_request")
     artifact_raw = None
     try:
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(
+            max_line_size=_CLIENT_MAX_HDR, max_field_size=_CLIENT_MAX_HDR) as session:
             async with session.request(
                 method, url,
                 headers=headers or {},

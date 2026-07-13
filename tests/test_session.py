@@ -986,3 +986,46 @@ def test_maybe_advance_phase_never_auto_advances(monkeypatch):
     assert core.session.maybe_advance_phase() is None
     assert core.session.get()["scan_phase"] == "exploit"              # unchanged — no auto-advance
     assert core.session.get().get("phase_advice") == "coverage"       # advisory recorded
+
+
+# ---------------------------------------------------------------------------
+# SMITH_LHOST → known_assets.attacker_host (operator reverse-shell listener)
+# ---------------------------------------------------------------------------
+
+def test_start_reads_smith_lhost_env(monkeypatch):
+    monkeypatch.setenv("SMITH_LHOST", "1.2.3.4:9001")
+    sess = core.session.start("example.com")
+    assert sess["known_assets"].get("attacker_host") == {
+        "lhost": "1.2.3.4", "lport": 9001, "source": "SMITH_LHOST"}
+
+
+def test_start_lhost_defaults_port_4444(monkeypatch):
+    monkeypatch.setenv("SMITH_LHOST", "attacker.vps.example")
+    sess = core.session.start("example.com")
+    assert sess["known_assets"]["attacker_host"]["lport"] == 4444
+
+
+def test_start_no_lhost_env_no_attacker_host(monkeypatch):
+    monkeypatch.delenv("SMITH_LHOST", raising=False)
+    sess = core.session.start("example.com")
+    assert "attacker_host" not in sess["known_assets"]
+
+
+def test_start_lhost_ipv6_bracketed(monkeypatch):
+    monkeypatch.setenv("SMITH_LHOST", "[2001:db8::1]:9001")
+    sess = core.session.start("example.com")
+    assert sess["known_assets"]["attacker_host"] == {
+        "lhost": "2001:db8::1", "lport": 9001, "source": "SMITH_LHOST"}
+
+
+def test_start_lhost_ipv6_bare(monkeypatch):
+    monkeypatch.setenv("SMITH_LHOST", "::1")
+    sess = core.session.start("example.com")
+    ah = sess["known_assets"]["attacker_host"]
+    assert ah["lhost"] == "::1" and ah["lport"] == 4444
+
+
+def test_start_lhost_out_of_range_port_falls_back(monkeypatch):
+    monkeypatch.setenv("SMITH_LHOST", "1.2.3.4:70000")
+    sess = core.session.start("example.com")
+    assert sess["known_assets"]["attacker_host"]["lport"] == 4444

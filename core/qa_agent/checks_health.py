@@ -9,6 +9,7 @@ exploitation via a steering directive instead of pausing.
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 
 import core.qa_agent as _qa
@@ -318,12 +319,27 @@ def _check_exploit_escalation(entries: list[dict], findings_data: dict, session_
     return None
 
 
+def _is_client_response_size_error(err: str) -> bool:
+    """True when a tool 'failure' is actually the HTTP CLIENT rejecting a large-but-valid
+    response (aiohttp LineTooLong / a header/field over the parser limit), NOT a network or
+    reachability problem — the request reached the target and got a response the client parser
+    couldn't fit (e.g. a huge `token=`/Set-Cookie header, or data reflected into a header during
+    exploitation). These must not be mis-framed as 'target down / DNS / SSL / proxy'."""
+    e = (err or "").lower()
+    return (("more than" in e and "bytes" in e)          # "Got more than 8190 bytes when reading"
+            or "line too long" in e or "linetoolong" in e
+            or "is too long" in e                        # "Header value/name is too long"
+            or "max_line_size" in e or "max_field_size" in e)
+
+
 def _check_repeated_tool_failure(entries: list[dict]) -> dict | None:
     """HIR when the same tool fails 3+ times in a row — likely an infrastructure issue.
 
     Message + remediation options are tool-aware: Python-native tools
     (http_request, spider) get a target-reachability framing; Docker-backed
     tools (kali, metasploit, nuclei, ...) keep the container/infra framing.
+    Client-side response-size errors (aiohttp LineTooLong) are exempted — they mean the target
+    responded, so they surface as a NON-blocking advisory, not a reachability HIR that halts.
     """
     tool_entries = [e for e in entries if e.get("type") == "TOOL" and e.get("error")]
     if len(tool_entries) < 3:
@@ -340,6 +356,24 @@ def _check_repeated_tool_failure(entries: list[dict]) -> dict | None:
         return None
 
     is_python_native = broken_tool in _PYTHON_NATIVE_TOOLS
+
+    # Client-side response-size errors (aiohttp LineTooLong) are NOT reachability failures — the
+    # target responded; our HTTP client rejected an oversized response line. Don't halt the scan
+    # with a mis-framed reachability HIR; surface a non-blocking advisory (fixed at the source by
+    # raising the client's max_line_size/max_field_size in mcp_server/http_tools.py).
+    errs = [str(e.get("error", "")) for e in last_three]
+    if is_python_native and all(_is_client_response_size_error(x) for x in errs):
+        return {
+            "code": "TOOL_RESPONSE_TOO_LARGE", "urgency": "medium", "blocking": False,
+            "message": (
+                f"'{broken_tool}' hit the HTTP client's line/field size limit 3× — a large "
+                "response (e.g. a big token=/Set-Cookie header or data reflected into a header), "
+                "NOT a target-reachability problem. The client parser limit has been raised; if it "
+                "recurs, chunk the data to <8 KB per response (head -c 4000 / paginate). Target is "
+                "up — keep testing."
+            ),
+        }
+
     if is_python_native:
         situation = (
             f"Tool '{broken_tool}' has failed 3 times in a row in the last 20 minutes. "
@@ -382,3 +416,58 @@ def _check_repeated_tool_failure(entries: list[dict]) -> dict | None:
         "code": "HIR_TOOL_FAILURE", "urgency": "high", "blocking": False,
         "message": message,
     }
+
+
+# A reverse-shell payload firing at one of these = a placeholder LHOST that can't call back.
+_REVSHELL_INDICATORS = ("msfvenom", "reverse_bash", "reverse_tcp", "/dev/tcp/", "lhost=",
+                        "nc -e", "socat tcp", "meterpreter", "reverse shell")
+# Exact placeholder HOST tokens — matched against the extracted lhost/callback VALUE, never as a
+# loose substring, so a real 'lhost=attacker.corp.com' is NOT flagged (only the literal placeholders).
+_PLACEHOLDER_HOSTS = frozenset({
+    "attacker.example.com", "attacker", "lhost", "your_ip", "your-ip", "your.ip",
+    "changeme", "x.x.x.x", "10.10.10.10", "example.com", "attacker_ip", "attacker-ip",
+    "0.0.0.0", "attacker.local", "attacker.tld", "target_ip",
+})
+# Pull the host token out of the common reverse-shell syntaxes (lhost=, /dev/tcp/HOST/, tcp:HOST,
+# connect("HOST"…, nc … HOST port).
+_CALLBACK_HOST_RE = re.compile(
+    r"(?:lhost[=\s]+|/dev/tcp/|tcp:|connect\(\"?|fsockopen\(\"?|-e\s+/\S+\s+|nc\s+(?:-\S+\s+)*)"
+    r"([A-Za-z0-9._-]+)", re.I)
+
+
+def _check_reverse_shell_placeholder_lhost(entries: list[dict], session_data: dict) -> dict | None:
+    """Advisory when a reverse-shell payload is fired with a PLACEHOLDER LHOST (e.g.
+    attacker.example.com / ATTACKER / LHOST) and no routable listener is configured — a futile
+    payload that can't call back (the msfvenom-rejects-attacker.example.com case). Points at the
+    real options instead of letting the model burn calls or silently switch skills. NON-blocking —
+    never halts the scan. Suppressed once an operator listener (SMITH_LHOST → attacker_host) exists,
+    since then the payload is legitimate. Matches on the extracted host VALUE (not loose substrings),
+    so a genuine hostname that merely starts with 'attacker' is not flagged."""
+    if (session_data.get("known_assets") or {}).get("attacker_host"):
+        return None
+    now = datetime.now(timezone.utc)
+    tool_entries = [e for e in entries if e.get("type") == "TOOL"]
+    for e in tool_entries[-15:]:
+        if _ts_age_secs(e.get("ts", ""), now) > 1200:
+            continue
+        cmd = str(e.get("command", ""))
+        if not cmd or not any(ind in cmd.lower() for ind in _REVSHELL_INDICATORS):
+            continue
+        hosts = {h.strip().lower() for h in _CALLBACK_HOST_RE.findall(cmd)}
+        if hosts & _PLACEHOLDER_HOSTS:
+            return {
+                "code": "REVERSE_SHELL_NO_LHOST", "urgency": "medium", "blocking": False,
+                "message": (
+                    "A reverse-shell payload used a PLACEHOLDER LHOST (e.g. attacker.example.com / "
+                    "ATTACKER / LHOST) — it cannot call back; you have no routable listener. Do ONE "
+                    "of: (1) an operator listener, if set, is in known_assets.attacker_host — use it; "
+                    "(2) prove egress via the OOB collaborator — session(action='oob_mint'), embed "
+                    "http://<sub>/ (wget) or a DNS lookup in the RCE sink, then oob_poll; the callback "
+                    "artifact satisfies the post_exploit_rce gate; (3) if there is no egress, document "
+                    "the interactive shell as a DEAD-END (a dismissed escalation_lead on the RCE "
+                    "finding) AND session(action='wishlist_add', need='public reverse-shell listener + "
+                    "confirm target egress'). Do NOT re-run msfvenom with a placeholder or silently "
+                    "switch skills — the target is reachable; only the listener is missing."
+                ),
+            }
+    return None

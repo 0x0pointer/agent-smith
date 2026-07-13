@@ -127,6 +127,7 @@ from .checks_health import (  # noqa: E402
     _check_budget_limit,
     _check_exploit_escalation,
     _check_repeated_tool_failure,
+    _check_reverse_shell_placeholder_lhost,
     _check_target_unreachable,
     _check_zero_endpoints,
 )

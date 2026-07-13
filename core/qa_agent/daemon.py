@@ -36,6 +36,7 @@ from .checks_health import (
     _check_budget_limit,
     _check_exploit_escalation,
     _check_repeated_tool_failure,
+    _check_reverse_shell_placeholder_lhost,
     _check_target_unreachable,
     _check_zero_endpoints,
 )
@@ -98,6 +99,8 @@ _CHECKS: list[tuple] = [
     (_check_missing_skill,         ("coverage_data", "session_data")),
     # Deep post-exploitation: RCE→shell, container escape, real lateral movement
     (_check_post_exploit_depth,    ("session_data",)),
+    # Reverse-shell with a placeholder LHOST → point at OOB / operator listener / documented dead-end
+    (_check_reverse_shell_placeholder_lhost, ("entries", "session_data")),
 ]
 
 
