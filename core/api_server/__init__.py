@@ -153,7 +153,14 @@ async def _start_background_tasks() -> None:
     _load_dotenv()
     from core.qa_agent import qa_daemon
     _qa_task = asyncio.create_task(qa_daemon.run(interval_s=120))
-    _watchdog_task = asyncio.create_task(_smith_watchdog_loop())
+    # The watchdog auto-respawns a headless Smith whenever a scan is 'running' but Smith
+    # looks dead. SMITH_WATCHDOG_DISABLED=1 turns that off so the dashboard UI can run
+    # WITHOUT unattended agent spawns / surprise API cost — e.g. when a human is driving
+    # the scan interactively. Default (unset) keeps the auto-restart behaviour.
+    if os.environ.get("SMITH_WATCHDOG_DISABLED", "").strip().lower() not in ("1", "true", "yes"):
+        _watchdog_task = asyncio.create_task(_smith_watchdog_loop())
+    else:
+        _watchdog_task = None
     _status_task = asyncio.create_task(_status_update_loop())
 
 
@@ -291,6 +298,7 @@ from .smith import (  # noqa: E402
     _SMITH_STALL_SECONDS,
     _SPAWN_SOURCE_TAGS,
     _WATCHDOG_MAX_NO_PROGRESS,
+    _WATCHDOG_MAX_PER_SCAN,
     _client_installed,
     _client_process_running,
     _cold_recovery_prompt,
