@@ -72,6 +72,18 @@ async def _watchdog_respawn_flow(now: float) -> None:
     if sid and sid != _smith._watchdog_scan_key:
         _smith._watchdog_scan_key = sid      # new scan → reset the cumulative count
         _smith._watchdog_scan_restarts = 0
+        _smith._watchdog_last_respawn_progress = ()
+    # Progress-aware cap: a respawn that LED TO substantive progress (a new finding / newly-closed
+    # cell) is not a runaway. Reset the per-scan counter whenever the scan ADVANCED since the last
+    # observation, so the cap counts only CONSECUTIVE futile respawns (recovery→list→exit with zero
+    # progress). Without this, a healthy long scan that legitimately respawns 8+ times and keeps
+    # finding things is wrongly suppressed and stalls (the "my deep scan died at 8 respawns" bug).
+    _cur_progress = _smith._scan_progress_snapshot()
+    if _smith._watchdog_scan_restarts and _cur_progress != _smith._watchdog_last_respawn_progress:
+        _log.info("watchdog: scan progressed since last respawn (%s → %s) — resetting per-scan cap",
+                  _smith._watchdog_last_respawn_progress, _cur_progress)
+        _smith._watchdog_scan_restarts = 0
+    _smith._watchdog_last_respawn_progress = _cur_progress
     if _smith._watchdog_scan_restarts >= _api._WATCHDOG_MAX_PER_SCAN:
         _log.warning("watchdog suppressed: per-scan respawn cap %d reached for scan %s — "
                      "auto-respawn stopped, awaiting operator",

@@ -31,6 +31,11 @@ _watchdog_no_progress_count = 0
 # runaway where the rolling per-hour cap alone let the watchdog respawn forever.
 _watchdog_scan_key: str = ""
 _watchdog_scan_restarts = 0
+# Progress snapshot (findings, addressed cells) observed at the last watchdog respawn-flow pass.
+# The per-scan cap resets whenever the scan ADVANCED since this mark, so the cap counts only
+# CONSECUTIVE futile respawns — a healthy long scan that legitimately respawns many times and
+# keeps finding things is never suppressed (fixes the "deep scan stalls at 8 respawns" regression).
+_watchdog_last_respawn_progress: tuple = ()
 # Last respawn-failure reason (the child's own exit line, e.g. an out-of-usage /
 # credit / auth message) so the no-progress HIR can report the REAL cause instead
 # of the generic "agent keeps exiting without testing". Cleared on a live respawn.

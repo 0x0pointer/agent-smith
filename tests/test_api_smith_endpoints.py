@@ -726,6 +726,7 @@ class TestWatchdogNoProgressBackoff:
         monkeypatch.setattr(api.smith, "_watchdog_last_progress", None)
         monkeypatch.setattr(api.smith, "_watchdog_scan_key", "")
         monkeypatch.setattr(api.smith, "_watchdog_scan_restarts", 0)
+        monkeypatch.setattr(api.smith, "_watchdog_last_respawn_progress", ())
 
     def test_snapshot_reads_findings_and_cells_not_mtime(self, tmp_path, monkeypatch):
         # The fingerprint is (findings, addressed cells) ONLY — quick_log mtime is
@@ -828,11 +829,14 @@ class TestWatchdogNoProgressBackoff:
         operator instead of spawning again."""
         monkeypatch.setattr(api, "_watchdog_last_restart_ts", 0.0)
         monkeypatch.setattr(api, "_watchdog_restart_count_window", [])
-        # This scan has already been auto-respawned up to the cap.
+        # This scan has been auto-respawned up to the cap WITH NO PROGRESS since (the runaway
+        # signature: the snapshot equals the last-respawn mark, so the progress-reset does NOT fire).
         monkeypatch.setattr(api.smith, "_watchdog_scan_key", "scan-abc")
         monkeypatch.setattr(api.smith, "_watchdog_scan_restarts", api._WATCHDOG_MAX_PER_SCAN)
+        monkeypatch.setattr(api.smith, "_watchdog_last_respawn_progress", (3, 7))
         with patch.object(api, "_mcp_sse_alive", return_value=True), \
              patch.object(api, "_read_json", return_value={"id": "scan-abc"}), \
+             patch.object(api.smith, "_scan_progress_snapshot", return_value=(3, 7)), \
              patch.object(api, "_watchdog_should_escalate_no_progress", return_value=False), \
              patch.object(api, "_spawn_smith", new_callable=AsyncMock) as mock_spawn, \
              patch.object(api.smith, "_watchdog_notify") as mock_notify:
@@ -840,6 +844,29 @@ class TestWatchdogNoProgressBackoff:
         mock_spawn.assert_not_called()
         codes = [c.args[2] for c in mock_notify.call_args_list]
         assert "WATCHDOG_PER_SCAN_CAP" in codes
+
+    @pytest.mark.asyncio
+    async def test_respawn_flow_resets_cap_when_scan_progressed(self, monkeypatch):
+        """REGRESSION: a healthy LONG scan that legitimately respawns past the cap but keeps making
+        progress must NOT be suppressed. When the scan ADVANCED since the last respawn (snapshot
+        differs from the mark), the per-scan counter resets — only CONSECUTIVE futile respawns trip
+        the cap. This is the '#156 stalled my deep scan at 8 respawns' fix."""
+        monkeypatch.setattr(api, "_watchdog_last_restart_ts", 0.0)
+        monkeypatch.setattr(api, "_watchdog_restart_count_window", [])
+        monkeypatch.setattr(api.smith, "_watchdog_scan_key", "scan-abc")
+        monkeypatch.setattr(api.smith, "_watchdog_scan_restarts", api._WATCHDOG_MAX_PER_SCAN)  # at cap
+        monkeypatch.setattr(api.smith, "_watchdog_last_respawn_progress", (3, 7))
+        with patch.object(api, "_mcp_sse_alive", return_value=True), \
+             patch.object(api, "_read_json", return_value={"id": "scan-abc"}), \
+             patch.object(api.smith, "_scan_progress_snapshot", return_value=(4, 9)), \
+             patch.object(api, "_watchdog_should_escalate_no_progress", return_value=False), \
+             patch.object(api, "_detect_active_client", return_value="opencode"), \
+             patch.object(api, "_spawn_smith", new_callable=AsyncMock,
+                          return_value=(True, 4242)) as mock_spawn, \
+             patch("core.notifiers.notify"):
+            await api.smith._watchdog_respawn_flow(time.time())
+        mock_spawn.assert_awaited_once()                 # progress reset the cap → respawn allowed
+        assert api.smith._watchdog_scan_restarts == 1    # reset to 0, then +1 for this respawn
 
     @pytest.mark.asyncio
     async def test_respawn_flow_resets_per_scan_count_on_new_scan(self, monkeypatch):
