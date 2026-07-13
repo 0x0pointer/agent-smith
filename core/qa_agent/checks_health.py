@@ -425,7 +425,7 @@ _REVSHELL_INDICATORS = ("msfvenom", "reverse_bash", "reverse_tcp", "/dev/tcp/", 
 # loose substring, so a real 'lhost=attacker.corp.com' is NOT flagged (only the literal placeholders).
 _PLACEHOLDER_HOSTS = frozenset({
     "attacker.example.com", "attacker", "lhost", "your_ip", "your-ip", "your.ip",
-    "changeme", "x.x.x.x", "10.10.10.10", "example.com", "attacker_ip", "attacker-ip",
+    "changeme", "x.x.x.x", "10.10.10.10", "example.com", "attacker_ip", "attacker-ip",  # NOSONAR S1313 — placeholder-detection literal, not a network address
     "0.0.0.0", "attacker.local", "attacker.tld", "target_ip",
 })
 # Pull the host token out of the common reverse-shell syntaxes (lhost=, /dev/tcp/HOST/, tcp:HOST,
@@ -462,7 +462,7 @@ def _check_reverse_shell_placeholder_lhost(entries: list[dict], session_data: di
                     "ATTACKER / LHOST) — it cannot call back; you have no routable listener. Do ONE "
                     "of: (1) an operator listener, if set, is in known_assets.attacker_host — use it; "
                     "(2) prove egress via the OOB collaborator — session(action='oob_mint'), embed "
-                    "http://<sub>/ (wget) or a DNS lookup in the RCE sink, then oob_poll; the callback "
+                    "http://<sub>/ (wget) or a DNS lookup in the RCE sink, then oob_poll; the callback "  # NOSONAR S5332 — example URL in guidance text, not an HTTP connection
                     "artifact satisfies the post_exploit_rce gate; (3) if there is no egress, document "
                     "the interactive shell as a DEAD-END (a dismissed escalation_lead on the RCE "
                     "finding) AND session(action='wishlist_add', need='public reverse-shell listener + "
