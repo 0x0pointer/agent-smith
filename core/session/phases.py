@@ -41,8 +41,19 @@ def phase_label(phase: str) -> str:
 # ── Saturation predicates (each dischargeable via documented dead-ends) ──────────
 
 def _tools_run(sess: dict) -> set:
+    """All tool names run this scan. Reads BOTH session lists because they use different
+    vocabularies: `tools_called` holds the resolved SCANNER names (httpx/nmap/spider/naabu/... —
+    the vocabulary _RECON_TOOLS is written in), while `tool_invocations[].tool` holds the raw
+    dispatcher names (http_request/kali/...). Reading only tool_invocations (the original bug) left
+    _recon_done permanently False on real scans — the scanner names live in tools_called — so
+    depth_saturated was always False and the phase could never advance. Union both so recon is
+    detected regardless of which list a tool lands in."""
     out: set = set()
-    for e in (sess or {}).get("tool_invocations", []) or []:
+    s = sess or {}
+    for t in s.get("tools_called", []) or []:
+        if isinstance(t, str) and t:
+            out.add(t)
+    for e in s.get("tool_invocations", []) or []:
         if isinstance(e, dict) and e.get("tool"):
             out.add(e["tool"])
     return out
@@ -83,6 +94,48 @@ def _hunt_attempted(sess: dict) -> bool:
     flag set by gates._mark_active_skill_worked), not merely a set_skill rubber-stamp."""
     return any(isinstance(s, dict) and s.get("skill") in _HUNT_SKILLS and s.get("worked")
                for s in (sess or {}).get("skill_history", []) or [])
+
+
+def _worked_skills(sess: dict) -> set:
+    """The set of skills that have done attributable WORK (a tool fired while active), by the
+    same `worked` flag _hunt_attempted uses."""
+    return {e.get("skill") for e in (sess or {}).get("skill_history", []) or []
+            if isinstance(e, dict) and e.get("worked")}
+
+
+def _enforce_deep_skills() -> bool:
+    """Whether A→B requires the WHOLE applicable-skill sweep (full/enforcing profile) or just
+    the single-skill bar (weak local profiles). Forcing the full sweep on a small model
+    reproduces the coverage-gate 'game-then-stall', so those profiles keep the lighter bar.
+    Fail-safe → True (the deep bar)."""
+    try:
+        from mcp_server.scan_engine.budget import get_profile
+        return bool(get_profile().get("enforce_coverage", True))
+    except Exception:
+        return True
+
+
+def _skills_exhausted(sess: dict) -> bool:
+    """Every APPLICABLE hunt skill has actually WORKED — the deep-skill sweep is done, so Phase A
+    ran all its skills (web-exploit AND param-fuzz AND business-logic AND credential-audit AND the
+    conditional post-exploit/cloud/container/lateral ones), not just one. The mandatory
+    skill-chain gates ARE the applicability logic: each is opened by a real trigger (an endpoint
+    type discovered, or a confirmed RCE / IMDS / container / internal reach), so 'all gates
+    satisfied' == 'all applicable skills ran' — no hand-kept list to drift. Reads the per-skill
+    `worked` flags directly (not gate.status) so it doesn't depend on reconcile_worked_gates
+    having run this cycle. DISCHARGEABLE and never a deadlock: a skill blocked by the environment
+    still 'works' by running and documenting the dead-end, and the operator can N/A a gate. On
+    weak profiles it delegates to the single-skill bar (already checked by depth_saturated)."""
+    if not _enforce_deep_skills():
+        return True
+    worked = _worked_skills(sess)
+    for g in (sess or {}).get("gates", []) or []:
+        if g.get("status") == "satisfied":
+            continue
+        req = set(g.get("required_skills", []) or [])
+        if req and not req.issubset(worked):
+            return False
+    return True
 
 
 def _chain_fids(findings_data: dict) -> set:
@@ -137,12 +190,22 @@ def open_bridges(findings_data: dict) -> int:
 
 
 def depth_saturated(sess: dict, findings_data: dict) -> bool:
-    """A → B: the deep hunt has exhausted its high-value leads — recon is done, EVERY
-    high/critical finding has been pursued to a terminal or documented dead-end, and no
-    provable exploit bridge is left unattempted. Returns False while any deep work remains,
-    so Phase A keeps going (unbudgeted, like the lean early runs) until it's truly done."""
+    """A → B: the deep hunt has exhausted its high-value leads. Phase A runs UNBUDGETED (like the
+    lean early runs that went deep for hours) and advances only when ALL of these hold — each
+    dischargeable, so it always terminates, but only once depth is genuinely mined out:
+      1. recon has run AND at least one hunt skill did real work (the hunt started);
+      2. every APPLICABLE hunt skill has run — all mandatory skill-chain gates worked, i.e. the
+         FULL skill sweep, not just one skill (_skills_exhausted);
+      3. every high/critical finding is PURSUED — driven to a terminal, or a documented
+         dead-end (dismissed escalation_lead);
+      4. no provable exploit BRIDGE is left unattempted.
+    It deliberately does NOT advance on the model's own 'I want to sweep' signal: that breadth
+    pull is the regression being fixed, so only objective depth-exhaustion moves the phase — the
+    Phase-A DRAIN refusal instead redirects a premature sweep back into the deep work still owed."""
     if not _recon_done(sess) or not _hunt_attempted(sess):
         return False  # the deep hunt hasn't genuinely run yet — keep hunting
+    if not _skills_exhausted(sess):
+        return False  # applicable skills still owe their deep pass — keep hunting, don't drift to breadth
     highs = [f for f in findings_data.get("findings", [])
              if f.get("severity") in ("high", "critical")
              and f.get("status", "confirmed") != "false_positive"]
@@ -176,10 +239,21 @@ def synthesis_saturated(findings_data: dict) -> bool:
 
 
 def next_phase(current: str, sess: dict, findings_data: dict, matrix: dict) -> str | None:
-    """The phase to advance to if the current one is saturated, else None. Only ever moves
-    forward A→B→C (never backward)."""
+    """ADVISORY: the phase the current one COULD advance to if saturated, else None. Only ever
+    forward A→B→C. Phases no longer AUTO-advance on this — it drives the dashboard 'ready to
+    advance?' hint (see gates.maybe_advance_phase). The operator advances via gates.advance_phase."""
     if current == EXPLOIT and depth_saturated(sess, findings_data):
         return COVERAGE
     if current == COVERAGE and coverage_saturated(matrix):
         return SYNTHESIS
     return None
+
+
+def forced_next(current: str) -> str | None:
+    """Operator-forced next phase (IGNORES saturation) — one step forward, exploit→coverage→
+    synthesis; None past synthesis. Used by the human-gated advance (gates.advance_phase)."""
+    try:
+        i = PHASES.index(current)
+    except ValueError:
+        i = 0
+    return PHASES[i + 1] if i + 1 < len(PHASES) else None

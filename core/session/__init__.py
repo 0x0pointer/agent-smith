@@ -194,6 +194,7 @@ from .intervention import (  # noqa: E402
 )
 from .gates import (  # noqa: E402
     add_tool_called,
+    advance_phase,
     defer_gates,
     maybe_advance_phase,
     open_trigger_gate,

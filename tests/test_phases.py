@@ -24,6 +24,33 @@ class TestPhaseState:
         assert ph.current_phase({"scan_phase": "bogus"}) == "exploit"  # unknown → default
 
 
+class TestReconWiring:
+    def test_tools_run_reads_tools_called_scanner_names(self):
+        # REGRESSION (BUG A): recon scanners are recorded in `tools_called` as SCANNER names
+        # (httpx/nmap/...), while tool_invocations[].tool holds DISPATCHER names
+        # (http_request/kali). _tools_run must union BOTH — reading only tool_invocations left
+        # _recon_done permanently False on real scans (scanner names never appear there), so
+        # depth_saturated was always False and the advisory hint could never fire.
+        s = {"scan_phase": "exploit",
+             "tools_called": ["httpx", "naabu", "nuclei", "ffuf", "spider", "kali"],
+             "tool_invocations": [{"tool": "http_request"}, {"tool": "kali"}],
+             "skill_history": [{"skill": "web-exploit", "worked": True}]}
+        assert "httpx" in ph._tools_run(s)
+        assert ph._recon_done(s) is True
+
+    def test_recon_done_false_when_only_dispatcher_names(self):
+        s = {"tools_called": [], "tool_invocations": [{"tool": "http_request"}]}
+        assert ph._recon_done(s) is False
+
+
+class TestForcedNext:
+    def test_forward_only_and_stops_at_synthesis(self):
+        assert ph.forced_next("exploit") == "coverage"
+        assert ph.forced_next("coverage") == "synthesis"
+        assert ph.forced_next("synthesis") is None
+        assert ph.forced_next("bogus") == "coverage"   # unknown → treat as start
+
+
 class TestDepthSaturation:
     def _fd(self, findings, chains=None):
         return {"findings": findings, "chains": chains or []}
@@ -51,6 +78,44 @@ class TestDepthSaturation:
         s = {"scan_phase": "exploit", "tool_invocations": [{"tool": "nmap"}],
              "skill_history": [{"skill": "network-assess", "worked": True}]}
         assert ph.depth_saturated(s, self._fd([_crit(title="RCE via code execution")])) is True
+
+    # ── Skill-exhaustion bar (Phase A runs the FULL applicable-skill sweep, not just one) ──
+    def test_owed_skill_gate_blocks_saturation(self, monkeypatch):
+        # The deep hunt ran ONE skill (web-exploit) but a discovered surface opened a param-fuzz
+        # gate that hasn't worked → depth is NOT exhausted, keep hunting (don't drift to breadth).
+        monkeypatch.setattr(ph, "open_bridges", lambda fd: 0)
+        monkeypatch.setattr(ph, "_enforce_deep_skills", lambda: True)
+        s = _sess(gates=[{"id": "params", "status": "pending",
+                          "required_skills": ["param-fuzz"], "satisfied_skills": []}])
+        assert ph.depth_saturated(s, self._fd([])) is False
+
+    def test_all_gate_skills_worked_saturates(self, monkeypatch):
+        # Every applicable skill did real work → the deep sweep is complete → advance. Reads the
+        # per-skill `worked` flag directly, so a gate still marked 'pending' (reconcile not yet run)
+        # does not falsely block.
+        monkeypatch.setattr(ph, "open_bridges", lambda fd: 0)
+        monkeypatch.setattr(ph, "_enforce_deep_skills", lambda: True)
+        s = _sess(skill_history=[{"skill": "web-exploit", "worked": True},
+                                 {"skill": "param-fuzz", "worked": True}],
+                  gates=[{"id": "params", "status": "pending",
+                          "required_skills": ["param-fuzz"], "satisfied_skills": []}])
+        assert ph.depth_saturated(s, self._fd([])) is True
+
+    def test_satisfied_gate_never_blocks(self, monkeypatch):
+        monkeypatch.setattr(ph, "open_bridges", lambda fd: 0)
+        monkeypatch.setattr(ph, "_enforce_deep_skills", lambda: True)
+        s = _sess(gates=[{"id": "g", "status": "satisfied",
+                          "required_skills": ["reverse-shell"], "satisfied_skills": ["reverse-shell"]}])
+        assert ph.depth_saturated(s, self._fd([])) is True
+
+    def test_weak_profile_keeps_single_skill_bar(self, monkeypatch):
+        # On a weak local profile the full-sweep requirement is dropped (else the small model
+        # game-then-stalls) — an owed gate does NOT hold Phase A.
+        monkeypatch.setattr(ph, "open_bridges", lambda fd: 0)
+        monkeypatch.setattr(ph, "_enforce_deep_skills", lambda: False)
+        s = _sess(gates=[{"id": "params", "status": "pending",
+                          "required_skills": ["param-fuzz"], "satisfied_skills": []}])
+        assert ph.depth_saturated(s, self._fd([])) is True
 
     def test_unpursued_high_blocks_saturation(self, monkeypatch):
         monkeypatch.setattr(ph, "open_bridges", lambda fd: 0)

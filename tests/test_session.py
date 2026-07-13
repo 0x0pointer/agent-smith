@@ -936,3 +936,96 @@ def test_get_intervention_returns_none_when_no_intervention(tmp_path, monkeypatc
     monkeypatch.setattr(scan_session, "_SESSION_FILE", session_file)
     scan_session.start("https://example.com")
     assert scan_session.get_intervention() is None
+
+
+# ---------------------------------------------------------------------------
+# phase control — human-gated A→B→C (advance_phase / maybe_advance_phase)
+# ---------------------------------------------------------------------------
+
+def test_advance_phase_moves_one_step_forward():
+    core.session.start("example.com")
+    assert core.session.get()["scan_phase"] == "exploit"
+    r = core.session.advance_phase()
+    assert r == {"ok": True, "from": "exploit", "to": "coverage"}
+    assert core.session.get()["scan_phase"] == "coverage"
+    assert core.session.advance_phase()["to"] == "synthesis"
+
+
+def test_advance_phase_rejects_past_synthesis():
+    core.session.start("example.com")
+    core.session.advance_phase(); core.session.advance_phase()   # → synthesis
+    r = core.session.advance_phase()
+    assert r["ok"] is False and "final" in r["error"]
+    assert core.session.get()["scan_phase"] == "synthesis"
+
+
+def test_advance_phase_target_alias_jumps_forward():
+    core.session.start("example.com")
+    r = core.session.advance_phase("c")     # letter alias, jump exploit→synthesis
+    assert r == {"ok": True, "from": "exploit", "to": "synthesis"}
+
+
+def test_advance_phase_rejects_backward():
+    core.session.start("example.com")
+    core.session.advance_phase("coverage")
+    r = core.session.advance_phase("exploit")
+    assert r["ok"] is False and "not forward" in r["error"]
+    assert core.session.get()["scan_phase"] == "coverage"
+
+
+def test_advance_phase_no_running_scan():
+    assert core.session.advance_phase()["ok"] is False   # nothing started
+
+
+def test_maybe_advance_phase_never_auto_advances(monkeypatch):
+    # Even when the phase LOOKS saturated, maybe_advance_phase must NOT change scan_phase —
+    # phases are operator-gated now. It returns None and only records the advisory hint.
+    core.session.start("example.com")
+    from core.session import phases as ph
+    monkeypatch.setattr(ph, "next_phase", lambda *a, **k: "coverage")  # pretend saturated
+    assert core.session.maybe_advance_phase() is None
+    assert core.session.get()["scan_phase"] == "exploit"              # unchanged — no auto-advance
+    assert core.session.get().get("phase_advice") == "coverage"       # advisory recorded
+
+
+# ---------------------------------------------------------------------------
+# SMITH_LHOST → known_assets.attacker_host (operator reverse-shell listener)
+# ---------------------------------------------------------------------------
+
+def test_start_reads_smith_lhost_env(monkeypatch):
+    monkeypatch.setenv("SMITH_LHOST", "1.2.3.4:9001")
+    sess = core.session.start("example.com")
+    assert sess["known_assets"].get("attacker_host") == {
+        "lhost": "1.2.3.4", "lport": 9001, "source": "SMITH_LHOST"}
+
+
+def test_start_lhost_defaults_port_4444(monkeypatch):
+    monkeypatch.setenv("SMITH_LHOST", "attacker.vps.example")
+    sess = core.session.start("example.com")
+    assert sess["known_assets"]["attacker_host"]["lport"] == 4444
+
+
+def test_start_no_lhost_env_no_attacker_host(monkeypatch):
+    monkeypatch.delenv("SMITH_LHOST", raising=False)
+    sess = core.session.start("example.com")
+    assert "attacker_host" not in sess["known_assets"]
+
+
+def test_start_lhost_ipv6_bracketed(monkeypatch):
+    monkeypatch.setenv("SMITH_LHOST", "[2001:db8::1]:9001")
+    sess = core.session.start("example.com")
+    assert sess["known_assets"]["attacker_host"] == {
+        "lhost": "2001:db8::1", "lport": 9001, "source": "SMITH_LHOST"}
+
+
+def test_start_lhost_ipv6_bare(monkeypatch):
+    monkeypatch.setenv("SMITH_LHOST", "::1")
+    sess = core.session.start("example.com")
+    ah = sess["known_assets"]["attacker_host"]
+    assert ah["lhost"] == "::1" and ah["lport"] == 4444
+
+
+def test_start_lhost_out_of_range_port_falls_back(monkeypatch):
+    monkeypatch.setenv("SMITH_LHOST", "1.2.3.4:70000")
+    sess = core.session.start("example.com")
+    assert sess["known_assets"]["attacker_host"]["lport"] == 4444

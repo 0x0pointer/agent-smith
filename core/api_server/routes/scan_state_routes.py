@@ -1,7 +1,8 @@
-"""Scan-state mutation routes: clear, tunnels, intervention, steering."""
+"""Scan-state mutation routes: clear, tunnels, intervention, steering, phase advance."""
 from __future__ import annotations
 
 import logging
+import re
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
@@ -11,6 +12,38 @@ import core.api_server as _api
 from ._common import router
 
 _log = logging.getLogger(__name__)
+
+
+# ── Operator phase-advance (human-gated A→B→C) ──────────────────────────────
+# Phases never auto-advance; the operator drives them via the dashboard button
+# (/api/phase/advance) or a typed steer ("advance to phase B", "next phase"),
+# which we parse here so it fires deterministically server-side.
+_PHASE_ADVANCE_RE = re.compile(
+    r'\b(?:advance|proceed|move|switch|go|goto|jump|progress|start|begin|enter)\b'
+    r'[\w\s]{0,20}?\b'
+    r'(?:phase\s*(?P<letter>[abc])\b'
+    r'|(?P<name>coverage|synthesis|sweep|exploit)\s+phase\b'
+    r'|phase\s+(?P<name2>coverage|synthesis|sweep|exploit)\b)', re.I)
+_NEXT_PHASE_RE = re.compile(r'\bnext\s+phase\b|\badvance\s+(?:the\s+)?phase\b', re.I)
+
+
+def _parse_phase_steer(message: str):
+    """Detect an operator phase-advance instruction in a free-form steer.
+    Returns (True, target) where target is 'exploit'/'coverage'/'synthesis' or None (=next phase),
+    or (False, None) for a normal steer. Conservative: needs an advance verb AND an explicit phase
+    reference, and a bare 'coverage'/'exploit' must be qualified by the word 'phase' (so
+    'go check the coverage tab' is NOT read as an advance)."""
+    m = _PHASE_ADVANCE_RE.search(message or "")
+    if m:
+        letter = (m.group("letter") or "").lower()
+        name = (m.group("name") or m.group("name2") or "").lower()
+        tgt = ({"a": "exploit", "b": "coverage", "c": "synthesis"}.get(letter)
+               or {"coverage": "coverage", "sweep": "coverage",
+                   "synthesis": "synthesis", "exploit": "exploit"}.get(name))
+        return (True, tgt)
+    if _NEXT_PHASE_RE.search(message or ""):
+        return (True, None)
+    return (False, None)
 
 
 # ── Scan-state mutation ─────────────────────────────────────────────────────
@@ -164,6 +197,16 @@ async def api_steer(request: Request) -> JSONResponse:
         message = str(body.get("message", "")).strip()
         if not message:
             return JSONResponse({"ok": False, "error": "message required"}, status_code=400)
+        # Operator phase-advance via typed steer ("advance to phase B", "next phase") — handle it
+        # deterministically server-side (don't route it through the model) so the phase moves NOW.
+        is_phase, target = _parse_phase_steer(message)
+        if is_phase:
+            from core import session as scan_session
+            scan_session.load_from_disk(force=True)
+            res = scan_session.advance_phase(target)
+            return JSONResponse(
+                {"phase_advanced": bool(res.get("ok")), **res},
+                status_code=200 if res.get("ok") else 400)
         from core.steering import steering_queue, RESUME_REQUIRED
         steering_queue.add_directive(
             code=RESUME_REQUIRED,
@@ -176,4 +219,51 @@ async def api_steer(request: Request) -> JSONResponse:
         return JSONResponse({"ok": True})
     except Exception:
         _log.exception("api_steer failed")
+        return JSONResponse({"ok": False, "error": _api._ERR_REQUEST_FAILED}, status_code=500)
+
+
+@router.get("/api/phase")
+async def api_phase() -> JSONResponse:
+    """Current scan phase + advisory hint, for the dashboard's phase control."""
+    try:
+        from core import session as scan_session
+        from core.session import phases as _phases
+        scan_session.load_from_disk(force=True)
+        cur = scan_session.get() or {}
+        phase = _phases.current_phase(cur)
+        return JSONResponse({
+            "phase": phase,
+            "label": _phases.phase_label(phase),
+            "advice": cur.get("phase_advice"),         # phase it COULD advance to (advisory only)
+            "next": _phases.forced_next(phase),         # the next forward phase (for the button)
+            "phases": list(_phases.PHASES),
+            "running": cur.get("status") == "running",
+        })
+    except Exception:
+        _log.exception("api_phase failed")
+        return JSONResponse({"phase": "exploit", "label": "", "advice": None, "next": "coverage",
+                             "phases": ["exploit", "coverage", "synthesis"], "running": False})
+
+
+@router.post("/api/phase/advance")
+async def api_phase_advance(request: Request) -> JSONResponse:
+    """Operator advances the scan phase FORWARD (dashboard button). Phases never auto-advance —
+    Phase A runs as thorough/long as you want, and you move to the Phase-B sweep fallback and
+    Phase-C synthesis by hand. Body (optional): {"target": "coverage"|"synthesis"|"b"|"c"};
+    omit target = next phase forward."""
+    try:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        target = body.get("target") if isinstance(body, dict) else None
+        from core import session as scan_session
+        # Force-reload before mutating — the MCP process owns session.json; the dashboard's cached
+        # _current would otherwise be stale (same pattern as api_intervention_respond). The MCP
+        # picks up our write via _reconcile_if_external_write on its next tool call.
+        scan_session.load_from_disk(force=True)
+        res = scan_session.advance_phase(target)
+        return JSONResponse(res, status_code=200 if res.get("ok") else 400)
+    except Exception:
+        _log.exception("api_phase_advance failed")
         return JSONResponse({"ok": False, "error": _api._ERR_REQUEST_FAILED}, status_code=500)

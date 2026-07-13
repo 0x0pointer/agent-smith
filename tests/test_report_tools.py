@@ -671,3 +671,30 @@ async def test_coverage_drain_allowed_in_coverage_phase(monkeypatch):
     # in Phase B the sweep is not gated (reaches the real handler → no DEFERRED redirect)
     out = await _do_coverage({"type": "sweep"})
     assert "DEFERRED" not in out
+
+
+def test_phase_a_redirect_names_remaining_deepwork(monkeypatch):
+    # The Phase-A DRAIN refusal must POINT BACK to the specific deep work owed — un-pursued high
+    # findings + un-run applicable skills + unattempted bridges — not a bare 'go deeper'. This is
+    # what keeps Phase A productive (and stops /param-fuzz-style skills starving) while the refusal
+    # itself keeps Phase A long. Objective depth-exhaustion advances the phase, never this nudge.
+    from mcp_server.report_tools import coverage as covmod
+    import core.session as sess
+    import core.findings as findings
+    from core.session import phases as ph
+    monkeypatch.setattr(sess, "get", lambda: {
+        "scan_phase": "exploit",
+        "skill_history": [{"skill": "web-exploit", "worked": True}],
+        "gates": [{"id": "params", "status": "pending",
+                   "required_skills": ["param-fuzz"], "satisfied_skills": []}],
+    })
+    monkeypatch.setattr(findings, "_load", lambda: {"findings": [
+        {"id": "f1", "severity": "critical", "title": "Confirmed SQLi in /login",
+         "description": "", "status": "confirmed"}], "chains": []})
+    monkeypatch.setattr(ph, "open_bridges", lambda fd: 2)
+    out = covmod._phase_a_deepwork_redirect("sweep")
+    assert "DEFERRED" in out and "PHASE A" in out
+    assert "Confirmed SQLi in /login" in out            # names the un-pursued finding
+    assert "1 high/critical finding(s)" in out
+    assert "/param-fuzz" in out                          # names the owed applicable skill
+    assert "2 provable exploit bridge" in out            # names the unattempted bridges

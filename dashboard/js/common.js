@@ -363,6 +363,66 @@
   setInterval(_pollSmithStatus, 10000);
   _pollSmithStatus();
 
+  // ── Human-gated phase control (A→B→C) ─────────────────────────────────────
+  // Phases NEVER auto-advance — Phase A runs as deep/long as you leave it. You
+  // move to the Phase-B sweep fallback and Phase-C synthesis by hand (button or
+  // a typed "advance to phase B" steer). Depth logic is untouched.
+  const _PHASE_META = {
+    exploit:   { short: 'A · deep exploitation', nextLabel: 'Advance to Phase B (sweep)' },
+    coverage:  { short: 'B · coverage sweep',    nextLabel: 'Advance to Phase C (synthesis)' },
+    synthesis: { short: 'C · synthesis',         nextLabel: null },
+  };
+  async function _pollPhase() {
+    try {
+      const p = await fetch('/api/phase?_=' + Date.now()).then(r => r.json());
+      const curEl  = document.getElementById('cmd-phase-current');
+      const btn    = document.getElementById('cmd-phase-advance-btn');
+      const btnLbl = document.getElementById('cmd-phase-advance-label');
+      const hintEl = document.getElementById('cmd-phase-hint');
+      const meta   = _PHASE_META[p.phase] || { short: p.phase, nextLabel: 'Advance phase' };
+      if (curEl) curEl.textContent = meta.short;
+      if (btn) {
+        if (p.running && p.next) {
+          btn.style.display = 'inline-block';
+          btn.dataset.target = p.next;
+          if (btnLbl) btnLbl.textContent = meta.nextLabel || ('Advance to ' + p.next);
+        } else {
+          btn.style.display = 'none';   // idle scan, or already at synthesis
+        }
+      }
+      // Advisory only — the phase LOOKS saturated. Never blocks; you decide.
+      if (hintEl) hintEl.textContent = (p.advice && p.running) ? '✓ looks saturated — advance when ready' : '';
+    } catch (e) {}
+  }
+  setInterval(_pollPhase, 10000);
+  _pollPhase();
+
+  async function advancePhase(target) {
+    const btn = document.getElementById('cmd-phase-advance-btn');
+    const fb  = document.getElementById('cmd-smith-feedback');
+    const tgt = target || (btn && btn.dataset.target) || undefined;
+    // Two-step inline confirm (matches completeScan): first click arms, second fires.
+    if (btn && btn.dataset.armed !== '1') {
+      btn.dataset.armed = '1';
+      if (fb) fb.textContent = 'Click Advance again to move' + (tgt ? ' to ' + tgt : '') +
+                               ' — Phase A stays exactly as deep as you left it.';
+      setTimeout(() => { if (btn) btn.dataset.armed = '0'; if (fb) fb.textContent = ''; }, 5000);
+      return;
+    }
+    if (btn) { btn.dataset.armed = '0'; btn.disabled = true; }
+    try {
+      const res = await fetch('/api/phase/advance', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(tgt ? { target: tgt } : {}),
+      }).then(r => r.json());
+      if (fb) fb.textContent = res.ok ? ('✓ Advanced ' + res.from + ' → ' + res.to)
+                                      : ('✗ ' + (res.error || 'could not advance'));
+      _pollPhase();
+      setTimeout(() => { if (fb) fb.textContent = ''; }, 4000);
+    } catch (e) { if (fb) fb.textContent = '✗ Request failed'; }
+    if (btn) btn.disabled = false;
+  }
+
   let _completeConfirmExpires = 0;
 
   async function completeScan() {
