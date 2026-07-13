@@ -117,24 +117,47 @@ def _process_matches_smith(proc) -> bool:
 
 
 def _smith_running() -> bool:
-    """Return True if any Smith (claude OR opencode, dashboard- or manually-launched) is active.
+    """Return True if a Smith (claude/opencode/codex) is actively driving the scan.
 
-    Any one signal is sufficient — checked in cheapest-first order:
-      1. ``_signal_pid_file_alive``           — tracked PID from a dashboard spawn
-      2. ``_signal_quick_log_fresh``          — recent MCP tool-call heartbeat
-      3. ``_signal_session_recently_started`` — scan started < 2 h ago with
-                                                quick_log wiped (post-clear case)
-      4. ``_signal_process_scan_finds_client``— live opencode/claude/codex process
+    Live-process / startup signals — any one means running:
+      1. ``_signal_pid_file_alive``            — the tracked dashboard-spawn PID is alive
+      2. ``_signal_process_scan_finds_client`` — a live opencode/claude/codex process matches
+      3. ``_signal_session_recently_started``  — startup grace (scan started < 2 h ago, no heartbeat)
 
-    Each helper handles its own exceptions and returns False on any
-    fault, so the top-level function stays low-complexity.
+    Then the heartbeat, but GATED so it doesn't cause the laggy Phase-C pickup:
+      - If we were tracking a spawn PID and it is now DEAD, the tracked Smith cleanly EXITED →
+        return False so the watchdog respawns promptly (don't wait out the 5-min idle window). This
+        is the dashboard-spawned / cloud-Claude path.
+      - Otherwise (no tracked PID — e.g. a local model whose process the needle can't match) fall
+        back to ``_signal_quick_log_fresh`` so **thinking-mode pauses (2-3 min between tool calls in
+        Phase A/B) are still tolerated** and we don't spuriously respawn a working Smith.
     """
-    return (
-        _smith._signal_pid_file_alive()
-        or _smith._signal_quick_log_fresh()
-        or _smith._signal_session_recently_started()
-        or _smith._signal_process_scan_finds_client()
-    )
+    if (_smith._signal_pid_file_alive()
+            or _smith._signal_process_scan_finds_client()
+            or _smith._signal_session_recently_started()):
+        return True
+    if _tracked_pid_is_dead():          # tracked spawn confirmed exited → snappy respawn
+        return False
+    return _smith._signal_quick_log_fresh()   # untracked → heartbeat tolerates thinking pauses
+
+
+def _tracked_pid_is_dead() -> bool:
+    """True iff smith.pid EXISTS and points to a valid-but-DEAD pid — i.e. a spawn we were
+    tracking has cleanly exited. False when there's no pid file / an unparseable one (untracked:
+    e.g. a manually-launched or local-model Smith whose process the needle can't match) so the
+    caller falls back to the softer heartbeat signal instead of respawning over a thinking pause.
+    """
+    try:
+        import psutil
+        pid = int(_api._SMITH_PID_FILE.read_text().strip())
+    except (FileNotFoundError, ValueError, PermissionError, ImportError):
+        return False
+    if not (0 < pid < (1 << 22)):
+        return False
+    try:
+        return not psutil.pid_exists(pid)
+    except OSError:
+        return False
 
 
 def _live_pid_from_pid_file() -> int | None:

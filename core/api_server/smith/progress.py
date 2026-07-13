@@ -17,18 +17,25 @@ from ._common import _log, _WATCHDOG_MAX_NO_PROGRESS
 
 
 def _scan_progress_snapshot() -> tuple:
-    """(findings, addressed cells) — the watchdog's fingerprint for 'did the last
-    respawn actually accomplish anything SUBSTANTIVE?'.
+    """(findings, addressed cells, chains) — the watchdog's fingerprint for 'did the
+    last respawn accomplish anything SUBSTANTIVE?'.
 
     Deliberately does NOT include quick_log mtime: a respawned agent that merely
     thrashes (recovery -> list -> exit) still bumps the log, so including mtime made
     the fingerprint change on pure activity and reset the no-progress counter every
-    time — the breaker then never fired and the watchdog respawned indefinitely. Real
-    progress = a new finding or a newly-closed cell; anything less is a futile respawn."""
+    time — the breaker then never fired and the watchdog respawned indefinitely.
+
+    Includes CHAINS because Phase C (synthesis) advances by PROVING chains, not by
+    filing new findings or closing cells — without this, every productive synthesis
+    respawn looked like 'no progress', tripping the no-progress breaker / per-scan cap
+    and stalling the scan in Phase C. Real progress = a new finding, a newly-closed
+    cell, OR a newly-proven chain."""
     import json
-    findings = addressed = 0
+    findings = addressed = chains = 0
     try:
-        findings = len(json.loads(_api._FINDINGS_FILE.read_text()).get("findings", []))
+        f = json.loads(_api._FINDINGS_FILE.read_text())
+        findings = len(f.get("findings", []))
+        chains = len(f.get("chains", []))
     except Exception:
         pass
     try:
@@ -37,7 +44,7 @@ def _scan_progress_snapshot() -> tuple:
                         if c.get("status") in ("tested_clean", "vulnerable", "not_applicable"))
     except Exception:
         pass
-    return (findings, addressed)
+    return (findings, addressed, chains)
 
 
 def _watchdog_should_escalate_no_progress() -> bool:

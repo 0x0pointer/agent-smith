@@ -26,13 +26,65 @@ def _watchdog_notify(title: str, body: str, code: str) -> None:
         pass
 
 
+def _synthesis_backoff_active(now: float) -> bool:
+    """Phase-C throttle: True (defer the respawn) when synthesis has CONVERGED — the coverage
+    matrix is fully closed (0 pending cells) AND less than _WATCHDOG_SYNTHESIS_GAP_SECONDS has
+    elapsed since the last spawn.
+
+    Rationale: once the matrix is fully closed each one-shot respawn only does ~2 min of marginal
+    chain-proving before exiting; with the snappy _tracked_pid_is_dead() respawn that becomes a
+    ~2-min restart thrash — a fresh model spawn every couple of minutes for diminishing returns.
+    Deferring to the longer gap keeps synthesis advancing slowly without the thrash.
+
+    STRICTLY scoped so it CANNOT change Phase A/B behaviour: _in_converged_synthesis() is False in
+    any phase other than 'synthesis', and False even in synthesis while ANY cell is still pending —
+    so exploit (A) and coverage (B) always fall straight through to the normal snappy cadence. The
+    first respawn after a (re)start also fires immediately (_watchdog_last_restart_ts is 0 / long ago).
+    """
+    if not _smith._in_converged_synthesis():
+        return False
+    gap = now - _api._watchdog_last_restart_ts
+    if gap >= _api._WATCHDOG_SYNTHESIS_GAP_SECONDS:
+        return False
+    _log.info("watchdog: synthesis converged (matrix fully closed) — deferring respawn "
+              "(%.0fs since last spawn < %ds synthesis gap) to avoid the 2-min thrash",
+              gap, _api._WATCHDOG_SYNTHESIS_GAP_SECONDS)
+    return True
+
+
+def _respawn_hourly_cap_blocks(now: float) -> bool:
+    """Prune the trailing-hour restart window in place; True (and notify the operator) once the
+    per-hour restart cap is hit. Extracted from _watchdog_respawn_flow to keep that function within
+    the cognitive-complexity budget — behaviour is unchanged."""
+    _api._watchdog_restart_count_window[:] = [
+        t for t in _api._watchdog_restart_count_window if now - t < 3600
+    ]
+    if len(_api._watchdog_restart_count_window) < _api._WATCHDOG_MAX_PER_HOUR:
+        return False
+    _log.warning("watchdog suppressed: %d restarts in last hour exceeds cap %d",
+                 len(_api._watchdog_restart_count_window), _api._WATCHDOG_MAX_PER_HOUR)
+    _smith._watchdog_notify(
+        "Smith respawn cap reached",
+        f"Watchdog gave up after {len(_api._watchdog_restart_count_window)} restarts in the "
+        f"last hour (cap {_api._WATCHDOG_MAX_PER_HOUR}). Scan is stuck — intervene from the dashboard.",
+        "WATCHDOG_RESPAWN_CAP",
+    )
+    return True
+
+
 async def _watchdog_respawn_flow(now: float) -> None:
     """Respawn Smith (or escalate) after it stopped while the scan is running.
 
-    Runs the guard gauntlet — MCP alive, min-gap, per-hour cap, no-progress
-    backoff — then spawns a fresh client. Each guard that blocks notifies the
-    operator and returns. Extracted from _watchdog_tick to keep both readable.
+    Runs the guard gauntlet — synthesis backoff, MCP alive, min-gap, per-hour cap,
+    no-progress backoff — then spawns a fresh client. Each guard that blocks notifies
+    the operator and returns. Extracted from _watchdog_tick to keep both readable.
     """
+    # Synthesis backoff (Phase C) — checked FIRST so a deliberate throttle never notifies the
+    # operator, probes MCP, or touches the min-gap / per-hour / per-scan / no-progress counters.
+    # STRICTLY scoped to converged synthesis (see _synthesis_backoff_active): Phase A/B — and any
+    # phase still holding pending cells — return False there and keep the snappy respawn cadence.
+    if _synthesis_backoff_active(now):
+        return
     _smith._watchdog_notify(
         "Smith stopped while scan running",
         "Watchdog detected Smith exited with the scan still marked running. Auto-restart will "
@@ -50,18 +102,7 @@ async def _watchdog_respawn_flow(now: float) -> None:
         return
     if now - _api._watchdog_last_restart_ts < _api._WATCHDOG_MIN_GAP_SECONDS:
         return
-    _api._watchdog_restart_count_window[:] = [
-        t for t in _api._watchdog_restart_count_window if now - t < 3600
-    ]
-    if len(_api._watchdog_restart_count_window) >= _api._WATCHDOG_MAX_PER_HOUR:
-        _log.warning("watchdog suppressed: %d restarts in last hour exceeds cap %d",
-                     len(_api._watchdog_restart_count_window), _api._WATCHDOG_MAX_PER_HOUR)
-        _smith._watchdog_notify(
-            "Smith respawn cap reached",
-            f"Watchdog gave up after {len(_api._watchdog_restart_count_window)} restarts in the "
-            f"last hour (cap {_api._WATCHDOG_MAX_PER_HOUR}). Scan is stuck — intervene from the dashboard.",
-            "WATCHDOG_RESPAWN_CAP",
-        )
+    if _respawn_hourly_cap_blocks(now):
         return
     # Cumulative per-scan cap — the per-hour window above resets each hour, so on an
     # operator-terminated thorough scan (status stays 'running' forever) the watchdog

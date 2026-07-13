@@ -55,8 +55,11 @@ def _safe(fid: str) -> str:
 # "T1078 - Valid Accounts (Privileged Account Creation…)". HTML entity codes
 # render as the literal character in every Mermaid theme, so the text is unchanged.
 _MERMAID_ESCAPES = {
+    # ';' first — every other entity ends in ';', so escaping ';' afterward would corrupt them.
+    ";": "#59;",
     '"': "#34;", "(": "#40;", ")": "#41;", "|": "#124;",
     "[": "#91;", "]": "#93;", "{": "#123;", "}": "#125;",
+    "<": "#60;", ">": "#62;",
 }
 
 

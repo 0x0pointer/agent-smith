@@ -42,6 +42,37 @@ def _remap_mermaid_dark(src: str) -> str:
     return src
 
 
+def sanitize_mermaid(src: str) -> str:
+    """Escape Mermaid-breaking chars INSIDE node/edge label spans, preserving <br/>
+    line-breaks and the structural syntax. Model-authored diagrams routinely put
+    payloads/values in labels — a leading ';' (statement separator) or '<header>'
+    (parsed as an HTML tag) throws 'Syntax error in text' in mermaid 10.9.6. We escape
+    only the label CONTENT (inside [...], (...), {...}, |...|), never the delimiters."""
+    import re
+    if not src:
+        return src
+    _span = re.compile(r'(\[[^\]\n]*\]|\([^)\n]*\)|\{[^}\n]*\}|\|[^|\n]*\|)')
+    # Leave existing entities (#NN;) and <br/> intact — this makes re-sanitizing idempotent
+    # (the endpoint AND _render_mermaid_svgs both call this, so it can run twice).
+    _protect = re.compile(r'#\d+;|<br\s*/?>', re.I)
+
+    def _esc(m):
+        span = m.group(0)
+        stash: list[str] = []
+
+        def _keep(mm):
+            stash.append(mm.group(0))
+            return f"\x00{len(stash) - 1}\x00"
+
+        inner = _protect.sub(_keep, span[1:-1])
+        inner = inner.replace(";", "#59;").replace("<", "#60;").replace(">", "#62;")
+        for i, tok in enumerate(stash):
+            inner = inner.replace(f"\x00{i}\x00", tok)
+        return span[0] + inner + span[-1]
+
+    return _span.sub(_esc, src)
+
+
 def _render_mermaid_svgs(content: str) -> dict[str, str]:
     """Extract mermaid blocks from markdown and render each to SVG via mmdc.
     Results are cached by content hash to avoid blocking on every poll."""
@@ -61,7 +92,7 @@ def _render_mermaid_svgs(content: str) -> dict[str, str]:
     for i, block in enumerate(blocks):
         try:
             with tempfile.NamedTemporaryFile(suffix='.mmd', mode='w', delete=False) as f:
-                f.write(_remap_mermaid_dark(block))
+                f.write(sanitize_mermaid(_remap_mermaid_dark(block)))
                 inp = f.name
             out = inp.replace('.mmd', '.svg')
             subprocess.run(

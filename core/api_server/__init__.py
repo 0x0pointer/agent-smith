@@ -137,6 +137,13 @@ _watchdog_restart_count_window: list[float] = []  # epoch seconds of restarts in
 _WATCHDOG_POLL_SECONDS  = 60
 _WATCHDOG_MIN_GAP_SECONDS = 90       # min seconds between auto-restarts
 _WATCHDOG_MAX_PER_HOUR  = 20         # safety cap to avoid restart storms
+# Synthesis backoff: once the coverage matrix is fully closed (Phase C / synthesis), each one-shot
+# respawn only does ~2 min of marginal chain-proving before exiting. With the snappy
+# _tracked_pid_is_dead() respawn that becomes a ~2-min restart thrash — a fresh model spawn every
+# couple of minutes for diminishing returns. When phase=synthesis AND zero cells are pending, the
+# watchdog enforces THIS longer gap (instead of _WATCHDOG_MIN_GAP_SECONDS) so synthesis still
+# advances slowly without the thrash. Any phase with real pending work keeps the snappy cadence.
+_WATCHDOG_SYNTHESIS_GAP_SECONDS = 600   # 10 min between respawns once synthesis has converged
 
 # Periodic status update — interval is configurable via .env so an operator
 # can dial it down for a long-running engagement. 0 disables the loop.

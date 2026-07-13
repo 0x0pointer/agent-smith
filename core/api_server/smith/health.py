@@ -128,6 +128,24 @@ def _scan_has_pending_cells() -> bool:
     return any(c.get("status") in ("pending", "in_progress") for c in cov.get("matrix", []))
 
 
+def _in_converged_synthesis() -> bool:
+    """True when the scan is in the synthesis phase (Phase C) AND the coverage matrix is fully
+    closed (no pending/in_progress cells). This is the state where each one-shot respawn only
+    does ~2 min of marginal chain-proving before exiting; the watchdog applies the longer
+    ``_WATCHDOG_SYNTHESIS_GAP_SECONDS`` respawn gap here to avoid the 2-min restart thrash, while
+    any phase with real pending work keeps the snappy cadence. Reads scan_phase from session.json
+    (parent-owned path) and defers the pending-cell test to the sibling helper.
+    """
+    import json as _json
+    try:
+        sd = _json.loads(_api._SESSION_FILE.read_text())
+    except (OSError, ValueError):
+        return False
+    if sd.get("scan_phase") != "synthesis":
+        return False
+    return not _smith._scan_has_pending_cells()
+
+
 def _smith_stalled_pid() -> int | None:
     """Return the live Smith pid if its agent loop has clearly EXITED mid-scan.
 
