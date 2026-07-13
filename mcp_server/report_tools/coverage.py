@@ -436,6 +436,60 @@ async def _do_coverage_sweep(data, cov):
     return _format_sweep_report(cells, applied, candidates, blocked, inconclusive, oob_note)
 
 
+def _phase_a_deepwork_redirect(cov_type: str) -> str:
+    """Phase A refuses a DRAIN op (sweep / bulk_tested / next_batch / auto_crosscutting) and
+    points the model BACK to the specific deep work it still owes — un-pursued high findings,
+    un-run applicable skills, unattempted exploit bridges — instead of letting it escape to
+    breadth. The refusal is what keeps Phase A alive (the deep, hours-long phase the lean early
+    runs did); naming the remaining work is what keeps it productive. Fail-soft: if findings /
+    session can't be read, falls back to the generic deep-work nudge."""
+    lines: list[str] = []
+    try:
+        from core import findings as _findings
+        from core import session as _sess
+        from core.session import phases as _phases
+        data = _findings._load()
+        sess = _sess.get() or {}
+        chain_fids = _phases._chain_fids(data)
+        unpursued = [f for f in data.get("findings", [])
+                     if f.get("severity") in ("high", "critical")
+                     and f.get("status", "confirmed") != "false_positive"
+                     and not _phases._pursued(f, chain_fids)]
+        if unpursued:
+            from core.prompt_fence import fence as _fence
+            sample = "; ".join(_fence(f.get("title", "")) for f in unpursued[:5])
+            more = f" (+{len(unpursued) - 5} more)" if len(unpursued) > 5 else ""
+            lines.append(
+                f"  • {len(unpursued)} high/critical finding(s) NOT yet driven to a terminal: "
+                f"{sample}{more}. Chain each onward (report(action='chain', ...)); if one truly "
+                "dead-ends, dismiss its escalation_lead with a rationale.")
+        worked = _phases._worked_skills(sess)
+        owed = sorted({s for g in (sess.get("gates", []) or [])
+                       if g.get("status") != "satisfied"
+                       for s in (set(g.get("required_skills", []) or []) - worked)})
+        if owed:
+            lines.append(
+                f"  • Applicable skill(s) not yet run: {', '.join('/' + s for s in owed)} — "
+                "set_skill + invoke each; they are DEPTH work and Phase A won't advance until they have.")
+        bridges = _phases.open_bridges(data)
+        if bridges:
+            lines.append(
+                f"  • {bridges} provable exploit bridge(s) unattempted — report(action='chain', "
+                "data={type:'suggest'}), then prove or dismiss each.")
+    except Exception:
+        pass
+    body = "\n".join(lines) if lines else (
+        "  • Drive every confirmed finding to its terminal and attempt every provable exploit bridge.")
+    return (
+        f"DEFERRED — '{cov_type}' is breadth cell-testing (Phase B work) and you are in PHASE A "
+        "(deep exploitation). The matrix is being built for Phase B, but do NOT drain it yet — do "
+        "the DEEP work still owed:\n" + body + "\n"
+        "The scan AUTO-ADVANCES to Phase B only when depth is exhausted (all applicable skills run, "
+        "every high/critical driven to a terminal or a documented dead-end, and no provable bridge "
+        "left) — the sweep runs THEN. Keep hunting; don't burn cells."
+    )
+
+
 async def _do_coverage(data):
     from core import coverage as cov
 
@@ -454,15 +508,7 @@ async def _do_coverage(data):
         from core import session as _sess
         from core.session import phases as _phases
         if _phases.current_phase(_sess.get()) == _phases.EXPLOIT:
-            return (
-                f"DEFERRED — '{cov_type}' is breadth cell-testing (Phase B work). You are in "
-                "PHASE A (deep exploitation): the coverage matrix is being built for later, but do "
-                "NOT sweep/drain it yet. Instead, drive every confirmed finding to its terminal "
-                "(RCE / pivot / full takeover), chain the mandatory skills, and file "
-                "report(action='chain', ...). The scan AUTO-ADVANCES to Phase B the moment depth "
-                "saturates (every high/critical driven to a terminal or a documented dead-end) — "
-                "run the sweep then."
-            )
+            return _phase_a_deepwork_redirect(cov_type)
 
     if cov_type == "endpoint":
         return await _do_coverage_endpoint(data, cov)

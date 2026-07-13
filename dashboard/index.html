@@ -137,6 +137,16 @@
       <span class="cmd-chip" onclick="setSmithChip('Summarize all findings discovered so far')">Summarize findings</span>
     </div>
     <div id="cmd-smith-feedback" class="cmd-smith-feedback"></div>
+    <div class="cmd-smith-phase-row" id="cmd-phase-row" style="display:flex;align-items:center;gap:10px;margin:6px 0;flex-wrap:wrap">
+      <span class="cmd-phase-tag" style="font-size:11px;letter-spacing:.05em;color:#8b949e">PHASE</span>
+      <strong id="cmd-phase-current" class="cmd-phase-current" style="color:#58a6ff">—</strong>
+      <button class="cmd-phase-advance-btn" id="cmd-phase-advance-btn" onclick="advancePhase()"
+        title="Phase A stays exactly as deep as you left it — this only unlocks the next phase"
+        style="display:none;background:#1f6feb;color:#fff;border:none;border-radius:6px;padding:5px 12px;cursor:pointer;font-size:12px">
+        &#9654; <span id="cmd-phase-advance-label">Advance</span>
+      </button>
+      <span id="cmd-phase-hint" class="cmd-phase-hint" style="font-size:12px;color:#3fb950"></span>
+    </div>
     <div class="cmd-smith-complete-row">
       <button class="cmd-smith-restart-btn" id="cmd-restart-btn" onclick="restartSmith()" style="display:none">
         &#9654; <span id="cmd-restart-label">Restart Smith</span>

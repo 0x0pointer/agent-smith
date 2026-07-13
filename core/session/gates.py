@@ -191,11 +191,14 @@ def set_step(step: str) -> dict | None:
 
 
 def maybe_advance_phase() -> str | None:
-    """Saturation-driven three-phase transition (exploit → coverage → synthesis). Reads the
-    live findings + coverage matrix, and if the current phase's goal is genuinely done,
-    advances ONE step forward and persists it. Returns the new phase when it transitions,
-    else None. Safe to call on any checkpoint (status / recovery / after a finding or cell) —
-    it only moves forward and never budget/time-gates. See core/session/phases.py."""
+    """Phases are OPERATOR-GATED — this NO LONGER auto-advances. Auto-advancing on a saturation
+    check risked a buggy/early check cutting the deep Phase-A pass short (exactly what the operator
+    wants to avoid: Phase A should run thorough and unbounded until the human says otherwise). This
+    now only computes an ADVISORY hint — whether the current phase LOOKS saturated, i.e. which phase
+    the operator COULD advance to — stores it on the session as `phase_advice` for the dashboard,
+    and returns None. The phase only changes via advance_phase() (dashboard button / typed
+    'advance to phase B' steer). Kept as a callable no-op so its existing callers
+    (status / recovery / completion) stay valid without auto-advancing."""
     from core.session import phases as _phases
     _sess._reconcile_if_external_write()
     if _sess._current is None or _sess._current.get("status") != "running":
@@ -203,21 +206,49 @@ def maybe_advance_phase() -> str | None:
     cur = _phases.current_phase(_sess._current)
     try:
         from core import findings as _findings, coverage as _cov
-        findings_data = _findings._load()
-        matrix = _cov.get_matrix()
+        advice = _phases.next_phase(cur, _sess._current, _findings._load(), _cov.get_matrix())
     except Exception:
-        return None
-    nxt = _phases.next_phase(cur, _sess._current, findings_data, matrix)
-    if not nxt or nxt == cur:
-        return None
+        advice = None
+    if _sess._current.get("phase_advice") != advice:
+        _sess._current["phase_advice"] = advice
+        _sess._flush()
+    return None   # never auto-advances — the operator decides via advance_phase()
+
+
+def advance_phase(target: str | None = None) -> dict:
+    """OPERATOR-gated phase advance (dashboard button / typed steer). Moves scan_phase FORWARD one
+    step (exploit → coverage → synthesis), or directly to `target` if it is forward of the current
+    phase. Never backward, never past synthesis. IGNORES saturation — the human decides when Phase
+    A's deep pass is done, so nothing can cut it short. Persists + logs PHASE_ADVANCE (operator).
+    Returns {ok, from, to} (with `error` when it can't advance)."""
+    from core.session import phases as _phases
+    _sess._reconcile_if_external_write()
+    if _sess._current is None or _sess._current.get("status") != "running":
+        return {"ok": False, "error": "no running scan"}
+    cur = _phases.current_phase(_sess._current)
+    if target:
+        alias = {"a": _phases.EXPLOIT, "b": _phases.COVERAGE, "c": _phases.SYNTHESIS,
+                 "exploit": _phases.EXPLOIT, "coverage": _phases.COVERAGE, "synthesis": _phases.SYNTHESIS}
+        target = alias.get(str(target).strip().lower(), str(target).strip().lower())
+        if target not in _phases.PHASES:
+            return {"ok": False, "error": f"unknown phase '{target}'", "from": cur, "to": cur}
+        if _phases.PHASES.index(target) <= _phases.PHASES.index(cur):
+            return {"ok": False, "error": f"phase '{target}' is not forward of '{cur}'",
+                    "from": cur, "to": cur}
+        nxt = target
+    else:
+        nxt = _phases.forced_next(cur)
+    if not nxt:
+        return {"ok": False, "error": "already at the final phase (synthesis)", "from": cur, "to": cur}
     _sess._current["scan_phase"] = nxt
+    _sess._current["phase_advice"] = None
     _sess._flush()
     try:
         from core import logger as _log
-        _log.note(f"PHASE_ADVANCE {cur} → {nxt}: {_phases.phase_label(nxt)}")
+        _log.note(f"PHASE_ADVANCE {cur} → {nxt} (operator): {_phases.phase_label(nxt)}")
     except Exception:
         pass
-    return nxt
+    return {"ok": True, "from": cur, "to": nxt}
 
 
 def _mark_active_skill_worked() -> bool:

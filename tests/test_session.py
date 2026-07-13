@@ -936,3 +936,53 @@ def test_get_intervention_returns_none_when_no_intervention(tmp_path, monkeypatc
     monkeypatch.setattr(scan_session, "_SESSION_FILE", session_file)
     scan_session.start("https://example.com")
     assert scan_session.get_intervention() is None
+
+
+# ---------------------------------------------------------------------------
+# phase control — human-gated A→B→C (advance_phase / maybe_advance_phase)
+# ---------------------------------------------------------------------------
+
+def test_advance_phase_moves_one_step_forward():
+    core.session.start("example.com")
+    assert core.session.get()["scan_phase"] == "exploit"
+    r = core.session.advance_phase()
+    assert r == {"ok": True, "from": "exploit", "to": "coverage"}
+    assert core.session.get()["scan_phase"] == "coverage"
+    assert core.session.advance_phase()["to"] == "synthesis"
+
+
+def test_advance_phase_rejects_past_synthesis():
+    core.session.start("example.com")
+    core.session.advance_phase(); core.session.advance_phase()   # → synthesis
+    r = core.session.advance_phase()
+    assert r["ok"] is False and "final" in r["error"]
+    assert core.session.get()["scan_phase"] == "synthesis"
+
+
+def test_advance_phase_target_alias_jumps_forward():
+    core.session.start("example.com")
+    r = core.session.advance_phase("c")     # letter alias, jump exploit→synthesis
+    assert r == {"ok": True, "from": "exploit", "to": "synthesis"}
+
+
+def test_advance_phase_rejects_backward():
+    core.session.start("example.com")
+    core.session.advance_phase("coverage")
+    r = core.session.advance_phase("exploit")
+    assert r["ok"] is False and "not forward" in r["error"]
+    assert core.session.get()["scan_phase"] == "coverage"
+
+
+def test_advance_phase_no_running_scan():
+    assert core.session.advance_phase()["ok"] is False   # nothing started
+
+
+def test_maybe_advance_phase_never_auto_advances(monkeypatch):
+    # Even when the phase LOOKS saturated, maybe_advance_phase must NOT change scan_phase —
+    # phases are operator-gated now. It returns None and only records the advisory hint.
+    core.session.start("example.com")
+    from core.session import phases as ph
+    monkeypatch.setattr(ph, "next_phase", lambda *a, **k: "coverage")  # pretend saturated
+    assert core.session.maybe_advance_phase() is None
+    assert core.session.get()["scan_phase"] == "exploit"              # unchanged — no auto-advance
+    assert core.session.get().get("phase_advice") == "coverage"       # advisory recorded

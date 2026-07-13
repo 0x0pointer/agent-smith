@@ -101,6 +101,42 @@ def isolate_session(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def isolate_api_runtime_files(tmp_path, monkeypatch):
+    """HARD guard: no test may destroy real runtime state through the API layer.
+
+    DELETE /api/clear (core.api_server.routes.scan_state_routes.api_clear) wipes session.json,
+    coverage, logs, artifacts, pocs, steering, cost, recovery + metrics using the core.api_server
+    module-level path constants, _REPO_ROOT, core.logger._LOG_DIR, core.coverage and core.findings.
+    Several api tests call DELETE /api/clear; without this redirect those wipes hit the REAL repo
+    files and DESTROY a live/completed scan's state whenever the suite runs in a working tree that
+    holds one — this actually happened once (a full-suite run erased a completed scan's
+    session.json, coverage_matrix.json and pentest.log). Redirect every path api_clear touches to
+    tmp so a test clear is inert on real data. Opt-in findings/coverage fixtures override these
+    (last monkeypatch wins) for tests that need a specific path."""
+    import core.api_server as _api
+    import core.logger as _logger
+    import core.coverage as _coverage
+    import core.findings as _findings
+    # Distinct guard dir — NOT tmp_path/"logs", which several tests create themselves via
+    # (tmp_path/"logs").mkdir() and would collide with (FileExistsError).
+    guard = tmp_path / "_apiclear_guard"
+    guard.mkdir(exist_ok=True)
+    monkeypatch.setattr(_api, "_REPO_ROOT", guard, raising=False)
+    for _name, _rel in (("_SESSION_FILE", "session.json"),
+                        ("_QUICK_LOG_FILE", "quick_log.json"),
+                        ("_QA_STATE_FILE", "qa_state.json"),
+                        ("_COST_FILE", "session_cost.json"),
+                        ("_STEERING_FILE", "steering_queue.json"),
+                        ("_SMITH_PID_FILE", "smith.pid"),
+                        ("_SMITH_CLIENT_FILE", "smith.client")):
+        if hasattr(_api, _name):
+            monkeypatch.setattr(_api, _name, guard / _rel, raising=False)
+    monkeypatch.setattr(_logger, "_LOG_DIR", guard, raising=False)
+    monkeypatch.setattr(_coverage, "COVERAGE_FILE", tmp_path / "coverage_matrix.json", raising=False)
+    monkeypatch.setattr(_findings, "FINDINGS_FILE", tmp_path / "findings.json", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def reset_findings_lock(monkeypatch):
     """
     asyncio.Lock() attaches to the running event loop on first use.
