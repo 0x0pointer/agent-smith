@@ -724,40 +724,41 @@ class TestWatchdogNoProgressBackoff:
     def _reset_no_progress_globals(self, monkeypatch):
         monkeypatch.setattr(api.smith, "_watchdog_no_progress_count", 0)
         monkeypatch.setattr(api.smith, "_watchdog_last_progress", None)
+        monkeypatch.setattr(api.smith, "_watchdog_scan_key", "")
+        monkeypatch.setattr(api.smith, "_watchdog_scan_restarts", 0)
 
-    def test_snapshot_reads_findings_cells_and_mtime(self, tmp_path, monkeypatch):
+    def test_snapshot_reads_findings_and_cells_not_mtime(self, tmp_path, monkeypatch):
+        # The fingerprint is (findings, addressed cells) ONLY — quick_log mtime is
+        # deliberately excluded: a respawn that merely thrashes (recovery→list→exit)
+        # still bumps the log, so including mtime reset the no-progress counter on
+        # pure activity and the breaker never fired. Substantive progress = a new
+        # finding or a newly-closed cell, nothing less.
         findings = tmp_path / "findings.json"
         coverage = tmp_path / "coverage.json"
-        quick = tmp_path / "quick_log.json"
         findings.write_text(json.dumps({"findings": [{"id": "a"}, {"id": "b"}]}))
         coverage.write_text(json.dumps({"matrix": [
             {"status": "tested_clean"}, {"status": "vulnerable"},
             {"status": "not_applicable"}, {"status": "pending"},  # pending not counted
         ]}))
-        quick.write_text("{}\n")
         monkeypatch.setattr(api, "_FINDINGS_FILE", findings)
         monkeypatch.setattr(api, "_COVERAGE_FILE", coverage)
-        monkeypatch.setattr(api, "_QUICK_LOG_FILE", quick)
 
-        findings_n, addressed, qmtime = api._scan_progress_snapshot()
-        assert findings_n == 2
-        assert addressed == 3          # tested_clean + vulnerable + not_applicable
-        assert qmtime == round(quick.stat().st_mtime, 1)
+        snap = api._scan_progress_snapshot()
+        assert snap == (2, 3)          # findings=2, addressed = tested_clean+vulnerable+not_applicable
 
     def test_snapshot_is_all_zero_when_files_missing(self, tmp_path, monkeypatch):
         monkeypatch.setattr(api, "_FINDINGS_FILE", tmp_path / "nope.json")
         monkeypatch.setattr(api, "_COVERAGE_FILE", tmp_path / "nope2.json")
-        monkeypatch.setattr(api, "_QUICK_LOG_FILE", tmp_path / "nope3.json")
-        assert api._scan_progress_snapshot() == (0, 0, 0.0)
+        assert api._scan_progress_snapshot() == (0, 0)
 
     def test_first_call_never_escalates(self, monkeypatch):
         """Reset globals → last_progress is None → the very first observation
         can't escalate (we have nothing to compare against yet)."""
-        monkeypatch.setattr(api.smith, "_scan_progress_snapshot", lambda: (1, 5, 123.0))
+        monkeypatch.setattr(api.smith, "_scan_progress_snapshot", lambda: (1, 5))
         assert api._watchdog_should_escalate_no_progress() is False
 
     def test_escalates_after_max_unchanged_snapshots(self, monkeypatch):
-        monkeypatch.setattr(api.smith, "_scan_progress_snapshot", lambda: (1, 5, 123.0))
+        monkeypatch.setattr(api.smith, "_scan_progress_snapshot", lambda: (1, 5))
         # First call seeds last_progress (False); each subsequent identical call
         # increments; escalation fires once the counter hits the cap.
         results = [api._watchdog_should_escalate_no_progress()
@@ -767,7 +768,7 @@ class TestWatchdogNoProgressBackoff:
         assert any(results)  # cap reached within the window
 
     def test_progress_resets_the_counter(self, monkeypatch):
-        snaps = [(1, 5, 1.0), (1, 5, 1.0), (2, 6, 2.0), (2, 6, 2.0)]
+        snaps = [(1, 5), (1, 5), (2, 6), (2, 6)]
         it = iter(snaps)
         monkeypatch.setattr(api.smith, "_scan_progress_snapshot", lambda: next(it))
         api._watchdog_should_escalate_no_progress()      # seed (1,5,1.0)
@@ -778,7 +779,7 @@ class TestWatchdogNoProgressBackoff:
 
     def test_escalate_triggers_hir_and_notifies_and_resets(self, monkeypatch):
         monkeypatch.setattr(api.smith, "_watchdog_no_progress_count", 3)
-        monkeypatch.setattr(api.smith, "_watchdog_last_progress", (1, 5, 1.0))
+        monkeypatch.setattr(api.smith, "_watchdog_last_progress", (1, 5))
         with patch("core.session.trigger_intervention") as mock_hir, \
              patch("core.notifiers.notify") as mock_notify:
             api._escalate_no_progress_hir()
@@ -815,6 +816,50 @@ class TestWatchdogNoProgressBackoff:
             await api.smith._watchdog_respawn_flow(time.time())
         mock_escalate.assert_not_called()
         mock_spawn.assert_awaited_once()
+        # A successful respawn counts toward the cumulative per-scan cap.
+        assert api.smith._watchdog_scan_restarts == 1
+
+    @pytest.mark.asyncio
+    async def test_respawn_flow_stops_at_per_scan_cap(self, monkeypatch):
+        """The rolling per-HOUR window resets each hour, so on an operator-terminated
+        thorough scan (status stays 'running' forever) it alone lets the watchdog
+        respawn ~20/hour indefinitely — the '40 agents overnight' runaway. Once a single
+        scan hits the cumulative per-scan cap, auto-respawn STOPS and hands off to the
+        operator instead of spawning again."""
+        monkeypatch.setattr(api, "_watchdog_last_restart_ts", 0.0)
+        monkeypatch.setattr(api, "_watchdog_restart_count_window", [])
+        # This scan has already been auto-respawned up to the cap.
+        monkeypatch.setattr(api.smith, "_watchdog_scan_key", "scan-abc")
+        monkeypatch.setattr(api.smith, "_watchdog_scan_restarts", api._WATCHDOG_MAX_PER_SCAN)
+        with patch.object(api, "_mcp_sse_alive", return_value=True), \
+             patch.object(api, "_read_json", return_value={"id": "scan-abc"}), \
+             patch.object(api, "_watchdog_should_escalate_no_progress", return_value=False), \
+             patch.object(api, "_spawn_smith", new_callable=AsyncMock) as mock_spawn, \
+             patch.object(api.smith, "_watchdog_notify") as mock_notify:
+            await api.smith._watchdog_respawn_flow(time.time())
+        mock_spawn.assert_not_called()
+        codes = [c.args[2] for c in mock_notify.call_args_list]
+        assert "WATCHDOG_PER_SCAN_CAP" in codes
+
+    @pytest.mark.asyncio
+    async def test_respawn_flow_resets_per_scan_count_on_new_scan(self, monkeypatch):
+        """A new scan (different session id) resets the cumulative counter so a fresh
+        scan gets its full crash-resume budget even if a prior scan exhausted the cap."""
+        monkeypatch.setattr(api, "_watchdog_last_restart_ts", 0.0)
+        monkeypatch.setattr(api, "_watchdog_restart_count_window", [])
+        monkeypatch.setattr(api.smith, "_watchdog_scan_key", "old-scan")
+        monkeypatch.setattr(api.smith, "_watchdog_scan_restarts", api._WATCHDOG_MAX_PER_SCAN)
+        with patch.object(api, "_mcp_sse_alive", return_value=True), \
+             patch.object(api, "_read_json", return_value={"id": "new-scan"}), \
+             patch.object(api, "_watchdog_should_escalate_no_progress", return_value=False), \
+             patch.object(api, "_detect_active_client", return_value="opencode"), \
+             patch.object(api, "_spawn_smith", new_callable=AsyncMock,
+                          return_value=(True, 4242)) as mock_spawn, \
+             patch("core.notifiers.notify"):
+            await api.smith._watchdog_respawn_flow(time.time())
+        mock_spawn.assert_awaited_once()          # reset → spawn allowed
+        assert api.smith._watchdog_scan_key == "new-scan"
+        assert api.smith._watchdog_scan_restarts == 1
 
 
 # ---------------------------------------------------------------------------

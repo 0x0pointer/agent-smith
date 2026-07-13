@@ -26,6 +26,11 @@ from __future__ import annotations
 # object the submodules mutate via ``_smith.<name>``.
 _watchdog_last_progress: tuple | None = None
 _watchdog_no_progress_count = 0
+# Cumulative per-scan auto-respawn accounting (enforces _WATCHDOG_MAX_PER_SCAN). Keyed
+# on the session id so a new scan resets it; stops the operator-terminated-thorough
+# runaway where the rolling per-hour cap alone let the watchdog respawn forever.
+_watchdog_scan_key: str = ""
+_watchdog_scan_restarts = 0
 # Last respawn-failure reason (the child's own exit line, e.g. an out-of-usage /
 # credit / auth message) so the no-progress HIR can report the REAL cause instead
 # of the generic "agent keeps exiting without testing". Cleared on a live respawn.
@@ -41,6 +46,7 @@ from ._common import (  # noqa: E402,F401
     _SMITH_STALL_SECONDS,
     _WATCHDOG_MAX_NO_PROGRESS,
     _WATCHDOG_COLD_START_AFTER,
+    _WATCHDOG_MAX_PER_SCAN,
     _KNOWN_CLIENTS,
     _SPAWN_SOURCE_TAGS,
     _MCP_SSE_RESTART_MIN_GAP_SECONDS,

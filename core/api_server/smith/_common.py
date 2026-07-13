@@ -48,6 +48,15 @@ _WATCHDOG_MAX_NO_PROGRESS = 3
 # context gets a real shot before the run escalates to HIR_NO_PROGRESS.
 _WATCHDOG_COLD_START_AFTER = 2
 
+# Cumulative per-scan auto-respawn cap. _WATCHDOG_MAX_PER_HOUR is a ROLLING window,
+# so a thorough scan — which is operator-terminated and never auto-completes (status
+# stays "running" indefinitely) — lets the watchdog respawn ~20/hour forever: the
+# observed "40 agents overnight" runaway. This is a HARD cap on TOTAL auto-respawns
+# for a single scan (keyed on the session id). Once hit, the watchdog stops respawning
+# and escalates to the operator instead of silently looping. Genuine crash-resume still
+# works up to this many times per scan; a runaway can't exceed it.
+_WATCHDOG_MAX_PER_SCAN = 8
+
 _KNOWN_CLIENTS = ("claude", "opencode", "codex")
 
 # Small lookup table for the audit-log tag that goes into session.json's

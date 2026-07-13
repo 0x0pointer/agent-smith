@@ -17,11 +17,16 @@ from ._common import _log, _WATCHDOG_MAX_NO_PROGRESS
 
 
 def _scan_progress_snapshot() -> tuple:
-    """(findings, addressed cells, quick_log mtime) — the watchdog's fingerprint
-    for 'did the last respawn actually accomplish anything?'."""
+    """(findings, addressed cells) — the watchdog's fingerprint for 'did the last
+    respawn actually accomplish anything SUBSTANTIVE?'.
+
+    Deliberately does NOT include quick_log mtime: a respawned agent that merely
+    thrashes (recovery -> list -> exit) still bumps the log, so including mtime made
+    the fingerprint change on pure activity and reset the no-progress counter every
+    time — the breaker then never fired and the watchdog respawned indefinitely. Real
+    progress = a new finding or a newly-closed cell; anything less is a futile respawn."""
     import json
     findings = addressed = 0
-    qmtime = 0.0
     try:
         findings = len(json.loads(_api._FINDINGS_FILE.read_text()).get("findings", []))
     except Exception:
@@ -32,11 +37,7 @@ def _scan_progress_snapshot() -> tuple:
                         if c.get("status") in ("tested_clean", "vulnerable", "not_applicable"))
     except Exception:
         pass
-    try:
-        qmtime = round(_api._QUICK_LOG_FILE.stat().st_mtime, 1)
-    except Exception:
-        pass
-    return (findings, addressed, qmtime)
+    return (findings, addressed)
 
 
 def _watchdog_should_escalate_no_progress() -> bool:
