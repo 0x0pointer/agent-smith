@@ -74,6 +74,7 @@ from .health import (  # noqa: E402,F401
     _kill_hung_smith,
     _smith_generating,
     _scan_has_pending_cells,
+    _in_converged_synthesis,
     _smith_stalled_pid,
     _smith_exited,
 )
@@ -105,6 +106,8 @@ from .mcp_sse import (  # noqa: E402,F401
 )
 from .watchdog import (  # noqa: E402,F401
     _watchdog_notify,
+    _synthesis_backoff_active,
+    _respawn_hourly_cap_blocks,
     _watchdog_respawn_flow,
     _watchdog_tick,
     _smith_watchdog_loop,

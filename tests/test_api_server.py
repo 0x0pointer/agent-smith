@@ -538,3 +538,22 @@ def test_pid_alive_returns_true_for_self():
 def test_port_healthy_returns_false_for_unused_port():
     import core.api_server as srv
     assert srv._port_healthy(19999) is False
+
+
+def test_sanitize_mermaid_escapes_label_breakers():
+    """Model-authored diagrams put payloads/values in labels; ';' '<' '>' break
+    mermaid 10.9.6 ('Syntax error in text'). sanitize_mermaid escapes them INSIDE
+    label spans only, preserving <br/> and the structural syntax."""
+    from core.api_server.mermaid import sanitize_mermaid as s
+    # leading ';' in an edge label (statement separator)
+    assert s('A -->|; COPY FROM PROGRAM| B["x"]') == 'A -->|#59; COPY FROM PROGRAM| B["x"]'
+    # angle brackets parsed as HTML tags
+    assert s('A -->|Bearer <header>| B') == 'A -->|Bearer #60;header#62;| B'
+    # <br/> line-breaks preserved; other breakers inside the same label escaped
+    assert s('G[a<br/>b; c<d>]') == 'G[a<br/>b#59; c#60;d#62;]'
+    # structure (arrows, node ids, delimiters, quotes) untouched
+    assert s('A["ok"] --> B(round)') == 'A["ok"] --> B(round)'
+    # idempotent
+    once = s('X[a; b <c>]'); assert s(once) == once
+    # empty / None-safe
+    assert s('') == '' and s(None) is None

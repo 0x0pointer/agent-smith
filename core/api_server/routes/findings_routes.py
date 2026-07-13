@@ -20,11 +20,17 @@ async def api_findings() -> JSONResponse:
     data = _api._read_json(_api._FINDINGS_FILE)
     # Render diagram + exploit-chain SVGs server-side so the topology tab matches
     # the threat-model theme.
+    from ..mermaid import sanitize_mermaid
     for d in [*data.get("diagrams", []), *data.get("chains", [])]:
-        if d.get("mermaid") and "svg" not in d:
-            wrapped = f"```mermaid\n{d['mermaid']}\n```"
-            svgs = _api._render_mermaid_svgs(wrapped)
-            d["svg"] = svgs.get("0", "")
+        if d.get("mermaid"):
+            # Escape label-breakers (';', '<', '>') so BOTH the server SVG render AND the
+            # client-side mermaid fallback stop throwing "Syntax error in text" on
+            # model-authored diagrams that put payloads/values in labels.
+            d["mermaid"] = sanitize_mermaid(d["mermaid"])
+            if "svg" not in d:
+                wrapped = f"```mermaid\n{d['mermaid']}\n```"
+                svgs = _api._render_mermaid_svgs(wrapped)
+                d["svg"] = svgs.get("0", "")
     return JSONResponse(data)
 
 
@@ -52,6 +58,9 @@ async def api_finding(finding_id: str) -> JSONResponse:
         )
         if not touches:
             continue
+        if c.get("mermaid"):
+            from ..mermaid import sanitize_mermaid
+            c["mermaid"] = sanitize_mermaid(c["mermaid"])
         if c.get("mermaid") and "svg" not in c:
             wrapped = f"```mermaid\n{c['mermaid']}\n```"
             svgs = _api._render_mermaid_svgs(wrapped)

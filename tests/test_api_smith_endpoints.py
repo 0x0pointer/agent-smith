@@ -261,6 +261,22 @@ class TestSmithRunning:
         (tmp_path / "quick_log.json").write_text('{"type":"TOOL"}\n')
         assert api._smith_running() is True
 
+    def test_running_false_when_tracked_pid_dead_despite_fresh_heartbeat(
+        self, sandbox_smith_files, tmp_path
+    ):
+        """Snappy Phase-C respawn: a dashboard-tracked spawn whose PID is now DEAD means
+        Smith cleanly EXITED — even a fresh MCP heartbeat (its last activity just before
+        exit) must NOT read as 'running', or the watchdog waits out the whole idle window
+        before respawning (the laggy pickup the operator saw in Phase C). Contrast
+        test_idle_window_tolerates_thinking_mode_pauses: with NO tracked pid the heartbeat
+        still tolerates a 2-3 min thinking pause, so Phase A/B aren't disrupted."""
+        (tmp_path / "quick_log.json").write_text('{"type":"TOOL"}\n')  # fresh heartbeat
+        (tmp_path / "smith.pid").write_text("424242\n")                # tracked spawn pid
+        import psutil
+        with patch.object(psutil, "pid_exists", return_value=False), \
+             patch.object(psutil, "process_iter", return_value=[]):
+            assert api._smith_running() is False
+
     def test_running_false_when_quick_log_stale(self, sandbox_smith_files, tmp_path):
         ql = tmp_path / "quick_log.json"
         ql.write_text("{}\n")
@@ -729,14 +745,19 @@ class TestWatchdogNoProgressBackoff:
         monkeypatch.setattr(api.smith, "_watchdog_last_respawn_progress", ())
 
     def test_snapshot_reads_findings_and_cells_not_mtime(self, tmp_path, monkeypatch):
-        # The fingerprint is (findings, addressed cells) ONLY — quick_log mtime is
+        # The fingerprint is (findings, addressed cells, chains) — quick_log mtime is
         # deliberately excluded: a respawn that merely thrashes (recovery→list→exit)
         # still bumps the log, so including mtime reset the no-progress counter on
-        # pure activity and the breaker never fired. Substantive progress = a new
-        # finding or a newly-closed cell, nothing less.
+        # pure activity and the breaker never fired. CHAINS are included so Phase C
+        # (synthesis) progress — proving chains, not filing findings/closing cells —
+        # still resets the counter. Substantive progress = a new finding, a newly-
+        # closed cell, OR a newly-proven chain.
         findings = tmp_path / "findings.json"
         coverage = tmp_path / "coverage.json"
-        findings.write_text(json.dumps({"findings": [{"id": "a"}, {"id": "b"}]}))
+        findings.write_text(json.dumps({
+            "findings": [{"id": "a"}, {"id": "b"}],
+            "chains": [{"name": "c1"}],
+        }))
         coverage.write_text(json.dumps({"matrix": [
             {"status": "tested_clean"}, {"status": "vulnerable"},
             {"status": "not_applicable"}, {"status": "pending"},  # pending not counted
@@ -745,12 +766,13 @@ class TestWatchdogNoProgressBackoff:
         monkeypatch.setattr(api, "_COVERAGE_FILE", coverage)
 
         snap = api._scan_progress_snapshot()
-        assert snap == (2, 3)          # findings=2, addressed = tested_clean+vulnerable+not_applicable
+        # findings=2, addressed = tested_clean+vulnerable+not_applicable, chains=1
+        assert snap == (2, 3, 1)
 
     def test_snapshot_is_all_zero_when_files_missing(self, tmp_path, monkeypatch):
         monkeypatch.setattr(api, "_FINDINGS_FILE", tmp_path / "nope.json")
         monkeypatch.setattr(api, "_COVERAGE_FILE", tmp_path / "nope2.json")
-        assert api._scan_progress_snapshot() == (0, 0)
+        assert api._scan_progress_snapshot() == (0, 0, 0)
 
     def test_first_call_never_escalates(self, monkeypatch):
         """Reset globals → last_progress is None → the very first observation
@@ -2266,6 +2288,55 @@ def test_scan_has_pending_cells(tmp_path, monkeypatch):
     assert smith._scan_has_pending_cells() is False
     monkeypatch.setattr(api, "_COVERAGE_FILE", tmp_path / "missing.json")
     assert smith._scan_has_pending_cells() is False
+
+
+def _setup_phase(tmp_path, monkeypatch, *, phase, pending):
+    """Wire session.json (scan_phase) + coverage matrix (pending vs fully-closed)."""
+    sess = tmp_path / "session.json"
+    cov = tmp_path / "coverage.json"
+    monkeypatch.setattr(api, "_SESSION_FILE", sess)
+    monkeypatch.setattr(api, "_COVERAGE_FILE", cov)
+    sess.write_text(json.dumps({"status": "running", "scan_phase": phase}))
+    matrix = [{"status": "pending"}] if pending else [{"status": "tested_clean"}]
+    cov.write_text(json.dumps({"matrix": matrix}))
+
+
+def test_in_converged_synthesis_only_true_for_synthesis_with_no_pending(tmp_path, monkeypatch):
+    # Phase C synthesis + fully-closed matrix → the converged state
+    _setup_phase(tmp_path, monkeypatch, phase="synthesis", pending=False)
+    assert smith._in_converged_synthesis() is True
+    # Synthesis but cells still pending → NOT converged (real work left, stay snappy)
+    _setup_phase(tmp_path, monkeypatch, phase="synthesis", pending=True)
+    assert smith._in_converged_synthesis() is False
+    # Phase A (exploit) / Phase B (coverage) → ALWAYS False, even with a fully-closed matrix,
+    # so the synthesis backoff can NEVER apply to them.
+    _setup_phase(tmp_path, monkeypatch, phase="exploit", pending=False)
+    assert smith._in_converged_synthesis() is False
+    _setup_phase(tmp_path, monkeypatch, phase="coverage", pending=False)
+    assert smith._in_converged_synthesis() is False
+
+
+def test_synthesis_backoff_defers_only_converged_synthesis_never_phase_a_b(tmp_path, monkeypatch):
+    """The backoff must throttle respawns ONLY in converged Phase C, and must leave Phase A/B (and
+    any phase with pending work) on the snappy cadence — the operator's hard constraint."""
+    monkeypatch.setattr(api, "_WATCHDOG_SYNTHESIS_GAP_SECONDS", 600)
+    monkeypatch.setattr(api, "_watchdog_last_restart_ts", 1000.0)
+    inside = 1000.0 + 120     # 2 min since last spawn — inside the 10-min synthesis gap
+    elapsed = 1000.0 + 601    # past the gap
+
+    # Converged synthesis, inside the gap → DEFER; once the gap elapses → allow respawn
+    _setup_phase(tmp_path, monkeypatch, phase="synthesis", pending=False)
+    assert smith._synthesis_backoff_active(inside) is True
+    assert smith._synthesis_backoff_active(elapsed) is False
+
+    # Phase A (exploit) and Phase B (coverage) in the SAME 2-min window → NEVER deferred
+    _setup_phase(tmp_path, monkeypatch, phase="exploit", pending=False)
+    assert smith._synthesis_backoff_active(inside) is False
+    _setup_phase(tmp_path, monkeypatch, phase="coverage", pending=False)
+    assert smith._synthesis_backoff_active(inside) is False
+    # Even in synthesis, pending cells → NEVER deferred (there is real work to respawn for)
+    _setup_phase(tmp_path, monkeypatch, phase="synthesis", pending=True)
+    assert smith._synthesis_backoff_active(inside) is False
 
 
 def _stub_stalled(monkeypatch, *, age, generating, pending, recently_started=False, pid=4242):
