@@ -28,19 +28,18 @@ Run:
 | `decision-event.schema.json` | ✅ | §3, §3.3, §3.6 — captured_field reasoning; `teacher_origin`; `context_manifest_id` |
 | `action-event.schema.json` | ✅ | §3.4, §7 — `exact_action_hash` + `semantic_action_family` + behavior fields; `safety_class` |
 | `result-event.schema.json` | ✅ | §3.5, §4, §5 — visible spans; 3-layer outcome; evidence primitives |
-| `adjudication-event.schema.json` | ⬜ next | §3.1, §4, §5 — retraction/supersession + adjudicated labels |
-| `state-snapshot.schema.json` | ⬜ next | §3, §3.2 — latent/observed/belief layers for Replay |
-| `context-manifest.schema.json` | ⬜ next | §3.6 — components[{type,ref,ordinal}] + rendered_prompt_hash |
-| `release-manifest.schema.json` | ⬜ next | §13 — canonical digests + random_seed |
+| `adjudication-event.schema.json` | ✅ | §3.1, §4, §5 — retraction/supersession + adjudicated labels; `reproducible ⇒ artifact_id` |
+| `state-snapshot.schema.json` | ✅ | §3, §3.2 — latent/observed/belief layers + `state_hash` for Replay |
+| `context-manifest.schema.json` | ✅ | §3.6 — components[{type,ref,ordinal}] + rendered_prompt_hash |
+| `release-manifest.schema.json` | ✅ | §13 — canonical digests + random_seed |
 
 ## Acceptance tests (§15.1) — coverage so far
 
-`validate.py` runs the four that need no external infra:
-**Schema conformance**, **Evidence derivation** (recompute V-level from primitives — the §5 rule lives in `derive_level()`), **DAG ordering** (parent.sequence < child.sequence), **Trust boundary** (untrusted → data only).
+`build_derived.py` bakes the derived digests (rendered_prompt_hash, state_hash, canonical_manifest_digest); `validate.py` then runs the **10** checks that need no external infra and recomputes those digests to prove reproducibility:
 
-Pending (need the remaining schemas / an event-store / exporter): Replay, Retraction, Concurrency,
-Temporal leakage, Redaction, Span integrity, Context replay, Preference filtering (P0 unexportable),
-Release reproducibility, Lineage, Correction, State-layer isolation, Teacher gate.
+**Schema conformance** · **Evidence derivation** (recompute V-level from primitives — the §5 rule lives in `derive_level()`) · **DAG ordering** (parent.sequence < child.sequence) · **Trust boundary** (untrusted → data only) · **Correction edge** (`supersedes` never in `caused_by`) · **State-layer isolation** (nothing writes latent) · **Teacher gate** (only `open_weight` exportable) · **Context replay** (rendered_prompt_hash reconstructs from components) · **Snapshot integrity** (state_hash reproduces from state layers) · **Release reproducibility** (canonical digest deterministic + matches stored).
+
+Still pending — need a real event-store / exporter / branch execution: **Replay** (full event-fold → snapshot), **Concurrency**, **Temporal leakage** (export-time), **Redaction** (chain-wide placeholder survival), **Span integrity** (against live artifacts), **Preference filtering** (P0 unexportable — needs preference records), **Lineage**.
 
 ## Conventions
 - Draft 2020-12. Each schema's `$id` is its **bare filename**; `$ref`s are relative (`common.schema.json#/$defs/...`) so the set validates locally with no network.
