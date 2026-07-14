@@ -54,6 +54,21 @@ async def container_running() -> bool:
 # Lifecycle
 # ---------------------------------------------------------------------------
 
+def _forward_ai_keys(environ) -> list[str]:
+    """docker ``-e`` flags for the AI API keys forwarded into the Kali container. AITEST_ANTHROPIC_API_KEY
+    (kept out of Claude Code's ANTHROPIC_API_KEY so it can't bill the Smith agent) is forwarded AS
+    ANTHROPIC_API_KEY for pyrit/tools; a bare ANTHROPIC_API_KEY (SMITH_USE_API_KEY=yes / legacy)
+    overrides it when both are set."""
+    fwd: dict[str, str] = {}
+    for src, dst in (("OPENAI_API_KEY", "OPENAI_API_KEY"),
+                     ("AITEST_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY"),
+                     ("ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY"),
+                     ("AZURE_OPENAI_API_KEY", "AZURE_OPENAI_API_KEY")):
+        if environ.get(src):
+            fwd[dst] = environ[src]
+    return [x for dst, val in fwd.items() for x in ("-e", f"{dst}={val}")]
+
+
 async def ensure_running() -> tuple[bool, str]:
     """
     Start the Kali container if it isn't running yet.
@@ -72,17 +87,8 @@ async def ensure_running() -> tuple[bool, str]:
                 f"  docker build -t {KALI_IMAGE} ./tools/kali/"
             )
 
-        # Forward AI API keys into the container. AITEST_ANTHROPIC_API_KEY (kept out of Claude Code's
-        # ANTHROPIC_API_KEY so it can't bill the Smith agent) is forwarded AS ANTHROPIC_API_KEY for
-        # pyrit/tools; a bare ANTHROPIC_API_KEY (SMITH_USE_API_KEY=yes / legacy) overrides it if both set.
-        _fwd: dict[str, str] = {}
-        for src, dst in (("OPENAI_API_KEY", "OPENAI_API_KEY"),
-                         ("AITEST_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY"),
-                         ("ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY"),
-                         ("AZURE_OPENAI_API_KEY", "AZURE_OPENAI_API_KEY")):
-            if os.environ.get(src):
-                _fwd[dst] = os.environ[src]
-        env_flags: list[str] = [x for dst, val in _fwd.items() for x in ("-e", f"{dst}={val}")]
+        # Forward AI API keys into the container (see _forward_ai_keys).
+        env_flags: list[str] = _forward_ai_keys(os.environ)
 
         proc = await asyncio.create_subprocess_exec(
             docker_executable(), "run", "-d",
