@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "coverage-transition-event.schema.json",
+  "title": "Coverage-transition event (training-data-plan.md §3)",
+  "description": "A coverage-matrix cell changing status. A `tested_clean` is a GENUINE negative training label (systematic 'this was tested and is safe'), not just an absence — §8 'include failed scans, labeled'. A `vulnerable` closure links to the finding that proves it.",
+  "allOf": [
+    { "$ref": "event-envelope.schema.json" },
+    {
+      "type": "object",
+      "properties": {
+        "event_type": { "const": "coverage_transition" },
+        "coverage_transition": {
+          "type": "object",
+          "properties": {
+            "cell_id": { "type": "string" },
+            "status": { "type": "string", "enum": ["pending", "in_progress", "tested_clean", "vulnerable", "not_applicable", "skipped"] },
+            "endpoint_path": { "type": ["string", "null"] },
+            "method": { "type": ["string", "null"] },
+            "injection_type": { "type": ["string", "null"] },
+            "param_name": { "type": ["string", "null"] },
+            "finding_id": { "type": ["string", "null"], "description": "required-by-convention when status=vulnerable" },
+            "artifact_id": { "type": ["string", "null"], "description": "agent-smith artifact id proving the closure" }
+          },
+          "required": ["cell_id", "status"]
+        }
+      },
+      "required": ["coverage_transition"]
+    }
+  ]
+}

@@ -5,7 +5,9 @@ Schemas + a minimal event-store + validating fixtures derived from **`training-d
 Goal — surface schema/semantic defects on real data before freezing `smith-event/1.0`.
 
 ```
-schemas/                    9 JSON Schemas (draft 2020-12), $id = bare filename, relative $refs
+schemas/                    12 JSON Schemas (draft 2020-12), $id = bare filename, relative $refs
+                            (common, event-envelope, observation, decision, action, result, adjudication,
+                             finding, coverage-transition, state-snapshot, context-manifest, release-manifest)
 eventstore/
   core.py                   digest · Redactor (HMAC placeholders) · Store (fold/snapshot) · resolve_span · render_sft_example
   acceptance.py             9 event-store §15.1 tests, each with a NEGATIVE control
