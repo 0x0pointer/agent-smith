@@ -10,10 +10,9 @@
   },
   "belief_state": {
     "POST /api/v1/merchants/login#email": {
-      "sqli_confidence": 0.9,
-      "initial_surface_signal": "downgraded_by_adjudication"
+      "sqli_confidence": 0.9
     }
   },
-  "state_hash": "sha256:8302add1f9f920686253058bd9e671b6d789ee2287eabb2051e86d2e8606d7b5",
+  "state_hash": "sha256:c212d612409f2a7a313f9ea5a5038b7134fd6526922845e818e5e39647e90775",
   "schema_version": "smith-event/1.0"
 }

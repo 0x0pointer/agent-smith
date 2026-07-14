@@ -9,6 +9,7 @@
       "type": "object",
       "properties": {
         "event_type": { "const": "result" },
+        "state_ops": { "type": "array", "items": { "$ref": "common.schema.json#/$defs/state_op" } },
         "result": {
           "type": "object",
           "properties": {

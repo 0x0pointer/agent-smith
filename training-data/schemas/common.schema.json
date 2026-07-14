@@ -135,6 +135,16 @@
         "training_rendering": { "$ref": "common.schema.json#/$defs/sha256_ref" }
       }
     },
+    "state_op": {
+      "type": "object",
+      "description": "A structured contribution to a state layer, applied in sequence order by the reducer (§3.2). Contributions from a superseded event are skipped when folding (Correction).",
+      "properties": {
+        "layer": { "type": "string", "enum": ["observed", "belief"] },
+        "key": { "type": "string" },
+        "value": {}
+      },
+      "required": ["layer", "key", "value"]
+    },
     "evidence": {
       "type": "object",
       "description": "Evidence stored as PRIMITIVES; dimensions + V-level are COMPUTED from them (§5).",

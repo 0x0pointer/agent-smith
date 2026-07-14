@@ -28,7 +28,13 @@ def bake_context():
         if not line.strip():
             continue
         m = json.loads(line)
-        m["rendered_prompt_hash"] = digest(sorted(m["components"], key=lambda c: c["ordinal"]))
+        # Bind renderer + tokenizer into the hash so a renderer/tokenizer SWAP invalidates it
+        # (a components-only hash would make a renderer change invisible — §3.6).
+        m["rendered_prompt_hash"] = digest({
+            "components": sorted(m["components"], key=lambda c: c["ordinal"]),
+            "renderer_version": m["renderer_version"],
+            "tokenizer_ref": m["tokenizer_ref"],
+        })
         out.append(json.dumps(m, ensure_ascii=False))
     p.write_text("\n".join(out) + "\n")
 
