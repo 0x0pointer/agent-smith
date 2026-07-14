@@ -1,7 +1,10 @@
 # Training-Data Pipeline for Pentest Model Distillation — Plan (v1.2, schema-spike-ready draft)
 
-> **Status:** DRAFT v1.2 — architecture approved; the schema contract is **spike-ready but NOT
-> frozen.** v1.2 resolves the round-3 implementation-level corrections: **latent / observed /
+> **Status:** v1.2 — **`smith-event/1.0` FROZEN** (validated on a REAL emitted scan stream, not just
+> the fixture: 199 events + 17 harvested decisions passed schema + sequence + DAG + linkage + no-leak
+> via `eventstore/validate_stream.py`). Freeze contract: **additive changes only; anything breaking →
+> `smith-event/2.0`.** The three prior "open before freezing" items are resolved (see §17). v1.2 also
+> resolves the round-3 implementation-level corrections: **latent / observed /
 > belief** state layers (§3.2); **per-field capture-mode provenance** so no reasoning field is
 > reconstructed post-hoc (§3); **distributed event-ordering authority** + supersedes-is-a-correction-
 > edge (§3.1); a **context-assembly manifest** per model invocation (§3.6); **exact + semantic-family**
@@ -575,9 +578,8 @@ anti-future-leakage** (§3.3) · action fingerprint + semantic dedup (§3.4) · 
 spans (§3.5) · label-uncertainty + multi-parent credit (§4) · evidence stored as **dimensions**,
 V0–V5 derived (§5) · **counterfactual quality levels P0–P3** + action safety class (§7) · confidence
 calibration as an eval layer (§11) · Claude track reworded to **contamination-control-not-ToS-
-resolution** (§12) · dataset release digest + day-one governance fields (§13). Still open before
-freezing: pick the belief-state representation, the normalizer/fingerprint spec, and the cloning
-approach per target class.
+resolution** (§12) · dataset release digest + day-one governance fields (§13). The three
+"open before freezing" items are resolved in §17 — none required a schema change.
 
 **v1.1 → v1.2 (round-3 implementation review):** state split into **latent / observed / belief**
 (§3.2) · per-field **`capture_mode`** provenance, no post-hoc fabrication + human-override-only-after-
@@ -588,4 +590,27 @@ edge (§3.1) · **context-assembly manifest** per invocation (§3.6) · **`exact
 dimensions (§5) · Plane-A **raw-vs-redacted contradiction resolved** (transient acquisition, named
 stage objects) + **HMAC-keyed engagement-scoped placeholders** (§8) · release digests get **canonical
 serialization + byte-identical rebuild** test (§13) · **schema-freeze acceptance-test suite** (§15.1).
-Schema is **spike-ready, not frozen**; next artifact = `schemas/` + `fixtures/` on one lab scan.
+Schema is **FROZEN as `smith-event/1.0`** (§17); `schemas/` + `fixtures/` + the offline event-store +
+the runtime emitter + the passive decision harvester + `validate_stream.py` are all shipped and proven
+on a real scan.
+
+## 17. Freeze resolutions (smith-event/1.0)
+The three items listed as "open before freezing" were not schema gaps — two are design choices we made,
+and the third is downstream infra that must NOT be built yet:
+
+- **Belief-state representation — DECIDED.** `state-snapshot.belief_state` stays an *open object*:
+  a per-entity map `{ <target_ref>: { hypotheses: [{claim, confidence}], cell_status, cred_confidence } }`,
+  with `belief_delta { hypothesis, prior_confidence, posterior_confidence }` per decision. The schema
+  already carries it; *runtime* belief emission is an **additive post-freeze increment** (fed partly by
+  the harvested confidence in Smith's narration). No schema change.
+- **Normalizer / fingerprint spec — PINNED as `norm/1`.** `exact_action_hash = sha256(` canonical JSON,
+  sorted keys, UTF-8, no whitespace, of `{tool, params}` `)`; `semantic_action_family` derived
+  {target_entity ← target|url, operation_class ← tool, payload_family ← action|method}. This is exactly
+  what the runtime emitter produces today. The **normalizer version rides in the release manifest**
+  (`normalizer_versions`), so a richer `norm/2` (URL canonicalization, volatile-field stripping) is
+  additive and never breaks the schema.
+- **Cloning approach per target class — DECIDED, Phase-5 BUILD.** Per class: containerized lab targets
+  (VulnBank etc.) → container+DB snapshot/restore for **P3**; idempotent HTTP surfaces → separately-reset
+  equivalent states for **P2**; non-cloneable / production → **P1** (same-frozen-observation judgement)
+  only, never P3. This is **counterfactual-generation infrastructure (Phase 5)** — not needed for the
+  current SFT-data stage, and building it now would be premature. Decided-not-built, on purpose.
