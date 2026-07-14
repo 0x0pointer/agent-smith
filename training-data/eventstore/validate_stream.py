@@ -99,6 +99,26 @@ def _leak_scan(raw_text, errors):
             errors.append(f"LEAK: {label} pattern present in the stream")
 
 
+def _artifact_completeness(events, events_path, errors):
+    """Every referenced artifact (result.artifact_id, finding.proof_artifact_id) must be durably
+    retained in the engagement bundle logs/smith-events/<id>/ — else the training data points at
+    observation content that was wiped. Returns how many resolve. No refs -> nothing to check."""
+    refs = {r for e in events for r in
+            (e.get("result", {}).get("artifact_id"), e.get("finding", {}).get("proof_artifact_id")) if r}
+    if not refs:
+        return 0
+    bundle = events_path.parent / events_path.stem  # logs/smith-events/<id>/
+    if not bundle.is_dir():
+        errors.append(f"[BUNDLE] {len(refs)} artifacts referenced but no durable bundle at {bundle.name}/ — "
+                      "observation content was not retained")
+        return 0
+    missing = sorted(r for r in refs if not (bundle / f"{r}.txt").exists())
+    if missing:
+        errors.append(f"[BUNDLE] {len(missing)}/{len(refs)} referenced artifacts missing from {bundle.name}/ "
+                      f"(e.g. {missing[0]})")
+    return len(refs) - len(missing)
+
+
 def validate_stream(events_path, decisions_path=None):
     errors = []
     events = _load(events_path)
@@ -110,7 +130,9 @@ def validate_stream(events_path, decisions_path=None):
     _result_linkage(events, errors)
     _harvested_decisions(events, decisions, errors)
     _leak_scan(events_path.read_text() + ("\n" + decisions_path.read_text() if decisions else ""), errors)
+    retained = _artifact_completeness(events, events_path, errors)
     census = collections.Counter(e["event_type"] for e in events)
+    census["artifacts_retained"] = retained
     census["harvested_decision"] = len(decisions)
     return {"ok": not errors, "errors": errors, "census": dict(census), "events": len(events)}
 

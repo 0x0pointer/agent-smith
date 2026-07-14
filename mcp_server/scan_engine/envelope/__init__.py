@@ -194,7 +194,7 @@ def wrap(tool: str, raw_output: str, context: dict | None = None,
     # 5.9. smith-event capture (training-data Plane A) — fire-and-forget, fail-soft, does not block
     try:
         from mcp_server.scan_engine.smith_events import emit_tool_call
-        emit_tool_call(tool, ctx, result)
+        emit_tool_call(tool, ctx, result, artifact_id)
     except Exception:
         pass
 

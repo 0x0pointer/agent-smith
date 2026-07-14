@@ -187,3 +187,35 @@ def test_coverage_transition_invalid_dropped(emit_env):
     se.emit_coverage_transition({"cell_id": "c", "status": "bogus"})   # bad status
     se.emit_coverage_transition({"status": "tested_clean"})            # missing cell_id
     assert not _events(emit_env)                                       # both dropped, never emitted
+
+
+def test_emit_tool_call_copies_artifact_and_links_it(emit_env, monkeypatch, tmp_path):
+    import mcp_server.scan_engine.artifacts as arts
+    src_dir = tmp_path / "src_artifacts"
+    src_dir.mkdir()
+    (src_dir / "http_req_1.txt").write_text("HTTP/1.1 200 OK\r\n\r\n{\"balance\": 1}")
+    monkeypatch.setattr(arts, "_ARTIFACTS_DIR", src_dir)
+
+    se.emit_tool_call("http_request", {"method": "GET", "url": "http://x"}, FakeResult(), artifact_id="http_req_1")
+
+    r = _events(emit_env)[1]
+    _validate(r)
+    assert r["result"]["artifact_id"] == "http_req_1"                      # linked in the event
+    copied = emit_env / "eng-test" / "http_req_1.txt"
+    assert copied.exists() and "200 OK" in copied.read_text()             # durable copy survives the wipe
+    meta = json.loads((emit_env / "eng-test" / "meta.json").read_text())  # provenance snapshot
+    assert meta["id"] == "eng-test" and meta["model_profile"] == "full"
+
+
+def test_emit_tool_call_fail_soft_when_artifact_missing(emit_env, monkeypatch, tmp_path):
+    import mcp_server.scan_engine.artifacts as arts
+    monkeypatch.setattr(arts, "_ARTIFACTS_DIR", tmp_path / "nope")   # source doesn't exist
+    se.emit_tool_call("httpx", {"target": "x"}, FakeResult(), artifact_id="missing_123")
+    r = _events(emit_env)[1]
+    assert r["result"]["artifact_id"] == "missing_123"              # still referenced (event never lies about the id)
+    assert not (emit_env / "eng-test" / "missing_123.txt").exists()  # nothing copied; no crash
+
+
+def test_emit_tool_call_no_artifact_id_omits_field(emit_env):
+    se.emit_tool_call("nmap", {"target": "h"}, FakeResult())        # no artifact_id
+    assert "artifact_id" not in _events(emit_env)[1]["result"]

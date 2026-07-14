@@ -72,6 +72,38 @@ def test_leak_fails(tmp_path):
     assert any("LEAK" in e for e in res["errors"])
 
 
+def _result_with_artifact(artifact_id, seq=2, eid=R_ID):
+    r = _result(seq=seq, eid=eid)
+    r["result"]["artifact_id"] = artifact_id
+    return r
+
+
+def test_retained_artifact_passes_and_counts(tmp_path):
+    p = tmp_path / "s.jsonl"
+    _write(p, [_action(), _result_with_artifact("art_1")])
+    bundle = tmp_path / "s"
+    bundle.mkdir()
+    (bundle / "art_1.txt").write_text("HTTP/1.1 200 OK\r\n\r\nthe observation the model saw")
+    res = vs.validate_stream(p, tmp_path / "none.jsonl")
+    assert res["ok"], res["errors"]
+    assert res["census"]["artifacts_retained"] == 1
+
+
+def test_missing_bundle_fails(tmp_path):
+    p = tmp_path / "s.jsonl"
+    _write(p, [_action(), _result_with_artifact("art_1")])   # no bundle dir at all
+    res = vs.validate_stream(p, tmp_path / "none.jsonl")
+    assert not res["ok"] and any("BUNDLE" in e and "not retained" in e for e in res["errors"])
+
+
+def test_artifact_missing_from_bundle_fails(tmp_path):
+    p = tmp_path / "s.jsonl"
+    _write(p, [_action(), _result_with_artifact("art_1")])
+    (tmp_path / "s").mkdir()   # bundle exists but the artifact file is absent
+    res = vs.validate_stream(p, tmp_path / "none.jsonl")
+    assert not res["ok"] and any("missing" in e for e in res["errors"])
+
+
 def test_harvested_decision_explains_must_resolve(tmp_path):
     p, dp = tmp_path / "s.jsonl", tmp_path / "s.decisions.jsonl"
     _write(p, [_action(), _result()])

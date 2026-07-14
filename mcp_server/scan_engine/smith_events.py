@@ -259,9 +259,48 @@ def emit_coverage_transition(cell: dict) -> None:
         pass
 
 
-def emit_tool_call(tool: str, ctx: dict, result: Any) -> None:
+def _copy_artifact(engagement: str, artifact_id: str) -> None:
+    """Copy the tool's raw artifact into the engagement's DURABLE bundle (logs/smith-events/<id>/)
+    BEFORE the volatile ./artifacts/ dir is wiped on the next scan — so the training data's observation
+    content (what the model actually saw) survives. Plane-A raw retention (§8); redact at export."""
+    if not artifact_id:
+        return
+    try:
+        from mcp_server.scan_engine.artifacts import _ARTIFACTS_DIR
+        src = _ARTIFACTS_DIR / f"{artifact_id}.txt"
+        if not src.exists():
+            return
+        dst_dir = _EVENTS_DIR / engagement
+        dst_dir.mkdir(parents=True, exist_ok=True)
+        dst = dst_dir / f"{artifact_id}.txt"
+        if not dst.exists():  # idempotent — an artifact_id backing several cells is copied once
+            import shutil
+            shutil.copy2(src, dst)
+    except Exception:
+        pass
+
+
+def _snapshot_meta(engagement: str) -> None:
+    """One-time per-engagement provenance snapshot (target / model / timing) — session.json is wiped
+    between scans, so capture what the exporter needs to attribute the corpus."""
+    try:
+        dst_dir = _EVENTS_DIR / engagement
+        meta = dst_dir / "meta.json"
+        if meta.exists():
+            return
+        from core import session
+        s = session.get() or {}
+        snap = {k: s.get(k) for k in ("id", "target", "scan_phase", "model_profile", "started")}
+        dst_dir.mkdir(parents=True, exist_ok=True)
+        meta.write_text(json.dumps(snap, ensure_ascii=False, indent=2))
+    except Exception:
+        pass
+
+
+def emit_tool_call(tool: str, ctx: dict, result: Any, artifact_id: str = "") -> None:
     """Emit one ``action`` event + the ``result`` it caused, linked to the current ``decision`` (if the
-    agent recorded one). Fail-soft — never raises."""
+    agent recorded one), and COPY the tool's raw artifact into the engagement's durable bundle so the
+    observation content survives the ./artifacts/ wipe on the next scan. Fail-soft — never raises."""
     if not _enabled():
         return
     try:
@@ -286,12 +325,19 @@ def emit_tool_call(tool: str, ctx: dict, result: Any) -> None:
                                  "exact_action_hash": fingerprint,
                                  "semantic_action_family": _family(tool, ctx),
                                  "safety_class": _safety_class(tool, ctx)}}
+            observed = {"execution_status": "error" if ev.get("error") else "ok",
+                        "result_class": _result_class(result)}
+            result_obj = {"observed": observed}
+            if artifact_id:
+                result_obj["artifact_id"] = artifact_id  # -> logs/smith-events/<engagement>/<id>.txt
             res = {**_envelope("result", engagement, _next_seq(engagement, path),
                                caused_by=[action["event_id"]], correlation_id=did),
-                   "result": {"observed": {"execution_status": "error" if ev.get("error") else "ok",
-                                           "result_class": _result_class(result)}}}
+                   "result": result_obj}
             with path.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(action, ensure_ascii=False) + "\n")
                 f.write(json.dumps(res, ensure_ascii=False) + "\n")
+        # Durable Plane-A retention (outside the lock — file I/O)
+        _copy_artifact(engagement, artifact_id)
+        _snapshot_meta(engagement)
     except Exception:
         pass  # fail-soft: instrumentation must never break the scan

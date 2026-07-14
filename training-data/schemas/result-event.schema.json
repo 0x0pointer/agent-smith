@@ -13,6 +13,7 @@
         "result": {
           "type": "object",
           "properties": {
+            "artifact_id": { "type": ["string", "null"], "description": "agent-smith artifact id of the raw tool output; a durable copy is retained at logs/smith-events/<engagement>/<artifact_id>.txt (Plane A)." },
             "visible_spans": { "$ref": "common.schema.json#/$defs/visible_spans" },
             "observed": {
               "type": "object",
