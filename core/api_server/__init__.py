@@ -131,6 +131,7 @@ app.mount("/static", StaticFiles(directory=str(_DASHBOARD_DIR)), name="static")
 _qa_task:        asyncio.Task | None = None  # kept alive to prevent GC
 _watchdog_task:  asyncio.Task | None = None
 _status_task:    asyncio.Task | None = None
+_refusal_task:   asyncio.Task | None = None
 # Auto-restart watchdog state
 _watchdog_last_restart_ts: float = 0.0
 _watchdog_restart_count_window: list[float] = []  # epoch seconds of restarts in trailing hour
@@ -155,7 +156,7 @@ _svg_cache: dict[str, dict[str, str]] = {}
 
 @app.on_event("startup")
 async def _start_background_tasks() -> None:
-    global _qa_task, _watchdog_task, _status_task
+    global _qa_task, _watchdog_task, _status_task, _refusal_task
     from mcp_server._app import _load_dotenv
     _load_dotenv()
     from core.qa_agent import qa_daemon
@@ -168,6 +169,15 @@ async def _start_background_tasks() -> None:
         _watchdog_task = asyncio.create_task(_smith_watchdog_loop())
     else:
         _watchdog_task = None
+    # The refusal monitor watches the driving Claude's transcript for Usage-Policy
+    # refusals and drives notify + skip-recovery. It is INTENTIONALLY independent of
+    # SMITH_WATCHDOG_DISABLED — the interactive case (watchdog off) is exactly where a
+    # content-safety refusal otherwise goes unnoticed. It never spawns a process, so it
+    # is safe during a human-driven scan. Disable with SMITH_REFUSAL_MONITOR_DISABLED=1.
+    if os.environ.get("SMITH_REFUSAL_MONITOR_DISABLED", "").strip().lower() not in ("1", "true", "yes"):
+        _refusal_task = asyncio.create_task(_refusal_monitor_loop())
+    else:
+        _refusal_task = None
     _status_task = asyncio.create_task(_status_update_loop())
 
 
@@ -336,6 +346,7 @@ from .smith import (  # noqa: E402
     _smith_running,
     _smith_stalled_pid,
     _smith_watchdog_loop,
+    _refusal_monitor_loop,
     _spawn_smith,
     _spawn_source_tag,
     _watchdog_should_escalate_no_progress,
