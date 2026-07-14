@@ -191,6 +191,13 @@ def wrap(tool: str, raw_output: str, context: dict | None = None,
     # 5.8. Quick log — fire-and-forget, does not block
     _quick_log_tool(tool, ctx, result.summary, result)
 
+    # 5.9. smith-event capture (training-data Plane A) — fire-and-forget, fail-soft, does not block
+    try:
+        from mcp_server.scan_engine.smith_events import emit_tool_call
+        emit_tool_call(tool, ctx, result)
+    except Exception:
+        pass
+
     # 6. Context tracking (P4) — charge, check pressure tiers, periodic snapshot
     json_str = enforced.to_json()
     json_str = _check_context_pressure(enforced, json_str)
