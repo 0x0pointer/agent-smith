@@ -169,7 +169,16 @@ async def _run(name: str, **kwargs) -> str:
         tool    = REGISTRY[name]
         args    = tool.build_args(**kwargs)
         mount   = os.environ.get("PENTEST_TARGET_PATH", os.getcwd()) if tool.needs_mount else None
-        env_vars = {k: os.environ[k] for k in tool.forward_env if k in os.environ} or None
+        # forward_env entries are "VAR" or "SRC:DST" — the SRC:DST form forwards SRC's value into the
+        # tool subprocess under the name DST. This lets us keep the anthropic AI-testing key in .env
+        # as AITEST_ANTHROPIC_API_KEY (so Claude Code never picks it up for model billing) while the
+        # red-team tools still receive it as the ANTHROPIC_API_KEY they expect. Server-side only.
+        env_vars = {}
+        for _spec in tool.forward_env:
+            _src, _, _dst = _spec.partition(":")
+            if _src in os.environ:
+                env_vars[_dst or _src] = os.environ[_src]
+        env_vars = env_vars or None
 
         try:
             stdout, stderr, _ = await run_container(
@@ -244,3 +253,12 @@ def _load_dotenv() -> None:
             val = val.strip().strip('"').strip("'")
             if key:
                 os.environ[key] = val
+
+    # Server-only: the AI-testing anthropic key lives in .env as AITEST_ANTHROPIC_API_KEY so an
+    # interactive Claude Code can't pick it up and bill the Smith agent's model calls to it. Inside the
+    # server we re-expose it as ANTHROPIC_API_KEY for the QA agent + red-team tool forwarding; the
+    # spawned Smith strips ANTHROPIC_API_KEY unless SMITH_SPAWN_USE_API_KEY=1, so it never bills the
+    # agent. A real ANTHROPIC_API_KEY (SMITH_USE_API_KEY=yes / legacy) takes precedence if present.
+    _aitest = os.environ.get("AITEST_ANTHROPIC_API_KEY")
+    if _aitest and not os.environ.get("ANTHROPIC_API_KEY"):
+        os.environ["ANTHROPIC_API_KEY"] = _aitest

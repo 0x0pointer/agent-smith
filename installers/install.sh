@@ -233,10 +233,36 @@ echo ""
 
 _ask_key "OPENAI_API_KEY" \
     "Powers FuzzyAI and PyRIT scoring (openai provider)"
-_ask_key "ANTHROPIC_API_KEY" \
-    "Powers FuzzyAI and PyRIT scoring (anthropic provider) — API key (sk-ant-...), NOT your Claude.ai login"
+_ask_key "AITEST_ANTHROPIC_API_KEY" \
+    "Powers FuzzyAI and PyRIT scoring (anthropic provider) — API key (sk-ant-...), NOT your Claude.ai login. Stored SEPARATELY (AITEST_) so it never bills your Smith agent's model calls."
 _ask_key "AZURE_OPENAI_API_KEY" \
     "Powers FuzzyAI with azure provider"
+
+# ── Smith agent model auth: subscription (default) vs API key ─────────────────
+_set_env() {
+    python3 -c "
+import pathlib, sys
+p = pathlib.Path(sys.argv[1])
+lines = [l for l in p.read_text().splitlines() if not l.startswith(sys.argv[2] + '=')]
+lines.append(sys.argv[2] + '=' + sys.argv[3])
+p.write_text('\n'.join(lines) + '\n')
+" "$ENV_FILE" "$1" "$2"
+}
+echo ""
+echo "  Smith agent model auth — bill its model calls to your Claude SUBSCRIPTION (default) or an API key?"
+printf "  Use an API key for the Smith agent (bills credit) instead of your subscription? [y/N]: "
+IFS= read -r _use_api </dev/tty || true
+echo ""
+if [[ "$_use_api" =~ ^[Yy] ]]; then
+    _set_env "SMITH_USE_API_KEY" "yes"
+    _set_env "SMITH_SPAWN_USE_API_KEY" "1"
+    _ask_key "ANTHROPIC_API_KEY" \
+        "The Claude API key the Smith agent (interactive + headless) will bill (sk-ant-...)"
+    ok "Smith agent will use the API key (SMITH_USE_API_KEY=yes)."
+else
+    _set_env "SMITH_USE_API_KEY" "no"
+    ok "Smith agent will use your Claude subscription (no ANTHROPIC_API_KEY written to .env)."
+fi
 
 # ── Telegram bridge (optional) ────────────────────────────────────────────────
 echo ""
