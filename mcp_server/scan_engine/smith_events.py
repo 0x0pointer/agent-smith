@@ -37,6 +37,7 @@ _EVENTS_DIR = _paths.REPO_ROOT / "logs" / "smith-events"  # module-level so test
 
 _lock = threading.Lock()
 _seq: dict[str, int] = {}  # engagement_id -> last allocated sequence (in-memory, seeded from disk)
+_current_decision: dict[str, str] = {}  # engagement_id -> current decision event_id (links following actions)
 
 # Tools that only READ the target — everything else is treated as at-least-reversible.
 _READ_ONLY = {"nmap", "naabu", "httpx", "nuclei", "subfinder", "spider", "ffuf", "semgrep",
@@ -135,8 +136,75 @@ def _result_class(result: Any) -> str:
     return "ok"
 
 
+def _provenance() -> dict:
+    """proposal_source + teacher_origin from the session model (§3, §12). Defaults to open_weight;
+    a proprietary model id (if ever recorded) is what would flip it — the export gate keys on this."""
+    prov = {"proposal_source": "model", "teacher_origin": "open_weight"}
+    try:
+        from core import session
+        mp = (session.get() or {}).get("model_profile")
+        if mp:
+            prov["proposal_source"] = f"model:{mp}"
+    except Exception:
+        pass
+    return prov
+
+
+def _captured(value: Any) -> dict:
+    """Wrap a reasoning field as a captured_field (§3). Present ⇒ pre_decision_generated (the agent
+    produced it BEFORE acting); absent ⇒ not_captured — NEVER fabricated post-hoc."""
+    if value is None:
+        return {"value": None, "capture_mode": "not_captured"}
+    return {"value": value, "capture_mode": "pre_decision_generated", "actor": "model"}
+
+
+def emit_decision(data: dict) -> str | None:
+    """Emit a schema-valid ``decision`` event from what the agent recorded BEFORE acting (§3). Absent
+    reasoning fields are marked ``not_captured``. Stores the decision id so the following ``action``s
+    link ``caused_by`` it (decision → action → result). Returns the id, or None. Fail-soft."""
+    if not _enabled():
+        return None
+    try:
+        engagement = _engagement_id()
+        if not engagement:
+            return None
+        data = data or {}
+        _EVENTS_DIR.mkdir(parents=True, exist_ok=True)
+        path = _EVENTS_DIR / f"{engagement}.jsonl"
+        supporting = [{"artifact_ref": a, "visible_at_decision": True}
+                      for a in (data.get("supporting_observations") or [])
+                      if isinstance(a, str) and a.startswith("sha256:")]
+        decision = {
+            "goal": str(data.get("goal") or ""),
+            "hypothesis": data.get("hypothesis"),
+            "supporting_observations": supporting,
+            "target_ref": data.get("target_ref"),
+            "technique": data.get("technique"),
+            "alternatives_considered": _captured(data.get("alternatives_considered")),
+            "expected_signals": _captured(data.get("expected_signals")),
+            "confidence": _captured(data.get("confidence")),
+            "stop_condition": _captured(data.get("stop_condition")),
+            "chosen_tool": str(data.get("chosen_tool") or ""),
+            "operation": str(data.get("operation") or "call"),
+            "params": data.get("params") if isinstance(data.get("params"), dict) else {},
+            "explanation": (str(data["explanation"])[:400] if data.get("explanation") else None),
+            "provenance": _provenance(),
+            "context_manifest_id": data.get("context_manifest_id"),
+        }
+        decision = {k: v for k, v in decision.items() if v is not None}
+        with _lock:
+            env = _envelope("decision", engagement, _next_seq(engagement, path))
+            with path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps({**env, "decision": decision}, ensure_ascii=False) + "\n")
+            _current_decision[engagement] = env["event_id"]
+        return env["event_id"]
+    except Exception:
+        return None
+
+
 def emit_tool_call(tool: str, ctx: dict, result: Any) -> None:
-    """Emit one ``action`` event + the ``result`` it caused. Fail-soft — never raises."""
+    """Emit one ``action`` event + the ``result`` it caused, linked to the current ``decision`` (if the
+    agent recorded one). Fail-soft — never raises."""
     if not _enabled():
         return
     try:
@@ -151,15 +219,18 @@ def emit_tool_call(tool: str, ctx: dict, result: Any) -> None:
             json.dumps({"tool": tool, "params": params}, sort_keys=True, ensure_ascii=False).encode()
         ).hexdigest()
         ev = getattr(result, "evidence", None) or {}
+        did = _current_decision.get(engagement)  # the decision this action executes, if recorded
         with _lock:
-            action = {**_envelope("action", engagement, _next_seq(engagement, path)),
+            action = {**_envelope("action", engagement, _next_seq(engagement, path),
+                                  caused_by=[did] if did else None, correlation_id=did),
                       "action": {"tool": tool,
                                  "operation": str(ctx.get("action") or ("exec" if ctx.get("command") else "call")),
                                  "params": params,
                                  "exact_action_hash": fingerprint,
                                  "semantic_action_family": _family(tool, ctx),
                                  "safety_class": _safety_class(tool, ctx)}}
-            res = {**_envelope("result", engagement, _next_seq(engagement, path), caused_by=[action["event_id"]]),
+            res = {**_envelope("result", engagement, _next_seq(engagement, path),
+                               caused_by=[action["event_id"]], correlation_id=did),
                    "result": {"observed": {"execution_status": "error" if ev.get("error") else "ok",
                                            "result_class": _result_class(result)}}}
             with path.open("a", encoding="utf-8") as f:

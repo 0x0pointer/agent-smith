@@ -15,7 +15,8 @@ _RES = [(json.loads(f.read_text())["$id"], Resource.from_contents(json.loads(f.r
         for f in sorted(_SCHEMAS.glob("*.json"))]
 _REG = Registry().with_resources(_RES)
 _BY = {i: r.contents for i, r in _RES}
-_SCHEMA_FOR = {"action": "action-event.schema.json", "result": "result-event.schema.json"}
+_SCHEMA_FOR = {"action": "action-event.schema.json", "result": "result-event.schema.json",
+               "decision": "decision-event.schema.json"}
 
 
 class FakeResult:
@@ -28,8 +29,9 @@ class FakeResult:
 def emit_env(tmp_path, monkeypatch):
     monkeypatch.setattr(se, "_EVENTS_DIR", tmp_path)
     monkeypatch.setattr(se, "_seq", {})
+    monkeypatch.setattr(se, "_current_decision", {})
     import core.session as cs
-    monkeypatch.setattr(cs, "get", lambda: {"id": "eng-test"})
+    monkeypatch.setattr(cs, "get", lambda: {"id": "eng-test", "model_profile": "full"})
     return tmp_path
 
 
@@ -105,3 +107,46 @@ def test_ulid_matches_schema_pattern(emit_env):
     import re
     for e in _events(emit_env):
         assert re.fullmatch(r"[0-9A-HJKMNP-TV-Za-hjkmnp-tv-z]{26}", e["event_id"])
+
+
+def test_emit_decision_schema_valid_with_honest_capture_mode(emit_env):
+    did = se.emit_decision({"goal": "confirm SQLi on email param", "chosen_tool": "http_request",
+                            "operation": "request", "technique": "CWE-89", "confidence": 0.6,
+                            "alternatives_considered": ["blind", "time-based"]})
+    assert did
+    d = _events(emit_env)[0]
+    _validate(d)
+    assert d["event_type"] == "decision"
+    # provided fields -> pre_decision_generated; absent fields -> not_captured (never fabricated)
+    assert d["decision"]["confidence"] == {"value": 0.6, "capture_mode": "pre_decision_generated", "actor": "model"}
+    assert d["decision"]["expected_signals"]["capture_mode"] == "not_captured"
+    assert d["decision"]["stop_condition"]["capture_mode"] == "not_captured"
+    assert d["decision"]["provenance"]["teacher_origin"] == "open_weight"
+    assert d["decision"]["provenance"]["proposal_source"] == "model:full"
+
+
+def test_action_links_caused_by_current_decision(emit_env):
+    did = se.emit_decision({"goal": "g", "chosen_tool": "http_request", "operation": "request"})
+    se.emit_tool_call("http_request", {"method": "GET", "url": "http://x"}, FakeResult())
+    d, a, r = _events(emit_env)
+    assert d["event_id"] == did and (d["sequence"], a["sequence"], r["sequence"]) == (1, 2, 3)
+    assert a["caused_by"] == [did] and a["correlation_id"] == did      # action executes the decision
+    assert r["caused_by"] == [a["event_id"]] and r["correlation_id"] == did  # result under same decision
+    for e in (d, a, r):
+        _validate(e) if e["event_type"] in _SCHEMA_FOR else None
+
+
+def test_action_without_decision_has_no_causal_link(emit_env):
+    se.emit_tool_call("httpx", {"target": "x"}, FakeResult())   # no decision recorded first
+    a = _events(emit_env)[0]
+    assert "caused_by" not in a and "correlation_id" not in a   # unattributed action is honest, not fabricated
+
+
+def test_emit_decision_no_session_returns_none(tmp_path, monkeypatch):
+    monkeypatch.setattr(se, "_EVENTS_DIR", tmp_path)
+    monkeypatch.setattr(se, "_seq", {})
+    monkeypatch.setattr(se, "_current_decision", {})
+    import core.session as cs
+    monkeypatch.setattr(cs, "get", lambda: None)
+    assert se.emit_decision({"goal": "g", "chosen_tool": "x"}) is None
+    assert not list(tmp_path.glob("*.jsonl"))
