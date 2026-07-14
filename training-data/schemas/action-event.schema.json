@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "action-event.schema.json",
+  "title": "Action event (training-data-plan.md §3.4, §7)",
+  "description": "A concrete tool execution caused_by a decision. Carries the two-identifier fingerprint (exact_action_hash for exact-repeat dedup; semantic_action_family for weighting, NOT deletion) plus the behavior-distinguishing fields so distinct actions never collapse. safety_class gates auto-execution in counterfactual generation (§7).",
+  "allOf": [
+    { "$ref": "event-envelope.schema.json" },
+    {
+      "type": "object",
+      "properties": {
+        "event_type": { "const": "action" },
+        "action": {
+          "type": "object",
+          "properties": {
+            "tool": { "type": "string" },
+            "operation": { "type": "string" },
+            "params": { "type": "object" },
+            "exact_action_hash": { "$ref": "common.schema.json#/$defs/sha256_ref", "description": "Dedup exact repeats aggressively (§3.4)." },
+            "semantic_action_family": {
+              "type": "object",
+              "description": "Sampling/weighting key — NEVER auto-deleted (§3.4).",
+              "properties": {
+                "target_entity": { "type": "string" },
+                "operation_class": { "type": "string" },
+                "param_mutation": { "type": "string" },
+                "payload_family": { "type": "string" },
+                "auth_context": { "type": "string" },
+                "expected_oracle": { "type": "string" }
+              },
+              "required": ["target_entity", "operation_class", "payload_family"]
+            },
+            "behavior": {
+              "type": "object",
+              "description": "Behavior-distinguishing fields so the family can't collapse distinct actions (§3.4).",
+              "properties": {
+                "transport": { "type": "string" },
+                "method": { "type": "string" },
+                "encoding": { "type": "string" },
+                "execution_cardinality": { "type": "integer", "minimum": 1 },
+                "timing_model": { "type": "string" },
+                "concurrency": { "type": "string" },
+                "session_state": { "type": "string" },
+                "tool_semver": { "type": "string" },
+                "side_effect_class": { "type": "string" }
+              }
+            },
+            "safety_class": { "type": "string", "enum": ["read_only", "reversible", "state_mutating", "destructive", "externally_observable"] }
+          },
+          "required": ["tool", "operation", "exact_action_hash", "semantic_action_family", "safety_class"]
+        }
+      },
+      "required": ["action"]
+    }
+  ]
+}

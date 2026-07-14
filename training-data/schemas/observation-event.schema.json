@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "observation-event.schema.json",
+  "title": "Observation event (training-data-plan.md §3, §3.2)",
+  "description": "A tool/scanner/target/model observation. Carries a trust label (untrusted target content is DATA, never instructions) and updates the OBSERVED (not latent) state layer. Artifacts are by reference with per-stage hashes.",
+  "allOf": [
+    { "$ref": "event-envelope.schema.json" },
+    {
+      "type": "object",
+      "properties": {
+        "event_type": { "const": "observation" },
+        "observation": {
+          "type": "object",
+          "properties": {
+            "artifact_ref": { "$ref": "common.schema.json#/$defs/sha256_ref" },
+            "stage_hashes": { "$ref": "common.schema.json#/$defs/stage_hashes" },
+            "status": { "type": "string" },
+            "type": { "type": "string", "description": "e.g. http_response / nmap_scan / sql_error" },
+            "indicators": { "type": "array", "items": { "type": "string" } },
+            "trust": { "$ref": "common.schema.json#/$defs/trust_label" },
+            "content_hash": { "$ref": "common.schema.json#/$defs/sha256_ref", "description": "Duplicate-observation identity (§3.1)." },
+            "updates_state_layer": { "type": "string", "enum": ["observed", "belief"], "description": "Never 'latent' — the acting pipeline never writes latent truth (§3.2)." }
+          },
+          "required": ["artifact_ref", "trust", "type"]
+        }
+      },
+      "required": ["observation"]
+    }
+  ]
+}

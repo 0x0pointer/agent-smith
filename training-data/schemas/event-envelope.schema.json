@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "event-envelope.schema.json",
+  "title": "smith-event envelope (training-data-plan.md §3.1)",
+  "description": "Append-only event-sourcing envelope carried by EVERY event. The execution-causality graph is a DAG over caused_by/depends_on ONLY; supersedes is a correction edge and never enters that DAG. Ordering authority: sequence is monotonic per-engagement from one event-store authority; no causal parent may hold a greater committed sequence than its child.",
+  "type": "object",
+  "properties": {
+    "event_id": { "$ref": "common.schema.json#/$defs/ulid" },
+    "engagement_id": { "type": "string" },
+    "event_type": {
+      "type": "string",
+      "enum": ["observation", "decision", "action", "result", "adjudication", "state_snapshot", "intervention", "finding", "coverage_transition", "chain_transition"]
+    },
+    "sequence": { "type": "integer", "minimum": 0, "description": "Monotonic per-engagement, allocated by ONE event-store authority. Authoritative practical order." },
+    "occurred_at": { "$ref": "common.schema.json#/$defs/iso8601", "description": "Source-reported time (may drift across clocks)." },
+    "recorded_at": { "$ref": "common.schema.json#/$defs/iso8601", "description": "Event-store receipt time." },
+    "caused_by": { "type": "array", "items": { "$ref": "common.schema.json#/$defs/ulid" }, "description": "Authoritative causal parents (DAG edge)." },
+    "depends_on": { "type": "array", "items": { "$ref": "common.schema.json#/$defs/ulid" }, "description": "Authoritative causal deps (DAG edge)." },
+    "supersedes": { "type": "array", "items": { "$ref": "common.schema.json#/$defs/ulid" }, "description": "CORRECTION edge — NOT part of the execution-causality DAG (§3.1)." },
+    "correlation_id": { "type": "string", "description": "e.g. decision_id — links retries/results to their decision." },
+    "schema_version": { "type": "string", "description": "e.g. smith-event/1.0" }
+  },
+  "required": ["event_id", "engagement_id", "event_type", "sequence", "occurred_at", "recorded_at", "schema_version"]
+}

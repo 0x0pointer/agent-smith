@@ -1,0 +1,20 @@
+{
+  "release_id": "smith-dataset-0.1.0",
+  "canonical_manifest_digest": "sha256:dd7c525826fb7bf462b2c1ba7672a1ddae1031e95168e03261a840e03da03bd5",
+  "source_snapshot_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+  "selection_manifest_digest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+  "split_manifest_digest": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+  "exporter_image_digest": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+  "random_seed": 284991,
+  "selection_query": "event_type in (decision,result) AND evidence.level >= V2 AND teacher_origin = open_weight",
+  "query_engine": "duckdb@0.10",
+  "schema_migration_versions": [
+    "smith-event/1.0"
+  ],
+  "reward_policy_version": "R_v1",
+  "redaction_version": "redact/1.0",
+  "normalizer_versions": [
+    "utf8/1.0",
+    "ansi-strip/1.0"
+  ]
+}

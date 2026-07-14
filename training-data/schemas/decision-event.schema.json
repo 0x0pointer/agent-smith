@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "decision-event.schema.json",
+  "title": "Decision event — the atom of supervision (training-data-plan.md §3)",
+  "description": "A structured decision record. Reasoning fields (alternatives_considered, expected_signals, confidence, stop_condition) are captured_field objects with a capture_mode — never fabricated post-hoc. Provenance carries teacher_origin (gates §12). Temporal visibility per evidence ref (§3.3) and a context_manifest_id (§3.6) let the exact context be reconstructed.",
+  "allOf": [
+    { "$ref": "event-envelope.schema.json" },
+    {
+      "type": "object",
+      "properties": {
+        "event_type": { "const": "decision" },
+        "decision": {
+          "type": "object",
+          "properties": {
+            "goal": { "type": "string" },
+            "hypothesis": { "type": "string" },
+            "supporting_observations": { "type": "array", "items": { "$ref": "common.schema.json#/$defs/visible_evidence_ref" } },
+            "target_ref": { "type": "string" },
+            "technique": { "type": "string", "description": "CWE / MITRE ATT&CK id" },
+            "alternatives_considered": { "$ref": "common.schema.json#/$defs/captured_field" },
+            "expected_signals": { "$ref": "common.schema.json#/$defs/captured_field" },
+            "confidence": { "$ref": "common.schema.json#/$defs/captured_field" },
+            "stop_condition": { "$ref": "common.schema.json#/$defs/captured_field" },
+            "chosen_tool": { "type": "string" },
+            "operation": { "type": "string" },
+            "params": { "type": "object" },
+            "explanation": { "type": ["string", "null"], "description": "OPTIONAL short 40-80 token explanation; never the raw scratchpad." },
+            "provenance": { "$ref": "common.schema.json#/$defs/provenance" },
+            "runtime_versions": { "$ref": "common.schema.json#/$defs/runtime_versions" },
+            "context_manifest_id": { "type": "string", "description": "Ref to the §3.6 context-assembly manifest for THIS model invocation." }
+          },
+          "required": ["goal", "chosen_tool", "operation", "provenance", "confidence", "alternatives_considered", "expected_signals", "stop_condition"]
+        }
+      },
+      "required": ["decision"]
+    }
+  ]
+}

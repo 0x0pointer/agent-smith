@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "context-manifest.schema.json",
+  "title": "Context-assembly manifest (training-data-plan.md §3.6)",
+  "description": "The FULL assembled input for one model invocation (not just evidence): system policy, skill text, tool schemas, prior summaries, compaction output, operator/QA messages, budget, prior failures — each an ordered component. rendered_prompt_hash + renderer_version + tokenizer_ref let the exact context be reconstructed and hash-verified (acceptance test 'Context replay'). Referenced from a decision via context_manifest_id. Standalone DOCUMENT, not an event.",
+  "type": "object",
+  "properties": {
+    "context_manifest_id": { "type": "string" },
+    "engagement_id": { "type": "string" },
+    "components": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "enum": ["system_policy", "skill", "tool_schema", "observation", "compaction_summary", "operator_msg", "qa_advisory", "scratch_memory", "budget", "prior_failure"] },
+          "ref": { "type": "string" },
+          "ordinal": { "type": "integer", "minimum": 0 }
+        },
+        "required": ["type", "ref", "ordinal"]
+      }
+    },
+    "rendered_prompt_hash": { "$ref": "common.schema.json#/$defs/sha256_ref" },
+    "renderer_version": { "type": "string" },
+    "tokenizer_ref": { "type": "string" }
+  },
+  "required": ["context_manifest_id", "components", "rendered_prompt_hash", "renderer_version", "tokenizer_ref"]
+}

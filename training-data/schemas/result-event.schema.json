@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "result-event.schema.json",
+  "title": "Result event (training-data-plan.md §3.5, §4, §5)",
+  "description": "A tool result caused_by an action (one action MAY have multiple result events). Stores which fragments the model saw as coordinate-system-tagged visible_spans (§3.5), the observed result + adjudicated utility as UNCERTAIN labels (§4, never self-scored by the acting model), and evidence PRIMITIVES from which dimensions + V-level are computed (§5).",
+  "allOf": [
+    { "$ref": "event-envelope.schema.json" },
+    {
+      "type": "object",
+      "properties": {
+        "event_type": { "const": "result" },
+        "result": {
+          "type": "object",
+          "properties": {
+            "visible_spans": { "$ref": "common.schema.json#/$defs/visible_spans" },
+            "observed": {
+              "type": "object",
+              "description": "Layer A — observed result (§4).",
+              "properties": {
+                "execution_status": { "type": "string" },
+                "result_class": { "type": "string" },
+                "new_artifacts": { "type": "array", "items": { "$ref": "common.schema.json#/$defs/sha256_ref" } },
+                "state_changes": { "type": "array", "items": { "type": "string" } }
+              },
+              "required": ["execution_status", "result_class"]
+            },
+            "utility": {
+              "type": "object",
+              "description": "Layer B — adjudicated utility, an UNCERTAIN label {value, confidence, source, method, ...} (§4). Computed async from state transitions or adjudicated; never self-scored.",
+              "additionalProperties": {
+                "type": "object",
+                "properties": {
+                  "value": {},
+                  "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+                  "source": { "type": "string" },
+                  "method": { "type": "string" }
+                },
+                "required": ["value", "source"]
+              }
+            },
+            "credit": {
+              "type": "array",
+              "description": "Layer C — multi-parent credit; weights need not sum to 1 (§4).",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "event_id": { "$ref": "common.schema.json#/$defs/ulid" },
+                  "role": { "type": "string" },
+                  "weight": { "type": "number" }
+                },
+                "required": ["event_id", "role", "weight"]
+              }
+            },
+            "evidence": { "$ref": "common.schema.json#/$defs/evidence" }
+          },
+          "required": ["observed"]
+        }
+      },
+      "required": ["result"]
+    }
+  ]
+}
