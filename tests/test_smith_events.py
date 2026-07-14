@@ -16,7 +16,8 @@ _RES = [(json.loads(f.read_text())["$id"], Resource.from_contents(json.loads(f.r
 _REG = Registry().with_resources(_RES)
 _BY = {i: r.contents for i, r in _RES}
 _SCHEMA_FOR = {"action": "action-event.schema.json", "result": "result-event.schema.json",
-               "decision": "decision-event.schema.json"}
+               "decision": "decision-event.schema.json", "finding": "finding-event.schema.json",
+               "coverage_transition": "coverage-transition-event.schema.json"}
 
 
 class FakeResult:
@@ -150,3 +151,39 @@ def test_emit_decision_no_session_returns_none(tmp_path, monkeypatch):
     monkeypatch.setattr(cs, "get", lambda: None)
     assert se.emit_decision({"goal": "g", "chosen_tool": "x"}) is None
     assert not list(tmp_path.glob("*.jsonl"))
+
+
+def test_emit_finding_schema_valid_and_linked_to_decision(emit_env):
+    did = se.emit_decision({"goal": "g", "chosen_tool": "http_request", "operation": "request"})
+    se.emit_finding({"title": "SQLi on login", "severity": "CRITICAL", "target": "http://x/login",
+                     "technique": "CWE-89"}, "F-123", "kali_99_abc")
+    d, f = _events(emit_env)
+    _validate(f)
+    assert f["event_type"] == "finding"
+    assert f["finding"]["finding_id"] == "F-123"
+    assert f["finding"]["severity"] == "critical"          # coerced lowercase
+    assert f["finding"]["proof_artifact_id"] == "kali_99_abc"
+    assert f["caused_by"] == [did] and f["correlation_id"] == did   # finding under the decision
+
+
+def test_emit_finding_bad_severity_coerced_and_no_id_dropped(emit_env):
+    se.emit_finding({"title": "x", "severity": "BOGUS", "target": "t"}, "F-1")
+    assert _events(emit_env)[0]["finding"]["severity"] == "info"    # unknown severity -> info
+    se.emit_finding({"title": "y", "severity": "high", "target": "t"}, "")   # no finding_id
+    assert len(_events(emit_env)) == 1                              # dropped, not emitted
+
+
+def test_emit_coverage_transition_schema_valid(emit_env):
+    se.emit_coverage_transition({"cell_id": "cell-abc", "status": "vulnerable", "finding_id": "F-1",
+                                 "injection_type": "sqli", "param_name": "email"})
+    c = _events(emit_env)[0]
+    _validate(c)
+    assert c["event_type"] == "coverage_transition"
+    assert c["coverage_transition"]["status"] == "vulnerable"
+    assert c["coverage_transition"]["finding_id"] == "F-1"
+
+
+def test_coverage_transition_invalid_dropped(emit_env):
+    se.emit_coverage_transition({"cell_id": "c", "status": "bogus"})   # bad status
+    se.emit_coverage_transition({"status": "tested_clean"})            # missing cell_id
+    assert not _events(emit_env)                                       # both dropped, never emitted

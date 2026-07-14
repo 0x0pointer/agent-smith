@@ -104,6 +104,14 @@ async def _do_coverage_tested(data: dict, cov: Any) -> str:
         )
     if isinstance(result, str):
         return result  # passes through REJECTED messages directly
+    # smith-event: coverage transition (training-data Plane A) — fire-and-forget, fail-soft
+    try:
+        from mcp_server.scan_engine.smith_events import emit_coverage_transition
+        emit_coverage_transition({k: data.get(k) for k in
+                                  ("cell_id", "status", "finding_id", "artifact_id",
+                                   "injection_type", "param_name", "endpoint_path", "method")})
+    except Exception:
+        pass
     return f"Cell updated: {data.get('cell_id')}"
 
 
@@ -111,6 +119,15 @@ async def _do_coverage_bulk(data: dict, cov: Any) -> str:
     """Handle coverage type='bulk_tested': update multiple cells at once."""
     result = await cov.bulk_update(data.get("updates", []))
     await _emit_coverage_event()
+    # smith-event: one coverage transition per updated cell — fire-and-forget, fail-soft
+    if result.get("updated"):
+        try:
+            from mcp_server.scan_engine.smith_events import emit_coverage_transition
+            for u in (data.get("updates") or []):
+                if isinstance(u, dict):
+                    emit_coverage_transition(u)
+        except Exception:
+            pass
     msg = f"Bulk update: {result['updated']} cell(s) updated"
     if result["warnings"]:
         msg += f"\n\nINTEGRITY WARNINGS ({len(result['warnings'])}):\n"

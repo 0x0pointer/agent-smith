@@ -202,6 +202,63 @@ def emit_decision(data: dict) -> str | None:
         return None
 
 
+def emit_finding(data: dict, finding_id: str, proof_artifact_id: str = "") -> None:
+    """Emit a ``finding`` event when report(action='finding') files one (§3, §4). caused_by the current
+    decision (shared correlation_id) so the graph reads decision → action → result → finding. Fail-soft."""
+    if not _enabled():
+        return
+    try:
+        engagement = _engagement_id()
+        if not engagement or not finding_id:
+            return
+        data = data or {}
+        sev = str(data.get("severity") or "").lower()
+        if sev not in ("critical", "high", "medium", "low", "info"):
+            sev = "info"
+        finding = {"finding_id": str(finding_id), "title": str(data.get("title") or ""),
+                   "severity": sev, "target": str(data.get("target") or ""),
+                   "technique": data.get("technique"), "cve": data.get("cve") or None,
+                   "proof_artifact_id": proof_artifact_id or None}
+        finding = {k: v for k, v in finding.items() if v is not None}
+        _EVENTS_DIR.mkdir(parents=True, exist_ok=True)
+        path = _EVENTS_DIR / f"{engagement}.jsonl"
+        did = _current_decision.get(engagement)
+        with _lock:
+            env = _envelope("finding", engagement, _next_seq(engagement, path),
+                            caused_by=[did] if did else None, correlation_id=did)
+            with path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps({**env, "finding": finding}, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
+def emit_coverage_transition(cell: dict) -> None:
+    """Emit a ``coverage_transition`` event when a matrix cell changes status (§3). A tested_clean is a
+    genuine NEGATIVE label; a vulnerable closure links its finding. Fail-soft."""
+    if not _enabled():
+        return
+    try:
+        engagement = _engagement_id()
+        if not engagement:
+            return
+        cell = cell or {}
+        cid, status = str(cell.get("cell_id") or ""), str(cell.get("status") or "")
+        if not cid or status not in ("pending", "in_progress", "tested_clean", "vulnerable", "not_applicable", "skipped"):
+            return
+        ct = {"cell_id": cid, "status": status}
+        for k in ("endpoint_path", "method", "injection_type", "param_name", "finding_id", "artifact_id"):
+            if cell.get(k):
+                ct[k] = cell[k]
+        _EVENTS_DIR.mkdir(parents=True, exist_ok=True)
+        path = _EVENTS_DIR / f"{engagement}.jsonl"
+        with _lock:
+            env = _envelope("coverage_transition", engagement, _next_seq(engagement, path))
+            with path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps({**env, "coverage_transition": ct}, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
 def emit_tool_call(tool: str, ctx: dict, result: Any) -> None:
     """Emit one ``action`` event + the ``result`` it caused, linked to the current ``decision`` (if the
     agent recorded one). Fail-soft — never raises."""
