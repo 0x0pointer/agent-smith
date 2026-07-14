@@ -42,6 +42,14 @@ _watchdog_last_respawn_progress: tuple = ()
 _last_spawn_failure: str = ""
 # Restart throttle for the MCP SSE self-heal — reset by tests on this facade.
 _mcp_sse_last_restart_ts: float = 0.0
+# ── Usage-Policy refusal monitor state ───────────────────────────────────────
+# Transcript size (per filename) we last alerted a refusal on, so a persistent wedge
+# alerts ONCE while a genuinely new refusal (file grew, terminal turn is a refusal
+# again) re-alerts. Consecutive counter drives the interactive HIR escalation; both
+# reset when the scan is no longer wedged. On the facade so refusal.py mutates the
+# same object tests patch.
+_refusal_last_alert: dict = {}
+_refusal_consecutive = 0
 
 # ── Re-exports (public import surface preserved) ─────────────────────────────
 from core.client_patterns import looks_like_smith  # noqa: E402,F401
@@ -111,4 +119,18 @@ from .watchdog import (  # noqa: E402,F401
     _watchdog_respawn_flow,
     _watchdog_tick,
     _smith_watchdog_loop,
+)
+from .refusal import (  # noqa: E402,F401
+    _looks_like_refusal,
+    _find_wedged_transcript,
+    _newest_scan_transcript,
+    _evaluate_transcript,
+    _terminal_assistant_text,
+    _assistant_text_of,
+    _tail_has_pentest_tooluse,
+    _active_skill,
+    _skip_directive_message,
+    _handle_refusal,
+    _refusal_monitor_tick,
+    _refusal_monitor_loop,
 )
