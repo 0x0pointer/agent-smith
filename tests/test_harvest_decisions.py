@@ -104,3 +104,21 @@ def test_inner_tool_mapping():
     assert hd._inner_tool("kali", {}) == "kali"
     assert hd._inner_tool("mcp__pentest-agent__session", {"action": "start"}) is None   # not wrap-routed
     assert hd._inner_tool("mcp__pentest-agent__report", {"action": "finding"}) is None
+
+
+def _wrap_call_at(ts):
+    return {"type": "assistant", "timestamp": ts,
+            "message": {"role": "assistant", "content": [{"type": "tool_use", "name": "mcp__pentest-agent__http", "input": {"method": "GET"}}]}}
+
+
+def test_auto_transcript_picks_time_aligned(tmp_path):
+    tdir = tmp_path / "transcripts"
+    tdir.mkdir()
+    ev = _action(1, "01AAAAAAAAAAAAAAAAAAAAAAAA", "http_request")
+    ev["occurred_at"] = "2026-07-14T12:00:10+00:00"
+    epath = tmp_path / "eng.jsonl"
+    _write(epath, [ev])
+    _write(tdir / "aligned.jsonl", [_wrap_call_at("2026-07-14T12:00:05+00:00")])   # inside the action window
+    _write(tdir / "off.jsonl", [_wrap_call_at("2020-01-01T00:00:00+00:00")])       # nowhere near
+    pick = hd.auto_transcript(epath, tdir)
+    assert pick is not None and pick.name == "aligned.jsonl"

@@ -61,40 +61,45 @@ def _inner_tool(mcp_name: str, tool_input: dict) -> str | None:
     return None
 
 
+def _block_reasoning(b: dict) -> str | None:
+    """Reasoning text of a `thinking`/`text` content block, else None."""
+    if b.get("type") == "thinking":
+        return (b.get("thinking") or b.get("text") or "").strip() or None
+    if b.get("type") == "text":
+        return (b.get("text") or "").strip() or None
+    return None
+
+
+def _content_blocks(entry: dict):
+    """Yield the content blocks of an assistant message (normalizing string content to a text block)."""
+    msg = entry.get("message") if isinstance(entry.get("message"), dict) else {}
+    content = msg.get("content")
+    if isinstance(content, str):
+        if msg.get("role") == "assistant" and content.strip():
+            yield {"type": "text", "text": content}
+    elif isinstance(content, list):
+        for b in content:
+            if isinstance(b, dict):
+                yield b
+
+
 def parse_transcript(path: pathlib.Path) -> list[dict]:
     """Ordered wrap-routed tool calls with the reasoning (text+thinking) that preceded each."""
     calls: list[dict] = []
     buf: list[str] = []
     for line in path.read_text(errors="replace").splitlines():
-        line = line.strip()
-        if not line:
+        if not line.strip():
             continue
         try:
-            e = json.loads(line)
+            entry = json.loads(line)
         except ValueError:
             continue
-        msg = e.get("message") if isinstance(e.get("message"), dict) else {}
-        ts = e.get("timestamp")
-        content = msg.get("content")
-        if isinstance(content, str):
-            if msg.get("role") == "assistant" and content.strip():
-                buf.append(content.strip())
-            continue
-        if not isinstance(content, list):
-            continue
-        for b in content:
-            if not isinstance(b, dict):
-                continue
-            btype = b.get("type")
-            if btype == "thinking":
-                th = (b.get("thinking") or b.get("text") or "").strip()
-                if th:
-                    buf.append(th)
-            elif btype == "text":
-                tx = (b.get("text") or "").strip()
-                if tx:
-                    buf.append(tx)
-            elif btype == "tool_use":
+        ts = entry.get("timestamp")
+        for b in _content_blocks(entry):
+            reasoning = _block_reasoning(b)
+            if reasoning:
+                buf.append(reasoning)
+            elif b.get("type") == "tool_use":
                 inner = _inner_tool(b.get("name", ""), b.get("input") or {})
                 if inner:
                     calls.append({"reasoning": "\n".join(buf).strip(), "inner_tool": inner, "ts": ts})
@@ -185,23 +190,56 @@ def _latest(pattern_dir: pathlib.Path, glob: str, exclude: str = "") -> pathlib.
     return max(files, key=lambda f: f.stat().st_mtime) if files else None
 
 
+def _epoch(iso) -> float | None:
+    try:
+        return datetime.fromisoformat(str(iso)).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+def auto_transcript(events_path: pathlib.Path, tdir: pathlib.Path) -> pathlib.Path | None:
+    """Pick the transcript whose wrap-call timestamps best overlap this event stream's action window —
+    robust engagement↔transcript mapping (no dependence on 'newest' or a stored session id)."""
+    actions, _ = load_actions(events_path)
+    times = [t for t in (_epoch(a.get("occurred_at")) for a in actions) if t]
+    if not times:
+        return None
+    lo, hi = min(times), max(times)
+    best, best_n = None, 0
+    for f in tdir.glob("*.jsonl"):
+        try:
+            if f.stat().st_mtime < lo - 3600:  # cheap prefilter: inactive before the scan -> skip parse
+                continue
+        except OSError:
+            continue
+        n = sum(1 for c in parse_transcript(f)
+                if (ts := _epoch(c.get("ts"))) is not None and lo - 30 <= ts <= hi + 30)
+        if n > best_n:
+            best, best_n = f, n
+    return best
+
+
 def main():
     ap = argparse.ArgumentParser(description="Passively harvest decisions from a Smith transcript.")
     ap.add_argument("--transcript")
     ap.add_argument("--events")
     ap.add_argument("--out")
-    ap.add_argument("--latest", action="store_true", help="newest transcript + newest event stream")
+    ap.add_argument("--latest", action="store_true", help="use the newest event stream")
     a = ap.parse_args()
-    if a.latest:
-        repo = pathlib.Path(__file__).resolve().parents[2]
-        tdir = pathlib.Path.home() / ".claude" / "projects" / "-Users-gibson-agent-smith"
-        a.transcript = a.transcript or str(_latest(tdir, "*.jsonl") or "")
-        a.events = a.events or str(_latest(repo / "logs" / "smith-events", "*.jsonl", exclude="decisions") or "")
-    if not a.transcript or not a.events:
-        ap.error("need --transcript and --events (or --latest)")
-    ev = pathlib.Path(a.events)
-    out = pathlib.Path(a.out) if a.out else ev.with_suffix(".decisions.jsonl")
-    stats = harvest(pathlib.Path(a.transcript), ev, out)
+    repo = pathlib.Path(__file__).resolve().parents[2]
+    tdir = pathlib.Path.home() / ".claude" / "projects" / "-Users-gibson-agent-smith"
+    if a.latest and not a.events:
+        a.events = str(_latest(repo / "logs" / "smith-events", "*.jsonl", exclude="decisions") or "")
+    if not a.events:
+        ap.error("need --events (or --latest)")
+    events = pathlib.Path(a.events)
+    # Default: auto-select the transcript by timestamp overlap (robust engagement↔transcript mapping).
+    transcript = pathlib.Path(a.transcript) if a.transcript else auto_transcript(events, tdir)
+    if not transcript or not transcript.exists():
+        ap.error("could not resolve a transcript; pass --transcript explicitly")
+    out = pathlib.Path(a.out) if a.out else events.with_suffix(".decisions.jsonl")
+    stats = harvest(transcript, events, out)
+    stats["transcript"] = transcript.name
     print(json.dumps(stats, indent=2))
 
 
