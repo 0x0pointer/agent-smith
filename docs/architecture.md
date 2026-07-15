@@ -135,3 +135,4 @@ Every scan produces a structured set of artifacts you can hand to a developer, a
 | Session log | `logs/pentest.log` | Full audit trail of what the agent decided and why |
 | QA state | `qa_state.json` | Live QA alerts, steering directives, and Smith's acknowledgements |
 | Steering queue | `steering_queue.json` | Active depth-enforcement directives injected by the QA daemon |
+| Training data | `logs/smith-events/` | Redacted, schema-versioned event stream per engagement — decisions → actions → results → findings. Accumulates across scans and distills into a local **LoRA adapter** that runs *as Smith*. See **[training-data.md](training-data.md)**. |
