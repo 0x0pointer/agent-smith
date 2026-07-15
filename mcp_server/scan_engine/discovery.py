@@ -165,13 +165,24 @@ def _attr(blob: str, name: str) -> str | None:
     return m.group(1) if m else None
 
 
+# Hidden fields named like an anti-CSRF token / nonce / captcha — do NOT register these
+# as injectable params (fuzzing them just breaks the request). Every OTHER hidden field
+# (user_id, redirect, role, order_total, ...) is a prime mass-assignment / IDOR /
+# open-redirect surface and MUST be registered.
+_CSRF_NAME_RE = re.compile(r"csrf|xsrf|_token\b|\btoken$|authenticity|nonce|captcha", re.I)
+
+
 def _form_params(inner: str, ptype: str) -> list[dict]:
-    """Extract named, testable input fields from a form body."""
+    """Extract named, testable input fields from a form body. Hidden fields ARE included
+    (mass-assignment / IDOR / open-redirect params live in hidden inputs) EXCEPT anti-CSRF
+    tokens, which must not be fuzzed."""
     params, seen = [], set()
     for tag in _INPUT_RE.findall(inner):
         name = _attr(tag, "name")
         itype = (_attr(tag, "type") or "text").lower()
-        if not name or name in seen or itype in ("submit", "button", "reset", "image", "hidden"):
+        if not name or name in seen or itype in ("submit", "button", "reset", "image"):
+            continue
+        if itype == "hidden" and _CSRF_NAME_RE.search(name):
             continue
         seen.add(name)
         params.append({"name": name, "type": ptype,
@@ -393,6 +404,44 @@ async def _verify_live(base: str, inventory: list[dict]) -> tuple[list[dict], in
     return kept, len(inventory) - len(kept)
 
 
+# Source specificity for merge: a param-rich source wins the discovered_by label over a
+# bare crawl URL. Lower rank = more specific.
+_SOURCE_RANK = {"openapi": 0, "swagger": 0, "graphql": 0, "form": 1, "js": 2, "spider": 3}
+
+
+def _merge_inventory(inventory: list[dict]) -> list[dict]:
+    """Collapse endpoints sharing (normalized_path, method) into ONE registration with the
+    UNION of their params BEFORE registration.
+
+    Without this, inventory built crawl-URLs-first means a param-less bare URL (e.g.
+    ``GET /search``) registers first and add_endpoint's (path, method) dedup then DROPS the
+    param-rich OpenAPI/form entry for the same route — the params (and their injection
+    cells) are silently lost. This is a primary cause of param-less endpoints in the matrix.
+    Merging first unions the params so the richest view of each route is what gets registered;
+    the most specific ``discovered_by`` label wins."""
+    from core.coverage.classify import _normalize_path
+    merged: dict[tuple, dict] = {}
+    order: list[tuple] = []
+    for ep in inventory:
+        try:
+            key = (_normalize_path(ep.get("path", "")), (ep.get("method") or "GET").upper())
+        except Exception:
+            key = (ep.get("path"), ep.get("method"))
+        cur = merged.get(key)
+        if cur is None:
+            merged[key] = {**ep, "params": list(ep.get("params") or [])}
+            order.append(key)
+            continue
+        have = {p.get("name") for p in cur["params"] if p.get("name")}
+        for p in (ep.get("params") or []):
+            if p.get("name") and p["name"] not in have:
+                cur["params"].append(p)
+                have.add(p["name"])
+        if _SOURCE_RANK.get(ep.get("discovered_by", ""), 9) < _SOURCE_RANK.get(cur.get("discovered_by", ""), 9):
+            cur["discovered_by"] = ep.get("discovered_by")
+    return [merged[k] for k in order]
+
+
 async def _register_inventory(inventory: list[dict], auth_context: str) -> dict:
     """Register every endpoint (add_endpoint dedups); tally new registrations/cells."""
     from core.coverage import add_endpoint
@@ -501,7 +550,9 @@ async def discover_and_register(target: str, spider_urls: list[str], auth_contex
         inventory += await _discover_forms(spider_urls)
 
         inventory, dropped = await _verify_live(base, inventory)
-
+        # Merge same-route entries so a param-rich form/spec isn't shadowed by a
+        # param-less crawl URL at add_endpoint's (path, method) dedup.
+        inventory = _merge_inventory(inventory)
         result = await _register_inventory(inventory, auth_context)
     finally:
         _DISCOVERY_AUTH.reset(token)

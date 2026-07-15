@@ -8,11 +8,11 @@ agent-smith uses **5 MCP tools** that each dispatch to many underlying actions:
 
 | MCP tool | Dispatches via | Registered in |
 |----------|---------------|---------------|
-| `scan()` | `tool=` param (nmap, nuclei, ffuf, ...) | `mcp_server/scan_tools.py` |
+| `scan()` | `tool=` param (nmap, nuclei, ffuf, ...) | `mcp_server/scan_tools/` (package) |
 | `kali()` | freeform shell command | `mcp_server/kali_tools.py` |
 | `http()` | `action=` param (request, save_poc) | `mcp_server/http_tools.py` |
-| `report()` | `action=` param (finding, diagram, note, dashboard) | `mcp_server/report_tools.py` |
-| `session()` | `action=` param (start, complete, status, ...) | `mcp_server/session_tools.py` |
+| `report()` | `action=` param (finding, diagram, note, dashboard) | `mcp_server/report_tools/` (package) |
+| `session()` | `action=` param (start, complete, status, ...) | `mcp_server/session_tools/` (package) |
 
 **Do NOT add new top-level MCP tools.** Always add new capabilities as a dispatch value inside an existing tool. This keeps the system prompt small and prevents context bloat as the toolset grows.
 
@@ -34,21 +34,22 @@ Create `tools/mytool.py`:
 ```python
 from tools.base import Tool
 
+def _build_args(target: str, flags: str = "") -> list[str]:
+    """Build the container argv from the scan() call's params."""
+    return ["--flag", target, *(flags.split() if flags else [])]
+
 def _parse(stdout: str, stderr: str) -> list[dict]:
     """Optional: parse raw output into structured findings."""
     return None  # return None to pass raw stdout through
 
-mytool = Tool(
+# The module-level variable MUST be named TOOL — the registry imports it by that name.
+TOOL = Tool(
     name         = "mytool",
     image        = "docker.io/vendor/mytool:latest",
-    build_args   = lambda **kw: [
-        "--flag", kw["target"],
-        *(kw["flags"].split() if kw.get("flags") else []),
-    ],
+    build_args   = _build_args,
     parser        = _parse,
     needs_mount   = False,           # True if scanning a local codebase
     forward_env   = ["MY_API_KEY"],  # env vars to pass into the container
-    extra_volumes = None,
     default_timeout = 120,
     max_output    = 10_000,
 )
@@ -56,20 +57,20 @@ mytool = Tool(
 
 ### 2. Register it in the registry
 
-Add to `tools/__init__.py`:
+Add to `tools/__init__.py` — import `TOOL` under a private alias and key the entry by `.name`:
 
 ```python
-from tools.mytool import mytool
+from tools.mytool import TOOL as _mytool
 
-REGISTRY: dict[str, Tool] = {
+REGISTRY = {
     ...
-    "mytool": mytool,
+    _mytool.name: _mytool,
 }
 ```
 
-### 3. Add the dispatch entry in scan_tools.py
+### 3. Add the dispatch entry in the scan_tools package
 
-In `mcp_server/scan_tools.py`, add `"mytool"` to the dispatch logic inside the `scan()` function. It will automatically use `_run("mytool", ...)` — no new `@mcp.tool()` decorator needed.
+`mcp_server/scan_tools/` is a package: add `"mytool"` to the dispatch logic in the relevant `handlers_*.py` (e.g. `handlers_net.py` for a network scanner, `handlers_code.py` for a static-analysis tool, `handlers_ai.py` / `handlers_mobile.py` / `handlers_exploit.py` for their domains). It will automatically use `_run("mytool", ...)` — no new `@mcp.tool()` decorator needed.
 
 ### 4. Document it
 
@@ -117,10 +118,11 @@ Skills live in a separate repo ([github.com/0x0pointer/skills](https://github.co
 
 ### 1. Create the skill file
 
-Clone the skills repo and add your skill:
+Clone the skills repo and add your skill under `skills/<domain>/<name>/SKILL.md` (one level of
+domain nesting, e.g. `skills/mobile/android-security/`):
 
 ```
-skills/my-skill/SKILL.md
+skills/<domain>/my-skill/SKILL.md
 ```
 
 ```markdown
@@ -146,20 +148,17 @@ git add skills
 git commit -m "update skills submodule"
 ```
 
-### 2. Register it in the installers
+### 2. Re-run the installer — skills are auto-discovered
 
-Add to `installers/install.sh`:
-
-```bash
-mkdir -p "$HOME/.claude/skills/my-skill"
-cp "$REPO_DIR/skills/my-skill/SKILL.md" "$HOME/.claude/skills/my-skill/SKILL.md"
-```
-
-Add the reverse to `installers/uninstall.sh` (append to the `for skill_dir in ...` loop):
+No manual `install.sh` / `uninstall.sh` edits are needed. `installers/install.sh` discovers every
+skill automatically with:
 
 ```bash
-"$HOME/.claude/skills/my-skill"
+find "$REPO_DIR/skills" -mindepth 2 -maxdepth 3 -name SKILL.md
 ```
+
+So just add the skill at `skills/<domain>/<name>/SKILL.md` and re-run `./installers/install.sh`; it
+installs the new skill (and `uninstall.sh` removes whatever was installed). No per-skill `mkdir`/`cp`.
 
 ### 3. Document it
 
@@ -173,7 +172,8 @@ Add one row to the skills table in `CLAUDE.md`.
 
 If your feature isn't a scanner but fits an existing tool (e.g. a new report format), add it as an action:
 
-1. Add the handler in the appropriate `mcp_server/*_tools.py` module
+1. Add the handler in the appropriate tool module — `mcp_server/http_tools.py` / `kali_tools.py`, or the
+   relevant submodule of the `mcp_server/report_tools/` and `mcp_server/session_tools/` packages
 2. Add it to the dispatch `if/elif` chain in the tool function
 3. Add one row to the tool's table in `CLAUDE.md`
 

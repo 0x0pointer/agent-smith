@@ -134,6 +134,10 @@ def isolate_api_runtime_files(tmp_path, monkeypatch):
     monkeypatch.setattr(_logger, "_LOG_DIR", guard, raising=False)
     monkeypatch.setattr(_coverage, "COVERAGE_FILE", tmp_path / "coverage_matrix.json", raising=False)
     monkeypatch.setattr(_findings, "FINDINGS_FILE", tmp_path / "findings.json", raising=False)
+    # A scan reaching a terminal state now stops the pentest containers (Kali/MSF/MobSF).
+    # Tests call complete()/_stop() constantly — without this a suite run would `docker stop`
+    # the operator's REAL running containers. The teardown tests opt back in by unsetting this.
+    monkeypatch.setenv("SMITH_KEEP_CONTAINERS", "1")
 
 
 @pytest.fixture(autouse=True)

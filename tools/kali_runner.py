@@ -25,6 +25,37 @@ KALI_API       = f"http://localhost:{KALI_PORT}"
 # Prevents concurrent callers from racing to create the same container.
 _start_lock = asyncio.Lock()
 
+import pathlib as _pathlib
+import secrets as _secrets
+
+_REPO_ROOT = _pathlib.Path(__file__).resolve().parents[1]
+_GUARD_SRC = _REPO_ROOT / "tools" / "kali" / "api_guard.py"
+_TOKEN_FILE = _REPO_ROOT / "logs" / ".kali_api_token"
+# kali-server-mcp runs loopback-only inside the container on this port; only the
+# in-container guard (published on :5000) can reach it.
+_KALI_UPSTREAM_PORT = "5555"
+
+
+def _kali_token() -> str:
+    """Shared secret between the MCP and the in-container API guard, persisted (0600) so
+    both agree across restarts. Fail-open ('') so a filesystem hiccup never breaks Kali —
+    the guard then runs open and logs a warning."""
+    try:
+        if _TOKEN_FILE.exists():
+            existing = _TOKEN_FILE.read_text().strip()
+            if existing:
+                return existing
+        token = _secrets.token_hex(32)
+        _TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _TOKEN_FILE.write_text(token)
+        try:
+            _TOKEN_FILE.chmod(0o600)
+        except OSError:
+            pass
+        return token
+    except Exception:
+        return ""
+
 
 # ---------------------------------------------------------------------------
 # State checks
@@ -90,10 +121,16 @@ async def ensure_running() -> tuple[bool, str]:
         # Forward AI API keys into the container (see _forward_ai_keys).
         env_flags: list[str] = _forward_ai_keys(os.environ)
 
+        _token = _kali_token()
         proc = await asyncio.create_subprocess_exec(
             docker_executable(), "run", "-d",
             "--name", KALI_CONTAINER,
-            "-p", f"{KALI_PORT}:5000",
+            # SECURITY: publish the command API to LOOPBACK ONLY. It is unauthenticated
+            # root RCE — on 0.0.0.0 any host on the LAN could drive it. The MCP reaches it
+            # at localhost:5001; the LAN cannot.
+            "-p", f"127.0.0.1:{KALI_PORT}:5000",
+            # Tunnel/listener ports stay on 0.0.0.0 — targets must reach them for
+            # reverse tunnels / file transfer during a pentest (that is their purpose).
             "-p", "1080:1080",          # SOCKS5 proxy (chisel reverse tunnel)
             "-p", "8888:8888",          # chisel server listener
             "-p", "8889:8889",          # python HTTP server (file transfer to targets)
@@ -103,8 +140,21 @@ async def ensure_running() -> tuple[bool, str]:
             "--cap-add=NET_ADMIN",
             "--device=/dev/net/tun:/dev/net/tun",
             "--add-host=host.docker.internal:host-gateway",
+            # Front the API with the loopback auth guard (token + Host allowlist) so a local
+            # process or a DNS-rebinding page that reaches loopback still can't drive it. The
+            # guard is MOUNTED so this is live without an image rebuild; the Dockerfile bakes
+            # the same guard for clean builds.
+            "-v", f"{_GUARD_SRC}:/usr/local/bin/kali-api-guard:ro",
+            "-e", f"KALI_API_TOKEN={_token}",
+            "-e", f"KALI_UPSTREAM_PORT={_KALI_UPSTREAM_PORT}",
+            "-e", "KALI_GUARD_PORT=5000",
             *env_flags,
             KALI_IMAGE,
+            # Override CMD: kali-server-mcp bound LOOPBACK-only inside the container; the
+            # guard listens on the published :5000 and forwards to it after auth.
+            "sh", "-c",
+            f"kali-server-mcp --ip 127.0.0.1 --port {_KALI_UPSTREAM_PORT} & "
+            "exec python3 /usr/local/bin/kali-api-guard",
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -118,6 +168,7 @@ async def ensure_running() -> tuple[bool, str]:
             async with aiohttp.ClientSession() as s:
                 async with s.get(
                     f"{KALI_API}/health",
+                    headers={"X-Kali-Token": _kali_token()},
                     timeout=aiohttp.ClientTimeout(total=1),
                 ) as r:
                     if r.status == 200:
@@ -210,6 +261,7 @@ async def exec_command(command: str, timeout: int = 600) -> str:
             async with session.post(
                 f"{KALI_API}/api/command",
                 json={"command": command, "timeout": timeout},
+                headers={"X-Kali-Token": _kali_token()},
                 timeout=aiohttp.ClientTimeout(total=timeout + 30),
             ) as resp:
                 data      = await resp.json()

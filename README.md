@@ -90,7 +90,7 @@ Drop any of these the moment you start your client. `/pentester` orchestrates ev
 | `/request-cves` | MITRE CVE form + GHSA draft + disclosure report + vendor email, per qualifying finding |
 | `/threat-modeling` | PASTA + STRIDE — component map, data-flow diagram, attack tree, risk register |
 
-> 💡 25+ skills total — full catalog and chaining map in **[docs/skills.md](docs/skills.md)**.
+> 💡 35+ skills total — full catalog and chaining map in **[docs/skills.md](docs/skills.md)**.
 
 ---
 
@@ -160,6 +160,16 @@ The LLM decides what to run; each tool's output is aggregated and returned to th
 
 ---
 
+## Every scan builds training data
+
+Every pentest Smith runs is also a **structured, redacted dataset of the engagement** — each *decision → action → result → finding* is captured as a schema-versioned event stream and retained per engagement (with the raw artifacts the model actually saw). It's a **byproduct: the capture is passive, read-only, leak-scanned, and never influences the scan** (opt out with `SMITH_EVENTS_DISABLED=1`).
+
+The value compounds: **the more pentests you run, the more data you accumulate — and the better the model you can distill from it.** Pool the streams into a behaviour-cloning dataset and fine-tune a small open-weight base with QLoRA into a **LoRA adapter that runs *as Smith* locally**. Diversity of targets beats raw volume.
+
+→ **[docs/training-data.md](docs/training-data.md)** — what's captured, the safety model, and the exporter + DGX Spark QLoRA harness.
+
+---
+
 ## Documentation
 
 **Getting started**
@@ -168,6 +178,7 @@ The LLM decides what to run; each tool's output is aggregated and returned to th
 **Concepts**
 - [architecture.md](docs/architecture.md) — component diagram, project layout, what a scan produces
 - [skills.md](docs/skills.md) — full skill catalog, chaining map, per-skill reference
+- [training-data.md](docs/training-data.md) — every scan builds a redacted dataset you can distill into a local LoRA adapter
 
 **Operating Smith**
 - [operating.md](docs/operating.md) — scan modes, Human Intervention (HIR), lifecycle, QA depth enforcement
@@ -181,7 +192,6 @@ The LLM decides what to run; each tool's output is aggregated and returned to th
 **Contributing**
 - [extending.md](docs/extending.md) — adding new tools and skills
 - [testing.md](docs/testing.md) — running the test suite, coverage, adding tests
-- [phase1-detector-trust.md](docs/phase1-detector-trust.md) — internals: coverage-matrix trust model
 
 > **Adding a new skill?** Skills live in a separate repo ([github.com/0x0pointer/skills](https://github.com/0x0pointer/skills)) pulled in as a git submodule. After adding a skill there, update the submodule pointer (`git add skills && git commit`) and re-run the installer to deploy it.
 

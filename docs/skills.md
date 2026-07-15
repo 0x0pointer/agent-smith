@@ -15,23 +15,34 @@ Skills are slash commands that expand into detailed instructions for Claude. The
 | `/param-fuzz` | Auth stripping, type confusion, boundary values, mass assignment, token entropy analysis |
 | `/business-logic` | Value/quantity abuse, workflow bypass, BOLA/BFLA, replay, quota bypass, multi-tenant isolation |
 | `/api-security` | OWASP API Top 10 (2023) — BOLA, BFLA, mass assignment, JWT/OAuth abuse, SSRF, business-flow abuse, inventory drift. REST/GraphQL/gRPC/SOAP/MCP |
+| `/oauth-security` | OAuth 2.0 / OIDC — redirect_uri bypass, PKCE downgrade, state CSRF, code injection, scope escalation, mix-up attacks |
+| `/saml-sso` | SAML signature wrapping (XSW1–8), golden SAML, SCIM provisioning abuse, deep JWT (alg confusion, jku/kid injection) |
 | `/network-assess` | VLAN hopping, LLMNR/NBT-NS, SNMP, segmentation |
 | `/post-exploit` | Linux/Windows privesc, persistence, credential harvesting |
 | `/lateral-movement` | PTH, PTT, Kerberoasting, NTLM relay, delegation abuse |
 | `/metasploit` | Exploit validation in an isolated Docker container |
 | `/reverse-shell` | Generates and manages reverse shells across all platforms |
-| `/pivot-tunnel` | Chisel + SOCKS5 tunneling after RCE |
 
 **Cloud, infra & identity**
 
 | Skill | What it does |
 |---|---|
 | `/cloud-security` | AWS / Azure / GCP IAM, storage, serverless, logging gaps |
+| `/cloud-identity-federation` | OIDC CI/CD trust abuse, workload-identity (IRSA / GKE WI / AKS), SSRF→IMDS→role→credential chains |
 | `/container-k8s-security` | Container escape, K8s RBAC, etcd, service account abuse |
 | `/ad-assessment` | ADCS (ESC1–ESC8), BloodHound, GPO, LAPS, forest trusts |
 | `/email-security` | SPF / DKIM / DMARC, open relay, MTA-STS, SMTP security |
 | `/ssl-tls-audit` | TLS protocol/cipher audit, cert chain, POODLE/BEAST/Heartbleed/etc. |
 | `/credential-audit` | Brute force, password spraying, default creds, lockout, MFA bypass |
+
+**Mobile**
+
+| Skill | What it does |
+|---|---|
+| `/mobile-pentest-plan` | Mobile pentest orchestrator — fingerprint app, tier data sensitivity, scope a MASTG plan, dispatch to android/ios |
+| `/android-security` | APK static (MobSF / jadx / mobsfscan) + Frida/objection dynamic, MASVS 2.0 / MASTG |
+| `/ios-security` | IPA static (MobSF / class-dump / mobsfscan) + jailbroken-device dynamic, MASVS 2.0 / MASTG |
+| `/masvs-checklist` | OWASP MASVS 2.0 compliance matrix mapped to MASTG test IDs, per-control evidence |
 
 **Recon & analysis**
 
@@ -40,6 +51,8 @@ Skills are slash commands that expand into detailed instructions for Claude. The
 | `/osint` | Subdomain takeover, cert transparency, Shodan, leaked creds |
 | `/threat-modeling` | PASTA + STRIDE + 4-question, attack tree, risk register |
 | `/codebase` | OWASP ASVS 5.0 white-box review (16 chapters, 427 requirements) |
+| `/compliance` | Full OWASP ASVS 5.0 compliance matrix (346 controls) with per-control evidence — reviewed CSV + HTML report |
+| `/supply-chain` | Dependency confusion, typosquatting, lockfile integrity, malicious install hooks, CI/CD (Actions/GitLab) misconfig, SLSA gaps |
 | `/analyze-cve` | CVE code-path tracing + Burp PoC |
 | `/aikido-triage` | Triage Aikido SAST/SCA/secret-scan CSV against your code |
 
@@ -54,6 +67,7 @@ Skills are slash commands that expand into detailed instructions for Claude. The
 
 | Skill | What it does |
 |---|---|
+| `/report` | Generates a NullPointer Studio styled dark-themed PDF pentest report from findings.json |
 | `/remediate` | Writes code patches and config fixes for every finding |
 | `/gh-export` | Formats confirmed findings as copy-pasteable GitHub issues |
 | `/request-cves` | Generates CVE submission packages — MITRE form, GHSA draft, disclosure report, vendor email |
@@ -90,7 +104,7 @@ White-box source code security review structured around OWASP ASVS 5.0 (427 veri
 | `standard` | quick + route mapping + auth review + dangerous patterns | $0.50 | 45 min | 30 |
 | `thorough` | full ASVS-mapped review + IaC + crypto + source-to-sink tracing | $2.00 | 120 min | 60 |
 
-**Chains into:** `/threat-modelinging` (real architecture from code), `/pentester` (targeted scanning of discovered endpoints), `/web-exploit` (source-to-sink context), `/cloud-security` (IaC verification), `/analyze-cve` (full code context for CVE tracing).
+**Chains into:** `/threat-modeling` (real architecture from code), `/pentester` (targeted scanning of discovered endpoints), `/web-exploit` (source-to-sink context), `/cloud-security` (IaC verification), `/analyze-cve` (full code context for CVE tracing).
 
 ---
 
@@ -108,15 +122,15 @@ Full penetration test — recon through exploitation through reporting.
 **What it does:**
 
 1. Calls `report(action="dashboard")` — opens live findings tracker at `http://localhost:7777`
-2. Runs `run_naabu` + `run_subfinder` in parallel for initial recon
-3. Runs `run_httpx` to confirm live web services
-4. Calls `report_diagram` with a Mermaid diagram of discovered topology
-5. Runs `run_nuclei` on live web targets
-6. Runs `run_spider` to map all endpoints
-7. Runs deep scanning with `kali_exec` (nikto, sqlmap, testssl, …) based on depth
-8. Runs `run_ffuf` on interesting paths
-9. Calls `report_finding` for every confirmed vulnerability
-10. Calls `complete_scan` (blocked until diagram + PoCs are present)
+2. Runs `scan(tool="naabu")` + `scan(tool="subfinder")` in parallel for initial recon
+3. Runs `scan(tool="httpx")` to confirm live web services
+4. Calls `report(action="diagram")` with a Mermaid diagram of discovered topology
+5. Runs `scan(tool="nuclei")` on live web targets
+6. Runs `scan(tool="spider")` to map all endpoints
+7. Runs deep scanning with `kali(command=…)` (nikto, sqlmap, testssl, …) based on depth
+8. Runs `scan(tool="ffuf")` on interesting paths
+9. Calls `report(action="finding")` for every confirmed vulnerability
+10. Calls `session(action="complete")` (blocked until diagram + PoCs are present)
 
 **Depth presets:**
 
@@ -145,11 +159,11 @@ Traces a CVE in a project dependency — checks whether the vulnerable code path
 3. Traces the call chain from user-controlled input to the vulnerable function
 4. Assesses exploitability: reachable? user-controlled input? authentication required?
 5. Generates a `curl` command and Burp Suite HTTP request to test the vulnerability
-6. Calls `report_finding` if exploitable
+6. Calls `report(action="finding")` if exploitable
 
 ---
 
-## `/threat-modelinging`
+## `/threat-modeling`
 
 Structured threat model using the PASTA framework (Process for Attack Simulation and Threat Analysis) with STRIDE analysis and attack trees.
 
@@ -266,7 +280,7 @@ Once `/gh-export` has run, each finding in the **Findings** tab shows a **clipbo
 
 ## `/ai-redteam`
 
-Red-team assessment of AI/LLM endpoints using the OWASP LLM Top 10 (2025) framework. Systematically tests all 10 categories using four complementary tools.
+Red-team assessment of AI/LLM endpoints using the OWASP LLM Top 10 (2025) + OWASP AI Testing Guide (AITG v1) frameworks, plus OWASP MCP Top 10 runtime testing for agentic/MCP targets. Systematically tests all categories using four complementary tools.
 
 ```
 /ai-redteam https://ai-app.com/api/chat provider=openai depth=standard
@@ -276,20 +290,20 @@ Red-team assessment of AI/LLM endpoints using the OWASP LLM Top 10 (2025) framew
 
 **What it does:**
 
-1. Calls `start_scan` with target, depth, and limits
-2. Calls `start_dashboard` — live findings tracker
+1. Calls `session(action="start")` with target, depth, and limits
+2. Calls `report(action="dashboard")` — live findings tracker
 3. **Recon & fingerprinting** — probes the endpoint for model identification, response format, rate limiting, tool/function calling surface, and hidden parameters
-4. Calls `report_diagram` with an architecture diagram of the AI system (trust boundaries, guardrails, tool layer, RAG)
+4. Calls `report(action="diagram")` with an architecture diagram of the AI system (trust boundaries, guardrails, tool layer, RAG)
 5. **Automated scanning** — runs tools in parallel based on depth:
    - FuzzyAI: single-turn jailbreak fuzzing (jailbreak, prompt injection, system prompt leak, PII extraction, XSS injection)
    - Garak: probe-based scanning (DAN, encoding attacks, data leakage, hallucination, malware generation)
    - promptfoo: plugin-based evaluation (134 plugins — excessive agency, RAG poisoning, reasoning DoS, MCP attacks)
    - PyRIT: multi-turn orchestrated attacks (crescendo, jailbreak with configurable objectives)
 6. **Targeted multi-turn attacks** — based on Phase 2 results, runs focused attacks on weak categories (tool parameter fuzzing, authority marker rotation, multi-objective payloads)
-7. **Manual verification & PoC** — reproduces each finding with `http_request`, saves confirmed exploits via `save_poc`
-8. Calls `report_finding` for every confirmed vulnerability — mapped to OWASP LLM category
+7. **Manual verification & PoC** — reproduces each finding with `http(action="request")`, saves confirmed exploits via `http(action="save_poc")`
+8. Calls `report(action="finding")` for every confirmed vulnerability — mapped to OWASP LLM category
 9. Produces OWASP coverage summary showing which categories were tested and what was found
-10. Calls `complete_scan` and chains into `/gh-export`
+10. Calls `session(action="complete")` and chains into `/gh-export`
 
 **Tools used:**
 
@@ -322,7 +336,7 @@ Deep passive OSINT reconnaissance using the MITRE ATT&CK Reconnaissance framewor
 
 **What it does:**
 
-1. Calls `start_scan` with target domain and depth
+1. Calls `session(action="start")` with target domain and depth
 2. **DNS & WHOIS** — registrant info, name servers, MX/TXT/NS records, DNSSEC status
 3. **Certificate Transparency** — subdomain discovery via crt.sh, historical cert analysis, wildcard detection
 4. **Email harvesting** — theHarvester across all sources, SMTP verification (VRFY/EXPN/RCPT TO), catch-all detection
@@ -332,8 +346,8 @@ Deep passive OSINT reconnaissance using the MITRE ATT&CK Reconnaissance framewor
 8. **Social media & GitHub** — org repos, commit author emails, secrets in code, employee discovery
 9. **Cloud storage enumeration** — S3, Azure Blob, GCS bucket fuzzing
 10. **Document metadata extraction** — metagoofil + exiftool for employee names, software versions, GPS coordinates
-11. Calls `report_diagram` with infrastructure map
-12. Calls `complete_scan` — chains into `/pentester` if active scanning is authorized
+11. Calls `report(action="diagram")` with infrastructure map
+12. Calls `session(action="complete")` — chains into `/pentester` if active scanning is authorized
 
 Every finding is scored by confidence: **Confirmed** (authoritative source), **Likely** (2+ independent sources), or **Speculative** (single source).
 
@@ -369,7 +383,7 @@ Comprehensive container and Kubernetes security assessment covering OWASP Kubern
 9. **Network segmentation** — NetworkPolicy presence, cross-namespace connectivity, SSRF to cloud metadata
 10. **CIS benchmarks** — kube-bench (deployed as K8s Job), docker-bench-security (containerd-aware)
 11. **Defensive controls gap analysis** — admission controllers, PodSecurity, runtime security, audit logging
-12. Calls `report_diagram` with attack path map and `complete_scan`
+12. Calls `report(action="diagram")` with attack path map and `session(action="complete")`
 
 **Depth presets:**
 
@@ -428,7 +442,7 @@ Deep TLS/SSL configuration audit with compliance mapping to PCI DSS 4.0, NIST SP
 
 **What it does:**
 
-1. Calls `start_scan` with target and depth
+1. Calls `session(action="start")` with target and depth
 2. **Automated scanning** — testssl.sh, sslscan, sslyze, nuclei SSL templates in parallel
 3. **Protocol version analysis** — SSLv2/3, TLS 1.0/1.1/1.2/1.3 support and enforcement
 4. **Cipher suite & ordering** — NULL, EXPORT, DES, RC4, 3DES, CBC, DHE strength, server preference
@@ -442,7 +456,7 @@ Deep TLS/SSL configuration audit with compliance mapping to PCI DSS 4.0, NIST SP
 12. **Certificate revocation** — CRL distribution points, OCSP responder, stapled response freshness
 13. **Multi-port TLS scanning** — 20+ TLS-bearing ports (SMTP, IMAP, LDAPS, RDP, MQTT, etc.)
 14. **Compliance mapping** — PCI DSS 4.0 Section 4, NIST SP 800-52r2, FedRAMP controls
-15. Calls `report_finding` for every confirmed weakness with compliance impact
+15. Calls `report(action="finding")` for every confirmed weakness with compliance impact
 
 **Depth presets:**
 
@@ -473,7 +487,7 @@ Internal network assessment — assumes attacker has physical or VPN access to t
 5. **Share enumeration** — SMB shares (null session, anonymous), NFS exports
 6. **Network segmentation testing** — inter-VLAN access, firewall rule testing, DNS segmentation
 7. **Infrastructure device audit** — router/switch discovery, default credentials, SSH audit
-8. Calls `report_diagram` with network topology and `complete_scan`
+8. Calls `report(action="diagram")` with network topology and `session(action="complete")`
 
 **Depth presets:**
 
@@ -645,6 +659,13 @@ flowchart LR
     codebase -.enriches.-> cve[/analyze-cve/]
     codebase -.detects LLM use.-> ai
 
+    %% Codebase-driven appsec review
+    codebase --> comp[/compliance/]
+    codebase --> sc[/supply-chain/]
+    pentester --> sc
+    sc --> cve
+    sc --> cloud
+
     %% Pentester is the hub — branches to every scan/discovery skill
     pentester[/pentester/] --> web
     pentester --> pf[/param-fuzz/]
@@ -666,6 +687,12 @@ flowchart LR
     cloud --> k8s[/container-k8s-security/]
     cloud --> cve
 
+    %% Cloud identity federation — OIDC/workload-identity/SSRF→creds
+    cloud --> cif
+    web --> cif
+    cif --> post
+    cif --> cloud
+
     %% Web exploitation feeds CVE analysis, creds, post-exploit, param-fuzz, business-logic, and AI red-team
     web --> pf
     web --> bl
@@ -683,6 +710,16 @@ flowchart LR
     api --> creds
     api --> post
     codebase -.enriches.-> api
+
+    %% OAuth / SAML / SSO web-identity skills
+    pentester --> oauth[/oauth-security/]
+    api --> oauth
+    api --> saml[/saml-sso/]
+    web --> saml
+    oauth --> creds
+    oauth --> post
+    saml --> post
+    saml --> cif[/cloud-identity-federation/]
 
     %% Metasploit & reverse-shell drop into post-exploit
     msf --> post
@@ -704,11 +741,9 @@ flowchart LR
     %% Container/K8s security
     k8s --> post
 
-    %% Post-exploit → pivoting & lateral movement
+    %% Post-exploit → lateral movement
     post --> lateral
-    post --> pivot[/pivot-tunnel/]
     post --> ai_post[/ai-redteam<br/>Phase 3c/]
-    pivot --> lateral
     ad --> lateral
 
     %% AI red-team → post-access infra checks
@@ -719,6 +754,19 @@ flowchart LR
     %% Aikido triage feeds CVE dataflow analysis
     aikido[/aikido-triage/] --> cve
 
+    %% Mobile pentest orchestration
+    pentester --> mpp[/mobile-pentest-plan/]
+    codebase -.enriches.-> mpp
+    mpp --> android[/android-security/]
+    mpp --> ios[/ios-security/]
+    mpp --> masvs[/masvs-checklist/]
+    android --> api
+    ios --> api
+    android --> masvs
+    ios --> masvs
+    android --> post
+    ios --> post
+
     %% Reporting tail
     pentester --> tm[/threat-modeling/]
     tm --> remediate[/remediate/]
@@ -726,6 +774,7 @@ flowchart LR
     codebase --> remediate
     pentester --> ghexp[/gh-export/]
     pentester --> req[/request-cves/]
+    pentester --> report[/report/]
 ```
 
 The text tree below is the same routing in reference form:
@@ -739,6 +788,8 @@ Before a pentest
 During a pentest (/pentester)
   ├── /analyze-cve            if nuclei or semgrep finds a CVE dependency
   ├── /web-exploit            injection point or logic flaw found — deep SQLi, XSS, SSRF, parameter tampering
+  ├── /oauth-security         if OAuth 2.0 / OIDC login flow found — redirect_uri, PKCE, state, mix-up
+  ├── /saml-sso               if SAML / SSO / SCIM / JWT auth found — signature wrapping, golden SAML
   ├── /metasploit             if exploitable CVE confirmed — validate with Metasploit modules
   ├── /reverse-shell          exploit needs a callback — payload generation + listener setup
   ├── /ssl-tls-audit          if TLS services are found — PCI DSS/NIST compliance audit
@@ -747,6 +798,7 @@ During a pentest (/pentester)
   ├── /post-exploit           initial access obtained — privesc, credential harvesting, pivot
   ├── /container-k8s-security if Docker/K8s infrastructure is discovered
   ├── /cloud-security         if AWS/Azure/GCP infrastructure is discovered
+  ├── /cloud-identity-federation  SSRF→IMDS→role or OIDC CI/CD trust abuse → cloud credentials
   ├── /ad-assessment          if Active Directory domain is discovered
   ├── /email-security         if SMTP services found (port 25/465/587)
   └── /ai-redteam             if an LLM endpoint is discovered
@@ -757,15 +809,24 @@ After initial access (/post-exploit)
   └── /credential-audit       harvested hashes — crack and test credentials
 
 During a codebase scan
-  └── /analyze-cve            trace CVE reachability in code
+  ├── /analyze-cve            trace CVE reachability in code
+  ├── /compliance             full ASVS 5.0 compliance matrix (346 controls) with evidence
+  └── /supply-chain           dependency confusion, CI/CD misconfig, lockfile integrity, SLSA gaps
+
+For mobile targets (APK / IPA / mobile source)
+  ├── /mobile-pentest-plan    orchestrator — fingerprint, tier data sensitivity, scope MASTG plan, dispatch
+  ├── /android-security       APK static + Frida/objection dynamic (MASVS 2.0 / MASTG)
+  ├── /ios-security           IPA static + jailbroken-device dynamic (MASVS 2.0 / MASTG)
+  └── /masvs-checklist        MASVS 2.0 compliance matrix mapped to MASTG test IDs
 
 For AI/LLM targets (instead of /pentester)
-  └── /ai-redteam             OWASP LLM Top 10 assessment
+  └── /ai-redteam             OWASP LLM Top 10 + AITG v1 + MCP Top 10 assessment
 
 After a pentest
   ├── /threat-modeling           STRIDE analysis based on discovered architecture
   ├── /remediate              generate specific fixes for every finding
   ├── /aikido-triage          if an Aikido CSV export is available
+  ├── /report                 styled PDF pentest report from findings.json
   └── /gh-export              format findings as GitHub issues (includes remediation)
 ```
 

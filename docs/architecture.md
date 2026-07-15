@@ -19,6 +19,8 @@ You (/pentester scan target.com)
 
 The LLM decides what to run. Each tool's output is aggregated and returned to the model, which interprets the result and chooses the next action — pivoting deeper, skipping dead ends, or finalizing findings. Hard cost / time / call-count limits are enforced server-side. When any limit fires, the tool returns a stop signal and the agent writes the final report.
 
+The default Claude Code and opencode installs register the server over **SSE on `127.0.0.1:7778`** (see `installers/install.sh`, `installers/start-mcp-server.sh`); stdio is only the custom-MCP-client path (`poetry run python -m mcp_server`).
+
 ---
 
 ## Component diagram
@@ -36,7 +38,7 @@ flowchart TD
     Target["Target<br/>URL · IP range · codebase"]
 
     User -->|slash command| Agent
-    Agent -->|MCP stdio| MCP
+    Agent -->|MCP over SSE · 127.0.0.1:7778| MCP
     MCP --> Docker
     MCP --> Kali
     MCP --> Msf
@@ -58,25 +60,29 @@ flowchart TD
 mcp_server/              MCP tool layer — 5 consolidated tools (LLM-callable)
   __main__.py            entry point  →  python -m mcp_server
   _app.py                FastMCP singleton + shared helpers (_run, _clip)
-  scan_tools.py          scan()    — nmap · naabu · httpx · nuclei · ffuf · spider
+  scan_tools/            scan()    — nmap · naabu · httpx · nuclei · ffuf · spider
                                      subfinder · semgrep · trufflehog · fuzzyai · pyrit
                                      garak · promptfoo · metasploit · mobsf · mobsfscan
+                                     (package; per-tool handlers in handlers_net · handlers_ai ·
+                                      handlers_code · handlers_mobile · handlers_exploit)
   kali_tools.py          kali()    — freeform commands in the Kali container
   http_tools.py          http()    — raw HTTP requests + PoC saving
-  report_tools.py        report()  — findings · diagrams · notes · dashboard · coverage
-  session_tools.py       session() — scan lifecycle · Kali infra · codebase target
+  report_tools/          report()  — findings · diagrams · notes · dashboard · coverage (package)
+  session_tools/         session() — scan lifecycle · Kali infra · codebase target (package)
   scan_engine/           Per-tool response pipeline
-    envelope.py          Canonical tool-response wrapper — summarise → store → plan → steer → QA
+    envelope/            Canonical tool-response wrapper (package) — summarise → store → plan → steer → QA
     planner.py           Next-action suggestions (suppressed while a directive is active)
     budget.py            Hard call / cost / time limit enforcement
-    summarizers.py       Tool-specific output summarisers
+    summarizers/         Tool-specific output summarisers (package)
     discovery.py         OpenAPI / GraphQL / schema discovery → endpoint registration
     artifacts.py         Raw output storage with artifact_id generation
     state.py             Scan-engine state helpers
 
 core/                    Server infrastructure (packages)
   session/               Scan scope, depth presets, hard limits, scan_mode, known_assets, setup gates
-  api_server/            FastAPI web server (dashboard + REST API) — smith.py · routes.py · serve.py
+  api_server/            FastAPI web server (dashboard + REST API) — serve.py · smith/ · routes/ · mermaid.py
+  graph/                 Knowledge-graph world-model (build · chains · model · paths · primitives · views)
+                         — backs report(action='chain', type='suggest')
   coverage/              Endpoint × technique coverage matrix (artifact_id enforced)
   qa_agent/              QA daemon — depth enforcement, HIR triggers, steering directives
   adjunction/            Senior-review adjudication gate (rubric · verdict · directive)
@@ -97,7 +103,7 @@ tools/                   Docker tool definitions + runners
   metasploit/            Metasploit image (Dockerfile + msfconsole HTTP shim)
 
 skills/                  Slash command definitions (git submodule)
-                         27+ skills covering recon → exploit → report → remediate
+                         35+ skills covering recon → exploit → report → remediate
 
 dashboard/               Dashboard SPA (index.html + js/ + tabs/)
 threat-model/            Threat model reports (auto-displayed in the dashboard)
@@ -135,3 +141,4 @@ Every scan produces a structured set of artifacts you can hand to a developer, a
 | Session log | `logs/pentest.log` | Full audit trail of what the agent decided and why |
 | QA state | `qa_state.json` | Live QA alerts, steering directives, and Smith's acknowledgements |
 | Steering queue | `steering_queue.json` | Active depth-enforcement directives injected by the QA daemon |
+| Training data | `logs/smith-events/` | Redacted, schema-versioned event stream per engagement — decisions → actions → results → findings. Accumulates across scans and distills into a local **LoRA adapter** that runs *as Smith*. See **[training-data.md](training-data.md)**. |
