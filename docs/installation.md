@@ -37,7 +37,7 @@ agent-smith ships an MCP server. Anything that speaks MCP can drive it.
       <pre><code>git clone --recursive &lt;repo&gt;
 cd agent-smith
 ./installers/install.sh</code></pre>
-      Requires <a href="https://docs.anthropic.com/en/docs/claude-code">Claude Code</a> + an Anthropic API key.
+      Requires <a href="https://docs.anthropic.com/en/docs/claude-code">Claude Code</a>. Uses your <strong>Claude subscription by default</strong> — no Anthropic API key needed. The installer only writes <code>ANTHROPIC_API_KEY</code> if you opt in when it asks (<code>SMITH_USE_API_KEY=no</code> by default).
     </td>
     <td>
       OpenAI's coding agent. Installs AGENTS.md instructions, Codex skills, and the stdio MCP server.
@@ -137,6 +137,21 @@ Things that bite on a slow local model:
 - **`mcp.timeout` is huge (2.5 h)** because spider / sqlmap / kali runs are long; the 5 s default would cut them off.
 - **`external_directory: allow`** lets `/codebase` review paths outside opencode's cwd without an unanswerable permission prompt.
 - opencode reads the **served** `max_model_len` from `/v1/models` at runtime, so the effective window follows whatever you launch vLLM with. Local reasoning models are slow on a full window, so the dashboard watchdog tolerates up to **30 min** between tool calls before treating Smith as hung.
+
+---
+
+## Environment variables
+
+A handful of env vars (read from your shell or the repo `.env`) tune how Smith runs. None are
+required — every one has a working default.
+
+| Variable | Default | What it does |
+|---|---|---|
+| `SMITH_MODEL_PROFILE` | auto-detected | Force the model profile (`full` \| `medium` \| `small`) instead of auto-detecting from the environment. Smaller profiles tighten tool/output budgets and reduce required thorough passes so a small/local model's context window isn't overflowed. |
+| `SMITH_USE_API_KEY` | `no` | Set to `yes` to bill the **Smith agent** against an Anthropic API key instead of your Claude subscription. The installer sets this (and writes `ANTHROPIC_API_KEY`) only if you opt in when prompted; the default keeps you on the subscription with no key written. |
+| `SMITH_SPAWN_USE_API_KEY` | unset | When set (`1`), a **spawned/respawned** Smith (Restart button, watchdog) keeps `ANTHROPIC_API_KEY` and bills API credit — for a subscription-less box (e.g. CI). Unset, a spawned Smith strips the key so it never silently bills API credit. |
+| `SMITH_WATCHDOG_DISABLED` | unset (watchdog **on**) | Set (`1`) to disable the dashboard auto-respawn watchdog. The watchdog is meant for headless runs; **disable it for interactive-terminal runs** so it doesn't ghost-spawn a second Smith when you're driving `claude` yourself. |
+| `SMITH_KEEP_CONTAINERS` | unset (teardown **on**) | Set (`1`) to opt out of the automatic Kali / Metasploit / MobSF container teardown at scan end — e.g. to inspect a container after the scan finishes. |
 
 ---
 

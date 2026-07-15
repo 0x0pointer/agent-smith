@@ -87,15 +87,20 @@ scan(tool="ffuf", target="https://example.com", flags="-mc 200,301 -fc 404", opt
 ---
 
 ### `spider`
-Web crawler to map all reachable endpoints. Uses katana.
+Web crawler to map all reachable endpoints. Uses katana (+ playwright / ZAP AJAX in richer modes). On a `thorough`-depth session it always runs the full katana + playwright + ZAP AJAX merge regardless of `mode`.
 
 | Option | Default | Description |
 |---|---|---|
 | `depth` | `3` | Crawl depth |
+| `mode` | `fast` | `fast` (katana), `playwright` (headless JS render), or `deep` (heavier katana crawl) |
+| `cookies` | `{}` | Dict of cookies to send with the crawl (authenticated crawling) |
+| `max_pages` | `200` | Page cap for the crawl |
+| `timeout` | `7200` | Seconds before the crawl is killed (long default for deep enterprise nav trees) |
 
 ```
 scan(tool="spider", target="https://example.com")
-scan(tool="spider", target="https://example.com", options={"depth": 5})
+scan(tool="spider", target="https://example.com", options={"depth": 5, "mode": "playwright"})
+scan(tool="spider", target="https://example.com", options={"cookies": {"session": "abc"}, "max_pages": 500})
 ```
 
 **Requires:** Kali image (`docker build -t pentest-agent/kali-mcp ./tools/kali/`)
@@ -186,6 +191,95 @@ scan(tool="pyrit", target="http://app.com/v1/chat", options={"attack": "crescend
 
 ---
 
+### `garak`
+Probe-based LLM vulnerability scanner (NVIDIA garak). Drives the target through a REST generator (config auto-generated, `-G`) and runs the selected probe families, then tails the structured per-probe report so hits can be extracted.
+
+| Option | Default | Description |
+|---|---|---|
+| `probes` | `dan,encoding,promptinject,leakreplay,xss` | Comma-separated canonical probe names (no `probes.` prefix) |
+| `body_key` | `message` | JSON key the prompt is sent as (`{body_key: "$INPUT"}`) |
+| `method` | `post` | HTTP method for the REST generator |
+| `response_field` | `""` | JSONPath to the reply text in the response body |
+| `headers` | `{}` | Extra request headers (e.g. auth) |
+| `timeout` | `900` | Seconds before the run is killed |
+
+```
+scan(tool="garak", target="http://app.com/api/chat", options={"probes": "dan,promptinject", "body_key": "message", "response_field": "reply"})
+```
+
+**Requires:** Kali image.
+
+---
+
+### `promptfoo`
+Plugin-based LLM red-team evaluation (promptfoo). Config-driven two-step: `redteam generate` writes adversarial test cases, then `eval` runs them against the target and captures the results JSON.
+
+| Option | Default | Description |
+|---|---|---|
+| `plugins` | `prompt-injection,excessive-agency,pii,hallucination,prompt-extraction` | Comma-separated red-team plugins |
+| `attack_strategies` | `jailbreak,crescendo` | Comma-separated attack strategies |
+| `body_key` | `prompt` | JSON key the prompt is sent as (`{body_key: "{{prompt}}"}`) |
+| `method` | `POST` | HTTP method for the target provider |
+| `response_field` | `""` | `transformResponse` expression to extract the reply |
+| `attacker_provider` | `""` | Attacker LLM (`redteam.provider`) used to generate the tests |
+| `headers` | `{}` | Extra request headers (e.g. auth) |
+| `timeout` | `900` | Seconds before the run is killed |
+
+```
+scan(tool="promptfoo", target="http://app.com/api/chat", options={"plugins": "prompt-injection,pii", "attack_strategies": "jailbreak,crescendo"})
+```
+
+**Requires:** Kali image + an attacker-LLM key (e.g. `OPENAI_API_KEY`) for `redteam generate`.
+
+---
+
+### `metasploit`
+Controlled exploitation via the Metasploit Framework. Builds an `msfconsole -q -x` resource script from the options, sets RHOSTS/RPORT/PAYLOAD/LHOST/LPORT, and runs the module.
+
+| Option | Default | Description |
+|---|---|---|
+| `module` | `""` | Module path e.g. `exploit/multi/http/...` |
+| `payload` | `""` | Payload e.g. `linux/x64/meterpreter/reverse_tcp` |
+| `rport` | `""` | Remote port (RPORT) |
+| `lhost` | `""` | Listener host (LHOST) for reverse payloads |
+| `lport` | `4444` | Listener port (LPORT) |
+| `extra` | `""` | Extra `;`-separated `set`/resource commands |
+| `timeout` | `900` | Seconds before the run is killed |
+
+`target` is the RHOSTS host/IP.
+
+```
+scan(tool="metasploit", target="192.168.1.10", options={"module": "exploit/...", "payload": "linux/x64/meterpreter/reverse_tcp", "lhost": "10.0.0.5"})
+```
+
+**Requires:** Metasploit image (`docker build -t pentest-agent/metasploit ./tools/metasploit/`). Auto-starts on first use.
+
+---
+
+### `mobsf`
+MobSF static analysis of a **built** mobile binary. Uploads the file to the MobSF container, runs the scan, and returns a MASVS-aligned summary (plus the report `hash` and `scan_type`).
+
+`target` is a local path to an `.apk`, `.ipa`, `.appx`, or source `.zip`.
+
+```
+scan(tool="mobsf", target="/path/to/app.apk")
+```
+
+**Requires:** MobSF container — auto-pulled and started on first `scan(tool="mobsf")` call. Used by `/android-security` & `/ios-security`.
+
+---
+
+### `mobsfscan`
+Static analysis of a mobile **source tree** — like semgrep for Android/iOS source, with MASVS / OWASP-Mobile tagged findings. Mounts the path and scans it.
+
+`target` is the path to the mobile source tree.
+
+```
+scan(tool="mobsfscan", target="/path/to/mobile-src")
+```
+
+---
+
 ## `kali(command, timeout)`
 
 Run any command inside the persistent Kali Linux container. The container starts automatically on first call and persists for the session.
@@ -243,6 +337,7 @@ Save a confirmed exploit as a raw `.http` file in `pocs/` for Burp Repeater.
 | `body` | `null` | Request body |
 | `options.title` | `poc` | Short name used in the filename |
 | `options.notes` | `""` | Written as a comment at the top of the file |
+| `options.finding_id` | `""` | Finding UUID to auto-link this PoC — adds the saved filepath to the finding's `poc_files` |
 
 Files are written to `pocs/` as `YYYYMMDD_HHMMSS_<title>.http`.
 
@@ -256,7 +351,7 @@ http(action="save_poc", url="https://example.com/login", method="POST",
 
 ## `report(action, data)`
 
-Log findings, diagrams, and notes. All data is written to `findings.json` and visible in the dashboard.
+Log findings, diagrams, notes, exploit chains, and coverage-matrix updates. All data is written to `findings.json` / `coverage_matrix.json` and visible in the dashboard. Actions: `finding`, `update_finding`, `delete_finding`, `diagram`, `note`, `dashboard`, `coverage`, `chain`.
 
 ### `action="finding"`
 Log a confirmed vulnerability.
@@ -270,7 +365,12 @@ Log a confirmed vulnerability.
 | `evidence` | yes | Raw tool output, request/response, or PoC |
 | `tool_used` | no | Tool that found it |
 | `cve` | no | CVE ID if applicable |
+| `business_impact` | no | Plain-language impact statement for the report/dashboard |
+| `artifact_id` | no | The `artifact_id` of the tool call that proves this finding — links the proof so adjudication can **reuse** it instead of re-running the attack. If omitted, the session's most-recent tool artifact is auto-linked. |
+| `reproduction` | no | `{type: http\|command\|script\|manual, command: "...", expected: "..."}` — a re-runnable reproduction step |
 | `trace` | no | **White-box only.** Source data flow `[{kind: entrypoint\|propagation\|sink, file, line, scope, description}]` (first step `entrypoint`, last `sink`, ≥2 steps). When a codebase is pinned (`set_codebase`), each cited `file:line` is **resolved against the repo and a citation that doesn't exist is REJECTED** — so cite lines you actually read. Omit for black-box findings. |
+
+Returns `{id: "<finding_id>"}` — pass that `id` as `finding_id` when closing a coverage cell `vulnerable`.
 
 **Dedup:** a finding with the same `target` + `title` + `severity` as one already on record (and not a prior `false_positive`) is rejected as a `DUPLICATE` — re-file a genuinely distinct issue with a more specific title. This keeps `findings.json` and the adjudication gate clean across re-runs.
 
@@ -297,13 +397,26 @@ Update fields on an existing finding by `id`. Used by the completion-time adjudi
 | Field | Required | Description |
 |---|---|---|
 | `id` | yes | Finding id to update |
-| any of | — | `severity`, `title`, `description`, `evidence`, `status` (`confirmed`\|`false_positive`), `remediation`, `reproduction`, `escalation_leads`, `trace` |
+| any of | — | `severity`, `title`, `description`, `evidence`, `status` (`confirmed`\|`false_positive`\|`draft`), `gh_issue`, `remediation`, `reproduction`, `escalation_leads`, `trace` |
 | `adjudication` | — | Audit trail `{reproducible, artifact_id, original_severity, revised_severity, rationale}`. `rationale` is always required; when `reproducible: true`, an `artifact_id` that **exists on disk** (the run proving reproduction) is required — a self-attested "it reproduces" with no proving artifact is rejected. A finding with a **proven** `escalation_leads` chain to a worse terminal is auto-rescored to the terminal blast radius. |
 
 ```
 report(action="update_finding", data={"id": "<id>", "status": "confirmed", "severity": "high",
   "adjudication": {"reproducible": true, "artifact_id": "exec_sandbox_ab12", "original_severity": "medium",
                    "revised_severity": "high", "rationale": "re-ran the attack; confirmed data read"}})
+```
+
+---
+
+### `action="delete_finding"`
+Archive a finding by `id`. The finding is moved to the `archived[]` array in `findings.json` (not permanently deleted), so its `/finding/<id>` URL still resolves.
+
+| Field | Required | Description |
+|---|---|---|
+| `id` | yes | Finding id to archive |
+
+```
+report(action="delete_finding", data={"id": "<id>"})
 ```
 
 ---
@@ -359,6 +472,42 @@ report(action="dashboard", data={"port": 7777})
 
 ---
 
+### `action="coverage"`
+Manage the coverage matrix — the endpoints × params × injection-types grid written to `coverage_matrix.json` and rendered in the dashboard's Coverage tab. The `type` field selects the operation.
+
+| `type` | Purpose |
+|---|---|
+| `endpoint` | Register an endpoint and auto-generate its test cells |
+| `tested` | Mark a single cell tested |
+| `bulk_tested` | Mark many cells in one call |
+| `sweep` | Server-side probe + evaluate for pending injection cells |
+| `import_openapi` / `import_graphql` | Register **every** operation of a schema in one call |
+| `list` | Return the current matrix with cell IDs (compaction-recovery) |
+| `reset` | Clear the entire matrix |
+
+**`type="endpoint"`** — `{path, method, params=[{name, type, value_hint}], discovered_by=spider, auth_context=none}`. The `params=[...]` list is the trigger that **fans cells out** across the applicable injection types (sqli/xss/ssti/cmdi/ssrf/nosqli/xxe/traversal/crlf/prototype/mass_assignment/redirect — chosen per param `type`/name) plus the cross-cutting cells (cors, csrf, security_headers, rate_limit, method_tampering, cache, jwt, race, bfla). **Registering an endpoint without `params` yields a stub with zero testable cells** — include every parameter the endpoint accepts (query, body, path, header). An endpoint with N params typically generates ~12-25 cells.
+
+**`type="tested"`** — `{cell_id, status (tested_clean|vulnerable|not_applicable|skipped), notes, artifact_id, finding_id?}`. `artifact_id` (a file that exists on disk) is **required** for `tested_clean`/`vulnerable`; `finding_id` is **required** for `vulnerable` (file the finding first). On an injection cell, `tested_clean` is rejected if the artifact response is 401/403 — that means auth blocked the payload, not that it was filtered.
+
+**`type="bulk_tested"`** — `{updates=[{cell_id, status, notes, artifact_id, finding_id?}, ...]}`. Same per-update rules; rejected updates surface in `warnings` without blocking the batch.
+
+**`type="sweep"`** — `{max_cells=25, endpoint_id?}`. The server runs each pending injection probe (ssti/xss/cmdi/traversal/sqli), stores the artifact, auto-closes confident-clean cells, and returns oracle-positive cells as CANDIDATES for you to confirm → file a finding → close `vulnerable`.
+
+**`type="import_openapi"` / `type="import_graphql"`** — `{url}` = the OpenAPI/Swagger spec URL or the `/graphql` endpoint. Registers every operation in one call; auth is pulled from `known_assets`.
+
+**`type="list"`** — the compaction-recovery primitive. Returns `{cells: [...], total, filtered}` with cell IDs joined to endpoint context. Optional AND-combined filters: `{endpoint_path, method, status, injection_type, param_name, limit}`.
+
+**`type="reset"`** — clear the matrix (blocked during a running/intervention scan).
+
+```
+report(action="coverage", data={"type": "endpoint", "path": "/login", "method": "POST",
+  "params": [{"name": "username", "type": "string"}, {"name": "password", "type": "string"}]})
+report(action="coverage", data={"type": "tested", "cell_id": "c12", "status": "vulnerable",
+  "artifact_id": "http_ab12", "finding_id": "<finding_id>", "notes": "SQLi confirmed"})
+```
+
+---
+
 ## `session(action, options)`
 
 Scan lifecycle and infrastructure management.
@@ -383,7 +532,9 @@ Initialise a scan session. **Always call this first.**
 |---|---|---|---|---|
 | `recon` | port scan + subdomains + HTTP probe | $0.10 | 15 min | 10 |
 | `standard` | recon + nuclei + dir fuzzing | $0.50 | 45 min | 25 |
-| `thorough` | standard + full Kali toolchain | $2.00 | 120 min | 60 |
+| `thorough` | standard + full Kali toolchain | unlimited | unlimited | unlimited |
+
+`thorough` sets no hard cost/time/call cap (`max_cost_usd=None`, `max_time_minutes=None`, `max_tool_calls=0`) — it runs until you call `session(action="complete")` or the operator ends it. Pass explicit `max_*` options to impose your own ceiling.
 
 ```
 session(action="start", options={"target": "https://example.com", "depth": "standard"})
@@ -402,10 +553,111 @@ session(action="complete", options={"notes": "Found 3 high-severity issues, 1 cr
 ---
 
 ### `action="status"`
-Return current scan state: tools run, findings count, elapsed time, remaining calls.
+Return current scan state: tools run, findings count, elapsed time, remaining calls. When the response includes `qa_alerts`, immediately reply with `session(action="qa_reply")`.
 
 ```
 session(action="status")
+```
+
+---
+
+### `action="qa_reply"`
+Log your response to the QA agent's alerts (surfaced by `session(action="status")`). Write one sentence per alert — what you acknowledge and what you'll do. This is what the operator sees in the QA ↔ Smith conversation view.
+
+| Option | Description |
+|---|---|
+| `message` | Your acknowledgment of the QA alerts |
+
+```
+session(action="qa_reply", options={"message": "Acknowledged the NA-abuse alert; re-testing /admin cells under auth."})
+```
+
+---
+
+### `action="recovery"`
+Return a compact recovery brief after context compaction — includes `EXECUTE_NOW` (the single concrete next call), `auth_context` (recent creds/tokens/login endpoints), coverage/findings/phase state. Call this if you lost context. *No options.*
+
+```
+session(action="recovery")
+```
+
+---
+
+### `action="artifact"`
+Retrieve raw tool output stored by the scan engine (referenced by `artifact_id` in tool responses).
+
+| Option | Default | Description |
+|---|---|---|
+| `id` | required | Artifact ID from a tool response |
+| `mode` | `summary` | `summary`, `head`, `tail`, `grep`, `full` |
+| `max_chars` | `4000` | Output cap |
+| `pattern` | `""` | Regex for `grep` mode |
+
+```
+session(action="artifact", options={"id": "nuclei_ab12", "mode": "grep", "pattern": "CVE-"})
+```
+
+---
+
+### `action="set_skill"`
+Log a skill selection with reasoning **before** invoking the skill via the `Skill` tool (bookkeeping — it does not run the skill or satisfy a completion gate on its own).
+
+| Option | Description |
+|---|---|
+| `skill` | Name of the skill being started, e.g. `web-exploit` |
+| `reason` | 1–2 sentences on why this skill was chosen |
+| `chained_from` | Parent skill name when chaining (omit for the first skill) |
+
+```
+session(action="set_skill", options={"skill": "web-exploit", "reason": "Web app confirmed; systematic endpoint testing needed"})
+```
+
+---
+
+### `action="set_step"`
+Log the current workflow step within the active skill (shown in logs/recovery).
+
+| Option | Description |
+|---|---|
+| `step` | Current step label, e.g. `5_nuclei_scan` |
+
+```
+session(action="set_step", options={"step": "5_nuclei_scan"})
+```
+
+---
+
+### `action="pre_chain"`
+Record a planned skill chain before executing it (pre-declares the chained skills for the skill-history graph).
+
+```
+session(action="pre_chain", options={...})
+```
+
+---
+
+### `action="resume"` / `action="intervene"`
+`resume` acknowledges a pending human-steer / RESUME_REQUIRED directive and continues. `intervene` records an agent-initiated intervention request. Both feed the HIR / steering loop surfaced on the dashboard.
+
+```
+session(action="resume", options={...})
+session(action="intervene", options={...})
+```
+
+---
+
+### `action="setup_gate"`
+Manage manual-setup capability gates (a jailbroken device, an emulator, a UART/JTAG hookup) declared by a skill's `capabilities.yaml`. Non-blocking — an unsatisfied gate never blocks `session(action="complete")`.
+
+| `options.action` | Purpose |
+|---|---|
+| `list` | Show all setup gates and their status |
+| `elect` | `{id, choice: now\|defer\|skip}` — decide when to set it up (headless defaults to `defer`) |
+| `check` | `{id}` — run the capability's readiness probe to **prove** the setup is live; a pass writes a proving artifact + a `devices` known-asset |
+
+```
+session(action="setup_gate", options={"action": "list"})
+session(action="setup_gate", options={"action": "check", "id": "frida_device"})
 ```
 
 ---
@@ -461,6 +713,26 @@ Pre-warm or stop the Kali container. `kali()` starts it automatically on first c
 ```
 session(action="start_kali")
 session(action="stop_kali")
+```
+
+---
+
+### `action="start_metasploit"` / `action="stop_metasploit"`
+Pre-warm or stop the Metasploit container. `scan(tool="metasploit")` starts it automatically on first call.
+
+```
+session(action="start_metasploit")
+session(action="stop_metasploit")
+```
+
+---
+
+### `action="start_mobsf"` / `action="stop_mobsf"`
+Pre-warm or stop the MobSF container. `scan(tool="mobsf")` starts it automatically on first call.
+
+```
+session(action="start_mobsf")
+session(action="stop_mobsf")
 ```
 
 ---

@@ -1,6 +1,6 @@
 # Dashboard API Reference
 
-The FastAPI server (`core/api_server.py`) starts when Claude calls `report(action="dashboard", ...)`. It serves both the dashboard UI and a REST API used by the frontend.
+The FastAPI server (the `core/api_server/` package — routes live in `core/api_server/routes/*.py`) starts when Claude calls `report(action="dashboard", ...)`. It serves both the dashboard UI and a REST API used by the frontend.
 
 **Default URL:** `http://localhost:7777`
 
@@ -23,7 +23,7 @@ The call is idempotent — calling it again on the same port returns the existin
 
 ### `GET /`
 
-Returns `templates/dashboard.html` — a single-page app with these tabs:
+Returns `index.html` (a Jinja2 template that `{% include %}`s the per-tab partials; CSS/JS load from the `/static` mount) — a single-page app with these tabs:
 
 | Tab | Contents |
 |---|---|
@@ -49,6 +49,15 @@ A persistent panel above the tab nav exposes operator actions:
 | **Complete Scan** button | POSTs to `/api/complete`. Marks the scan terminal AND triggers a SCAN_COMPLETED envelope on Smith's next tool call so the process exits cleanly. |
 | **Restart Smith** button | Appears when scan is `running` / `intervention_required` but Smith's process is stopped. Auto-detects whether to spawn `opencode run` or `claude -p`. POSTs to `/api/restart-smith`. |
 | HIR panel | Appears when `/api/intervention` returns `active: true`. Renders one button per option in the HIR — clicking calls `/api/intervention/respond` with that choice. |
+
+### Other UI / static routes
+
+| Route | Returns |
+|---|---|
+| `GET /finding/{id}` | Standalone per-finding "dossier" page (`finding.html`); `finding.js` fetches `/api/findings/{id}`. Falls back to the archived list so a deleted finding's URL still resolves. |
+| `GET /healthz` | `{"ok": true}` — unauthenticated liveness probe used by `serve()`; returns no scan data so it stays reachable when the `/api/*` control plane requires the per-session bearer token. |
+| `GET /logo.png` | The dashboard logo PNG. |
+| `GET /favicon.ico` | The `.ico` favicon (also `GET /favicon-32x32.png` for the sized PNG). |
 
 ---
 
@@ -89,6 +98,14 @@ Current-session findings and diagrams (read from `findings.json`).
   ]
 }
 ```
+
+---
+
+### `GET /api/findings/{id}`
+
+One finding plus any exploit chains that reference it — feeds the standalone `/finding/{id}` detail page. Chain Mermaid is pre-rendered to SVG server-side. Falls back to the `archived[]` list so a deleted finding still resolves.
+
+**Response:** `{ "finding": {...}, "chains": [...], "archived": true|false, "meta": {...} }` — or `{"error": "not found"}` with a `404` if the id is unknown.
 
 ---
 
@@ -142,17 +159,40 @@ Per-tool cost breakdown for the current session (read from `session_cost.json`).
 
 ### `PATCH /api/findings/{id}`
 
-Attach a GitHub issue markdown block to an existing finding. Called automatically by `/gh-export`.
+Update fields on an existing finding. Called by `/gh-export` (to attach the `gh_issue` block) and by the dashboard's inline finding editor. Every field is optional — only the keys present in the body are applied.
 
-**Request body:**
+**Request body (any subset):**
 ```json
-{ "gh_issue": "**Summary:** ..." }
+{
+  "severity": "high",
+  "title": "...",
+  "description": "...",
+  "evidence": "...",
+  "status": "confirmed",
+  "gh_issue": "**Summary:** ...",
+  "remediation": "...",
+  "reproduction": { "type": "http", "command": "...", "expected": "..." },
+  "escalation_leads": [ ... ]
+}
 ```
 
-**Response:**
-```json
-{ "ok": true }
-```
+**Response:** `{ "ok": true }` (`ok` reflects whether the finding was updated). Returns `400` on error.
+
+---
+
+### `DELETE /api/findings/{id}`
+
+Archive a finding — moves it to the `archived[]` array in `findings.json` (not a hard delete, so the `/finding/{id}` page still resolves).
+
+**Response:** `{ "ok": true|false }` (`ok` reflects whether the finding was archived). Returns `400` on error.
+
+---
+
+### `GET /api/graph`
+
+The knowledge-graph world-model for the dashboard's World Model tab: nodes/edges (each carrying its full property bag), graph-derived candidate chains, ranked findings, and value-ranked next targets. Worklist panels ("proposed kill-chains", "deepen next", "next targets") drain to empty as work is proven.
+
+**Response:** `{ "stats": {nodes, edges, by_kind}, "nodes": [...], "edges": [...], "candidate_chains": [...], "ranked_findings": [...], "next_targets": [...] }`.
 
 ---
 
@@ -222,6 +262,18 @@ Full steering-queue dump — every directive ever injected with its status (`pen
 
 ---
 
+### `GET /api/adjudication-log`
+
+The senior-review verdict log — the Adjudication ↔ Smith conversation feed. Returns an array of verdict entries (empty `[]` when nothing has been adjudicated yet).
+
+---
+
+### `GET /api/metrics`
+
+Per-scan metrics for the Metrics tab (`pentest_metrics.jsonl`, loaded and aggregated): tool counts, coverage rate, finding-rate-per-hour.
+
+---
+
 ### `GET /api/intervention`
 
 Current HIR state. **Force-reloads `session.json` from disk on every call** so the dashboard process never serves stale in-memory data while the MCP process is writing.
@@ -243,7 +295,10 @@ Current HIR state. **Force-reloads `session.json` from disk on every call** so t
 
 ### `POST /api/intervention/respond`
 
-Human resolves an HIR via the dashboard. Transitions the session back to `running` (unless it was already terminal — `complete` / `incomplete_with_unresolved_blockers` / `limit_reached` are preserved) and injects a high-priority `RESUME_REQUIRED` steering directive so Smith sees the choice on the next tool call.
+Human resolves an HIR via the dashboard.
+
+- **Non-terminal choices** (CONTINUE / GUIDE / EXTEND / REDUCE_SCOPE / SKIP_CELLS / REAUTH / …) transition the session back to `running` and inject a high-priority `RESUME_REQUIRED` steering directive so Smith acts on the choice on its next tool call. Returns `{ "ok": true, "resumed": true, "instruction": "..." }`.
+- **Terminal choices** (`ACCEPT_PARTIAL` / `FORCE_COMPLETE` / `COMPLETE` / `ABORT`) actually **complete the scan** (so the agent isn't bounced back into the same blockers) — `ABORT` records `stop_reason=operator_abort`, the rest `operator_accept_partial`, both with `quality_gate=failed`. Returns `{ "ok": true, "completed": true, "instruction": "..." }`.
 
 **Request body:**
 ```json
@@ -257,6 +312,24 @@ Human resolves an HIR via the dashboard. Transitions the session back to `runnin
 Free-form HUMAN_STEER from the operator. Always queues (no dedup) so the operator can fire the same instruction twice if they want. The resulting directive is nagged on every tool call until Smith calls `session(action="qa_reply")`.
 
 **Request body:** `{ "message": "stop /admin/approve_loan — dead endpoint" }`
+
+A typed steer that reads as a phase-advance instruction ("advance to phase B", "next phase") is parsed server-side and routed to `advance_phase` deterministically instead of the model.
+
+---
+
+### `GET /api/phase`
+
+Current scan phase + advisory hint for the dashboard's phase control. Phases are `exploit` → `coverage` → `synthesis` and never auto-advance.
+
+**Response:** `{ "phase": "exploit", "label": "...", "advice": null, "next": "coverage", "phases": ["exploit","coverage","synthesis"], "running": true }`
+
+---
+
+### `POST /api/phase/advance`
+
+Operator advances the scan phase **forward** (the dashboard button). Body (optional): `{ "target": "coverage" | "synthesis" | "b" | "c" }`; omit `target` to advance to the next phase. Force-reloads session state before mutating (the MCP process owns `session.json`).
+
+**Response:** the `advance_phase` result (`{ "ok": true, ... }`), or `400` when the transition is rejected.
 
 ---
 
@@ -288,11 +361,86 @@ Terminate the scan. Sets `session.status = "complete"`, records the `finished` t
 
 **Request body:** `{ "notes": "Completed by human operator via dashboard" }`
 
+Completion is unconditional — it does **not** run the adjudication pass (that's a separate operator choice via `POST /api/triage`). It preserves deliverables (findings, coverage, artifacts, PoCs) and only wipes scan-tied operational pointers (`smith.pid`, `smith.client`, `quick_log`) so the dashboard immediately reflects "smith stopped".
+
+**Response:** `{ "ok": true, "status": "complete" }`
+
+---
+
+### `POST /api/triage`
+
+Operator-triggered adjudication (triage) pass — does **not** complete the scan. Injects the senior-review directive for every un-adjudicated in-scope finding and wakes Smith if it has gone idle. On a terminal scan the directive tells Smith to stop after adjudicating; on a running scan it resumes testing afterwards.
+
+**Response:** `{ "ok": true, "status": "triaging", "pending_adjudication": N, "smith_spawned": true|false }` (or `status: "nothing_to_triage"` when no findings await a verdict).
+
+---
+
+### `POST /api/triage-cancel`
+
+Operator escape hatch for the triage banner. Drops the `triage_requested` flag and removes un-consumed `TRIAGE_ADJUDICATION` (and legacy force-complete) steering directives. Does **not** touch findings or verdicts already recorded.
+
+**Response:** `{ "ok": true, "removed_directives": N }`
+
+---
+
+### `POST /api/force-stop`
+
+Hard stop — the "just stop it now" control. Flips the session terminal from **any** non-terminal state (clearing an open HIR first), cancels any triage pass, AND kills the running Smith process so it can neither keep working nor be respawned by the watchdog. Deliverables are preserved. *No request body.*
+
+**Response:** `{ "ok": true, "status": "complete", "killed": true|false, "pid": <pid|null>, "removed_directives": N }`
+
+---
+
+### `DELETE /api/clear`
+
+Wipe all scan state — resets `findings.json` and the coverage matrix, and deletes `session.json`, `quick_log`, `qa_state`, cost, steering, metrics, log files, `pocs/*.http`, `artifacts/`, `threat-model/`, `gh-issues.md`, and the Smith PID/client pointers. Also tears down chisel tunnels.
+
+**Response:** `{ "ok": true }`
+
+---
+
+### `DELETE /api/tunnels`
+
+Kill chisel tunnels in the Kali container (remote clients disconnect automatically).
+
+**Response:** `{ "ok": true, "message": "..." }`
+
+---
+
+### `POST /api/setup-gates/{id}/elect`
+
+Operator elects a manual-setup gate: `now` | `defer` | `skip`. Non-blocking — election just records the operator's decision; it never completes or blocks the scan.
+
+**Request body:** `{ "choice": "now" }` → **Response:** `{ "ok": true, "gate": {...} }` (or `404` if the gate isn't found).
+
+---
+
+### `POST /api/setup-gates/{id}/recheck`
+
+Operator re-runs a gate's readiness probe (the "I've set it up — verify" button). On a pass that clears a deferred gate, wakes Smith so it resumes the gated work. Raw probe stdout/stderr is scrubbed from the response.
+
+**Response:** `{ "ok": true, "status": "ok"|..., "gate": {...}, "probe": {...}, "smith_woken": true|false }`
+
 ---
 
 ### `GET /api/smith-status`
 
-`{"running": true/false}`. True when EITHER the dashboard-tracked Smith PID is alive OR the `quick_log.json` file has been touched within 180 s (catches Smith processes the dashboard didn't spawn).
+Smith liveness + activity heartbeat.
+
+**Response:**
+```json
+{
+  "running": true,
+  "adjudicating": false,
+  "heartbeat_age_s": 12,
+  "idle": false
+}
+```
+
+- `running` — true when any Smith process exists (including an idle interactive one sitting at a prompt).
+- `heartbeat_age_s` — seconds since the last MCP tool call (`quick_log` mtime), the true *activity* signal (`null` if no heartbeat yet).
+- `idle` — true when `heartbeat_age_s` exceeds the 120 s heartbeat window. A live-but-idle Smith (`running: true, idle: true`) has stopped working and is likely awaiting input.
+- `adjudicating` — true when a post-complete triage relaunch is in progress (`triage_requested`), so the UI can label it "adjudicating" instead of mistaking it for a hung scan.
 
 ---
 
@@ -301,7 +449,7 @@ Terminate the scan. Sets `session.status = "complete"`, records the `finished` t
 Reports which LLM clients are installed and which one will be used on the next restart:
 
 ```json
-{ "claude": true, "opencode": true, "active": "opencode" }
+{ "claude": true, "opencode": true, "codex": false, "active": "opencode" }
 ```
 
 `active` resolution order: last-used client (persisted in `logs/smith.client`) → whichever client process is currently running → `opencode` if installed → `claude` as fallback.
@@ -349,6 +497,6 @@ The dashboard polls in the background:
 - `/api/findings`, `/api/session`, `/api/coverage`, `/api/qa`, `/api/steering` — every 5 s
 - `/api/intervention` — every 3 s (HIR needs fast surface)
 - `/api/smith-status`, `/api/smith-clients` — every 10 s / 30 s
-- `/api/quicklog`, `/api/cycle-history`, `/api/wishlist`, `/api/adjudication-log` — only while the Activity tab is the active tab
+- `/api/quicklog`, `/api/wishlist`, `/api/adjudication-log` — only while the Activity tab is the active tab
 - `/api/threat-model` — polled when the tab is open
 - Logs (`/api/logs`) — every 3 s when the Logs tab is active

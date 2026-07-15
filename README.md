@@ -90,7 +90,7 @@ Drop any of these the moment you start your client. `/pentester` orchestrates ev
 | `/request-cves` | MITRE CVE form + GHSA draft + disclosure report + vendor email, per qualifying finding |
 | `/threat-modeling` | PASTA + STRIDE — component map, data-flow diagram, attack tree, risk register |
 
-> 💡 25+ skills total — full catalog and chaining map in **[docs/skills.md](docs/skills.md)**.
+> 💡 35+ skills total — full catalog and chaining map in **[docs/skills.md](docs/skills.md)**.
 
 ---
 

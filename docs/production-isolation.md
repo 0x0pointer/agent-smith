@@ -114,8 +114,10 @@ VM, not a container.
 Two nested trust boundaries: the **VM** contains a host compromise (properties 1 & 4), and
 **per-container hardening** limits what a single tool can do inside the VM (defense-in-depth).
 **Egress rules** (property 3) and **secret minimization** (property 2) tame the fact that
-Smith's tool containers legitimately use `--network=host` — inside the VM, "host" *is* the VM,
-and the VM's firewall is what bounds it.
+Smith's **lightweight scanner** containers legitimately use `--network=host`
+(`tools/docker_runner.py`) — inside the VM, "host" *is* the VM, and the VM's firewall is what
+bounds it. (The Kali and Metasploit **command** containers do NOT use host networking — they
+publish their APIs to loopback only; see §8.)
 
 ---
 
@@ -182,9 +184,12 @@ checked into your ops repo (not this one).
   path exists and constrains egress rules by uid (§10).
 - **The VM owns its Docker daemon.** Verify Smith is talking to the VM-local socket, not a
   forwarded host socket: `docker context ls` inside the VM must show the local daemon.
-- **Bind the dashboard to loopback only.** Smith currently starts uvicorn on `--host 0.0.0.0`
-  (`core/api_server/serve.py`) with no auth/CORS — see the security review, which tracks this
-  as a finding. In production, bind `127.0.0.1` and reach it via SSH tunnel (§11).
+- **The dashboard is loopback + token-authed by default — keep it that way.** Smith binds
+  uvicorn to `127.0.0.1` by default (`host = os.environ.get("DASHBOARD_HOST", "127.0.0.1")`
+  in `core/api_server/serve.py`), and every `/api/*` control-plane call is gated by a
+  per-session bearer token (`core/dashboard_auth.py`, enforced by the middleware in
+  `core/api_server/__init__.py`). The only action here is **don't** set `DASHBOARD_HOST=0.0.0.0`
+  unless you are behind a trusted boundary — reach the dashboard via SSH tunnel instead (§11).
 - **Resource caps** so a crypto-miner pulled in by a malicious dependency can't peg the box:
   size the VM modestly (e.g. 4 vCPU / 8 GB) and rely on the VM hypervisor's limits; inside,
   keep the per-container `--memory` / `--cpus` limits the runners already set.
@@ -212,9 +217,36 @@ posture broadly:
 - For genuinely untrusted code analysis, consider a **sandboxed runtime** (gVisor `runsc` or
   Kata Containers) as the exec_sandbox backend — VM-grade isolation per container.
 
-> `--network=host` in `tools/docker_runner.py` is acceptable *inside the VM* because the VM's
-> network namespace is itself bounded by the egress firewall (§10). It would be dangerous on a
-> bare host. This is why the egress rules are not optional.
+> `--network=host` in `tools/docker_runner.py` (the **lightweight scanner** containers —
+> nmap/nuclei/httpx/ffuf/…) is acceptable *inside the VM* because the VM's network namespace is
+> itself bounded by the egress firewall (§10). It would be dangerous on a bare host. This is why
+> the egress rules are not optional. The Kali/Metasploit **command** containers do *not* use host
+> networking — see the next subsection.
+
+### 8.1 The tool command APIs — loopback-only, token + Host-allowlist guarded
+
+Smith's Kali and Metasploit containers each expose a command API (`POST /api/command`) that runs
+an arbitrary shell — Kali's kali-server-mcp runs it **as root**. These used to be published on
+`0.0.0.0`, i.e. **unauthenticated remote code execution reachable from the LAN**. They are now
+hardened at three layers:
+
+- **Loopback-only publish.** `tools/kali_runner.py` publishes with `-p 127.0.0.1:5001:5000` and
+  `tools/metasploit_runner.py` with `-p 127.0.0.1:5002:5000`, so only the VM-local MCP process can
+  reach the command API — the LAN cannot. (Tunnel / handler ports — chisel, ligolo, meterpreter —
+  stay on `0.0.0.0` because targets must reach them for reverse connections; those are not command
+  APIs.)
+- **Token + Host-allowlist guard in front of each API.** For Kali, `tools/kali/api_guard.py`
+  requires a shared-secret token (`KALI_API_TOKEN`) and an allowlisted `Host` header, and forwards
+  to the upstream kali-server which is itself bound **loopback-only inside the container on
+  `:5555`**. For Metasploit, `tools/metasploit/server.py` enforces a `before_request` Host
+  allowlist, an `MSF_API_SECRET` shared secret, and `application/json`-only bodies (anti-CSRF — a
+  browser "simple request" in `text/plain`/form-encoded is rejected before it can execute).
+  Together these close the **network** vector, the **DNS-rebinding** vector (a rebound request
+  carries the attacker's `Host`), and the **local-process** vector (no token → no exec).
+- **Auto-teardown on scan end.** `core/session/lifecycle.py:stop_pentest_containers()` stops the
+  Kali / Metasploit / MobSF containers the moment a scan reaches a terminal state, so a **finished
+  scan leaves no running RCE endpoint**. Opt out with `SMITH_KEEP_CONTAINERS=1` only when you need
+  to inspect a container post-run.
 
 ---
 
@@ -307,8 +339,11 @@ enforced in the kernel instead of in a prompt.
 The dashboard (`:7777`) and MCP SSE (`:7778`) are the control plane — anyone who reaches them
 can steer or stop the agent. They must **never** be exposed on the network:
 
-- **Bind to `127.0.0.1` inside the VM.** Change the uvicorn bind from `0.0.0.0` to loopback
-  (see the security review finding on `core/api_server/serve.py`).
+- **It already binds `127.0.0.1` and requires a per-session bearer token.** The uvicorn bind
+  defaults to loopback (`DASHBOARD_HOST`, `core/api_server/serve.py`) and the `/api/*` routes
+  reject any request that doesn't carry the session token (`core/dashboard_auth.py`, minted
+  per scan). Leave `DASHBOARD_HOST` unset — do **not** set it to `0.0.0.0` unless the port is
+  behind a trusted boundary.
 - **Reach the dashboard from your laptop via SSH tunnel**, not by opening the port:
 
   ```bash
@@ -384,6 +419,9 @@ stat -c '%a' ~/agent-smith/.env                      # expect: 600
 
 # 6. No host filesystem shared into the VM
 mount | grep -iE 'virtfs|9p|vboxsf|shared'           # expect: no host shared folders
+
+# 7. The tool command APIs are loopback-only (check while Kali/MSF are running)
+ss -tlnp | grep -E ':(5001|5002)\b'                  # expect: 127.0.0.1:5001 / :5002, never 0.0.0.0
 ```
 
 If any check fails, the corresponding property in §2 is broken — fix it before running an
@@ -393,5 +431,6 @@ engagement against a live target.
 ---
 
 *This document describes the deployment posture. The application-level hardening it references
-(loopback bind + auth on the dashboard, etc.) is tracked separately in the Smith security
-review. Isolation is the boundary; those fixes are defense-in-depth on top of it.*
+(loopback bind + per-session token on the dashboard; loopback-only + token/Host-allowlisted
+container command APIs; auto-teardown of the RCE containers on scan end) is now implemented in
+Smith — not pending. Isolation is the boundary; those fixes are defense-in-depth on top of it.*
