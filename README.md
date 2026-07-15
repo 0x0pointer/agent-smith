@@ -192,7 +192,6 @@ The value compounds: **the more pentests you run, the more data you accumulate �
 **Contributing**
 - [extending.md](docs/extending.md) — adding new tools and skills
 - [testing.md](docs/testing.md) — running the test suite, coverage, adding tests
-- [phase1-detector-trust.md](docs/phase1-detector-trust.md) — internals: coverage-matrix trust model
 
 > **Adding a new skill?** Skills live in a separate repo ([github.com/0x0pointer/skills](https://github.com/0x0pointer/skills)) pulled in as a git submodule. After adding a skill there, update the submodule pointer (`git add skills && git commit`) and re-run the installer to deploy it.
 
