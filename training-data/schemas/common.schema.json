@@ -1,0 +1,173 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "common.schema.json",
+  "title": "Common $defs for the smith-event schema family (training-data-plan.md v1.2)",
+  "description": "Shared building blocks referenced by every event/state/context/release schema. Maps to §3, §3.1-§3.6, §4, §5 of training-data-plan.md.",
+  "$defs": {
+    "ulid": {
+      "type": "string",
+      "description": "UUIDv7/ULID — practical sort key, NOT authoritative causality (§3.1).",
+      "pattern": "^[0-9A-HJKMNP-TV-Za-hjkmnp-tv-z]{26}$"
+    },
+    "iso8601": { "type": "string", "format": "date-time" },
+    "sha256_ref": {
+      "type": "string",
+      "description": "Content-addressed artifact reference.",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "origin": {
+      "type": "string",
+      "enum": ["system", "operator", "skill", "model", "mcp_server", "scanner", "target", "external_api", "human_adjudicator"]
+    },
+    "trust_label": {
+      "type": "object",
+      "description": "Per-content-field trust/origin label (§3 trust labeling). Untrusted (target-controlled) content is always DATA, never instructions.",
+      "properties": {
+        "origin": { "$ref": "common.schema.json#/$defs/origin" },
+        "trust": { "type": "string", "enum": ["trusted", "untrusted", "mixed"] },
+        "rendering": { "type": "string", "enum": ["data", "instruction"] },
+        "instruction_authority": { "type": "boolean" }
+      },
+      "required": ["origin", "trust", "rendering", "instruction_authority"],
+      "allOf": [
+        {
+          "$comment": "Trust-boundary invariant (§3, acceptance test 'Trust boundary'): untrusted content may never be rendered with instruction authority.",
+          "if": { "properties": { "trust": { "const": "untrusted" } } },
+          "then": { "properties": { "rendering": { "const": "data" }, "instruction_authority": { "const": false } } }
+        }
+      ]
+    },
+    "capture_mode": {
+      "type": "string",
+      "description": "How a reasoning field was captured (§3). A field not produced pre-decision must be 'not_captured', never fabricated.",
+      "enum": ["pre_decision_generated", "operator_supplied", "policy_derived", "post_hoc_adjudicated", "not_captured"]
+    },
+    "captured_field": {
+      "type": "object",
+      "description": "A reasoning field with provenance (§3). value is null when capture_mode = not_captured.",
+      "properties": {
+        "value": {},
+        "capture_mode": { "$ref": "common.schema.json#/$defs/capture_mode" },
+        "actor": { "type": "string", "description": "e.g. model_invocation_18 / operator / policy@v3" }
+      },
+      "required": ["value", "capture_mode"]
+    },
+    "provenance": {
+      "type": "object",
+      "description": "Per-decision provenance (§3). teacher_origin gates the distributable exporter (§12).",
+      "properties": {
+        "proposal_source": { "type": "string" },
+        "selection_source": { "type": "string" },
+        "decision_source": { "type": "string" },
+        "execution_source": { "type": "string" },
+        "outcome_adjudicator": { "type": "string" },
+        "teacher_origin": {
+          "type": "string",
+          "enum": ["open_weight", "proprietary"],
+          "description": "License class of the PROPOSING model (§12). Set at capture, never inferred at export."
+        }
+      },
+      "required": ["proposal_source", "teacher_origin"]
+    },
+    "runtime_versions": {
+      "type": "object",
+      "description": "Immutable version refs so exporters can reconstruct what was available (§3).",
+      "properties": {
+        "agent_smith_commit": { "type": "string" },
+        "skill_commit": { "type": "string" },
+        "tool_registry_version": { "type": "string" },
+        "policy_version": { "type": "string" },
+        "container_digests": { "type": "object", "additionalProperties": { "$ref": "common.schema.json#/$defs/sha256_ref" } },
+        "model": {
+          "type": "object",
+          "properties": {
+            "provider": { "type": "string" },
+            "id": { "type": "string" },
+            "checkpoint_digest": { "type": "string" },
+            "adapter_digest": { "type": ["string", "null"] }
+          },
+          "required": ["provider", "id"]
+        }
+      }
+    },
+    "visible_evidence_ref": {
+      "type": "object",
+      "description": "Temporal-visibility record for one evidence reference at a decision (§3.3).",
+      "properties": {
+        "artifact_ref": { "$ref": "common.schema.json#/$defs/sha256_ref" },
+        "visible_at_decision": { "type": "boolean" },
+        "entered_context": { "type": "boolean" },
+        "context_position": { "type": ["integer", "null"] },
+        "available_but_not_shown": { "type": "boolean" },
+        "discovered_after_decision": { "type": "boolean" },
+        "hidden_ground_truth": { "type": "boolean", "description": "Evaluator-only latent fact (§3.2 latent layer)." }
+      },
+      "required": ["artifact_ref", "visible_at_decision"]
+    },
+    "visible_spans": {
+      "type": "object",
+      "description": "Which fragments of a result the model saw, anchored to a named artifact variant + coordinate system (§3.5).",
+      "properties": {
+        "artifact_ref": { "$ref": "common.schema.json#/$defs/sha256_ref" },
+        "artifact_variant": { "type": "string", "description": "e.g. sanitized_utf8_v2" },
+        "coordinate_system": { "type": "string", "description": "e.g. utf8_byte_offset" },
+        "spans": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": { "start": { "type": "integer", "minimum": 0 }, "end_exclusive": { "type": "integer", "minimum": 0 } },
+            "required": ["start", "end_exclusive"]
+          }
+        },
+        "truncation_strategy": { "type": "string" },
+        "original_bytes": { "type": "integer", "minimum": 0 },
+        "visible_bytes": { "type": "integer", "minimum": 0 }
+      },
+      "required": ["artifact_ref", "artifact_variant", "coordinate_system", "spans"]
+    },
+    "stage_hashes": {
+      "type": "object",
+      "description": "Per-transformation-stage hash checkpoints (§3.5/§8). A span always resolves against the exact bytes it was measured on.",
+      "properties": {
+        "source_original": { "$ref": "common.schema.json#/$defs/sha256_ref" },
+        "sanitized_evidence": { "$ref": "common.schema.json#/$defs/sha256_ref" },
+        "normalized_observation": { "$ref": "common.schema.json#/$defs/sha256_ref" },
+        "training_rendering": { "$ref": "common.schema.json#/$defs/sha256_ref" }
+      }
+    },
+    "state_op": {
+      "type": "object",
+      "description": "A structured contribution to a state layer, applied in sequence order by the reducer (§3.2). Contributions from a superseded event are skipped when folding (Correction).",
+      "properties": {
+        "layer": { "type": "string", "enum": ["observed", "belief"] },
+        "key": { "type": "string" },
+        "value": {}
+      },
+      "required": ["layer", "key", "value"]
+    },
+    "evidence": {
+      "type": "object",
+      "description": "Evidence stored as PRIMITIVES; dimensions + V-level are COMPUTED from them (§5).",
+      "properties": {
+        "primitives": {
+          "type": "object",
+          "properties": {
+            "attempt_count": { "type": "integer", "minimum": 0 },
+            "success_count": { "type": "integer", "minimum": 0 },
+            "independent_method_count": { "type": "integer", "minimum": 0 },
+            "control_present": { "type": "boolean" },
+            "control_passed": { "type": "boolean" },
+            "impact_observed": { "type": "boolean" },
+            "human_review_count": { "type": "integer", "minimum": 0 },
+            "environment_reset_success": { "type": "boolean" },
+            "is_deterministic": { "type": "boolean" }
+          },
+          "required": ["attempt_count", "success_count", "independent_method_count", "is_deterministic"]
+        },
+        "scale_version": { "type": "string", "description": "e.g. evidence-scales/1.0" },
+        "level": { "type": "string", "enum": ["V0", "V1", "V2", "V3", "V4", "V5"], "description": "Derived, not stored authoritatively; recomputable from primitives (§5, acceptance test 'Evidence derivation')." }
+      },
+      "required": ["primitives", "scale_version"]
+    }
+  }
+}

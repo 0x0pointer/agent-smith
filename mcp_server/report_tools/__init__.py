@@ -77,11 +77,32 @@ from .coverage import (
 )
 
 
+def _do_decision(data: Any) -> str:
+    """Record the structured decision BEHIND the next action(s) — the training-data 'why' (§3).
+    Best-effort: emits a `decision` smith-event and links the following tool calls caused_by it.
+    Absent reasoning fields are captured as not_captured (never fabricated)."""
+    if not isinstance(data, dict):
+        return "Error: decision data must be a JSON object"
+    try:
+        from mcp_server.scan_engine.smith_events import emit_decision
+        did = emit_decision(data)
+    except Exception:
+        did = None
+    return f'{{"id": "{did}", "recorded": true}}' if did else \
+        '{"recorded": false, "reason": "no active scan or SMITH_EVENTS_DISABLED"}'
+
+
 @mcp.tool()
 async def report(action: str, data: Any) -> str:
-    """Log findings, diagrams, notes, or coverage matrix updates.
+    """Log findings, diagrams, notes, coverage updates, or the DECISION behind your next action.
 
-    action : finding | update_finding | delete_finding | diagram | note | dashboard | coverage
+    action : finding | update_finding | delete_finding | diagram | note | dashboard | coverage | chain | decision
+
+    decision data (record BEFORE a non-trivial tool call — captures the 'why' for training data;
+    provide what you actually reasoned, omit the rest):
+      goal, hypothesis, technique(CWE/MITRE), chosen_tool, operation, target_ref,
+      alternatives_considered[], expected_signals[], confidence(0-1), stop_condition,
+      supporting_observations[artifact sha256 refs], explanation(short)
 
     finding data:
       title, severity (critical|high|medium|low|info), target,
@@ -179,5 +200,8 @@ async def report(action: str, data: Any) -> str:
         return await _do_coverage(data)
     elif action == "chain":
         return await _do_chain(data)
+    elif action == "decision":
+        return _do_decision(data)
     else:
-        return f"Unknown action '{action}'. Use: finding, update_finding, delete_finding, diagram, note, dashboard, coverage, chain"
+        return ("Unknown action '{}'. Use: finding, update_finding, delete_finding, diagram, note, "
+                "dashboard, coverage, chain, decision").format(action)

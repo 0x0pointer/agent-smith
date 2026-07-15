@@ -1,0 +1,18 @@
+{
+  "engagement_id": "lab-engagement-001",
+  "at_sequence": 5,
+  "latent_ground_truth_ref": null,
+  "observed_state": {
+    "POST /api/v1/merchants/login#email": {
+      "sqli_confirmed": true,
+      "evidence_level": "V3"
+    }
+  },
+  "belief_state": {
+    "POST /api/v1/merchants/login#email": {
+      "sqli_confidence": 0.9
+    }
+  },
+  "state_hash": "sha256:c212d612409f2a7a313f9ea5a5038b7134fd6526922845e818e5e39647e90775",
+  "schema_version": "smith-event/1.0"
+}

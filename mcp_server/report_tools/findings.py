@@ -216,6 +216,13 @@ async def _do_finding(data):
     except Exception:
         pass
 
+    # smith-event: finding event (training-data Plane A) — fire-and-forget, fail-soft
+    try:
+        from mcp_server.scan_engine.smith_events import emit_finding
+        emit_finding(data, entry.get("id", ""), evidence_artifact_id)
+    except Exception:
+        pass
+
     # ── Auto-trigger gates based on finding content ──────────────────────────
     gates_triggered = _auto_trigger_finding_gates(title, severity, data.get("description", ""), data.get("cve", ""))
     msg = f"Finding logged: [{severity.upper()}] {title}"
