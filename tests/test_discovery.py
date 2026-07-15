@@ -148,6 +148,53 @@ def test_extract_form_endpoints_resolves_relative_action():
     assert eps[0]["path"] == "/a/do/it"
 
 
+def test_extract_form_endpoints_keeps_hidden_params_drops_csrf():
+    # hidden fields carry mass-assignment / IDOR / open-redirect surface — keep them;
+    # only anti-CSRF tokens are dropped (fuzzing them just breaks the request).
+    html = """
+    <form action="/checkout" method="post">
+      <input name="quantity" type="number">
+      <input name="user_id" type="hidden">
+      <input name="redirect_to" type="hidden">
+      <input name="csrf_token" type="hidden">
+      <input name="authenticity_token" type="hidden">
+      <input type="submit">
+    </form>"""
+    ep = disc.extract_form_endpoints(html, "http://t/cart")[0]
+    names = {p["name"] for p in ep["params"]}
+    assert {"quantity", "user_id", "redirect_to"} <= names   # hidden business params kept
+    assert "csrf_token" not in names and "authenticity_token" not in names
+    assert next(p for p in ep["params"] if p["name"] == "quantity")["value_hint"] == "integer"
+
+
+# ── _merge_inventory (param-rich sources must not be shadowed by bare crawl URLs) ──
+
+def test_merge_inventory_unions_params_no_shadow():
+    inv = [
+        {"path": "/search", "method": "GET", "params": [], "discovered_by": "spider"},
+        {"path": "/search", "method": "GET",
+         "params": [{"name": "q", "type": "query"}], "discovered_by": "openapi"},
+    ]
+    merged = disc._merge_inventory(inv)
+    assert len(merged) == 1
+    assert [p["name"] for p in merged[0]["params"]] == ["q"]     # param-rich version survives
+    assert merged[0]["discovered_by"] == "openapi"              # most specific source wins
+
+
+def test_merge_inventory_keeps_distinct_methods_and_unions_across_sources():
+    inv = [
+        {"path": "/login", "method": "GET", "params": [], "discovered_by": "spider"},
+        {"path": "/login", "method": "POST",
+         "params": [{"name": "username", "type": "body_form"}], "discovered_by": "form"},
+        {"path": "/login", "method": "POST",
+         "params": [{"name": "password", "type": "body_form"}], "discovered_by": "form"},
+    ]
+    merged = disc._merge_inventory(inv)
+    by_method = {(m["method"]): m for m in merged}
+    assert set(by_method) == {"GET", "POST"}                    # GET page + POST action both kept
+    assert {p["name"] for p in by_method["POST"]["params"]} == {"username", "password"}
+
+
 # ── extract_js_routes ─────────────────────────────────────────────────────────
 
 def test_extract_js_routes_mines_fetch_axios_and_literals():
