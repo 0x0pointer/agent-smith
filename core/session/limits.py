@@ -160,4 +160,10 @@ def _stop(status: str, message: str) -> str:
         _sess._current["stop_reason"] = message
         _sess._current["finished"]    = datetime.now(timezone.utc).isoformat()
         _sess._flush()
+        # A budget/time/call limit ended the scan → tear down the RCE containers too.
+        try:
+            from core.session.lifecycle import stop_pentest_containers
+            stop_pentest_containers()
+        except Exception:
+            pass
     return message
