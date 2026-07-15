@@ -25,6 +25,34 @@ MSF_API       = f"http://localhost:{MSF_PORT}"
 # Prevents concurrent callers from racing to create the same container.
 _start_lock = asyncio.Lock()
 
+import pathlib as _pathlib
+import secrets as _secrets
+
+_REPO_ROOT = _pathlib.Path(__file__).resolve().parents[1]
+_SERVER_SRC = _REPO_ROOT / "tools" / "metasploit" / "server.py"
+_SECRET_FILE = _REPO_ROOT / "logs" / ".msf_api_secret"
+
+
+def _msf_secret() -> str:
+    """Shared secret for the Metasploit API, persisted (0600) so the MCP and container agree
+    across restarts. Fail-open ('') so a filesystem hiccup never breaks MSF — loopback + the
+    Host allowlist still protect the endpoint."""
+    try:
+        if _SECRET_FILE.exists():
+            existing = _SECRET_FILE.read_text().strip()
+            if existing:
+                return existing
+        token = _secrets.token_hex(32)
+        _SECRET_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _SECRET_FILE.write_text(token)
+        try:
+            _SECRET_FILE.chmod(0o600)
+        except OSError:
+            pass
+        return token
+    except Exception:
+        return ""
+
 
 # ---------------------------------------------------------------------------
 # State checks
@@ -71,10 +99,14 @@ async def ensure_running() -> tuple[bool, str]:
                 f"  docker build -t {MSF_IMAGE} ./tools/metasploit/"
             )
 
+        _secret = _msf_secret()
         proc = await asyncio.create_subprocess_exec(
             docker_executable(), "run", "-d",
             "--name", MSF_CONTAINER,
-            "-p", f"{MSF_PORT}:5000",
+            # SECURITY: the command API is unauthenticated root RCE — publish it to LOOPBACK
+            # ONLY (was 0.0.0.0). The MCP reaches it at localhost:5002; the LAN cannot.
+            "-p", f"127.0.0.1:{MSF_PORT}:5000",
+            # Handler/proxy ports stay on 0.0.0.0 — payloads/targets must reach them.
             "-p", "4444:4444",          # meterpreter handler
             "-p", "4445:4445",          # secondary handler
             "-p", "1081:1081",          # MSF socks_proxy module
@@ -82,6 +114,10 @@ async def ensure_running() -> tuple[bool, str]:
             "--cap-add=NET_RAW",
             "--cap-add=NET_ADMIN",
             "--add-host=host.docker.internal:host-gateway",
+            # Mount the hardened server (Host allowlist + json-only) so it's live without an
+            # image rebuild; set the shared secret it enforces on /api/command.
+            "-v", f"{_SERVER_SRC}:/opt/server.py:ro",
+            "-e", f"MSF_API_SECRET={_secret}",
             MSF_IMAGE,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
@@ -96,6 +132,7 @@ async def ensure_running() -> tuple[bool, str]:
             async with aiohttp.ClientSession() as s:
                 async with s.get(
                     f"{MSF_API}/health",
+                    headers={"X-API-Secret": _msf_secret()},
                     timeout=aiohttp.ClientTimeout(total=2),
                 ) as r:
                     if r.status == 200:
@@ -147,6 +184,7 @@ async def exec_command(command: str, timeout: int = 900) -> str:  # NOSONAR
             async with session.post(
                 f"{MSF_API}/api/command",
                 json={"command": command},
+                headers={"X-API-Secret": _msf_secret()},
                 timeout=aiohttp.ClientTimeout(total=timeout + 5),
             ) as resp:
                 data      = await resp.json()
