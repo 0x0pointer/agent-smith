@@ -465,8 +465,17 @@ RUN [ "$INSTALL_AI" = "1" ] || { echo "[ai] skipped"; exit 0; }; \
 # applies even before a rebuild.)
 RUN printf 'connect-timeout = 5\nmax-time = 30\n' > /root/.curlrc
 
+# Loopback auth guard — fronts the (unauthenticated) kali-server-mcp API with a
+# shared-secret token + Host allowlist. kali_runner also MOUNTS this at container
+# start so the protection is live without a rebuild; baking it here secures clean
+# builds and bare `docker run` too.
+COPY api_guard.py /usr/local/bin/kali-api-guard
+RUN chmod +x /usr/local/bin/kali-api-guard
+
 EXPOSE 5000
 
-# kali-server-mcp is the Flask API component of mcp-kali-server.
-# The MCP client bridge (mcp-server) is not needed — we call the HTTP API directly.
-CMD ["kali-server-mcp", "--ip", "0.0.0.0"]
+# kali-server-mcp (the Flask API of mcp-kali-server) is bound LOOPBACK-only inside the
+# container; the guard listens on the published :5000 and forwards to it after enforcing
+# the token + Host allowlist. Set KALI_API_TOKEN (kali_runner does) to require auth —
+# unset, the guard runs open and warns.
+CMD ["sh", "-c", "kali-server-mcp --ip 127.0.0.1 --port 5555 & exec python3 /usr/local/bin/kali-api-guard"]
