@@ -17,6 +17,7 @@ import core.coverage as _cov
 from .classify import (
     _APPLICABILITY,
     _applicable_types,
+    _normalize_param_type,
     _normalize_path,
     classify_endpoint,
     endpoint_value_rank,
@@ -101,7 +102,10 @@ async def add_endpoint(
         # Per-parameter cells
         for param in params:
             p_name = _sanitize_registered(param.get("name", ""), 128)  # AS-08
-            p_type = param.get("type", "query")
+            # Canonicalize the param type so the fan-out generates the right injection
+            # set (form->body_form gains xxe; json/body->body_json gains prototype/
+            # mass_assignment) instead of silently degrading to query/default.
+            p_type = _normalize_param_type(param.get("type", "query"))
             p_hint = param.get("value_hint", "")
             for inj_type in _applicable_types(p_type, p_hint, p_name):
                 cell = {
@@ -150,7 +154,19 @@ async def add_endpoint(
         from core.session import open_trigger_gate
         open_trigger_gate(ep_type, path)
 
-    return {"endpoint_id": ep_id, "new_cells": new_cells, "dedup": False}
+    result = {"endpoint_id": ep_id, "new_cells": new_cells, "dedup": False}
+    # An endpoint registered with NO params generates only the cross-cutting cells
+    # (cors/csrf/headers/…) and ZERO per-parameter injection cells — the matrix shows
+    # the endpoint but you can't close injection coverage on it. Nudge at registration
+    # time so the pattern is caught immediately, not at completion.
+    if not params:
+        result["warning"] = (
+            f"registered with 0 params -> only cross-cutting cells generated, NO per-parameter "
+            f"injection coverage for {method_upper} {path}. If this endpoint accepts any input "
+            f"(query / body / path / header), re-register with params=[{{name, type, value_hint}}] "
+            f"so the injection cells fan out (a form login, an id path segment, a JSON body, etc.)."
+        )
+    return result
 
 
 async def update_cell(

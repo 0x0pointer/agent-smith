@@ -60,6 +60,46 @@ APPLICABILITY: dict[str, list[str]] = {
 # Fallback: if no specific hint matches, use param_type/default
 FALLBACK_KEY = "{type}/default"
 
+# ── Param-type normalization ─────────────────────────────────────────────────
+# Smith (and spider/OpenAPI discovery) label params with many spellings for the
+# same surface. Only the canonical keys above generate the right injection set, so
+# a loosely-typed param silently degrades: a JSON-body param typed "json"/"body"
+# never gets prototype/mass_assignment cells, and a form param typed "form" falls
+# back to query/default and loses its xxe cell. Map the common aliases onto the
+# canonical param types BEFORE fan-out. Unknown values pass through unchanged
+# (classify._applicable_types then falls back to query/default as before).
+PARAM_TYPE_ALIASES: dict[str, str] = {
+    # form-encoded request bodies
+    "form": "body_form", "formdata": "body_form", "form_data": "body_form",
+    "urlencoded": "body_form", "x-www-form-urlencoded": "body_form",
+    "multipart": "body_form", "multipart/form-data": "body_form",
+    "post_form": "body_form", "body_urlencoded": "body_form",
+    # JSON request bodies — "body" defaults to JSON (the modern API default); if it
+    # was actually form-encoded the overlap (sqli/xss/ssti/ssrf/cmdi/nosqli) is still
+    # covered, only xxe differs.
+    "json": "body_json", "application/json": "body_json", "jsonbody": "body_json",
+    "json_body": "body_json", "post_json": "body_json", "body": "body_json",
+    # query string
+    "querystring": "query", "query_string": "query", "qs": "query",
+    "url_query": "query", "get": "query", "search": "query",
+    # path / route segments
+    "url": "path", "uri": "path", "route": "path", "segment": "path",
+    "path_param": "path", "pathparam": "path", "url_path": "path",
+    # headers / cookies
+    "head": "header", "http_header": "header", "headers": "header", "cookies": "cookie",
+    # AI / MCP surfaces
+    "prompt": "llm_prompt", "chat": "llm_prompt", "message": "llm_prompt",
+    "mcp_arg": "mcp_tool_arg", "mcp": "mcp_tool_arg",
+}
+
+
+def normalize_param_type(raw: str) -> str:
+    """Canonicalize a param type so the coverage fan-out generates the right injection
+    set. Case-insensitive; unknown types pass through unchanged (fan-out then falls
+    back to query/default). See PARAM_TYPE_ALIASES for the rationale."""
+    t = (raw or "").strip().lower()
+    return PARAM_TYPE_ALIASES.get(t, t)
+
 # ── Endpoint-type classification (path pattern → type tag), priority order ────
 TYPE_PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r'/graphql\b',                   re.IGNORECASE), "graphql"),

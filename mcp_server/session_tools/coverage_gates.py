@@ -240,4 +240,33 @@ def _coverage_blockers(cov: dict, data: dict | None = None, ctf_mode: bool = Fal
         blockers.extend(_completeness_blockers(cov, data, total, addressed, pct))
 
     blockers.extend(_integrity_blockers(cov.get("matrix", []), enforce_cov, ctf_mode))
+    under_blocker = _underregistered_endpoints_blocker(cov, enforce_cov and not ctf_mode)
+    if under_blocker:
+        blockers.append(under_blocker)
     return blockers
+
+
+def _underregistered_endpoints_blocker(cov: dict, coverage_enforced: bool) -> str | None:
+    """Flag write endpoints (POST/PUT/PATCH) registered with NO params — they generated
+    only cross-cutting cells and ZERO per-parameter injection coverage. A body-bearing
+    method with no body params is almost always an under-registration (the params were
+    dropped at registration), unlike a static GET page which legitimately has none — so
+    this stays high-precision. Advisory: follows enforce_coverage, never deadlocks local."""
+    if not coverage_enforced:
+        return None
+    have_param_cells = {c.get("endpoint_id") for c in cov.get("matrix", [])
+                        if c.get("param_type") != "endpoint" and c.get("param") != "_endpoint"}
+    write_methods = {"POST", "PUT", "PATCH"}
+    under = [ep for ep in cov.get("endpoints", [])
+             if ep.get("method", "").upper() in write_methods and ep.get("id") not in have_param_cells]
+    if not under:
+        return None
+    sample = "; ".join(f"{ep.get('method')} {ep.get('path')}" for ep in under[:5])
+    more = f" (+{len(under) - 5} more)" if len(under) > 5 else ""
+    return (
+        f"UNDER-REGISTERED ENDPOINTS: {len(under)} write endpoint(s) (POST/PUT/PATCH) were "
+        f"registered with NO params, so they have zero per-parameter injection cells — only the "
+        f"generic cross-cutting checks. Re-register each with its body/query params so the "
+        f"injection types fan out (report(action='coverage', data={{'type':'endpoint', ...}})): "
+        f"{sample}{more}."
+    )

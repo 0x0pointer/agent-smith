@@ -16,6 +16,7 @@ from core import taxonomy as _tax
 _APPLICABILITY = _tax.APPLICABILITY
 _FALLBACK_KEY = _tax.FALLBACK_KEY
 _TYPE_PATTERNS = _tax.TYPE_PATTERNS
+_normalize_param_type = _tax.normalize_param_type
 
 
 def _normalize_path(path: str) -> str:
