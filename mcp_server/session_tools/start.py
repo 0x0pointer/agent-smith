@@ -53,6 +53,7 @@ def _start_response(cfg: dict, classification: dict, target: str, scan_mode: str
         "  │  dashboard key — it is REQUIRED to load data, and a new scan mints a",
         "  │  new one. Show this link to the operator before you go silent.",
         "  └─────────────────────────────────────────────────────────────────────",
+        "  ⚠ AI-generated content may be incorrect. It should always be validated by a person.",
         "",
     ]
     if scan_mode == "benchmark":
@@ -214,7 +215,8 @@ def _do_start(opts):
         print(
             f"\n[agent-smith] Dashboard → http://localhost:7777/#k={_tok}\n"
             "[agent-smith]   open in a browser; the #k=… token is required to load "
-            "scan data (a new scan mints a new token).\n",
+            "scan data (a new scan mints a new token).\n"
+            "[agent-smith]   ⚠ AI-generated content may be incorrect. It should always be validated by a person.\n",
             file=_sys.stderr, flush=True,
         )
     except Exception:

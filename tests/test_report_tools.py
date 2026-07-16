@@ -515,9 +515,11 @@ async def test_dashboard_serves_canonical_on_malformed_port_input():
     with patch("core.api_server.serve", side_effect=_capture_serve):
         result = await _do_dashboard({"port": "5000\nINJECTED"})
     assert captured_args == [_DASHBOARD_CANONICAL_PORT]
-    # The injected payload must NOT appear anywhere in what we return
+    # The malformed port value must NOT be echoed anywhere in what we return. (The result now
+    # carries a trailing AI-content warning on its own line, so we assert the injected payload
+    # and the bad port fragment aren't reflected, rather than blanket-forbidding newlines.)
     assert "INJECTED" not in result
-    assert "\n" not in result
+    assert "5000" not in result
 
 
 # ── chain mermaid label escaping ─────────────────────────────────────────────
