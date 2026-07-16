@@ -266,7 +266,8 @@ async def _do_dashboard(data):
         except Exception:
             pass
         log.tool_result("dashboard", url)
-        return f"Dashboard running — open {url}"
+        return (f"Dashboard running — open {url}\n"
+                "⚠ AI-generated content may be incorrect. It should always be validated by a person.")
     except Exception as exc:
         # Defense against S5145: don't echo the raw exception message into
         # the audit log or the return string — its content could come from
