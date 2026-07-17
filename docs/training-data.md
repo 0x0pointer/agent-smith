@@ -22,9 +22,14 @@ at `logs/smith-events/<engagement_id>.jsonl`:
 | **result** | what came back, plus a reference to the raw artifact the model actually saw |
 | **finding** / **coverage** | confirmed vulnerabilities and coverage-matrix transitions |
 
-Each bundle is **self-contained**: the raw artifacts referenced by the stream are retained
-next to it, so the data still points at real observations even after the scan's scratch files
-are cleared.
+Each bundle is **self-contained**. Everything the stream refers to is retained next to it in
+`logs/smith-events/<engagement_id>/`, so the data still points at real observations even after
+the scan's scratch files are cleared:
+
+- the **raw artifacts** the model actually saw (tool output), and
+- a **`meta.json`** provenance snapshot (target, model profile, timing), and
+- the scan's final **`findings.json`** — the adjudicated vulnerabilities those events led to,
+  copied in when the scan completes (before the next scan overwrites it).
 
 ---
 

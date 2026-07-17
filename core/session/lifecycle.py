@@ -200,6 +200,21 @@ def stop_pentest_containers() -> None:
         pass
 
 
+def snapshot_training_bundle() -> None:
+    """When a scan reaches a terminal state, copy the final findings.json into the
+    engagement's durable training bundle (logs/smith-events/<id>/findings.json) so the
+    bundle is self-contained — events + raw artifacts + meta + the adjudicated findings.
+
+    Best-effort and never raises into the completion path. No-op when the event emitter is
+    disabled (no bundle to complete). Lazy import keeps core.session free of a top-level
+    dependency on mcp_server/."""
+    try:
+        from mcp_server.scan_engine.smith_events import snapshot_findings
+        snapshot_findings()
+    except Exception:
+        pass
+
+
 def complete(
     notes: str = "",
     stop_reason: str | None = None,
@@ -221,7 +236,9 @@ def complete(
         if stop_reason is not None:
             _sess._current["stop_reason"] = stop_reason
         _sess._flush()
-        # Scan ended (human complete or force-complete) → tear down the RCE containers.
+        # Scan ended (human complete or force-complete): snapshot the final findings into
+        # the durable training bundle (self-contained), then tear down the RCE containers.
+        snapshot_training_bundle()
         stop_pentest_containers()
     return _sess._current or {}
 
