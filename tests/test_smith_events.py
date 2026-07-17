@@ -257,3 +257,14 @@ def test_snapshot_findings_no_session_noop(tmp_path, monkeypatch):
     monkeypatch.setattr(cf, "FINDINGS_FILE", src)
     se.snapshot_findings()
     assert not list(tmp_path.glob("*/findings.json"))               # nothing written into a bundle
+
+
+def test_snapshot_findings_fail_soft_on_copy_error(emit_env, monkeypatch, tmp_path):
+    import core.findings as cf
+    src = tmp_path / "findings.json"; src.write_text('{"findings": []}')
+    monkeypatch.setattr(cf, "FINDINGS_FILE", src)
+    import shutil
+    monkeypatch.setattr(shutil, "copy2",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")))
+    se.snapshot_findings()                                          # copy error swallowed, must not raise
+    assert not (emit_env / "eng-test" / "findings.json").exists()   # nothing left behind on failure

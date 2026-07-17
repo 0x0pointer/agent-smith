@@ -11,7 +11,12 @@ from core.session import limits as lim
 
 
 def _running(monkeypatch):
-    """Install a running session with the flush/reconcile side-effects stubbed."""
+    """Install a running session with the flush/reconcile side-effects stubbed.
+
+    Disables the smith-event emitter so the terminal transition's training-bundle
+    snapshot doesn't write real files into logs/smith-events/ during these
+    container-teardown tests (the snapshot itself is covered in test_smith_events.py)."""
+    monkeypatch.setenv("SMITH_EVENTS_DISABLED", "1")
     monkeypatch.setattr(cs, "_current", {"id": "s", "status": "running",
                                          "limits": {"max_cost_usd": 1, "max_time_minutes": 1, "max_tool_calls": 1}})
     monkeypatch.setattr(cs, "_flush", lambda: None)
@@ -84,3 +89,25 @@ def test_fail_soft_when_docker_errors(monkeypatch):
                         lambda *a, **k: (_ for _ in ()).throw(OSError("docker missing")))
     lc.complete(notes="done")                          # must NOT raise
     assert cs._current["status"] == "complete"         # completion still succeeded
+
+
+def test_complete_fail_soft_when_bundle_snapshot_errors(monkeypatch):
+    # The training-bundle snapshot must never break completion — a raising
+    # snapshot_findings is swallowed and the scan still reaches 'complete'.
+    _running(monkeypatch)
+    monkeypatch.setenv("SMITH_KEEP_CONTAINERS", "1")   # isolate: no docker in this test
+    import mcp_server.scan_engine.smith_events as se
+    monkeypatch.setattr(se, "snapshot_findings",
+                        lambda: (_ for _ in ()).throw(RuntimeError("bundle boom")))
+    lc.complete(notes="done")                          # must NOT raise
+    assert cs._current["status"] == "complete"
+
+
+def test_limit_reached_fail_soft_when_bundle_snapshot_errors(monkeypatch):
+    # Same fail-soft guarantee on the budget/time/call-limit terminal path.
+    _running(monkeypatch)
+    monkeypatch.setenv("SMITH_KEEP_CONTAINERS", "1")
+    monkeypatch.setattr(lc, "snapshot_training_bundle",
+                        lambda: (_ for _ in ()).throw(RuntimeError("bundle boom")))
+    lim._stop("limit_reached", "TIME LIMIT hit")       # must NOT raise
+    assert cs._current["status"] == "limit_reached"
