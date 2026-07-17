@@ -219,3 +219,41 @@ def test_emit_tool_call_fail_soft_when_artifact_missing(emit_env, monkeypatch, t
 def test_emit_tool_call_no_artifact_id_omits_field(emit_env):
     se.emit_tool_call("nmap", {"target": "h"}, FakeResult())        # no artifact_id
     assert "artifact_id" not in _events(emit_env)[1]["result"]
+
+
+def test_snapshot_findings_copies_into_bundle(emit_env, monkeypatch, tmp_path):
+    import core.findings as cf
+    src = tmp_path / "findings.json"
+    src.write_text('{"findings": [{"id": "F-1", "title": "SQLi", "severity": "critical"}]}')
+    monkeypatch.setattr(cf, "FINDINGS_FILE", src)
+    se.snapshot_findings()
+    dst = emit_env / "eng-test" / "findings.json"                    # same bundle dir as events/artifacts
+    assert dst.exists()
+    assert json.loads(dst.read_text())["findings"][0]["id"] == "F-1"
+
+
+def test_snapshot_findings_disabled_via_env_noop(emit_env, monkeypatch, tmp_path):
+    import core.findings as cf
+    src = tmp_path / "findings.json"; src.write_text("{}")
+    monkeypatch.setattr(cf, "FINDINGS_FILE", src)
+    monkeypatch.setenv("SMITH_EVENTS_DISABLED", "1")                 # no bundle to complete
+    se.snapshot_findings()
+    assert not (emit_env / "eng-test" / "findings.json").exists()
+
+
+def test_snapshot_findings_no_source_is_fail_soft(emit_env, monkeypatch, tmp_path):
+    import core.findings as cf
+    monkeypatch.setattr(cf, "FINDINGS_FILE", tmp_path / "nope" / "findings.json")
+    se.snapshot_findings()                                           # findings.json absent -> must not raise
+    assert not (emit_env / "eng-test" / "findings.json").exists()
+
+
+def test_snapshot_findings_no_session_noop(tmp_path, monkeypatch):
+    monkeypatch.setattr(se, "_EVENTS_DIR", tmp_path)
+    import core.session as cs
+    monkeypatch.setattr(cs, "get", lambda: None)                    # no engagement id
+    import core.findings as cf
+    src = tmp_path / "findings.json"; src.write_text("{}")
+    monkeypatch.setattr(cf, "FINDINGS_FILE", src)
+    se.snapshot_findings()
+    assert not list(tmp_path.glob("*/findings.json"))               # nothing written into a bundle

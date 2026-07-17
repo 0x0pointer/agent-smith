@@ -297,6 +297,32 @@ def _snapshot_meta(engagement: str) -> None:
         pass
 
 
+def snapshot_findings() -> None:
+    """Copy the scan's final findings.json into the engagement's DURABLE bundle
+    (logs/smith-events/<id>/findings.json) at the terminal transition — so the training
+    bundle is self-contained: events + raw artifacts + meta + the adjudicated findings that
+    those events led to. findings.json is wiped/overwritten by the next scan, so capture it
+    now. Derives the engagement id the same way the event stream does (session id), so the
+    findings land in the SAME bundle dir as the events/artifacts. Called from the
+    running→terminal transition (core/session), not per tool call. Fail-soft — never raises."""
+    if not _enabled():
+        return
+    try:
+        engagement = _engagement_id()
+        if not engagement:
+            return
+        from core import findings as _findings
+        src = _findings.FINDINGS_FILE
+        if not src.exists():
+            return
+        dst_dir = _EVENTS_DIR / engagement
+        dst_dir.mkdir(parents=True, exist_ok=True)
+        import shutil
+        shutil.copy2(src, dst_dir / "findings.json")
+    except Exception:
+        pass
+
+
 def emit_tool_call(tool: str, ctx: dict, result: Any, artifact_id: str = "") -> None:
     """Emit one ``action`` event + the ``result`` it caused, linked to the current ``decision`` (if the
     agent recorded one), and COPY the tool's raw artifact into the engagement's durable bundle so the
