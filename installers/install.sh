@@ -424,6 +424,7 @@ if [[ "${_kali_answer:-Y}" =~ ^[Yy]$ ]]; then
     echo "    ai               LLM red-team: PyRIT, Garak, promptfoo (heaviest: torch)      ~12 min"
     echo ""
     _kali_build_args=()
+    _kali_install_ai=0
     _ask_kali_module() {  # $1=name  $2=build-arg  $3=default(Y|N)
         local _def="$3" _ans _hint
         [ "$_def" = "Y" ] && _hint="Y/n" || _hint="y/N"
@@ -432,8 +433,10 @@ if [[ "${_kali_answer:-Y}" =~ ^[Yy]$ ]]; then
         _ans="${_ans:-$_def}"
         if [[ "$_ans" =~ ^[Yy]$ ]]; then
             _kali_build_args+=(--build-arg "$2=1")
+            [[ "$2" == "INSTALL_AI" ]] && _kali_install_ai=1
         else
             _kali_build_args+=(--build-arg "$2=0")
+            [[ "$2" == "INSTALL_AI" ]] && _kali_install_ai=0
         fi
     }
     _ask_kali_module web    INSTALL_WEB    Y
@@ -441,6 +444,10 @@ if [[ "${_kali_answer:-Y}" =~ ^[Yy]$ ]]; then
     _ask_kali_module mobile INSTALL_MOBILE N
     _ask_kali_module cloud  INSTALL_CLOUD  N
     _ask_kali_module ai     INSTALL_AI     N
+    if [[ "$_kali_install_ai" == "1" ]]; then
+        _kali_build_args+=(--build-arg "REQUIRE_PYRIT=1")
+        echo "  AI module selected: requiring PyRIT in the build"
+    fi
     echo ""
     echo "  Building pentest-agent/kali-mcp (this may take a while)..."
     if docker build "${_kali_build_args[@]}" -t pentest-agent/kali-mcp "$REPO_DIR/tools/kali/" 2>&1 | tail -5; then
