@@ -45,7 +45,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     smbmap smbclient samba-common-bin impacket-scripts \
     enum4linux-ng netexec ldap-utils python3-pip \
     && rm -rf /var/lib/apt/lists/* \
-    && pip3 install --no-cache-dir ldapdomaindump==0.9.4 certipy-ad==5.0.4 bloodhound==1.9.0 --break-system-packages
+    && pip3 install --no-cache-dir --break-system-packages --ignore-installed \
+        ldapdomaindump==0.9.4 certipy-ad==5.0.4 bloodhound==1.9.0
 
 # Layer 8: service enumeration
 # snmpwalk is bundled in the snmp package; snmp-check not available on arm64

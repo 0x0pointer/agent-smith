@@ -8,8 +8,8 @@
       "message": "PoC required for 4 high/critical finding(s): SQL Injection in /login \u2014 Authentication Bypass, PostgreSQL Exposed with Default Credentials \u2014 Full DB Access, Plaintext Password Storage +1 more. Call http(action='save_poc', options={title: '...', finding_id: '<id>'}) for each.",
       "skill": null,
       "trigger": "POC_GAP",
-      "status": "pending",
-      "injected_at": null,
+      "status": "injected",
+      "injected_at": "2026-06-04T04:42:18.010333+00:00",
       "acknowledged_at": null,
       "ack_message": null
     },
@@ -21,10 +21,10 @@
       "message": "Gate 'credential_audit' open 16min \u2014 invoke /credential-audit to satisfy it. Use Skill tool: skill='credential-audit'.",
       "skill": "credential-audit",
       "trigger": "ENDPOINT_TRIGGER_GAP",
-      "status": "pending",
-      "injected_at": null,
-      "acknowledged_at": null,
-      "ack_message": null
+      "status": "acknowledged",
+      "injected_at": "2026-06-04T04:42:18.010634+00:00",
+      "acknowledged_at": "2026-06-06T10:13:07.568832+00:00",
+      "ack_message": "Acknowledged QA alerts. The steering directives reference stale findings from a previous/non-current target (/login, PostgreSQL defaults) and are not applicable to the current local maps-sdk-js repository review. I will continue with manual pass 3 for this codebase and will not include unrelated session findings in the final report."
     },
     {
       "id": "steer-ef54a9f3",
@@ -34,10 +34,10 @@
       "message": "Gate 'post_exploit_rce' open 15min \u2014 invoke /post-exploit to satisfy it. Use Skill tool: skill='post-exploit'.",
       "skill": "post-exploit",
       "trigger": "ENDPOINT_TRIGGER_GAP",
-      "status": "pending",
-      "injected_at": null,
-      "acknowledged_at": null,
-      "ack_message": null
+      "status": "acknowledged",
+      "injected_at": "2026-06-04T04:42:18.010854+00:00",
+      "acknowledged_at": "2026-06-04T05:48:12.305927+00:00",
+      "ack_message": "Completion is blocked by stale unrelated high/critical findings from prior targets plus an incorrect RCE gate on the signer finding. The current codebase audit did not confirm RCE or those unrelated findings. I will not create PoCs or invoke post-exploit for vulnerabilities not present in /home/deepanon/HackerOne/circle/arc-remote-signer."
     },
     {
       "id": "steer-3ba2f720",
@@ -47,10 +47,10 @@
       "message": "Gate 'api_coverage' open 16min \u2014 invoke /api-security to satisfy it. Use Skill tool: skill='api-security'.",
       "skill": "api-security",
       "trigger": "ENDPOINT_TRIGGER_GAP",
-      "status": "pending",
-      "injected_at": null,
-      "acknowledged_at": null,
-      "ack_message": null
+      "status": "acknowledged",
+      "injected_at": "2026-06-04T04:42:18.011064+00:00",
+      "acknowledged_at": "2026-06-04T05:43:52.555501+00:00",
+      "ack_message": "Acknowledged. The steering directives reference findings from a different target/session (SQLi / PostgreSQL / plaintext passwords are not present in this Go signer repository). For this audit, semgrep and trufflehog completed cleanly; I am proceeding with manual white-box endpoint/auth/crypto/threat-model mapping for /home/deepanon/HackerOne/circle/arc-remote-signer. I will not report inherited findings unless confirmed in this codebase."
     },
     {
       "id": "steer-97f9f326",
@@ -60,10 +60,10 @@
       "message": "Coverage stalled 16min \u2014 665 cells pending. EXECUTE: session(action='recovery') then resume systematic testing from EXECUTE_NOW.",
       "skill": null,
       "trigger": "COVERAGE_STALL",
-      "status": "pending",
-      "injected_at": null,
-      "acknowledged_at": null,
-      "ack_message": null
+      "status": "acknowledged",
+      "injected_at": "2026-06-04T04:42:18.011274+00:00",
+      "acknowledged_at": "2026-06-04T04:49:02.523174+00:00",
+      "ack_message": "Acknowledged WHITEBOX_PASSES note. I completed additional manual white-box passes using targeted Rust searches for unsafe code, command execution, file/path sinks, network sinks, crypto/key handling, unwrap/panic DoS paths, and business logic/payment state flows. The remaining stale steering directives reference unrelated prior targets and are not applicable to this Rust SDK source-only review."
     },
     {
       "id": "steer-52e8c1a6",
@@ -73,10 +73,10 @@
       "message": "Gate 'internal_network' open 15min \u2014 invoke /network-assess to satisfy it. Use Skill tool: skill='network-assess'.",
       "skill": "network-assess",
       "trigger": "ENDPOINT_TRIGGER_GAP",
-      "status": "pending",
-      "injected_at": null,
-      "acknowledged_at": null,
-      "ack_message": null
+      "status": "acknowledged",
+      "injected_at": "2026-06-04T04:42:18.011477+00:00",
+      "acknowledged_at": "2026-06-04T04:47:11.788884+00:00",
+      "ack_message": "Acknowledged. This target is a local Rust SDK/examples codebase, not the stale /login/PostgreSQL target referenced by older steering directives. Semgrep and trufflehog returned no repo-local findings; manual review focused on remote-signing and UMA example attack paths. No live target was provided, so network/post-exploit/internal-network gates are not applicable to this source-only review."
     }
   ]
 }

@@ -55,23 +55,54 @@ OPENCODE_CONFIG="$HOME/.config/opencode/opencode.json"
 if [[ -f "$OPENCODE_CONFIG" ]]; then
     echo ""
     echo "Registering pentest-agent MCP server with opencode..."
-    jq '.mcp["pentest-agent"] = {"type": "remote", "url": "http://127.0.0.1:7778/sse", "enabled": true, "timeout": 9000000}' \
-        "$OPENCODE_CONFIG" > "$OPENCODE_CONFIG.tmp" \
-        && mv "$OPENCODE_CONFIG.tmp" "$OPENCODE_CONFIG"
+    # Use Python (not jq — not guaranteed to be installed) to merge the MCP entry.
+    python3 -c "
+import json, pathlib, sys
+p = pathlib.Path(sys.argv[1])
+data = json.loads(p.read_text()) if p.stat().st_size else {}
+data.setdefault('mcp', {})['pentest-agent'] = {
+    'type': 'remote', 'url': 'http://127.0.0.1:7778/sse', 'enabled': True, 'timeout': 9000000,
+}
+p.write_text(json.dumps(data, indent=2) + '\n')
+" "$OPENCODE_CONFIG"
     ok "MCP server registered with opencode"
 else
     echo "  (opencode config not found at $OPENCODE_CONFIG — skipping opencode registration)"
 fi
 
-# ── Install launchd plist for auto-start on login ────────────────────────────
+# ── Install auto-start service for the MCP server (login / crash restart) ────
 echo ""
-echo "Installing launchd plist..."
-PLIST_SRC="$REPO_DIR/installers/com.agent-smith.mcp-sse.plist"
-PLIST_DST="$HOME/Library/LaunchAgents/com.agent-smith.mcp-sse.plist"
-sed "s|REPO_DIR|$REPO_DIR|g" "$PLIST_SRC" > "$PLIST_DST"
-launchctl unload "$PLIST_DST" 2>/dev/null || true
-launchctl load "$PLIST_DST"
-ok "launchd plist installed — MCP server auto-starts on login and restarts on crash"
+case "$(uname -s)" in
+    Darwin)
+        echo "Installing launchd plist..."
+        PLIST_SRC="$REPO_DIR/installers/com.agent-smith.mcp-sse.plist"
+        PLIST_DST_DIR="$HOME/Library/LaunchAgents"
+        PLIST_DST="$PLIST_DST_DIR/com.agent-smith.mcp-sse.plist"
+        mkdir -p "$PLIST_DST_DIR"
+        sed "s|REPO_DIR|$REPO_DIR|g" "$PLIST_SRC" > "$PLIST_DST"
+        launchctl unload "$PLIST_DST" 2>/dev/null || true
+        launchctl load "$PLIST_DST"
+        ok "launchd plist installed — MCP server auto-starts on login and restarts on crash"
+        ;;
+    Linux)
+        if command -v systemctl >/dev/null 2>&1; then
+            echo "Installing systemd user service..."
+            UNIT_SRC="$REPO_DIR/installers/agent-smith-mcp-sse.service"
+            UNIT_DST_DIR="$HOME/.config/systemd/user"
+            UNIT_DST="$UNIT_DST_DIR/agent-smith-mcp-sse.service"
+            mkdir -p "$UNIT_DST_DIR"
+            sed "s|REPO_DIR|$REPO_DIR|g" "$UNIT_SRC" > "$UNIT_DST"
+            systemctl --user daemon-reload
+            systemctl --user enable --now agent-smith-mcp-sse.service
+            ok "systemd user service installed — MCP server auto-starts on login and restarts on crash"
+        else
+            warn "systemctl not found — skipping auto-start service (run $REPO_DIR/installers/start-mcp-server.sh manually after reboot)"
+        fi
+        ;;
+    *)
+        warn "Unrecognized OS ($(uname -s)) — skipping auto-start service (run $REPO_DIR/installers/start-mcp-server.sh manually after reboot)"
+        ;;
+esac
 
 # ── Ask whether to overwrite existing skill files ────────────────────────────
 echo ""
