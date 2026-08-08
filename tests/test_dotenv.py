@@ -44,7 +44,9 @@ def test_load_dotenv_sets_missing_key(tmp_path, monkeypatch):
     assert os.environ.get("DIRECT_TEST_KEY") == "hello"
 
 
-def test_load_dotenv_does_not_overwrite_existing(tmp_path, monkeypatch):
+def test_load_dotenv_overwrites_existing(tmp_path, monkeypatch):
+    # .env always wins so editing the file and restarting the dashboard
+    # picks up new values (e.g. TELEGRAM_CHAT_ID) without a full MCP restart.
     env_file = tmp_path / ".env"
     env_file.write_text("EXISTING_KEY=from_file\n")
     monkeypatch.setenv("EXISTING_KEY", "from_env")
@@ -57,7 +59,7 @@ def test_load_dotenv_does_not_overwrite_existing(tmp_path, monkeypatch):
 
     monkeypatch.setattr(os.path, "join", patched_join)
     _load_dotenv()
-    assert os.environ["EXISTING_KEY"] == "from_env"
+    assert os.environ["EXISTING_KEY"] == "from_file"
 
 
 def test_load_dotenv_skips_comments(tmp_path, monkeypatch):

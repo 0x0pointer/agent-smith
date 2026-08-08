@@ -20,6 +20,8 @@ Optional fields set via update_finding():
   description:      updated description string
   evidence:         updated evidence string
   status:           "confirmed" | "false_positive" | "draft"
+  adjudication:     { reproducible, original_severity, revised_severity, rationale }
+                    — audit trail from the final senior-review pass (see adjunction/)
   reproduction:     { type, command, expected, verified }
   gh_issue:         "<markdown block>"
   remediation:      { summary, fix_type, diff, before, after, file, line,
@@ -34,9 +36,10 @@ import asyncio
 import json
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
+from core import paths as _paths
+from core import store as _store
 
-FINDINGS_FILE = Path(__file__).parent.parent / "findings.json"
+FINDINGS_FILE = _paths.FINDINGS_FILE
 
 _lock = asyncio.Lock()
 
@@ -55,11 +58,19 @@ def _load() -> dict:
         "meta":     {"created": datetime.now(timezone.utc).isoformat(), "target": ""},
         "findings": [],
         "diagrams": [],
+        "chains":   [],
     }
 
 
 def _save(data: dict) -> None:
-    FINDINGS_FILE.write_text(json.dumps(data, indent=2))
+    _store.save(FINDINGS_FILE, data)
+    # AS-REPUD: write a detached HMAC signature so post-hoc edits to the signed
+    # deliverable are detectable (verify via core.integrity.verify_file). Best-effort.
+    try:
+        from core import integrity
+        integrity.sign_file(FINDINGS_FILE)
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -77,8 +88,17 @@ async def add_finding(
     reproduction: dict | None = None,
     escalation_leads: list[dict] | None = None,
     business_impact: str = "",
+    trace: list[dict] | None = None,
+    evidence_artifact_id: str = "",
+    capabilities: dict | None = None,
 ) -> dict:
-    """Append a vulnerability finding. Returns the stored entry."""
+    """Append a vulnerability finding. Returns the stored entry.
+
+    ``trace`` is the optional source-code data flow (entrypoint→propagation→sink
+    with file:line:scope) for white-box findings. Its shape and — when a codebase
+    is pinned — its file:line resolution are validated at the report_tools
+    boundary before this is called, so anything stored here is already sound.
+    """
     entry = {
         "id":          str(uuid.uuid4()),
         "timestamp":   datetime.now(timezone.utc).isoformat(),
@@ -96,6 +116,21 @@ async def add_finding(
         entry["reproduction"] = reproduction
     if escalation_leads:
         entry["escalation_leads"] = escalation_leads
+    if trace:
+        entry["trace"] = trace
+    if capabilities:
+        # Compositional-chaining primitives this finding PROVIDES / is blocked REQUIRING.
+        # Validated (drop-unknown) at the report_tools boundary; stored flat so
+        # core.graph.build reads f["provides"]/f["requires"] directly.
+        if capabilities.get("provides"):
+            entry["provides"] = list(capabilities["provides"])
+        if capabilities.get("requires"):
+            entry["requires"] = list(capabilities["requires"])
+    if evidence_artifact_id:
+        # The proof artifact from the tool call that produced this finding.
+        # Adjudication reuses it so the model never re-runs the attack just to
+        # regenerate an artifact_id it forgot across context compaction.
+        entry["evidence_artifact_id"] = evidence_artifact_id
     async with _lock:
         data = _load()
         data["findings"].append(entry)
@@ -106,7 +141,8 @@ async def add_finding(
 _UPDATABLE_FIELDS = {
     "severity", "title", "description", "evidence", "status",
     "gh_issue", "remediation", "reproduction", "escalation_leads", "business_impact",
-    "poc_files",
+    "poc_files", "adjudication", "trace", "evidence_artifact_id",
+    "provides", "requires",  # compositional-chaining primitives (back-fillable at the dead-end)
 }
 
 
@@ -178,5 +214,34 @@ async def add_diagram(title: str, mermaid: str) -> dict:
     async with _lock:
         data = _load()
         data["diagrams"].append(entry)
+        _save(data)
+    return entry
+
+
+async def add_chain(
+    name: str,
+    steps: list[dict],
+    terminal_impact: str = "",
+    combined_severity: str = "",
+    mermaid: str = "",
+) -> dict:
+    """Append a proven exploit chain. Returns the stored entry.
+
+    steps: [{from_finding_id, to_finding_id, transition_artifact_id, mitre_technique}]
+    — each transition is artifact-backed (validated at the report_tools boundary),
+    so a stored chain only ever contains proven hand-offs.
+    """
+    entry = {
+        "id":                str(uuid.uuid4()),
+        "timestamp":         datetime.now(timezone.utc).isoformat(),
+        "name":              name,
+        "steps":             steps,
+        "terminal_impact":   terminal_impact,
+        "combined_severity": combined_severity,
+        "mermaid":           mermaid,
+    }
+    async with _lock:
+        data = _load()
+        data.setdefault("chains", []).append(entry)
         _save(data)
     return entry

@@ -37,6 +37,16 @@ def test_dashboard_returns_html():
     assert "text/html" in response.headers["content-type"]
 
 
+def test_html_and_static_assets_sent_no_cache():
+    """The dashboard HTML + static JS/CSS must carry Cache-Control: no-cache so the
+    browser revalidates and never serves a stale copy of an un-versioned script
+    (the recurring 'findings blank / stale dashboard' bug)."""
+    assert client.get("/").headers.get("cache-control") == "no-cache"
+    js = client.get("/static/js/common.js")
+    assert js.status_code == 200
+    assert js.headers.get("cache-control") == "no-cache"
+
+
 # ── GET /api/findings ─────────────────────────────────────────────────────────
 
 def test_api_findings_returns_json(tmp_path, monkeypatch):
@@ -368,6 +378,42 @@ def test_api_clear_calls_cleanup_tunnels(tmp_path, monkeypatch):
     mock_cleanup.assert_awaited_once()
 
 
+def test_api_clear_removes_stale_smith_pointers(tmp_path, monkeypatch):
+    """Clear All must wipe logs/smith.pid and logs/smith.client.
+
+    Stale pointers from the previous scan bias _detect_active_client() — a
+    PID file pointing at a dead opencode process from the last scan keeps
+    "active" stuck on opencode even after the operator clicks Clear and
+    wants a genuine fresh start. The PID file is also the first thing
+    _smith_running() consults; leaving it stale is a footgun.
+    """
+    from core import findings as findings_mod
+    import core.api_server as api_mod
+
+    findings_file = tmp_path / "findings.json"
+    findings_file.write_text(json.dumps({"meta": {}, "findings": [], "diagrams": []}))
+    monkeypatch.setattr(findings_mod, "FINDINGS_FILE", findings_file)
+
+    # Drop stale pointer files into a sandboxed logs/ — these must be gone
+    # after Clear runs.
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    smith_pid_file    = logs_dir / "smith.pid"
+    smith_client_file = logs_dir / "smith.client"
+    smith_pid_file.write_text("89337\n")
+    smith_client_file.write_text("opencode\n")
+    monkeypatch.setattr(api_mod, "_SMITH_PID_FILE",    smith_pid_file)
+    monkeypatch.setattr(api_mod, "_SMITH_CLIENT_FILE", smith_client_file)
+
+    with patch("core.api_server._cleanup_tunnels", new_callable=AsyncMock, return_value="x"):
+        response = client.delete("/api/clear")
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert not smith_pid_file.exists(), "smith.pid should be wiped by Clear All"
+    assert not smith_client_file.exists(), "smith.client should be wiped by Clear All"
+
+
 # ── DELETE /api/tunnels ──────────────────────────────────────────────────────
 
 def test_api_tunnels_returns_ok():
@@ -461,14 +507,16 @@ async def test_cleanup_tunnels_exception_handling():
 def test_read_pid_returns_none_for_missing_file(tmp_path, monkeypatch):
     import core.api_server as srv
     monkeypatch.setattr(srv, "_PID_FILE", tmp_path / "dashboard.pid")
-    assert srv._read_pid() is None
+    assert srv._read_pid() == (None, None)
 
 def test_read_pid_returns_int_when_file_exists(tmp_path, monkeypatch):
     import core.api_server as srv
     pid_file = tmp_path / "dashboard.pid"
     pid_file.write_text("12345")
     monkeypatch.setattr(srv, "_PID_FILE", pid_file)
-    assert srv._read_pid() == 12345
+    pid, mtime = srv._read_pid()
+    assert pid == 12345
+    assert mtime is None  # no timestamp in legacy format
 
 def test_write_pid_creates_file(tmp_path, monkeypatch):
     import core.api_server as srv
@@ -476,7 +524,7 @@ def test_write_pid_creates_file(tmp_path, monkeypatch):
     pid_file.parent.mkdir()
     monkeypatch.setattr(srv, "_PID_FILE", pid_file)
     srv._write_pid(99999)
-    assert pid_file.read_text() == "99999"
+    assert pid_file.read_text().split(":")[0] == "99999"
 
 def test_pid_alive_returns_false_for_dead_pid():
     import core.api_server as srv
@@ -490,3 +538,22 @@ def test_pid_alive_returns_true_for_self():
 def test_port_healthy_returns_false_for_unused_port():
     import core.api_server as srv
     assert srv._port_healthy(19999) is False
+
+
+def test_sanitize_mermaid_escapes_label_breakers():
+    """Model-authored diagrams put payloads/values in labels; ';' '<' '>' break
+    mermaid 10.9.6 ('Syntax error in text'). sanitize_mermaid escapes them INSIDE
+    label spans only, preserving <br/> and the structural syntax."""
+    from core.api_server.mermaid import sanitize_mermaid as s
+    # leading ';' in an edge label (statement separator)
+    assert s('A -->|; COPY FROM PROGRAM| B["x"]') == 'A -->|#59; COPY FROM PROGRAM| B["x"]'
+    # angle brackets parsed as HTML tags
+    assert s('A -->|Bearer <header>| B') == 'A -->|Bearer #60;header#62;| B'
+    # <br/> line-breaks preserved; other breakers inside the same label escaped
+    assert s('G[a<br/>b; c<d>]') == 'G[a<br/>b#59; c#60;d#62;]'
+    # structure (arrows, node ids, delimiters, quotes) untouched
+    assert s('A["ok"] --> B(round)') == 'A["ok"] --> B(round)'
+    # idempotent
+    once = s('X[a; b <c>]'); assert s(once) == once
+    # empty / None-safe
+    assert s('') == '' and s(None) is None

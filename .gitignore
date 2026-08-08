@@ -10,6 +10,7 @@ gh-issues.md
 threat-model/
 quick_log.json
 qa_state.json
+adjudication_log.jsonl
 
 # ── Test coverage ────────────────────────────────────────────────────────────
 coverage.xml
@@ -51,5 +52,12 @@ report_generator.py
 *.swo
 *~
 steering_queue.json
+wishlist_queue.json
 recovery_latest.json
 pentest_metrics.jsonl
+
+# AS-REPUD detached signatures (never commit)
+*.sig
+SECURITY-REVIEW.md
+analysis/
+run_2/

@@ -1,0 +1,47 @@
+<div id="tab-world-model" class="tab-content">
+  <div id="wm-stats" class="wm-stats"></div>
+
+  <!-- The interactive labeled-property graph is the centerpiece. -->
+  <section class="wm-panel wm-graph-panel">
+    <h3 class="wm-h">World model graph
+      <span class="wm-sub">labeled property graph — drag &amp; zoom · click a node/edge to inspect its properties</span></h3>
+    <div class="wm-graph-toolbar">
+      <div id="wm-legend" class="wm-legend"></div>
+      <div class="wm-graph-controls">
+        <span class="wm-layout-group" role="group" aria-label="Layout">
+          <button class="wm-btn" id="wm-layout-tree" onclick="wmSetLayout('tree')"
+                  title="Tree — horizontal hierarchy: host → endpoints → params → findings">⌗ Tree</button>
+          <button class="wm-btn" id="wm-layout-radial" onclick="wmSetLayout('radial')"
+                  title="Radial — each host is its own circle with its components/findings around it">◎ Radial</button>
+          <button class="wm-btn wm-btn-on" id="wm-layout-force" onclick="wmSetLayout('force')"
+                  title="Force — physics-based layout (default)">✦ Force</button>
+        </span>
+        <button class="wm-btn" id="wm-bridges-btn" onclick="wmToggleBridges()"
+                title="Highlight compositional PROVIDES / REQUIRES capability bridges">◆ Bridges</button>
+        <button class="wm-btn" onclick="wmRelayout()" title="Re-run the current layout">⟳</button>
+        <button class="wm-btn" onclick="wmFit()" title="Fit graph to view">⤢ Fit</button>
+      </div>
+    </div>
+    <div class="wm-graph-stage">
+      <div id="wm-graph" class="wm-graph"></div>
+      <div id="wm-inspector" class="wm-inspector wm-inspector-empty">Click a node or relationship to inspect its properties.</div>
+    </div>
+  </section>
+
+  <!-- Kill-chains are the payoff of the graph — give them the full width. -->
+  <section class="wm-panel wm-chains-panel">
+    <h3 class="wm-h">Proposed kill-chains <span class="wm-sub">graph-derived — prove &amp; file</span></h3>
+    <div id="wm-chains" class="wm-chains"></div>
+  </section>
+
+  <div class="wm-grid">
+    <section class="wm-panel">
+      <h3 class="wm-h">Deepen next <span class="wm-sub">highest-value findings</span></h3>
+      <div id="wm-findings" class="wm-list"></div>
+    </section>
+    <section class="wm-panel">
+      <h3 class="wm-h">High-value untested <span class="wm-sub">value-ranked endpoints</span></h3>
+      <div id="wm-targets" class="wm-list"></div>
+    </section>
+  </div>
+</div>

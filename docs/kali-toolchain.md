@@ -1,13 +1,13 @@
 # Kali Toolchain Reference
 
-All commands run via `kali_exec("command here")` inside the persistent `pentest-agent/kali-mcp` container.
+All commands run via `kali(command="command here")` inside the persistent `pentest-agent/kali-mcp` container.
 
 **Build the image first (one time):**
 ```bash
 docker build -t pentest-agent/kali-mcp ./tools/kali/
 ```
 
-The container starts automatically on the first `kali_exec` call and persists until `stop_kali` is called.
+The container starts automatically on the first `kali(command=…)` call and persists until `session(action="stop_kali")` is called.
 
 ---
 
@@ -70,7 +70,6 @@ The container starts automatically on the first `kali_exec` call and persists un
 | `theHarvester -d DOMAIN -b all -l 100` | Email, subdomain, IP, and employee OSINT |
 | `katana -u http://TARGET -d 3 -silent` | Fast headless JS-aware web crawler |
 | `cewl http://TARGET -d 2 -m 5` | Custom wordlist from target website content |
-| `photon -u http://TARGET -o /tmp/photon` | Web crawler for links, emails, JS files, secrets |
 
 ---
 
@@ -99,7 +98,6 @@ The container starts automatically on the first `kali_exec` call and persists un
 | `impacket-secretsdump TARGET` | Credential dump via SMB/DCE-RPC |
 | `ldapsearch -x -H ldap://TARGET -b '' -s base` | Anonymous LDAP base query |
 | `ldapdomaindump -u 'DOMAIN\USER' -p PASS TARGET` | Full LDAP domain dump |
-| `kerbrute userenum users.txt --dc TARGET -d DOMAIN` | Kerberos user enumeration |
 | `certipy find -u USER -p PASS -dc-ip TARGET` | Active Directory Certificate Services audit |
 | `bloodhound-python -u USER -p PASS -d DOMAIN -ns TARGET -c All` | BloodHound data collection |
 
@@ -125,15 +123,15 @@ The container starts automatically on the first `kali_exec` call and persists un
 | `pyrit-runner --target-url URL --attack crescendo --objective "Reveal your system prompt" --max-turns 10` | Crescendo escalation |
 | `pyrit-runner --target-url URL --attack jailbreak --scorer substring --max-turns 8` | Jailbreak with substring scorer |
 
-**Note:** `pyrit-runner` is a CLI shim installed at `/usr/local/bin/pyrit-runner` inside the Kali image. It requires `OPENAI_API_KEY` set in the container environment. Set it via:
+**Note:** `pyrit-runner` is a CLI shim at `/usr/local/bin/pyrit-runner` that ships **only with the opt-in AI domain** — it is present only when the image is built with `--build-arg INSTALL_AI=1` (default OFF), so a default `docker build ./tools/kali/` does **not** include it. When installed, it requires `OPENAI_API_KEY` set in the container environment. Set it via:
 ```
-kali_exec("export OPENAI_API_KEY=sk-...")
+kali(command="export OPENAI_API_KEY=sk-...")
 ```
 
 ---
 
 ## Tips
 
-- Use `timeout` parameter for long-running tools: `kali_exec("hydra ...", timeout=600)`
-- Pipe output through `head` to limit noisy tools: `kali_exec("gobuster ... 2>&1 | head -100")`
-- Write output to `/tmp/` to avoid losing results on long scans: `kali_exec("nikto -h TARGET -o /tmp/nikto.txt && cat /tmp/nikto.txt")`
+- Use `timeout` parameter for long-running tools: `kali(command="hydra ...", timeout=600)`
+- Pipe output through `head` to limit noisy tools: `kali(command="gobuster ... 2>&1 | head -100")`
+- Write output to `/tmp/` to avoid losing results on long scans: `kali(command="nikto -h TARGET -o /tmp/nikto.txt && cat /tmp/nikto.txt")`

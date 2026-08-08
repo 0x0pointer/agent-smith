@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "state-snapshot.schema.json",
+  "title": "Materialized state snapshot (training-data-plan.md §3, §3.2)",
+  "description": "A periodic materialization so exporters don't replay every event. Carries the THREE state layers, never conflated: latent (oracle-only, evaluator-visible), observed, belief. state_hash is the Replay-test anchor — recomputing the fold from events up to at_sequence must reproduce it. This is a derived DOCUMENT (not an event); it does not carry the event envelope.",
+  "type": "object",
+  "properties": {
+    "engagement_id": { "type": "string" },
+    "at_sequence": { "type": "integer", "minimum": 0, "description": "Snapshot reflects all events with sequence <= at_sequence." },
+    "latent_ground_truth_ref": { "oneOf": [ { "$ref": "common.schema.json#/$defs/sha256_ref" }, { "type": "null" } ], "description": "null on non-oracle targets; evaluator-only, never exported to the acting model (§3.2)." },
+    "observed_state": { "type": "object", "description": "Facts backed by direct observation / deterministic instrumentation.", "additionalProperties": true },
+    "belief_state": { "type": "object", "description": "Smith's hypotheses/confidences.", "additionalProperties": true },
+    "state_hash": { "$ref": "common.schema.json#/$defs/sha256_ref", "description": "Canonical hash of {observed_state, belief_state} — the Replay/Correction anchor." },
+    "schema_version": { "type": "string" }
+  },
+  "required": ["engagement_id", "at_sequence", "latent_ground_truth_ref", "observed_state", "belief_state", "state_hash"]
+}

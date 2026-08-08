@@ -21,6 +21,7 @@ def _build_args(host: str, ports: str = "top-100", flags: str = "") -> list[str]
 
 TOOL = Tool(
     name            = "naabu",
+    cap_add         = ["NET_RAW", "NET_ADMIN"],   # SYN scan needs raw sockets under --cap-drop=ALL (AS-13)
     image           = "projectdiscovery/naabu@sha256:4b28540e4de8209ba5f499f704f43f6f780dfd5b19e97533d44053bfb309da5b",
     build_args      = _build_args,
     default_timeout = 600,

@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "finding-event.schema.json",
+  "title": "Finding event (training-data-plan.md §3, §4, §5)",
+  "description": "A confirmed finding filed via report(action='finding') — a graph node the exporter treats as a supervision target. References the proof artifact + optional evidence primitives; when a decision was recorded it is caused_by that decision (shared correlation_id), materializing decision → action → result → finding.",
+  "allOf": [
+    { "$ref": "event-envelope.schema.json" },
+    {
+      "type": "object",
+      "properties": {
+        "event_type": { "const": "finding" },
+        "finding": {
+          "type": "object",
+          "properties": {
+            "finding_id": { "type": "string", "description": "agent-smith finding id" },
+            "title": { "type": "string" },
+            "severity": { "type": "string", "enum": ["critical", "high", "medium", "low", "info"] },
+            "target": { "type": "string" },
+            "technique": { "type": ["string", "null"], "description": "CWE / MITRE" },
+            "cve": { "type": ["string", "null"] },
+            "proof_artifact_id": { "type": ["string", "null"], "description": "agent-smith artifact id backing the finding (not a content hash)" },
+            "evidence": { "$ref": "common.schema.json#/$defs/evidence" }
+          },
+          "required": ["finding_id", "title", "severity", "target"]
+        }
+      },
+      "required": ["finding"]
+    }
+  ]
+}

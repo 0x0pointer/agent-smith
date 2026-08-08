@@ -251,18 +251,31 @@ class TestBuildQuickLogEntry:
         result = _build_quick_log_entry("http_request", "https://example.com", "", r)
         assert result.get("error") is True
 
-    def test_http_request_with_status_zero_does_not_set_error(self):
-        """status=0 is treated as absent (defaults to 200 via `or 200`), so no error flag."""
+    def test_http_request_with_status_zero_sets_error_true(self):
+        """status=0 means no HTTP response was received (aiohttp exception path);
+        this IS a real tool failure and should be flagged.
+
+        Replaces the earlier `*_does_not_set_error` test which codified a
+        latent bug: `int(ev.get("status", 200) or 200) == 0` short-circuited
+        any real 0 to 200 and silently swallowed the failure. The expression
+        is now a direct `ev.get("status") == 0` check.
+        """
         r = _mock_result(evidence={"status": 0})
         result = _build_quick_log_entry("http_request", "https://example.com", "", r)
-        # The expression `int(ev.get("status", 200) or 200)` evaluates 0 as falsy,
-        # so falls back to 200 — not an error condition.
-        assert result.get("error") is not True
+        assert result.get("error") is True
 
-    def test_non_http_tool_with_error_in_anomalies_sets_error_true(self):
+    def test_non_http_tool_with_error_in_anomalies_does_not_set_error(self):
+        """Anomaly text mentioning 'error'/'timeout'/'unreachable' is NOT a
+        tool failure — those are findings (SQL error message disclosure,
+        target reporting a timeout in its response, etc.).
+
+        Replaces the earlier `*_sets_error_true` test that codified the
+        overzealous keyword-scan behavior which flagged 53 of 100 successful
+        http_request entries as failures and fired spurious HIR_TOOL_FAILURE.
+        """
         r = _mock_result(evidence={}, anomalies=["connection error: timed out"])
         result = _build_quick_log_entry("nuclei", "https://example.com", "", r)
-        assert result.get("error") is True
+        assert result.get("error") is not True
 
     def test_result_none_does_not_crash(self):
         result = _build_quick_log_entry("nmap", "10.0.0.1", "scan done", None)
@@ -390,3 +403,47 @@ class TestInjectQaAlerts:
         assert sum(1 for w in env.warnings if "[QA HIGH]" in w) == 2
         assert "Alert one" in env.summary
         assert "Alert two" in env.summary
+
+
+# ---------------------------------------------------------------------------
+# wrap(artifact_raw=...) — decouple the stored artifact from the inline/cost body
+# ---------------------------------------------------------------------------
+
+def test_wrap_stores_artifact_raw_when_provided(monkeypatch):
+    """A large full body passed as artifact_raw is what lands on disk, while the
+    bounded raw_output still drives the inline summary + cost meter."""
+    from mcp_server.scan_engine import envelope
+    captured = {}
+
+    def fake_store(tool, raw):
+        captured["raw"] = raw
+        return "art_test"
+
+    monkeypatch.setattr(envelope, "_check_scan_gate", lambda tool: None)
+    monkeypatch.setattr(envelope, "store_artifact", fake_store)
+    envelope.wrap(
+        "http_request",
+        raw_output='{"status":200,"headers":{},"body":"small preview"}',
+        context={"url": "http://t", "method": "GET", "body": "", "headers": {}},
+        artifact_raw='{"status":200,"headers":{},"body":"FULL-LARGE-50KB-SPEC"}',
+    )
+    assert captured["raw"] == '{"status":200,"headers":{},"body":"FULL-LARGE-50KB-SPEC"}'
+
+
+def test_wrap_defaults_artifact_to_raw_output(monkeypatch):
+    """Without artifact_raw, the artifact is raw_output — unchanged behaviour."""
+    from mcp_server.scan_engine import envelope
+    captured = {}
+
+    def fake_store(tool, raw):
+        captured["raw"] = raw
+        return "art_test"
+
+    monkeypatch.setattr(envelope, "_check_scan_gate", lambda tool: None)
+    monkeypatch.setattr(envelope, "store_artifact", fake_store)
+    envelope.wrap(
+        "http_request",
+        raw_output='{"status":200,"headers":{},"body":"B"}',
+        context={"url": "http://t", "method": "GET", "body": "", "headers": {}},
+    )
+    assert captured["raw"] == '{"status":200,"headers":{},"body":"B"}'

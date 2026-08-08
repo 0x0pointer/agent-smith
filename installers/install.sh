@@ -3,6 +3,11 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+OS_NAME="$(uname -s)"
+
+# GUI-launched shells can omit common macOS CLI locations. Keep installer
+# prerequisite checks aligned with the MCP launcher runtime.
+export PATH="$PATH:/usr/local/bin:/opt/homebrew/bin:/snap/bin:/Applications/Docker.app/Contents/Resources/bin"
 
 # ── Colours ──────────────────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
@@ -25,15 +30,43 @@ ok "Prerequisites satisfied (docker, poetry, claude)"
 
 # ── Pull skills submodule ────────────────────────────────────────────────────
 echo ""
-echo "Pulling skills submodule..."
-git -C "$REPO_DIR" submodule update --init --recursive
-ok "Skills submodule up to date"
+echo "Updating skills submodule from upstream..."
+if git -C "$REPO_DIR" submodule update --init --recursive --remote skills; then
+    ok "Skills submodule updated to $(git -C "$REPO_DIR/skills" rev-parse --short HEAD)"
+else
+    warn "Could not update skills from upstream — falling back to the pinned submodule commit"
+    git -C "$REPO_DIR" submodule update --init --recursive skills
+    ok "Skills submodule checked out at pinned commit $(git -C "$REPO_DIR/skills" rev-parse --short HEAD)"
+fi
 
 # ── Python dependencies ───────────────────────────────────────────────────────
 echo ""
 echo "Installing Python dependencies..."
 poetry -C "$REPO_DIR" install --no-interaction
 ok "Poetry dependencies installed"
+
+# ── Disarm any existing supervisor before restarting the MCP ─────────────────
+# An already-loaded supervisor can restart the old daemon while this installer
+# is replacing it. Stop it first; the platform-specific setup below reloads it.
+case "$OS_NAME" in
+    Darwin)
+        PLIST_DST="$HOME/Library/LaunchAgents/com.agent-smith.mcp-sse.plist"
+        if [[ -f "$PLIST_DST" ]]; then
+            _OLD_REPO="$(awk '/WorkingDirectory/{getline; gsub(/^[[:space:]]*<string>|<\/string>[[:space:]]*$/, ""); print; exit}' "$PLIST_DST")"
+            if [[ -n "$_OLD_REPO" && "$_OLD_REPO" != "$REPO_DIR" ]]; then
+                warn "Existing launchd plist points at: $_OLD_REPO"
+                warn "This install will replace it to point at: $REPO_DIR"
+            fi
+            launchctl unload "$PLIST_DST" 2>/dev/null || true
+        fi
+        ;;
+    Linux)
+        UNIT_DST="$HOME/.config/systemd/user/agent-smith-mcp-sse.service"
+        if command -v systemctl >/dev/null 2>&1 && [[ -f "$UNIT_DST" ]]; then
+            systemctl --user stop agent-smith-mcp-sse.service 2>/dev/null || true
+        fi
+        ;;
+esac
 
 # ── Start MCP SSE daemon ──────────────────────────────────────────────────────
 echo ""
@@ -72,7 +105,7 @@ fi
 
 # ── Install auto-start service for the MCP server (login / crash restart) ────
 echo ""
-case "$(uname -s)" in
+case "$OS_NAME" in
     Darwin)
         echo "Installing launchd plist..."
         PLIST_SRC="$REPO_DIR/installers/com.agent-smith.mcp-sse.plist"
@@ -130,6 +163,31 @@ _cp() {
     cp "$src" "$dst"
 }
 
+_SKILL_OK=0
+_SKILL_MISSING=()
+
+_install_skill_dir() {
+    local name="$1"
+    local src="$2"
+    local dst="$HOME/.claude/skills/$name"
+
+    if [ ! -f "$src/SKILL.md" ]; then
+        warn "Skill /${name} source not found: $src/SKILL.md (skipping)"
+        _SKILL_MISSING+=("$name")
+        return
+    fi
+
+    [[ "$_FORCE_SKILLS" == false ]] && return 0
+
+    rm -rf "$dst"
+    mkdir -p "$dst"
+    # Folder copy includes capabilities.yaml (manual-setup prerequisites) when present.
+    # NOTE: the MCP server reads the AUTHORITATIVE capabilities.yaml from the repo's
+    # skills/<name>/ at runtime (core.capabilities); this installed copy is a mirror.
+    cp -R "$src"/. "$dst"/
+    _SKILL_OK=$((_SKILL_OK + 1))
+}
+
 # ── Install /pentester slash command ──────────────────────────────────────────
 echo ""
 echo "Installing /pentester slash command..."
@@ -141,123 +199,25 @@ ok "/pentester command available in all Claude sessions"
 echo ""
 echo "Installing security analysis skills..."
 
-mkdir -p "$HOME/.claude/skills/analyze-cve"
-_cp "$REPO_DIR/skills/analyze-cve/SKILL.md" "$HOME/.claude/skills/analyze-cve/SKILL.md"
-ok "/analyze-cve skill installed"
+mkdir -p "$HOME/.claude/skills"
+# Discover skills at BOTH skills/<name>/SKILL.md (flat) and skills/<domain>/<name>/SKILL.md
+# (one level of domain nesting, e.g. skills/mobile/android-security/). Install target
+# stays flat at ~/.claude/skills/<leaf-name>/ — nesting exists only in the repo.
+while IFS= read -r _skill_file; do
+    [ -e "$_skill_file" ] || continue
+    _skill_dir="$(dirname "$_skill_file")"
+    _skill_name="$(basename "$_skill_dir")"
 
-mkdir -p "$HOME/.claude/skills/threat-modeling"
-_cp "$REPO_DIR/skills/threat-modeling/SKILL.md" "$HOME/.claude/skills/threat-modeling/SKILL.md"
-ok "/threat-modeling skill installed"
+    # OpenCode has a client-specific variant; Claude uses skills/pentester.md.
+    [ "$_skill_name" = "pentester-opencode" ] && continue
 
-mkdir -p "$HOME/.claude/skills/aikido-triage"
-_cp "$REPO_DIR/skills/aikido-triage/SKILL.md" "$HOME/.claude/skills/aikido-triage/SKILL.md"
-ok "/aikido-triage skill installed"
+    _install_skill_dir "$_skill_name" "$_skill_dir"
+done < <(find "$REPO_DIR/skills" -mindepth 2 -maxdepth 3 -name SKILL.md 2>/dev/null)
 
-mkdir -p "$HOME/.claude/skills/gh-export"
-_cp "$REPO_DIR/skills/gh-export/SKILL.md" "$HOME/.claude/skills/gh-export/SKILL.md"
-ok "/gh-export skill installed"
-
-mkdir -p "$HOME/.claude/skills/ai-redteam"
-_cp "$REPO_DIR/skills/ai-redteam/SKILL.md" "$HOME/.claude/skills/ai-redteam/SKILL.md"
-ok "/ai-redteam skill installed"
-
-mkdir -p "$HOME/.claude/skills/container-k8s-security"
-_cp "$REPO_DIR/skills/container-k8s-security/SKILL.md" "$HOME/.claude/skills/container-k8s-security/SKILL.md"
-ok "/container-k8s-security skill installed"
-
-mkdir -p "$HOME/.claude/skills/cloud-security"
-_cp "$REPO_DIR/skills/cloud-security/SKILL.md" "$HOME/.claude/skills/cloud-security/SKILL.md"
-ok "/cloud-security skill installed"
-
-mkdir -p "$HOME/.claude/skills/ad-assessment"
-_cp "$REPO_DIR/skills/ad-assessment/SKILL.md" "$HOME/.claude/skills/ad-assessment/SKILL.md"
-ok "/ad-assessment skill installed"
-
-mkdir -p "$HOME/.claude/skills/email-security"
-_cp "$REPO_DIR/skills/email-security/SKILL.md" "$HOME/.claude/skills/email-security/SKILL.md"
-ok "/email-security skill installed"
-
-mkdir -p "$HOME/.claude/skills/metasploit"
-_cp "$REPO_DIR/skills/metasploit/SKILL.md" "$HOME/.claude/skills/metasploit/SKILL.md"
-ok "/metasploit skill installed"
-
-mkdir -p "$HOME/.claude/skills/reverse-shell"
-_cp "$REPO_DIR/skills/reverse-shell/SKILL.md" "$HOME/.claude/skills/reverse-shell/SKILL.md"
-ok "/reverse-shell skill installed"
-
-mkdir -p "$HOME/.claude/skills/web-exploit/refs"
-_cp "$REPO_DIR/skills/web-exploit/SKILL.md" "$HOME/.claude/skills/web-exploit/SKILL.md"
-if [ -d "$REPO_DIR/skills/web-exploit/refs" ]; then
-    for _ref_src in "$REPO_DIR/skills/web-exploit/refs/"*; do
-        _cp "$_ref_src" "$HOME/.claude/skills/web-exploit/refs/$(basename "$_ref_src")"
-    done
+ok "$_SKILL_OK security analysis skills installed"
+if [ ${#_SKILL_MISSING[@]} -gt 0 ]; then
+    warn "Missing skills: ${_SKILL_MISSING[*]}"
 fi
-ok "/web-exploit skill installed (with lazy-loaded injection refs)"
-
-mkdir -p "$HOME/.claude/skills/api-security"
-_cp "$REPO_DIR/skills/api-security/SKILL.md" "$HOME/.claude/skills/api-security/SKILL.md"
-ok "/api-security skill installed"
-
-mkdir -p "$HOME/.claude/skills/colang-gen"
-_cp "$REPO_DIR/skills/colang-gen/SKILL.md" "$HOME/.claude/skills/colang-gen/SKILL.md"
-ok "/colang-gen skill installed"
-
-mkdir -p "$HOME/.claude/skills/codebase"
-_cp "$REPO_DIR/skills/codebase/SKILL.md" "$HOME/.claude/skills/codebase/SKILL.md"
-ok "/codebase skill installed"
-
-mkdir -p "$HOME/.claude/skills/remediate"
-_cp "$REPO_DIR/skills/remediate/SKILL.md" "$HOME/.claude/skills/remediate/SKILL.md"
-ok "/remediate skill installed"
-
-mkdir -p "$HOME/.claude/skills/credential-audit"
-_cp "$REPO_DIR/skills/credential-audit/SKILL.md" "$HOME/.claude/skills/credential-audit/SKILL.md"
-ok "/credential-audit skill installed"
-
-mkdir -p "$HOME/.claude/skills/lateral-movement"
-_cp "$REPO_DIR/skills/lateral-movement/SKILL.md" "$HOME/.claude/skills/lateral-movement/SKILL.md"
-ok "/lateral-movement skill installed"
-
-mkdir -p "$HOME/.claude/skills/network-assess"
-_cp "$REPO_DIR/skills/network-assess/SKILL.md" "$HOME/.claude/skills/network-assess/SKILL.md"
-ok "/network-assess skill installed"
-
-mkdir -p "$HOME/.claude/skills/osint"
-_cp "$REPO_DIR/skills/osint/SKILL.md" "$HOME/.claude/skills/osint/SKILL.md"
-ok "/osint skill installed"
-
-mkdir -p "$HOME/.claude/skills/post-exploit"
-_cp "$REPO_DIR/skills/post-exploit/SKILL.md" "$HOME/.claude/skills/post-exploit/SKILL.md"
-ok "/post-exploit skill installed"
-
-mkdir -p "$HOME/.claude/skills/ssl-tls-audit"
-_cp "$REPO_DIR/skills/ssl-tls-audit/SKILL.md" "$HOME/.claude/skills/ssl-tls-audit/SKILL.md"
-ok "/ssl-tls-audit skill installed"
-
-mkdir -p "$HOME/.claude/skills/request-cves"
-_cp "$REPO_DIR/skills/request-cves/SKILL.md" "$HOME/.claude/skills/request-cves/SKILL.md"
-ok "/request-cves skill installed"
-
-mkdir -p "$HOME/.claude/skills/param-fuzz"
-_cp "$REPO_DIR/skills/param-fuzz/SKILL.md" "$HOME/.claude/skills/param-fuzz/SKILL.md"
-ok "/param-fuzz skill installed"
-
-mkdir -p "$HOME/.claude/skills/business-logic"
-_cp "$REPO_DIR/skills/business-logic/SKILL.md" "$HOME/.claude/skills/business-logic/SKILL.md"
-ok "/business-logic skill installed"
-
-mkdir -p "$HOME/.claude/skills/compliance/refs"
-_cp "$REPO_DIR/skills/compliance/SKILL.md" "$HOME/.claude/skills/compliance/SKILL.md"
-if [ -d "$REPO_DIR/skills/compliance/refs" ]; then
-    for _ref_src in "$REPO_DIR/skills/compliance/refs/"*; do
-        _cp "$_ref_src" "$HOME/.claude/skills/compliance/refs/$(basename "$_ref_src")"
-    done
-fi
-ok "/compliance skill installed (with ASVS 5.0 CSV ref)"
-
-mkdir -p "$HOME/.claude/skills/report"
-_cp "$REPO_DIR/skills/report/SKILL.md" "$HOME/.claude/skills/report/SKILL.md"
-ok "/report skill installed"
 
 # ── API keys (AI testing tools) ──────────────────────────────────────────────
 echo ""
@@ -311,10 +271,117 @@ echo ""
 
 _ask_key "OPENAI_API_KEY" \
     "Powers FuzzyAI and PyRIT scoring (openai provider)"
-_ask_key "ANTHROPIC_API_KEY" \
-    "Powers FuzzyAI and PyRIT scoring (anthropic provider) — API key (sk-ant-...), NOT your Claude.ai login"
+_ask_key "AITEST_ANTHROPIC_API_KEY" \
+    "Powers FuzzyAI and PyRIT scoring (anthropic provider) — API key (sk-ant-...), NOT your Claude.ai login. Stored SEPARATELY (AITEST_) so it never bills your Smith agent's model calls."
 _ask_key "AZURE_OPENAI_API_KEY" \
     "Powers FuzzyAI with azure provider"
+
+# ── Smith agent model auth: subscription (default) vs API key ─────────────────
+_set_env() {
+    python3 -c "
+import pathlib, sys
+p = pathlib.Path(sys.argv[1])
+lines = [l for l in p.read_text().splitlines() if not l.startswith(sys.argv[2] + '=')]
+lines.append(sys.argv[2] + '=' + sys.argv[3])
+p.write_text('\n'.join(lines) + '\n')
+" "$ENV_FILE" "$1" "$2"
+}
+echo ""
+echo "  Smith agent model auth — bill its model calls to your Claude SUBSCRIPTION (default) or an API key?"
+printf "  Use an API key for the Smith agent (bills credit) instead of your subscription? [y/N]: "
+IFS= read -r _use_api </dev/tty || true
+echo ""
+if [[ "$_use_api" =~ ^[Yy] ]]; then
+    _set_env "SMITH_USE_API_KEY" "yes"
+    _set_env "SMITH_SPAWN_USE_API_KEY" "1"
+    _ask_key "ANTHROPIC_API_KEY" \
+        "The Claude API key the Smith agent (interactive + headless) will bill (sk-ant-...)"
+    ok "Smith agent will use the API key (SMITH_USE_API_KEY=yes)."
+else
+    _set_env "SMITH_USE_API_KEY" "no"
+    ok "Smith agent will use your Claude subscription (no ANTHROPIC_API_KEY written to .env)."
+fi
+
+# ── Telegram bridge (optional) ────────────────────────────────────────────────
+echo ""
+echo "  Telegram bridge (optional) — get HIR / scan-complete alerts on your phone."
+echo "  Press Enter twice to skip; the bridge is a no-op when either key is blank."
+echo ""
+echo "  PREREQUISITE: install the Telegram app (https://telegram.org/apps)."
+echo "  Once installed, inside Telegram:"
+echo "    1. Open a chat with @BotFather → send /newbot → follow prompts → copy token"
+echo "    2. Search for your new bot → open the chat → send /start,"
+echo "       then send any text message (e.g. \"hi\") — getUpdates only returns"
+echo "       real messages, so /start alone may not surface the chat"
+echo "    3. In any browser, visit https://api.telegram.org/bot<TOKEN>/getUpdates"
+echo "       → copy the \"chat\":{\"id\": …} value (positive int for DMs, negative for groups/channels)"
+echo "       If you get {\"result\":[]}, send another message and refresh"
+echo ""
+
+_ask_key "TELEGRAM_BOT_TOKEN" \
+    "Bot token from @BotFather (format 123456:ABC-...)"
+_ask_key "TELEGRAM_CHAT_ID" \
+    "Your Telegram chat ID — receives alerts; only this chat is allowlisted"
+
+# ── Slack bridge (optional) ───────────────────────────────────────────────────
+echo ""
+echo "  Slack bridge (optional) — same HIR / status alerts in a Slack channel."
+echo "  Press Enter to skip. Any combination of Telegram/Slack/Discord can run."
+echo ""
+echo "  Setup (inside Slack):"
+echo "    1. https://api.slack.com/apps → Create New App → From scratch"
+echo "    2. Activate Incoming Webhooks → Add New Webhook to Workspace"
+echo "    3. Pick the channel that should receive alerts; copy the webhook URL"
+echo "       (https://hooks.slack.com/services/T…/B…/…)"
+echo ""
+
+_ask_key "SLACK_WEBHOOK_URL" \
+    "Slack incoming webhook URL — must start with https://hooks.slack.com/"
+
+# ── Discord bridge (optional) ─────────────────────────────────────────────────
+echo ""
+echo "  Discord bridge (optional) — same alerts in a Discord channel."
+echo "  Press Enter to skip."
+echo ""
+echo "  Setup (inside Discord):"
+echo "    1. Open the channel → Settings → Integrations → Webhooks → New Webhook"
+echo "    2. Name it (e.g. \"agent-smith\"), confirm the channel"
+echo "    3. Copy the webhook URL (https://discord.com/api/webhooks/<id>/<token>)"
+echo ""
+
+_ask_key "DISCORD_WEBHOOK_URL" \
+    "Discord webhook URL — must start with https://discord.com/api/webhooks/"
+
+# ── Periodic status updates ───────────────────────────────────────────────────
+echo ""
+echo "  Periodic status updates send a short scan-summary to every configured"
+echo "  notifier sink. Defaults to every 30 min. Set to 0 to disable. The"
+echo "  message contains NO target, NO finding titles — only counts."
+echo ""
+
+_ask_key "STATUS_UPDATE_INTERVAL_MINUTES" \
+    "Status update interval in minutes (default 30; 0 disables)"
+
+echo ""
+echo "── Out-of-band (OOB) interaction backend ─────────────────────────────────────"
+echo "  Confirms BLIND vulns (blind SSRF/RCE/XXE/OAST-SQLi, DNS exfil) via callbacks."
+echo "  Pluggable backend:"
+echo "    OOB_MODE=interactsh (default) — DNS+HTTP via the bundled interactsh-client."
+echo "       blank OOB_SERVER_URL = public oast.fun; or your self-hosted interactsh URL."
+echo "    OOB_MODE=http — ANY HTTP request logger (e.g. https://oob-logger.example.com,"
+echo "       webhook.site). HTTP-only, zero infra. OOB_POLL_URL (optional, supports {id})"
+echo "       is the log read-endpoint for automatic polling."
+echo "  Press Enter on all to use interactsh public servers."
+echo ""
+
+_ask_key "OOB_MODE" \
+    "OOB backend: interactsh (default) or http (blank = interactsh)"
+_ask_key "OOB_SERVER_URL" \
+    "interactsh server URL, or http logger base URL (blank = public oast.fun)"
+_ask_key "OOB_SERVER_TOKEN" \
+    "Auth token for a protected self-hosted interactsh server (blank if none/public)"
+_ask_key "OOB_POLL_URL" \
+    "http-mode log read-endpoint, supports {id} (blank = interactsh or manual check)"
 
 # ── Auto-approve pentest-agent MCP tools ──────────────────────────────────────
 echo ""
@@ -378,12 +445,50 @@ fi
 
 echo ""
 
-# Kali image (build)
-printf "  Build Kali image? (~10 min — required for most skills) [Y/n]: "
+# Kali image (build) — modular: choose which tool domains to bake in.
+# core is always installed; each other domain is a --build-arg toggle.
+printf "  Build Kali image? (required for most skills) [Y/n]: "
 read -r _kali_answer || true
 if [[ "${_kali_answer:-Y}" =~ ^[Yy]$ ]]; then
+    echo ""
+    echo "  Choose Kali tool modules (core is always included). Build-time estimates"
+    echo "  are approximate and depend on your network speed:"
+    echo ""
+    echo "    core   (always)  MCP server, recon: nmap/nuclei/httpx/subfinder, wordlists  ~6 min"
+    echo "    web              web/API exploit, fuzzing, injection, JWT/OAuth, SSL, crawl  ~8 min"
+    echo "    infra            internal net, AD, credentials, service enum, pivoting       ~5 min"
+    echo "    mobile           Android/iOS reversing + Frida/objection dynamic analysis    ~4 min"
+    echo "    cloud            AWS/Azure/GCP CLIs, Prowler, ScoutSuite, trivy, kube-bench   ~7 min"
+    echo "    ai               LLM red-team: PyRIT, Garak, promptfoo (heaviest: torch)      ~12 min"
+    echo ""
+    _kali_build_args=()
+    _kali_install_ai=0
+    _ask_kali_module() {  # $1=name  $2=build-arg  $3=default(Y|N)
+        local _def="$3" _ans _hint
+        [ "$_def" = "Y" ] && _hint="Y/n" || _hint="y/N"
+        printf "    Include %-7s module? [%s]: " "$1" "$_hint"
+        read -r _ans || true
+        _ans="${_ans:-$_def}"
+        if [[ "$_ans" =~ ^[Yy]$ ]]; then
+            _kali_build_args+=(--build-arg "$2=1")
+            [[ "$2" == "INSTALL_AI" ]] && _kali_install_ai=1
+        else
+            _kali_build_args+=(--build-arg "$2=0")
+            [[ "$2" == "INSTALL_AI" ]] && _kali_install_ai=0
+        fi
+    }
+    _ask_kali_module web    INSTALL_WEB    Y
+    _ask_kali_module infra  INSTALL_INFRA  Y
+    _ask_kali_module mobile INSTALL_MOBILE N
+    _ask_kali_module cloud  INSTALL_CLOUD  N
+    _ask_kali_module ai     INSTALL_AI     N
+    if [[ "$_kali_install_ai" == "1" ]]; then
+        _kali_build_args+=(--build-arg "REQUIRE_PYRIT=1")
+        echo "  AI module selected: requiring PyRIT in the build"
+    fi
+    echo ""
     echo "  Building pentest-agent/kali-mcp (this may take a while)..."
-    if docker build -t pentest-agent/kali-mcp "$REPO_DIR/tools/kali/" 2>&1 | tail -5; then
+    if docker build "${_kali_build_args[@]}" -t pentest-agent/kali-mcp "$REPO_DIR/tools/kali/" 2>&1 | tail -5; then
         ok "Kali image built: pentest-agent/kali-mcp"
     else
         warn "Kali build failed — run manually: docker build -t pentest-agent/kali-mcp $REPO_DIR/tools/kali/"
@@ -407,6 +512,9 @@ if [[ "${_msf_answer:-Y}" =~ ^[Yy]$ ]]; then
 else
     warn "Metasploit build skipped — run later: docker build -t pentest-agent/metasploit $REPO_DIR/tools/metasploit/"
 fi
+
+# MobSF needs no build — /android-security & /ios-security use the official MobSF
+# image, auto-pulled by tools/mobsf_runner.py on the first scan(tool='mobsf').
 
 # ── Done ──────────────────────────────────────────────────────────────────
 echo ""

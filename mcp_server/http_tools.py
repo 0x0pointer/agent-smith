@@ -10,6 +10,22 @@ from core import cost as cost_tracker
 from core import logger as log
 from mcp_server._app import mcp, _ensure_dict
 
+# Inline response body shown in the result/cost/log (the envelope itself only
+# surfaces a 500-char preview of this). Kept small so big responses don't bloat
+# context or the cost estimate.
+_INLINE_BODY_CHARS = 8_000
+# Full response body kept as the on-disk artifact when it exceeds the inline cap,
+# so the model can grep/page a large OpenAPI spec or JS bundle via
+# session(action='artifact'). ~1 MB bound guards against pathological downloads.
+_MAX_ARTIFACT_BODY = 1_000_000
+# aiohttp's default HTTP line/field parser limit is 8190 bytes, so a legitimately large
+# response line — a huge Set-Cookie / `token=<big JWT>` header, a verbose error page, or
+# data reflected into a header (e.g. exfiltration-via-header during exploitation) — raises
+# LineTooLong ("Got more than 8190 bytes when reading"), which the tool reports as a failure
+# and the QA health check then MISREADS as a target-reachability problem. Raise the client
+# parser limits so large-but-valid responses parse instead of erroring.
+_CLIENT_MAX_HDR = 256 * 1024
+
 
 def _write_text(path: str, content: str) -> None:
     with open(path, "w") as fh:
@@ -21,9 +37,9 @@ async def http(
     action:  str,
     url:     str,
     method:  str = "GET",
-    headers: dict | None = None,
+    headers: dict | str | None = None,
     body:    Any = None,
-    options: dict | None = None,
+    options: dict | str | None = None,
 ) -> str:
     """Raw HTTP request or PoC saving.
 
@@ -56,6 +72,32 @@ async def http(
         return f"Unknown action '{action}'. Use: request, save_poc"
 
 
+async def http_probe(url, method="GET", headers=None, body=None, timeout_s=20) -> dict:
+    """Low-level request returning the STRUCTURED response (status/headers/body).
+
+    Used by the server-side coverage sweep, which needs to evaluate a response
+    with an oracle — not the human-readable envelope _do_request wraps. No
+    cost/log/envelope side effects; fail-soft (a dead target returns status 0).
+
+    TLS verification is intentionally disabled (`ssl=False`): this is a pentest
+    probe against operator-chosen targets that routinely present self-signed,
+    expired, or mismatched certs (the same posture as nuclei/sqlmap/curl -k).
+    Enabling validation would make those in-scope targets unscannable. The probe
+    only reads responses to feed an oracle; it sends no secrets to protect."""
+    import aiohttp
+    try:
+        async with aiohttp.ClientSession(
+            max_line_size=_CLIENT_MAX_HDR, max_field_size=_CLIENT_MAX_HDR) as session:
+            async with session.request(
+                method, url, headers=headers or {}, data=body,
+                timeout=aiohttp.ClientTimeout(total=timeout_s), ssl=False,  # NOSONAR S4830 — intentional: see docstring
+            ) as resp:
+                return {"status": resp.status, "headers": dict(resp.headers),
+                        "body": await resp.text()}
+    except Exception as exc:
+        return {"status": 0, "headers": {}, "body": "", "error": str(exc)}
+
+
 async def _do_request(url, method, headers, body, opts):
     import aiohttp
 
@@ -65,8 +107,10 @@ async def _do_request(url, method, headers, body, opts):
 
     log.tool_call("http_request", {"url": url, "method": method, "poc": poc})
     call_id = cost_tracker.start("http_request")
+    artifact_raw = None
     try:
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(
+            max_line_size=_CLIENT_MAX_HDR, max_field_size=_CLIENT_MAX_HDR) as session:
             async with session.request(
                 method, url,
                 headers=headers or {},
@@ -76,12 +120,20 @@ async def _do_request(url, method, headers, body, opts):
                 proxy=proxy,
             ) as resp:
                 text = await resp.text()
-                result = json.dumps({
+                base = {
                     "status": resp.status,
                     "headers": dict(resp.headers),
-                    "body": text[:8_000],
                     "burp": f"request sent through {burp_proxy}" if poc else "not routed through Burp",
-                }, indent=2)
+                }
+                # Inline result drives the 500-char preview, cost, and logging —
+                # keep it bounded.
+                result = json.dumps({**base, "body": text[:_INLINE_BODY_CHARS]}, indent=2)
+                # When the body is larger, ALSO keep the full body (up to a sane
+                # cap) as the on-disk artifact so the model can grep/page a big
+                # OpenAPI spec or JS bundle via session(action='artifact'). It's
+                # never sent inline, so it inflates neither context nor cost.
+                if len(text) > _INLINE_BODY_CHARS:
+                    artifact_raw = json.dumps({**base, "body": text[:_MAX_ARTIFACT_BODY]}, indent=2)
     except Exception as exc:
         result = json.dumps({
             "error": str(exc),
@@ -91,7 +143,16 @@ async def _do_request(url, method, headers, body, opts):
     log.tool_result("http_request", result)
 
     from mcp_server.scan_engine import wrap
-    return wrap("http_request", result, {"url": url, "method": method})
+    # Pass body + headers so the envelope can detect credential-validation
+    # attempts (password/secret/api_key fields). Without these the QA daemon
+    # cannot exclude legitimate login traffic from its session-expiry check
+    # and fires false-positive HIR_AUTH_FAILURE on every login attempt.
+    return wrap("http_request", result, {
+        "url":     url,
+        "method":  method,
+        "body":    body or "",
+        "headers": headers or {},
+    }, artifact_raw=artifact_raw)
 
 
 async def _do_save_poc(url, method, headers, body, opts):

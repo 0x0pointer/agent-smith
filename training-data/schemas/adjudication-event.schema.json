@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "adjudication-event.schema.json",
+  "title": "Adjudication / retraction / supersession event (training-data-plan.md §3.1, §4, §5)",
+  "description": "Append-only correction. Events are never mutated; an incorrect one is corrected by THIS event. Points at the corrected event via envelope.supersedes (a CORRECTION edge, never caused_by — the execution-causality DAG is unaffected). rationale is always required; when reproducible=true an artifact_id that exists on disk is required (mirrors the MCP report(update_finding) adjudication contract).",
+  "allOf": [
+    { "$ref": "event-envelope.schema.json" },
+    {
+      "type": "object",
+      "properties": {
+        "event_type": { "const": "adjudication" },
+        "adjudication": {
+          "type": "object",
+          "properties": {
+            "kind": { "type": "string", "enum": ["retraction", "supersession", "utility_adjudication", "evidence_adjudication", "severity_rescore"] },
+            "target_event_id": { "$ref": "common.schema.json#/$defs/ulid", "description": "The event being corrected/adjudicated (also listed in envelope.supersedes for retraction/supersession)." },
+            "rationale": { "type": "string", "minLength": 1 },
+            "reproducible": { "type": "boolean" },
+            "artifact_id": { "$ref": "common.schema.json#/$defs/sha256_ref", "description": "Proving artifact; REQUIRED when reproducible=true." },
+            "original": { "description": "Prior value (e.g. {severity: high})." },
+            "revised": { "description": "Adjudicated value (e.g. {severity: critical})." },
+            "adjudicator": { "$ref": "common.schema.json#/$defs/origin" }
+          },
+          "required": ["kind", "target_event_id", "rationale", "adjudicator"],
+          "allOf": [
+            {
+              "$comment": "reproducible=true demands a proving artifact_id (§4 adjudication contract).",
+              "if": { "properties": { "reproducible": { "const": true } }, "required": ["reproducible"] },
+              "then": { "required": ["artifact_id"] }
+            }
+          ]
+        }
+      },
+      "required": ["adjudication"]
+    }
+  ]
+}

@@ -20,6 +20,7 @@ Run any security scanner.
 | spider | URL | depth=3, mode=fast\|playwright, cookies={}, max_pages=200 |
 | semgrep | path | |
 | trufflehog | path | |
+| exec_sandbox | path (codebase) | cmd= (required), setup=, image=python:3.11-slim (any stack: node/golang/ruby/…), subdir=, timeout=180, allow_network=true — build/run WHITE-BOX code in a hardened, caps-dropped sandbox over a staged copy to CONFIRM a finding; returns an `artifact_id`. Network ON by default (deps install); allow_network=false to isolate untrusted code. Opt-in, fail-soft, never a completion gate. |
 | fuzzyai | URL | attack=jailbreak, provider=openai, model= |
 | pyrit | URL | attack=prompt_injection, objective=, max_turns=5, scorer=self_ask |
 | garak | URL | probes=dan,encoding,promptinject,..., generator=rest |
@@ -36,8 +37,10 @@ Raw HTTP requests and PoC saving.
 
 ### `report(action, data)`
 Log findings, diagrams, notes, and coverage matrix updates.
-- `action="finding"` — data: `{title, severity, target, description, evidence, tool_used, cve}`
+- `action="finding"` — data: `{title, severity, target, description, evidence, tool_used, cve, trace?}`. Same `target`+`title`+`severity` as an existing (non-`false_positive`) finding is rejected as a DUPLICATE — re-file a distinct issue with a more specific title. `trace?` (WHITE-BOX): ordered `[{kind: entrypoint|propagation|sink, file, line, scope, description}]`, first entrypoint / last sink / ≥2 steps; with a codebase pinned (`set_codebase`) each cited `file:line` is resolved against the repo and a nonexistent citation is REJECTED. Omit for black-box.
+- `action="update_finding"` — data: `{id, …fields}`. `adjudication` = `{reproducible, artifact_id, original_severity, revised_severity, rationale}`: `rationale` always required; when `reproducible: true`, an `artifact_id` that exists on disk (the run proving reproduction) is required. A finding with a proven `escalation_leads` chain is auto-rescored to the terminal blast radius.
 - `action="diagram"` — data: `{title, mermaid}`
+- `action="chain"` — data: `{name, steps=[{from_finding_id, to_finding_id, transition_artifact_id, mitre_technique}], terminal_impact, combined_severity}`. Records a proven exploit chain — each `transition_artifact_id` must exist on disk or the chain is rejected; renders a MITRE Mermaid kill-chain.
 - `action="note"` — data: `{message}`
 - `action="dashboard"` — data: `{port: 8888}`
 - `action="coverage"` — data: `{type, ...}` — manage the coverage matrix:
@@ -48,7 +51,7 @@ Log findings, diagrams, notes, and coverage matrix updates.
 
 ### `session(action, options)`
 Scan lifecycle and infrastructure.
-- `action="start"` — options: `{target, depth, scope, out_of_scope, max_cost_usd, max_time_minutes, max_tool_calls, model_profile=full}` (model_profile: full|medium|small)
+- `action="start"` — options: `{target, depth, scope, out_of_scope, max_cost_usd, max_time_minutes, max_tool_calls, model_profile}` (model_profile: full|medium|small). **Auto-detected** when omitted: a local model (`OPENCODE_MODEL`/`OLLAMA_MODEL`=qwen/llama/…, or `OLLAMA_HOST` set) → `small`/`medium` so its context window isn't overflowed; cloud Claude/GPT → `full`. Override with the option or `SMITH_MODEL_PROFILE`. Smaller profiles tighten budgets, surface blockers one at a time, condense the adjudication directive, and require fewer thorough passes (full=3/medium=2/small=1).
 - `action="complete"` — options: `{notes}`
 - `action="status"` — returns current scan state (tools run, findings count, cost, remaining calls). **When the response includes `qa_alerts`, immediately call `session(action="qa_reply")` with your acknowledgment before continuing.**
 - `action="qa_reply"` — options: `{message}` — log your response to the QA agent's alerts. Call this every time `session(action="status")` returns non-empty `qa_alerts`. Write one sentence per alert: what you acknowledge and what you will do. This is what the human sees in the QA ↔ Smith conversation view.
@@ -59,6 +62,13 @@ Scan lifecycle and infrastructure.
 - `action="pull_images"` — pre-pull all Docker images
 - `action="set_skill"` — options: `{skill, reason, chained_from}` — log skill selection with reasoning; **call this before invoking or following any skill workflow**
 - `action="set_codebase"` — options: `{path}` — set local codebase for semgrep/trufflehog
+- **Wishlist (non-blocking agent→operator backlog)** — record a missing resource instead of marking a cell `not_applicable`; the operator fulfills it from the dashboard without pausing the scan, and a fulfilled need re-opens the blocked cells.
+  - `action="wishlist_add"` — options: `{need (required), category=credentials|scope|rate_limit|tooling|access|environment|other, rationale=, blocking_cell_ids=[...]}`. Non-blocking — keep testing. An auth need already satisfiable from `known_assets` is rejected (use the auth you hold).
+  - `action="wishlist_list"` — returns your open requests.
+- **OOB blind-vuln confirmation** (blind SSRF/RCE/XXE/OAST-SQLi/DNS-exfil; backend via `OOB_MODE`: `interactsh` default = DNS+HTTP, `http` = any request logger):
+  - `action="oob_start"` — ready the backend; returns the minted collaborator domain / logger base.
+  - `action="oob_mint"` — options: `{cell_id}` — returns a unique callback (subdomain or URL), stored in `known_assets` (survives compaction). Embed it in the payload.
+  - `action="oob_poll"` — options: `{correlation_id}` — a received callback is written as an artifact whose `artifact_id` (+ `finding_id`) closes the blind cell `vulnerable`.
 
 ## Skill Logging (mandatory)
 

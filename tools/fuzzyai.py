@@ -31,7 +31,11 @@ TOOL = Tool(
     default_timeout = 900,
     risk_level      = "intrusive",
     max_output      = 12_000,
-    forward_env     = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "AZURE_OPENAI_API_KEY"],
+    # AITEST_ANTHROPIC_API_KEY is the AI-testing anthropic key (kept out of Claude Code's ANTHROPIC_API_KEY
+    # so it can't bill the Smith agent); it's forwarded INTO the tool as ANTHROPIC_API_KEY. The bare
+    # ANTHROPIC_API_KEY is still forwarded for back-compat / SMITH_USE_API_KEY=yes.
+    forward_env     = ["OPENAI_API_KEY", "AITEST_ANTHROPIC_API_KEY:ANTHROPIC_API_KEY",
+                       "ANTHROPIC_API_KEY", "AZURE_OPENAI_API_KEY"],
     description     = (
         "AI/LLM security fuzzer (CyberArk FuzzyAI). "
         "Args: target (required — URL of the LLM endpoint), "

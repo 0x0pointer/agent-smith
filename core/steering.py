@@ -21,16 +21,20 @@ import json
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
+from core import paths as _paths
+from core import store as _store
 
-_REPO_ROOT = Path(__file__).parent.parent
-_STEERING_FILE = _REPO_ROOT / "steering_queue.json"
+_STEERING_FILE = _paths.STEERING_FILE
 
 # Codes that can appear in a directive
 RESUME_REQUIRED  = "RESUME_REQUIRED"
 CHAIN_REQUIRED   = "CHAIN_REQUIRED"
 RESUME_TESTING   = "RESUME_TESTING"
 POC_REQUIRED     = "POC_REQUIRED"
+# Compositional-chaining bridge push. A DISTINCT code (not RESUME_TESTING) so its
+# add_directive dedup slot (keyed on code+skill) is independent — otherwise the five
+# existing RESUME_TESTING/skill=None checks would silently suppress the bridge nudge.
+COMPOSE_REQUIRED = "COMPOSE_REQUIRED"
 
 
 @dataclass
@@ -61,10 +65,7 @@ class SteeringQueue:
 
     def _save(self, directives: list[dict]) -> None:
         try:
-            _STEERING_FILE.write_text(
-                json.dumps({"directives": directives}, indent=2),
-                encoding="utf-8",
-            )
+            _store.save(_STEERING_FILE, {"directives": directives})
         except Exception:
             pass
 
@@ -80,19 +81,22 @@ class SteeringQueue:
         priority: str = "high",
         skill: str | None = None,
         trigger: str = "",
+        force: bool = False,
     ) -> str | None:
         """Add a directive. Returns id if created, None if deduped.
 
         Dedup rule: skip if same code+skill already has status pending or injected.
+        Pass force=True to bypass dedup (used for human steering instructions).
         """
         directives = self._load()
-        for d in directives:
-            if (
-                d.get("code") == code
-                and d.get("skill") == skill
-                and d.get("status") in ("pending", "injected")
-            ):
-                return None  # already active — don't duplicate
+        if not force:
+            for d in directives:
+                if (
+                    d.get("code") == code
+                    and d.get("skill") == skill
+                    and d.get("status") in ("pending", "injected")
+                ):
+                    return None  # already active — don't duplicate
 
         directive_id = f"steer-{uuid.uuid4().hex[:8]}"
         directive = {
@@ -151,6 +155,25 @@ class SteeringQueue:
         if satisfied:
             self._save(directives)
         return satisfied
+
+    def cancel_by_trigger(self, trigger: str, message: str | None = None) -> int:
+        """Acknowledge all active directives with the given trigger. Returns count.
+
+        Used by the dashboard to cancel an in-flight pass (e.g. triage) — marks
+        the matching pending/injected directives acknowledged so they drop out of
+        get_active()/get_pending() without losing the audit trail.
+        """
+        directives = self._load()
+        n = 0
+        for d in directives:
+            if d.get("trigger") == trigger and d.get("status") in ("pending", "injected"):
+                d["status"] = "acknowledged"
+                d["acknowledged_at"] = self._now()
+                d["ack_message"] = message or "cancelled by operator"
+                n += 1
+        if n:
+            self._save(directives)
+        return n
 
     def acknowledge_latest_injected(self, message: str | None = None) -> str | None:
         """Acknowledge the most recently injected directive. Returns its id or None."""

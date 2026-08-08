@@ -90,11 +90,24 @@ _rehydrate_tools()
 # ── Parameter coercion ────────────────────────────────────────────────────
 
 def _ensure_dict(value):
-    """Coerce a JSON string to dict. LLMs sometimes serialize dict params as strings."""
+    """Coerce a dict-ish tool argument to a dict (or None).
+
+    LLMs — especially smaller local models — serialize dict params as JSON
+    strings, or send an empty string for "no options". A bare ``json.loads``
+    raised on ``''`` and crashed the tool call (the validation/loop error that
+    spun the watchdog). Empty/blank or unparseable strings now coerce to None;
+    callers do ``_ensure_dict(x) or {}``.
+    """
     if value is None:
         return None
     if isinstance(value, str):
-        return json.loads(value)
+        s = value.strip()
+        if not s:
+            return None
+        try:
+            return json.loads(s)
+        except (ValueError, TypeError):
+            return None
     return value
 
 
@@ -156,13 +169,23 @@ async def _run(name: str, **kwargs) -> str:
         tool    = REGISTRY[name]
         args    = tool.build_args(**kwargs)
         mount   = os.environ.get("PENTEST_TARGET_PATH", os.getcwd()) if tool.needs_mount else None
-        env_vars = {k: os.environ[k] for k in tool.forward_env if k in os.environ} or None
+        # forward_env entries are "VAR" or "SRC:DST" — the SRC:DST form forwards SRC's value into the
+        # tool subprocess under the name DST. This lets us keep the anthropic AI-testing key in .env
+        # as AITEST_ANTHROPIC_API_KEY (so Claude Code never picks it up for model billing) while the
+        # red-team tools still receive it as the ANTHROPIC_API_KEY they expect. Server-side only.
+        env_vars = {}
+        for _spec in tool.forward_env:
+            _src, _, _dst = _spec.partition(":")
+            if _src in os.environ:
+                env_vars[_dst or _src] = os.environ[_src]
+        env_vars = env_vars or None
 
         try:
             stdout, stderr, _ = await run_container(
                 tool.image, args, timeout=tool.default_timeout,
                 mount_path=mount, extra_volumes=tool.extra_volumes or None,
                 env_vars=env_vars,
+                network=tool.network, cap_add=tool.cap_add or None,
             )
         except asyncio.TimeoutError:
             result = f"[{name} timed out after {tool.default_timeout}s — increase timeout or reduce scope]"
@@ -211,7 +234,12 @@ async def _run(name: str, **kwargs) -> str:
 # ── .env loader ───────────────────────────────────────────────────────────────
 
 def _load_dotenv() -> None:
-    """Read .env from the project root into os.environ (only sets missing keys)."""
+    """Read .env from the project root into os.environ.
+
+    .env values always win over inherited environment so that editing the file
+    and restarting the dashboard picks up the new values without requiring a
+    full MCP server restart.
+    """
     env_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env")
     if not os.path.isfile(env_file):
         return
@@ -223,5 +251,14 @@ def _load_dotenv() -> None:
             key, _, val = line.partition("=")
             key = key.strip()
             val = val.strip().strip('"').strip("'")
-            if key and key not in os.environ:
+            if key:
                 os.environ[key] = val
+
+    # Server-only: the AI-testing anthropic key lives in .env as AITEST_ANTHROPIC_API_KEY so an
+    # interactive Claude Code can't pick it up and bill the Smith agent's model calls to it. Inside the
+    # server we re-expose it as ANTHROPIC_API_KEY for the QA agent + red-team tool forwarding; the
+    # spawned Smith strips ANTHROPIC_API_KEY unless SMITH_SPAWN_USE_API_KEY=1, so it never bills the
+    # agent. A real ANTHROPIC_API_KEY (SMITH_USE_API_KEY=yes / legacy) takes precedence if present.
+    _aitest = os.environ.get("AITEST_ANTHROPIC_API_KEY")
+    if _aitest and not os.environ.get("ANTHROPIC_API_KEY"):
+        os.environ["ANTHROPIC_API_KEY"] = _aitest

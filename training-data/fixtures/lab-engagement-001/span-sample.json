@@ -1,0 +1,7 @@
+{
+  "_comment": "A stored (redacted) artifact + the visible prefix the model saw — used by the Span-integrity acceptance test so it runs over real bytes, not a local literal.",
+  "artifact_variant": "sanitized_utf8_v2",
+  "coordinate_system": "utf8_byte_offset",
+  "artifact_utf8": "HTTP/1.1 500 INTERNAL SERVER ERROR\r\nContent-Type: application/json\r\n\r\n{\"error\": \"psycopg2.errors.SyntaxError: syntax error at or near \\\"'\\\" in query near ' OR '1'='1\", \"debug\": \"traceback suppressed\"}",
+  "visible_prefix_bytes": 68
+}

@@ -512,6 +512,65 @@ def test_pending_gates_empty_without_session():
     assert core.session.pending_gates() == []
 
 
+# ── enforce-properly: skill-chain gates need real WORK, not just declaration ──
+
+def test_skill_worked_false_on_bare_declaration():
+    core.session.start("example.com")
+    core.session.set_skill("api-security")  # declared, no tool work yet
+    assert core.session.skill_worked("api-security") is False
+
+
+def test_skill_worked_true_after_a_tool_call():
+    core.session.start("example.com")
+    core.session.set_skill("api-security")
+    core.session.add_tool_called("http")   # a tool fired while api-security is active
+    assert core.session.skill_worked("api-security") is True
+
+
+def test_skill_worked_false_for_freshly_declared_skill_even_after_prior_scan_work():
+    """The bookkeeping loophole: recon (and earlier skills) have already fired several
+    tools, then a NEW skill is declared with no work of its own. It must NOT be
+    considered worked just because the scan-as-a-whole was busy — otherwise a bare
+    set_skill on a live scan rubber-stamps the gate. Work must be attributable to the
+    declared skill."""
+    core.session.start("example.com")
+    core.session.set_skill("pentester")
+    for t in ("httpx", "naabu", "spider", "nuclei"):   # recon ran >=3 tools under pentester
+        core.session.add_tool_called(t)
+    core.session.set_skill("business-logic")            # declared, but does no work of its own
+    assert core.session.skill_worked("business-logic") is False
+    # pentester genuinely worked, so it stays satisfied.
+    assert core.session.skill_worked("pentester") is True
+    # Now business-logic actually runs a tool -> it earns its gate.
+    core.session.add_tool_called("http")
+    assert core.session.skill_worked("business-logic") is True
+
+
+def test_reconcile_worked_gates_only_satisfies_worked_skills():
+    core.session.start("example.com")
+    core.session.trigger_gate("api_coverage", "api discovered", ["api-security"])
+    # Declared but not worked → gate stays pending after reconcile.
+    core.session.set_skill("api-security")
+    core.session.reconcile_worked_gates()
+    assert any(g["id"] == "api_coverage" and g["status"] == "pending"
+               for g in core.session.get()["gates"])
+    # Now it does work → reconcile satisfies the gate.
+    core.session.add_tool_called("http")
+    core.session.reconcile_worked_gates()
+    assert all(g["status"] == "satisfied"
+               for g in core.session.get()["gates"] if g["id"] == "api_coverage")
+
+
+# ── context meter resets at the compaction/recovery boundary ──────────────────
+
+def test_reset_context_meter_drops_to_fixed_overhead():
+    core.session.start("example.com")
+    core.session.charge_context(500_000)   # simulate a long run pegging the meter
+    assert core.session.get()["context_chars_sent"] > 400_000
+    core.session.reset_context_meter()
+    assert core.session.get()["context_chars_sent"] == core.session._fixed_context_overhead_chars()
+
+
 def test_gates_persisted_to_file(tmp_path, monkeypatch):
     import json
     monkeypatch.setattr(core.session, "_SESSION_FILE", tmp_path / "session.json")
@@ -621,7 +680,7 @@ def test_update_known_assets_multiple_types_independent():
 from mcp_server.session_tools import _injection_breadth_blocker, _na_untooled_blocker
 
 
-def _cell(ep_id, param, param_type, inj_type, status="pending", tested_by=""):
+def _cell(ep_id, param, param_type, inj_type, status="pending", tested_by="", artifact_id=""):
     return {
         "id": f"cell-{ep_id}-{param}-{inj_type}",
         "endpoint_id": ep_id,
@@ -630,7 +689,82 @@ def _cell(ep_id, param, param_type, inj_type, status="pending", tested_by=""):
         "injection_type": inj_type,
         "status": status,
         "tested_by": tested_by,
+        "artifact_id": artifact_id,
     }
+
+
+def test_low_coverage_floor_blocks_below_40():
+    """Below the 40% hard floor → blocks completion (matrix is the deliverable)."""
+    from mcp_server.session_tools import _low_coverage_blocker
+    cov = {"matrix": [{"id": "c1", "status": "pending"}]}
+    out = _low_coverage_blocker(cov, total=10, addressed=2, pct=20.0)
+    assert out is not None and "SCAN NOT COMPLETE" in out
+
+
+def test_low_coverage_at_or_above_floor_passes():
+    """At or above the 40% floor → no block."""
+    from mcp_server.session_tools import _low_coverage_blocker
+    cov = {"matrix": [{"id": "c1", "status": "pending"}]}
+    assert _low_coverage_blocker(cov, total=10, addressed=4, pct=40.0) is None
+    assert _low_coverage_blocker(cov, total=10, addressed=6, pct=60.0) is None
+
+
+def test_low_coverage_blocker_raw_fires_regardless_of_findings():
+    """The RAW blocker always fires below the floor (it is profile-blind by design).
+    Whether it is APPLIED is decided by its caller _coverage_blockers via the
+    profile's enforce_coverage flag — tested separately below."""
+    from mcp_server.session_tools import _low_coverage_blocker
+    cov = {"matrix": [{"id": "c1", "status": "pending"}]}
+    out = _low_coverage_blocker(cov, total=840, addressed=5, pct=0.6)
+    assert out is not None and "SCAN NOT COMPLETE" in out
+
+
+def _low_cov_matrix():
+    return {
+        "meta": {"total_cells": 100, "addressed": 2},
+        "matrix": [{"id": "c1", "status": "pending", "injection_type": "sqli"}],
+        "endpoints": [],
+    }
+
+
+def test_coverage_blockers_floor_enforced_for_full_profile(monkeypatch):
+    """enforce_coverage=True (full / capable cloud model): low coverage hard-blocks
+    completion — the matrix is the deliverable and the model can work it."""
+    import mcp_server.scan_engine.budget as budget
+    monkeypatch.setattr(budget, "get_profile", lambda *a, **k: {"enforce_coverage": True})
+    from mcp_server.session_tools import _coverage_blockers
+    blockers = _coverage_blockers(_low_cov_matrix(), data={}, ctf_mode=False)
+    assert any("SCAN NOT COMPLETE" in b for b in blockers)
+
+
+def test_coverage_blockers_floor_advisory_for_local_profile(monkeypatch):
+    """enforce_coverage=False (medium/small / local model): the completeness gates
+    (low-coverage floor + findings-mapped + breadth) do NOT block — coverage is
+    advisory, the scan completes on findings (restores the V1.0.2 local behavior that
+    a forced floor against an unservable 700-cell matrix broke into game-or-stall)."""
+    import mcp_server.scan_engine.budget as budget
+    monkeypatch.setattr(budget, "get_profile", lambda *a, **k: {"enforce_coverage": False})
+    from mcp_server.session_tools import _coverage_blockers
+    blockers = _coverage_blockers(_low_cov_matrix(), data={}, ctf_mode=False)
+    assert not any("SCAN NOT COMPLETE" in b for b in blockers)
+    assert not any("INJECTION BREADTH" in b for b in blockers)
+
+
+def test_set_last_artifact_stashes_on_running_session(monkeypatch):
+    import core.session as sess
+    monkeypatch.setattr(sess, "_current", {"status": "running"})
+    monkeypatch.setattr(sess, "_flush", lambda: None)
+    sess.set_last_artifact("http_request", "http_request_1_xyz")
+    assert sess._current["last_artifact_id"] == "http_request_1_xyz"
+    assert sess._current["last_artifacts_by_tool"]["http_request"] == "http_request_1_xyz"
+
+
+def test_set_last_artifact_noop_when_not_running(monkeypatch):
+    import core.session as sess
+    monkeypatch.setattr(sess, "_current", {"status": "complete"})
+    monkeypatch.setattr(sess, "_flush", lambda: None)
+    sess.set_last_artifact("http_request", "x")
+    assert "last_artifact_id" not in sess._current
 
 
 def test_injection_breadth_blocker_no_gaps():
@@ -676,15 +810,24 @@ def test_na_untooled_blocker_no_issue():
 
 
 def test_na_untooled_blocker_fires():
+    # N/A bypass-type cell with neither artifact_id nor tested_by → no evidence → blocks.
     cells = [_cell("ep1", "q", "query", "sqli", status="not_applicable", tested_by="")]
     result = _na_untooled_blocker(cells, {"sqli": "blind bypass"})
     assert result is not None
     assert "INTEGRITY" in result
-    assert "tested_by" in result
+    assert "artifact_id" in result
 
 
 def test_na_untooled_blocker_with_tested_by_ok():
     cells = [_cell("ep1", "q", "query", "sqli", status="not_applicable", tested_by="sqlmap")]
+    assert _na_untooled_blocker(cells, {"sqli": "blind bypass"}) is None
+
+
+def test_na_untooled_blocker_with_artifact_only_ok():
+    # artifact_id is the real evidence — a bypass-tested N/A cell that cites an
+    # artifact but left tested_by blank must NOT block completion (the deadlock fix).
+    cells = [_cell("ep1", "q", "query", "sqli", status="not_applicable",
+                   tested_by="", artifact_id="http_request_120000_abcd1234")]
     assert _na_untooled_blocker(cells, {"sqli": "blind bypass"}) is None
 
 
@@ -737,3 +880,152 @@ def test_remaining_returns_none_for_unlimited_cost_time(coverage_file):
     assert r["cost_pct"] == 0
     assert r["time_pct"] == 0
     assert r["calls_remaining"] == -1  # 0 = unlimited → -1
+
+
+# ---------------------------------------------------------------------------
+# get_intervention — force-reload from disk before reading cache
+#
+# The user observed 5 HIR_STUCK_ON_TARGET events fire within 137ms because
+# get_intervention() (used as the dedup check by every HIR-triggering path)
+# read from a cached _current that hadn't observed the previous trigger's
+# flush yet. _reconcile_if_external_write() runs first now so the dedup
+# sees fresh state — same family of cross-process desync we fixed for the
+# Clear All path in PR #111.
+# ---------------------------------------------------------------------------
+
+def test_get_intervention_reloads_external_trigger_from_disk(tmp_path, monkeypatch):
+    """A peer process (the QA daemon in the dashboard) wrote an active
+    intervention to session.json. Our in-memory _current still says
+    status='running'. get_intervention() must see the disk reality
+    and return the intervention dict, not None — otherwise the dedup
+    check passes and a duplicate HIR fires."""
+    import json
+    import core.session as scan_session
+    session_file = tmp_path / "session.json"
+    monkeypatch.setattr(scan_session, "_SESSION_FILE", session_file)
+    # Set up in-memory state as 'running' (no intervention)
+    scan_session.start("https://example.com")
+    assert scan_session.get_intervention() is None
+    # Peer process writes an intervention directly to disk
+    current_disk = json.loads(session_file.read_text())
+    current_disk["status"] = "intervention_required"
+    current_disk["intervention"] = {
+        "code": "HIR_STUCK_ON_TARGET",
+        "situation": "stuck",
+        "tried": [],
+        "options": [],
+        "triggered_at": "2026-06-12T20:00:00+00:00",
+    }
+    session_file.write_text(json.dumps(current_disk))
+    # Bump mtime so the reconcile check fires (otherwise mtime equality
+    # short-circuits the reload — that's the desired steady-state perf)
+    new_mtime = session_file.stat().st_mtime + 10
+    import os
+    os.utime(session_file, (new_mtime, new_mtime))
+    # The next get_intervention() must reflect disk reality
+    iv = scan_session.get_intervention()
+    assert iv is not None
+    assert iv["code"] == "HIR_STUCK_ON_TARGET"
+
+
+def test_get_intervention_returns_none_when_no_intervention(tmp_path, monkeypatch):
+    """Negative case: status is 'running' on disk → no intervention.
+    The force-reload must NOT spuriously surface anything."""
+    import core.session as scan_session
+    session_file = tmp_path / "session.json"
+    monkeypatch.setattr(scan_session, "_SESSION_FILE", session_file)
+    scan_session.start("https://example.com")
+    assert scan_session.get_intervention() is None
+
+
+# ---------------------------------------------------------------------------
+# phase control — human-gated A→B→C (advance_phase / maybe_advance_phase)
+# ---------------------------------------------------------------------------
+
+def test_advance_phase_moves_one_step_forward():
+    core.session.start("example.com")
+    assert core.session.get()["scan_phase"] == "exploit"
+    r = core.session.advance_phase()
+    assert r == {"ok": True, "from": "exploit", "to": "coverage"}
+    assert core.session.get()["scan_phase"] == "coverage"
+    assert core.session.advance_phase()["to"] == "synthesis"
+
+
+def test_advance_phase_rejects_past_synthesis():
+    core.session.start("example.com")
+    core.session.advance_phase(); core.session.advance_phase()   # → synthesis
+    r = core.session.advance_phase()
+    assert r["ok"] is False and "final" in r["error"]
+    assert core.session.get()["scan_phase"] == "synthesis"
+
+
+def test_advance_phase_target_alias_jumps_forward():
+    core.session.start("example.com")
+    r = core.session.advance_phase("c")     # letter alias, jump exploit→synthesis
+    assert r == {"ok": True, "from": "exploit", "to": "synthesis"}
+
+
+def test_advance_phase_rejects_backward():
+    core.session.start("example.com")
+    core.session.advance_phase("coverage")
+    r = core.session.advance_phase("exploit")
+    assert r["ok"] is False and "not forward" in r["error"]
+    assert core.session.get()["scan_phase"] == "coverage"
+
+
+def test_advance_phase_no_running_scan():
+    assert core.session.advance_phase()["ok"] is False   # nothing started
+
+
+def test_maybe_advance_phase_never_auto_advances(monkeypatch):
+    # Even when the phase LOOKS saturated, maybe_advance_phase must NOT change scan_phase —
+    # phases are operator-gated now. It returns None and only records the advisory hint.
+    core.session.start("example.com")
+    from core.session import phases as ph
+    monkeypatch.setattr(ph, "next_phase", lambda *a, **k: "coverage")  # pretend saturated
+    assert core.session.maybe_advance_phase() is None
+    assert core.session.get()["scan_phase"] == "exploit"              # unchanged — no auto-advance
+    assert core.session.get().get("phase_advice") == "coverage"       # advisory recorded
+
+
+# ---------------------------------------------------------------------------
+# SMITH_LHOST → known_assets.attacker_host (operator reverse-shell listener)
+# ---------------------------------------------------------------------------
+
+def test_start_reads_smith_lhost_env(monkeypatch):
+    monkeypatch.setenv("SMITH_LHOST", "1.2.3.4:9001")
+    sess = core.session.start("example.com")
+    assert sess["known_assets"].get("attacker_host") == {
+        "lhost": "1.2.3.4", "lport": 9001, "source": "SMITH_LHOST"}
+
+
+def test_start_lhost_defaults_port_4444(monkeypatch):
+    monkeypatch.setenv("SMITH_LHOST", "attacker.vps.example")
+    sess = core.session.start("example.com")
+    assert sess["known_assets"]["attacker_host"]["lport"] == 4444
+
+
+def test_start_no_lhost_env_no_attacker_host(monkeypatch):
+    monkeypatch.delenv("SMITH_LHOST", raising=False)
+    sess = core.session.start("example.com")
+    assert "attacker_host" not in sess["known_assets"]
+
+
+def test_start_lhost_ipv6_bracketed(monkeypatch):
+    monkeypatch.setenv("SMITH_LHOST", "[2001:db8::1]:9001")
+    sess = core.session.start("example.com")
+    assert sess["known_assets"]["attacker_host"] == {
+        "lhost": "2001:db8::1", "lport": 9001, "source": "SMITH_LHOST"}
+
+
+def test_start_lhost_ipv6_bare(monkeypatch):
+    monkeypatch.setenv("SMITH_LHOST", "::1")
+    sess = core.session.start("example.com")
+    ah = sess["known_assets"]["attacker_host"]
+    assert ah["lhost"] == "::1" and ah["lport"] == 4444
+
+
+def test_start_lhost_out_of_range_port_falls_back(monkeypatch):
+    monkeypatch.setenv("SMITH_LHOST", "1.2.3.4:70000")
+    sess = core.session.start("example.com")
+    assert sess["known_assets"]["attacker_host"]["lport"] == 4444

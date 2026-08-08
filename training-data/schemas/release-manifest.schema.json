@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "release-manifest.schema.json",
+  "title": "Dataset release manifest (training-data-plan.md §13)",
+  "description": "Reproducible release identity under CANONICAL serialization (stable record sort, UTF-8, normalized timestamps). Explicit digests + the exact selection query + the full build lock (exporter image, query engine, schema migrations, source hashes, random seed) so a fresh machine can rebuild a byte-identical release (acceptance test 'Release reproducibility').",
+  "type": "object",
+  "properties": {
+    "release_id": { "type": "string", "description": "e.g. smith-dataset-0.1.0" },
+    "canonical_manifest_digest": { "$ref": "common.schema.json#/$defs/sha256_ref", "description": "Hash of the canonical serialization of THIS manifest minus this field." },
+    "source_snapshot_digest": { "$ref": "common.schema.json#/$defs/sha256_ref" },
+    "selection_manifest_digest": { "$ref": "common.schema.json#/$defs/sha256_ref" },
+    "split_manifest_digest": { "$ref": "common.schema.json#/$defs/sha256_ref" },
+    "exporter_image_digest": { "$ref": "common.schema.json#/$defs/sha256_ref" },
+    "random_seed": { "type": "integer" },
+    "selection_query": { "type": "string", "description": "The exact query/manifest that chose every record." },
+    "query_engine": { "type": "string", "description": "engine + version." },
+    "schema_migration_versions": { "type": "array", "items": { "type": "string" } },
+    "reward_policy_version": { "type": "string" },
+    "redaction_version": { "type": "string" },
+    "normalizer_versions": { "type": "array", "items": { "type": "string" } }
+  },
+  "required": ["release_id", "canonical_manifest_digest", "source_snapshot_digest", "selection_manifest_digest", "split_manifest_digest", "exporter_image_digest", "random_seed", "selection_query"]
+}

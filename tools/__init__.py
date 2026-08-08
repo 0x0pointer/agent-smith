@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from tools.fuzzyai    import TOOL as _fuzzyai
 from tools.httpx      import TOOL as _httpx
+from tools.mobsfscan  import TOOL as _mobsfscan
 from tools.naabu      import TOOL as _naabu
 from tools.nmap       import TOOL as _nmap
 from tools.nuclei     import TOOL as _nuclei
@@ -32,6 +33,7 @@ REGISTRY = {
     _subfinder.name:  _subfinder,   # subfinder  — subdomain discovery
     _semgrep.name:    _semgrep,     # semgrep    — static code analysis
     _trufflehog.name: _trufflehog,  # trufflehog — secret scanner
+    _mobsfscan.name:  _mobsfscan,   # mobsfscan  — mobile SOURCE static analysis (MASVS)
     _fuzzyai.name:    _fuzzyai,     # fuzzyai    — CyberArk AI/LLM fuzzer (own Docker image)
 }
 # fmt: on

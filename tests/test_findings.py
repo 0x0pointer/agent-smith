@@ -39,6 +39,27 @@ async def test_add_finding_stores_all_fields(findings_file):
 
 
 @pytest.mark.asyncio
+async def test_add_finding_links_evidence_artifact(findings_file):
+    # The proof artifact from the producing tool call is bound to the finding so
+    # adjudication can reuse it (no re-run).
+    entry = await core.findings.add_finding(
+        title="SQLi", severity="high", target="http://t.com",
+        description="d", evidence="e", evidence_artifact_id="http_request_120000_abcd",
+    )
+    assert entry["evidence_artifact_id"] == "http_request_120000_abcd"
+    data = json.loads(findings_file.read_text())
+    assert data["findings"][0]["evidence_artifact_id"] == "http_request_120000_abcd"
+
+
+@pytest.mark.asyncio
+async def test_add_finding_omits_empty_evidence_artifact(findings_file):
+    entry = await core.findings.add_finding(
+        title="X", severity="low", target="http://t.com", description="d", evidence="e",
+    )
+    assert "evidence_artifact_id" not in entry
+
+
+@pytest.mark.asyncio
 async def test_add_finding_multiple_accumulates(findings_file):
     await core.findings.add_finding(
         title="A", severity="low", target="t", description="d", evidence="e"
