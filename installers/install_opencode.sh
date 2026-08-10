@@ -612,6 +612,9 @@ if [[ "${_kali_answer:-Y}" =~ ^[Yy]$ ]]; then
             _kali_build_args+=(--build-arg "$2=0")
             [[ "$2" == "INSTALL_AI" ]] && _kali_install_ai=0
         fi
+        # The trailing [[ ]] tests above return 1 for every non-AI module. Without
+        # this, `set -e` kills the installer on the first module prompt.
+        return 0
     }
     _ask_kali_module web    INSTALL_WEB    Y
     _ask_kali_module infra  INSTALL_INFRA  Y
