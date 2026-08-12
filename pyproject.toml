@@ -7,16 +7,18 @@ package-mode = false
 
 [tool.poetry.dependencies]
 python = "^3.11"
-aiohttp = ">=3.14.1"
-mcp = "==1.26.0"
+aiohttp = ">=3.14.3"
+mcp = "==1.29.0"
 fastapi = {extras = ["standard"], version = "==0.135.1"}
 starlette = ">=1.3.1"
 pyjwt = {version = ">=2.13.0", extras = ["crypto"]}
 idna = ">=3.18"
 # Security floors for transitive deps (Dependabot remediation):
-# cryptography >=49 closes the bundled-OpenSSL advisory; python-multipart
-# >=0.0.32 closes the querystring/parameter-smuggling advisories.
-cryptography = ">=49.0.0"
+# cryptography >=50 closes the PKCS#7 Bleichenbacher oracle (GHSA-g6cj-pr64-35w5);
+# python-multipart >=0.0.32 closes the querystring/parameter-smuggling advisories;
+# aiohttp >=3.14.3 closes the C-parser heap read + WebSocket advisories
+# (GHSA-cq5v-8q36-5273, GHSA-mq44-7p77-q5h7, GHSA-mfx4-hv73-q22v).
+cryptography = ">=50.0.0"
 python-multipart = ">=0.0.32"
 sentry-sdk = {version = "==2.54.0", optional = true}
 psutil = ">=5.9"
