@@ -18,6 +18,20 @@ OPENCODE_SKILLS_DIR="$OPENCODE_CONFIG_DIR/skills"
 # prerequisite checks aligned with the MCP launcher runtime.
 export PATH="$PATH:/usr/local/bin:/opt/homebrew/bin:/snap/bin:/Applications/Docker.app/Contents/Resources/bin"
 
+# ── Platform ─────────────────────────────────────────────────────────────────
+# The MCP server is supervised by launchd on macOS and by a systemd *user* unit
+# on Linux. EVERY launchctl / ~/Library/LaunchAgents touch below is gated on
+# this: on Linux that directory does not exist, so the ungated plist write
+# (`sed ... > "$PLIST_DST"`) failed the redirect and `set -euo pipefail` aborted
+# the whole install with a bare "No such file or directory".
+case "$(uname -s)" in
+    Darwin) OS_KIND="macos" ;;
+    Linux)  OS_KIND="linux" ;;
+    *)      OS_KIND="other" ;;
+esac
+SYSTEMD_UNIT="agent-smith-mcp.service"
+SYSTEMD_UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+
 # ── Colours ──────────────────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 ok()   { echo -e "${GREEN}✓${NC} $*"; }
@@ -30,7 +44,12 @@ echo "  ===================================="
 echo ""
 
 # ── Prerequisites ─────────────────────────────────────────────────────────────
-command -v docker   >/dev/null 2>&1 || die "docker not found — install Docker Desktop first."
+if ! command -v docker >/dev/null 2>&1; then
+    if [[ "$OS_KIND" == "linux" ]]; then
+        die "docker not found — install Docker Engine: https://docs.docker.com/engine/install/ (then: sudo usermod -aG docker \"$USER\" && newgrp docker)"
+    fi
+    die "docker not found — install Docker Desktop first."
+fi
 command -v poetry   >/dev/null 2>&1 || die "poetry not found — install with: curl -sSL https://install.python-poetry.org | python3 -"
 command -v opencode >/dev/null 2>&1 || command -v opencode-cli >/dev/null 2>&1 || die "opencode not found — install from: https://opencode.ai"
 command -v node    >/dev/null 2>&1 || warn "node not found — Mermaid diagrams will render client-side (install Node.js v18+ for server-side pre-rendering)"
@@ -61,7 +80,7 @@ ok "Poetry dependencies installed"
 # SIGKILLing each other. Unload first; we reload the rewritten plist after the
 # MCP is up.
 PLIST_DST="$HOME/Library/LaunchAgents/com.agent-smith.mcp-sse.plist"
-if [[ -f "$PLIST_DST" ]]; then
+if [[ "$OS_KIND" == "macos" && -f "$PLIST_DST" ]]; then
     _OLD_REPO="$(awk '/WorkingDirectory/{getline; gsub(/^[[:space:]]*<string>|<\/string>[[:space:]]*$/, ""); print; exit}' "$PLIST_DST")"
     if [[ -n "$_OLD_REPO" && "$_OLD_REPO" != "$REPO_DIR" ]]; then
         warn "Existing launchd plist points at: $_OLD_REPO"
@@ -271,16 +290,72 @@ ok "MCP server registered in $OPENCODE_CONFIG (transport: remote/SSE)"
 ok "CLAUDE.md added to global instructions"
 ok "Context-window safety set (compaction.reserved > model output; external dirs allowed)"
 
-# ── Install launchd plist for auto-start on login ────────────────────────────
+# ── Install the auto-start supervisor (launchd on macOS, systemd on Linux) ───
 # PLIST_DST was set earlier (pre-disarm step); the unload is a no-op now but
 # keeps this section idempotent if someone runs it standalone.
 echo ""
-echo "Installing launchd plist..."
-PLIST_SRC="$REPO_DIR/installers/com.agent-smith.mcp-sse.plist"
-sed "s|REPO_DIR|$REPO_DIR|g" "$PLIST_SRC" > "$PLIST_DST"
-launchctl unload "$PLIST_DST" 2>/dev/null || true
-launchctl load "$PLIST_DST"
-ok "launchd plist installed — MCP server auto-starts on login and restarts on crash"
+if [[ "$OS_KIND" == "macos" ]]; then
+    echo "Installing launchd plist..."
+    PLIST_SRC="$REPO_DIR/installers/com.agent-smith.mcp-sse.plist"
+    mkdir -p "$(dirname "$PLIST_DST")"
+    sed "s|REPO_DIR|$REPO_DIR|g" "$PLIST_SRC" > "$PLIST_DST"
+    launchctl unload "$PLIST_DST" 2>/dev/null || true
+    launchctl load "$PLIST_DST"
+    ok "launchd plist installed — MCP server auto-starts on login and restarts on crash"
+elif [[ "$OS_KIND" == "linux" ]]; then
+    echo "Installing systemd user unit..."
+    # `systemctl --user` needs a live user D-Bus session. It is absent in some
+    # containers, bare `ssh host cmd` invocations and minimal WSL distros — in
+    # that case fall back to the self-managed nohup instance that
+    # start-mcp-server.sh already launched above, and say so.
+    if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
+        mkdir -p "$SYSTEMD_UNIT_DIR" "$REPO_DIR/logs"
+        sed "s|REPO_DIR|$REPO_DIR|g" \
+            "$REPO_DIR/installers/agent-smith-mcp.service" > "$SYSTEMD_UNIT_DIR/$SYSTEMD_UNIT"
+        systemctl --user daemon-reload
+
+        # start-mcp-server.sh started a self-managed nohup instance a moment ago
+        # (no supervisor was loaded then). It still holds port 7778, so systemd's
+        # instance would lose the bind, exit 1 and be respawned every 10 s — the
+        # dual-supervisor crash-loop. Hand the port over before enabling.
+        _PID_FILE="$REPO_DIR/logs/mcp_sse.pid"
+        if [[ -f "$_PID_FILE" ]] && kill -0 "$(cat "$_PID_FILE")" 2>/dev/null; then
+            kill "$(cat "$_PID_FILE")" 2>/dev/null || true
+            sleep 1
+        fi
+        rm -f "$_PID_FILE"
+
+        systemctl --user enable --now "$SYSTEMD_UNIT"
+        # Survive logout / start at boot on a headless box. Needs polkit or root;
+        # best-effort, and the unit still works for the current session without it.
+        loginctl enable-linger "$USER" >/dev/null 2>&1 || \
+            warn "loginctl enable-linger failed — MCP starts on login, not at boot (fix: sudo loginctl enable-linger $USER)"
+
+        # Readiness poll (curl is not guaranteed on a minimal server image).
+        if command -v curl >/dev/null 2>&1; then
+            for _i in $(seq 1 20); do
+                curl -sf --max-time 1 http://127.0.0.1:7778/sse >/dev/null 2>&1 && break
+                sleep 0.5
+            done
+        else
+            sleep 3
+        fi
+        if systemctl --user is-active --quiet "$SYSTEMD_UNIT"; then
+            ok "systemd user unit installed ($SYSTEMD_UNIT) — auto-starts on login and restarts on crash"
+        else
+            warn "systemd unit installed but not active — check: systemctl --user status $SYSTEMD_UNIT"
+            warn "and the server log: $REPO_DIR/logs/mcp_sse.log"
+        fi
+    else
+        warn "No systemd user session available — skipping auto-start unit."
+        warn "The MCP server is running as a self-managed process; restart it with:"
+        warn "  $REPO_DIR/installers/start-mcp-server.sh restart"
+    fi
+else
+    warn "Unsupported platform '$(uname -s)' for auto-start supervision — skipping."
+    warn "The MCP server is running as a self-managed process; restart it with:"
+    warn "  $REPO_DIR/installers/start-mcp-server.sh restart"
+fi
 
 # ── Ask whether to overwrite existing skill files ────────────────────────────
 echo ""
