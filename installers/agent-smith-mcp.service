@@ -1,0 +1,33 @@
+# systemd USER unit — the Linux counterpart of com.agent-smith.mcp-sse.plist.
+# Installed to ~/.config/systemd/user/agent-smith-mcp.service by the installers,
+# which sed-replace the literal REPO_DIR placeholder with the checkout path.
+#
+# Mapping from the launchd plist:
+#   RunAtLoad=true      -> WantedBy=default.target (+ `systemctl --user enable`)
+#   KeepAlive=true      -> Restart=always
+#   ThrottleInterval=10 -> RestartSec=10
+#   Standard{Out,Error}Path -> StandardOutput/StandardError=append:
+#
+# Like the plist, this runs run-mcp-server.sh in the FOREGROUND (it exec's
+# `python -m mcp_server`), so systemd supervises the real server process rather
+# than a wrapper that backgrounds via nohup and exits.
+[Unit]
+Description=agent-smith pentest MCP server (SSE on 127.0.0.1:7778)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=REPO_DIR
+# systemd user units start from a minimal PATH. Poetry commonly lives in
+# ~/.local/bin (pipx / the official installer), and run-mcp-server.sh resolves
+# the venv through it — keep both that and the standard dirs visible.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
+ExecStart=/bin/bash REPO_DIR/installers/run-mcp-server.sh --transport sse --host 127.0.0.1 --port 7778
+Restart=always
+RestartSec=10
+StandardOutput=append:REPO_DIR/logs/mcp_sse.log
+StandardError=append:REPO_DIR/logs/mcp_sse.log
+
+[Install]
+WantedBy=default.target
