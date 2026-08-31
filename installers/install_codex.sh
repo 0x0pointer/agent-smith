@@ -209,7 +209,7 @@ p.write_text('\n'.join(lines) + '\n')
     fi
 }
 
-_ask_key "OPENAI_API_KEY"       "OpenAI key - FuzzyAI and PyRIT attacker/scorer"
+_ask_key "OPENAI_API_KEY"       "OpenAI key - FuzzyAI and Garak attacker/scorer"
 _ask_key "ANTHROPIC_API_KEY"    "Anthropic key - FuzzyAI anthropic provider"
 _ask_key "AZURE_OPENAI_API_KEY" "Azure OpenAI key - FuzzyAI azure provider"
 
@@ -308,6 +308,70 @@ echo ""
 
 # Kali image (build) - modular: choose which tool domains to bake in.
 # core is always installed; each other domain is a --build-arg toggle.
+# Build a docker image, keeping the FULL build log on disk.
+#
+# This used to be `docker build ... 2>&1 | tail -5`, which threw the actual error
+# away: when the then-pinned `pyrit==0.11.0` became uninstallable (Kali moved to
+# Python 3.14, and PyRIT <= 0.13.0 caps Requires-Python at <3.14), pip's
+# "No matching distribution found" scrolled past and the operator was left with 5
+# lines of Dockerfile context and no cause. Failure detection was never the
+# problem — `set -o pipefail` propagated it correctly — visibility was.
+#
+# Design notes:
+#   * FOREGROUND pipeline, not `docker build &`: no detached child to reason about
+#     for signal delivery or cleanup, and the exit status comes straight back
+#     through the pipeline.
+#   * `tee` keeps every line; on a terminal `awk` collapses that to a live
+#     one-line step counter, and off a terminal (CI, piped to a file) the full
+#     stream is passed through instead.
+#   * The awk/cat filter always exits 0, so with `set -o pipefail` the pipeline
+#     status is docker's own.
+#   * `mktemp` per build: a fixed shared path in /tmp could already be owned by
+#     another user, and the redirect failing would print THEIR stale log as this
+#     build's error.
+_build_progress() {
+    if [ -t 1 ]; then
+        awk '/^#[0-9]+ \[[ 0-9]*[0-9]+\/[0-9]+\]/ { printf "\r\033[K  %.100s", $0; fflush() }
+             END { printf "\r\033[K" }'
+    else
+        cat
+    fi
+}
+
+_build_image() {  # $1=label  $2=image tag  $3=context dir  $4..=extra docker build args
+    local _label="$1" _tag="$2" _ctx="$3"; shift 3
+    local _safe="${_tag//[^a-zA-Z0-9]/-}"
+    local _tmp="${TMPDIR:-/tmp}"; _tmp="${_tmp%/}"
+    local _log
+    # X's must be TRAILING for both BSD and GNU mktemp — a "-XXXXXX.log" template
+    # is not expanded and would hand every run the same path.
+    _log="$(mktemp "${_tmp}/agent-smith-build-${_safe}-XXXXXX" 2>/dev/null)" \
+        || _log="${_tmp}/agent-smith-build-${_safe}.$$.log"
+    echo "  Build log: $_log"
+    if docker build "$@" -t "$_tag" "$_ctx" 2>&1 | tee "$_log" | _build_progress; then
+        ok "$_label image built: $_tag"
+        return 0
+    fi
+    warn "$_label build FAILED. Full log: $_log"
+    # Off a terminal the full stream was already echoed above, so don't repeat it.
+    # 60 lines, not 30: BuildKit's failure epilogue (the ">>> RUN" frame, the
+    # Dockerfile frame, the "failed to solve" line) is ~15 lines on its own, so a
+    # short tail can crowd out the failing step's actual output. Guarded on -s so
+    # a missing/empty log can't turn this into a second failure.
+    if [ -t 1 ] && [ -s "$_log" ]; then
+        echo "  ---------------- last 60 log lines ----------------"
+        tail -60 "$_log" | sed "s/^/  /"
+        echo "  ---------------------------------------------------"
+    fi
+    # Quoted so the hint stays copy-pasteable when the repo path contains spaces.
+    if [ "$#" -gt 0 ]; then
+        warn "Retry: docker build $* -t \"$_tag\" \"$_ctx\""
+    else
+        warn "Retry: docker build -t \"$_tag\" \"$_ctx\""
+    fi
+    return 1
+}
+
 printf "  Build Kali image? (required for most skills) [Y/n]: "
 read -r _kali_answer || true
 if [[ "${_kali_answer:-Y}" =~ ^[Yy]$ ]]; then
@@ -319,8 +383,8 @@ if [[ "${_kali_answer:-Y}" =~ ^[Yy]$ ]]; then
     echo "    web              web/API exploit, fuzzing, injection, JWT/OAuth, SSL, crawl  ~8 min"
     echo "    infra            internal net, AD, credentials, service enum, pivoting       ~5 min"
     echo "    mobile           Android/iOS reversing + Frida/objection dynamic analysis    ~4 min"
-    echo "    cloud            AWS/Azure/GCP CLIs, Prowler, ScoutSuite, trivy, kube-bench   ~7 min"
-    echo "    ai               LLM red-team: PyRIT, Garak, promptfoo (heaviest: torch)      ~12 min"
+    echo "    cloud            AWS/GCP CLIs, Prowler, ScoutSuite, trivy, kube-bench        ~7 min"
+    echo "    ai               LLM red-team: Garak, promptfoo (heaviest: torch)            ~12 min"
     echo ""
     _kali_build_args=()
     _kali_install_ai=0
@@ -346,17 +410,9 @@ if [[ "${_kali_answer:-Y}" =~ ^[Yy]$ ]]; then
     _ask_kali_module mobile INSTALL_MOBILE N
     _ask_kali_module cloud  INSTALL_CLOUD  N
     _ask_kali_module ai     INSTALL_AI     N
-    if [[ "$_kali_install_ai" == "1" ]]; then
-        _kali_build_args+=(--build-arg "REQUIRE_PYRIT=1")
-        echo "  AI module selected: requiring PyRIT in the build"
-    fi
     echo ""
     echo "  Building pentest-agent/kali-mcp (this may take a while)..."
-    if docker build "${_kali_build_args[@]}" -t pentest-agent/kali-mcp "$REPO_DIR/tools/kali/" 2>&1 | tail -5; then
-        ok "Kali image built: pentest-agent/kali-mcp"
-    else
-        warn "Kali build failed - run manually: docker build -t pentest-agent/kali-mcp $REPO_DIR/tools/kali/"
-    fi
+    _build_image Kali pentest-agent/kali-mcp "$REPO_DIR/tools/kali/" "${_kali_build_args[@]}" || true
 else
     warn "Kali build skipped - run later: docker build -t pentest-agent/kali-mcp $REPO_DIR/tools/kali/"
 fi
@@ -367,11 +423,7 @@ printf "  Build Metasploit image? (~5 min - required for /metasploit skill) [Y/n
 read -r _msf_answer || true
 if [[ "${_msf_answer:-Y}" =~ ^[Yy]$ ]]; then
     echo "  Building pentest-agent/metasploit..."
-    if docker build -t pentest-agent/metasploit "$REPO_DIR/tools/metasploit/" 2>&1 | tail -5; then
-        ok "Metasploit image built: pentest-agent/metasploit"
-    else
-        warn "Metasploit build failed - run manually: docker build -t pentest-agent/metasploit $REPO_DIR/tools/metasploit/"
-    fi
+    _build_image Metasploit pentest-agent/metasploit "$REPO_DIR/tools/metasploit/" || true
 else
     warn "Metasploit build skipped - run later: docker build -t pentest-agent/metasploit $REPO_DIR/tools/metasploit/"
 fi

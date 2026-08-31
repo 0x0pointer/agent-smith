@@ -27,10 +27,13 @@ RUN echo "insecure" > /root/.curlrc
 # Enable for a proxied build with:
 #     docker build --build-arg TRUST_BUILD_PROXY_CA=1 -t pentest-agent/kali-mcp ./tools/kali/
 #
-# Why it exists: the env-var bypasses above cover pip/git/npm/curl, but NOT
-# cargo (used later to compile PyRIT's base2048 Rust dep). cargo has no
-# "insecure" switch and, behind a MITM proxy (e.g. Aikido endpoint proxy,
-# Zscaler), hard-fails with "self-signed certificate in certificate chain".
+# Why it exists: the env-var bypasses above cover pip/git/npm/curl, but a build
+# behind a MITM proxy (e.g. Aikido endpoint proxy, Zscaler) can still hard-fail
+# with "self-signed certificate in certificate chain" for fetchers that honour
+# only the system trust store. NOTE: the original driver was cargo, which has no
+# "insecure" switch and was needed to compile PyRIT's base2048 Rust dep. PyRIT
+# is gone and nothing in this image compiles Rust any more, so this is now a
+# generic escape hatch — kept because a TLS-intercepted build still benefits.
 # When enabled, we capture the CA the proxy presents for a couple of stable
 # hosts (keeping only the issuer chain, not the per-host leaf) and add it to the
 # trust store so cargo accepts it. This deliberately trusts whatever the local
@@ -397,25 +400,39 @@ RUN [ "$INSTALL_CLOUD" = "1" ] || { echo "[cloud] skipped"; exit 0; }; \
 RUN [ "$INSTALL_CLOUD" = "1" ] || { echo "[cloud] skipped"; exit 0; }; \
     pip3 install --no-cache-dir awscli==1.44.63 --break-system-packages || true
 
-# Azure CLI.
+# GCP CLI. Self-healing: a fail-soft install must never leave a broken apt
+# source behind, or every LATER `apt-get update` exits 100 and kills the build.
 RUN [ "$INSTALL_CLOUD" = "1" ] || { echo "[cloud] skipped"; exit 0; }; \
-    apt-get update && apt-get install -y --no-install-recommends --fix-missing \
-    ca-certificates curl apt-transport-https lsb-release gnupg \
-    && curl -sL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor > /etc/apt/keyrings/microsoft.gpg \
-    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/microsoft.gpg] https://packages.microsoft.com/repos/azure-cli/ $(lsb_release -cs) main" > /etc/apt/sources.list.d/azure-cli.list \
-    && apt-get update && apt-get install -y --no-install-recommends --fix-missing azure-cli \
-    && rm -rf /var/lib/apt/lists/* || true
-
-# GCP CLI.
-RUN [ "$INSTALL_CLOUD" = "1" ] || { echo "[cloud] skipped"; exit 0; }; \
-    echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" > /etc/apt/sources.list.d/google-cloud-sdk.list \
-    && curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg \
-    && apt-get update && apt-get install -y --no-install-recommends --fix-missing google-cloud-cli \
-    && rm -rf /var/lib/apt/lists/* || true
+    { echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" > /etc/apt/sources.list.d/google-cloud-sdk.list \
+      && curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg \
+      && apt-get update && apt-get install -y --no-install-recommends --fix-missing google-cloud-cli; } \
+    || echo "[cloud] google-cloud-cli install failed — continuing"; \
+    apt-get update >/dev/null 2>&1 \
+      || { echo "[cloud] apt unhealthy after google-cloud-cli — removing its source"; rm -f /etc/apt/sources.list.d/google-cloud-sdk.list; }; \
+    rm -rf /var/lib/apt/lists/*; exit 0
 
 # Prowler (AWS/Azure/GCP auditor) + ScoutSuite (multi-cloud auditor), each under
-# `|| true` so one uninstallable pin can't take down the other. prowler 5.31.0 is
-# the first Python-3.13-compatible release; scoutsuite stays fail-soft.
+# `|| true` so one uninstallable pin can't take down the other.
+#
+# HEADS UP — as of kali-rolling on Python 3.14 BOTH of these silently no-op, so a
+# cloud-module image ships without them. Verified, not guessed:
+#
+#   prowler    EVERY release through the current latest (5.40.0) caps at
+#              Requires-Python <3.14, so pip finds no candidate at all. Only
+#              2023-era 3.x builds allow 3.14 and those are far too old to use.
+#              A python3.13 venv (3.13 is still in the image) gets further but
+#              then fails building the `zstd` wheel without a compiler + 3.13
+#              headers. The right fix is a sidecar container —
+#              prowlercloud/prowler:5.40.0 — matching how tools/fuzzyai.py and
+#              tools/mobsfscan.py already run their tools. Not pip.
+#
+#   scoutsuite installable, but needs --ignore-installed: it tries to uninstall
+#              Debian's python-dateutil and dies on `no RECORD file`. Adding that
+#              flag was verified to work (`scout` runs). Left unfixed here only
+#              because it was deliberately deferred, not because it is unsolved.
+#
+# Until one of those is done, treat /cloud-security as aws + gcloud + trivy +
+# kubectl + kube-bench + nuclei cloud templates.
 RUN [ "$INSTALL_CLOUD" = "1" ] || { echo "[cloud] skipped"; exit 0; }; \
     pip3 install --no-cache-dir prowler==5.31.0 --break-system-packages || true
 RUN [ "$INSTALL_CLOUD" = "1" ] || { echo "[cloud] skipped"; exit 0; }; \
@@ -423,24 +440,11 @@ RUN [ "$INSTALL_CLOUD" = "1" ] || { echo "[cloud] skipped"; exit 0; }; \
 
 # ============================================================================
 # AI (INSTALL_AI) — LLM/agent red-teaming. Skill: ai-redteam.
-# The heaviest domain (torch/CUDA deps), hence opt-in. FuzzyAI runs as a
-# separate container (ghcr.io/cyberark/fuzzyai); see tools/fuzzyai.py.
+# Garak + promptfoo. Opt-in because Garak pulls heavy ML deps. FuzzyAI runs as
+# a separate container (ghcr.io/cyberark/fuzzyai); see tools/fuzzyai.py.
+# PyRIT was removed: it needed a Rust toolchain and a pin that had to track
+# kali-rolling's Python, which repeatedly broke the whole image build.
 # ============================================================================
-
-# Microsoft PyRIT + thin CLI runner. base2048 (a PyRIT dep) compiles Rust, so
-# rustc/cargo are installed then purged. NOTE: behind a TLS-intercepting proxy,
-# cargo needs the CA — build with --build-arg TRUST_BUILD_PROXY_CA=1.
-RUN [ "$INSTALL_AI" = "1" ] || { echo "[ai] skipped"; exit 0; }; \
-    apt-get update && apt-get install -y --no-install-recommends --fix-missing rustc cargo \
-    && rm -rf /var/lib/apt/lists/* \
-    && pip3 install --no-cache-dir --ignore-installed pyrit==0.11.0 --break-system-packages \
-    && apt-get purge -y rustc cargo \
-    && apt-get autoremove -y \
-    && rm -rf /root/.cargo /root/.rustup
-COPY pyrit_runner.py /usr/local/bin/pyrit-runner
-RUN chmod +x /usr/local/bin/pyrit-runner
-# COPY can't be ARG-guarded, so drop the wrapper if the ai module (PyRIT) isn't installed.
-RUN [ "$INSTALL_AI" = "1" ] || rm -f /usr/local/bin/pyrit-runner
 
 # NVIDIA Garak — LLM vulnerability scanner (probe-based). Installed in a venv
 # (--system-site-packages) to avoid conflicts with Debian-managed packages.

@@ -4,7 +4,7 @@ Pentest Agent MCP Server
 Thin entry point — loads .env, imports all tool modules, starts the server.
 
 Consolidated tools (5 MCP tools, down from 24):
-  mcp_server/scan_tools.py    — scan()    : nmap, naabu, subfinder, httpx, nuclei, ffuf, spider, semgrep, trufflehog, fuzzyai, pyrit
+  mcp_server/scan_tools.py    — scan()    : nmap, naabu, subfinder, httpx, nuclei, ffuf, spider, semgrep, trufflehog, fuzzyai, garak, promptfoo
   mcp_server/kali_tools.py    — kali()    : freeform Kali container commands
   mcp_server/http_tools.py    — http()    : raw HTTP requests + PoC saving
   mcp_server/report_tools.py  — report()  : findings, diagrams, notes, dashboard

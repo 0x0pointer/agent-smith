@@ -6,7 +6,7 @@ import tools.kali_runner as kali
 
 
 def test_kali_forwards_aitest_as_anthropic():
-    # AITEST_ANTHROPIC_API_KEY is forwarded into the container AS ANTHROPIC_API_KEY (what pyrit reads)
+    # AITEST_ANTHROPIC_API_KEY is forwarded into the container AS ANTHROPIC_API_KEY (what the AI tools read)
     assert kali._forward_ai_keys({"AITEST_ANTHROPIC_API_KEY": "sk-ant-test"}) == ["-e", "ANTHROPIC_API_KEY=sk-ant-test"]
 
 

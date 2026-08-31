@@ -51,8 +51,6 @@ from .ai import (
     _section_after,
     _summarize_garak,
     _summarize_promptfoo,
-    _PYRIT_SUCCESS_KEYS,
-    _summarize_pyrit,
     _summarize_fuzzyai,
 )
 from .generic import _summarize_generic
@@ -80,6 +78,5 @@ _SUMMARIZERS: dict[str, Any] = {
     "spider": _summarize_spider,
     "garak": _summarize_garak,
     "promptfoo": _summarize_promptfoo,
-    "pyrit": _summarize_pyrit,
     "fuzzyai": _summarize_fuzzyai,
 }
