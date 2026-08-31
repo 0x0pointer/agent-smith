@@ -259,8 +259,8 @@ if (Confirm-Yes '  Build Kali image? (required for most skills)') {
     Write-Host '    web              web/API exploit, fuzzing, injection, JWT, SSL      ~8 min'
     Write-Host '    infra            internal net, AD, credentials, service enum, pivot ~5 min'
     Write-Host '    mobile           Android/iOS reversing + Frida dynamic analysis     ~4 min'
-    Write-Host '    cloud            AWS/Azure/GCP CLIs, Prowler, ScoutSuite, trivy      ~7 min'
-    Write-Host '    ai               LLM red-team: PyRIT, Garak, promptfoo (heaviest)   ~12 min'
+    Write-Host '    cloud            AWS/GCP CLIs, Prowler, ScoutSuite, trivy           ~7 min'
+    Write-Host '    ai               LLM red-team: Garak, promptfoo (heaviest)          ~12 min'
     Write-Host ''
     $kaliArgs = @()
     foreach ($m in @(

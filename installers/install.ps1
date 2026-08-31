@@ -199,7 +199,7 @@ function Set-EnvKey {
 Write-Host ''
 Write-Host '  API keys for AI red-teaming tools. Press Enter to skip any.'
 Write-Host ''
-Set-EnvKey 'OPENAI_API_KEY'        'OpenAI key — FuzzyAI + PyRIT scoring'
+Set-EnvKey 'OPENAI_API_KEY'        'OpenAI key — FuzzyAI + Garak scoring'
 Set-EnvKey 'ANTHROPIC_API_KEY'     'Anthropic key — FuzzyAI anthropic provider'
 Set-EnvKey 'AZURE_OPENAI_API_KEY'  'Azure OpenAI key — FuzzyAI azure provider'
 
@@ -301,8 +301,8 @@ if (Confirm-Yes '  Build Kali image? (required for most skills)') {
     Write-Host '    web              web/API exploit, fuzzing, injection, JWT, SSL      ~8 min'
     Write-Host '    infra            internal net, AD, credentials, service enum, pivot ~5 min'
     Write-Host '    mobile           Android/iOS reversing + Frida dynamic analysis     ~4 min'
-    Write-Host '    cloud            AWS/Azure/GCP CLIs, Prowler, ScoutSuite, trivy      ~7 min'
-    Write-Host '    ai               LLM red-team: PyRIT, Garak, promptfoo (heaviest)   ~12 min'
+    Write-Host '    cloud            AWS/GCP CLIs, Prowler, ScoutSuite, trivy           ~7 min'
+    Write-Host '    ai               LLM red-team: Garak, promptfoo (heaviest)          ~12 min'
     Write-Host ''
     $kaliArgs = @()
     foreach ($m in @(

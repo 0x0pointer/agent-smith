@@ -268,7 +268,7 @@ def _extract_and_persist_assets(tool: str, result: Any, ctx: dict) -> None:
         _persist_subfinder_assets(scan_session, evidence)
     elif tool == "spider":
         _persist_spider_assets(scan_session, evidence)
-    elif tool in ("fuzzyai", "garak", "pyrit", "promptfoo"):
+    elif tool in ("fuzzyai", "garak", "promptfoo"):
         _persist_ai_target_asset(scan_session, ctx)
     elif tool == "http_request":
         _persist_http_auth_assets(scan_session, evidence, ctx)

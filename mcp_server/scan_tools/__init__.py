@@ -44,7 +44,6 @@ from .handlers_code import (
 from .handlers_ai import (
     _handle_fuzzyai,
     _load_role_confusion_payloads,
-    _handle_pyrit,
     _handle_garak,
     _handle_promptfoo,
 )
@@ -70,7 +69,6 @@ _DISPATCH = {
     "mobsfscan":   _handle_mobsfscan,
     "mobsf":       _handle_mobsf,
     "fuzzyai":     _handle_fuzzyai,
-    "pyrit":       _handle_pyrit,
     "garak":       _handle_garak,
     "promptfoo":   _handle_promptfoo,
     "metasploit":  _handle_metasploit,
@@ -100,7 +98,6 @@ async def scan(tool: str, target: str, flags: str = "", options: dict | str | No
     | trufflehog | path        |                                                   |
     | exec_sandbox | path (codebase) | cmd= (required), setup=, image=python:3.11-slim, subdir=, timeout=180 — build/run white-box code in a network-isolated, caps-dropped sandbox to confirm a finding; returns an artifact_id |
     | fuzzyai    | URL         | attack=jailbreak, provider=openai, model=         |
-    | pyrit      | URL         | attack=prompt_injection, objective=, max_turns=5, scorer=self_ask, provider=openai|anthropic|azure, body_key=message, body_template=, response_field=, headers={} |
     | garak      | URL         | probes=dan,encoding,..., body_key=message, method=post, response_field=, headers={} (REST generator config auto-generated; -G) |
     | promptfoo  | URL         | plugins=prompt-injection,..., attack_strategies=jailbreak,crescendo, body_key=prompt, response_field=, attacker_provider=, headers={} (config auto-generated; -c) |
     | metasploit | host/IP     | module=, payload=, rport=, lhost=, lport=4444     |

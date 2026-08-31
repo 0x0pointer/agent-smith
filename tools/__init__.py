@@ -23,7 +23,7 @@ from tools.trufflehog import TOOL as _trufflehog
 # fmt: off
 # REGISTRY contains tools that run as standalone Docker containers
 # via _run() / docker_runner.run_container().
-# Tools that run inside the Kali container (ffuf, spider, pyrit, garak, promptfoo)
+# Tools that run inside the Kali container (ffuf, spider, garak, promptfoo)
 # use kali_runner.exec_command() directly instead.
 REGISTRY = {
     _nmap.name:       _nmap,        # nmap       — port scanner

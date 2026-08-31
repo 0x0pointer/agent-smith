@@ -298,7 +298,6 @@ Red-team assessment of AI/LLM endpoints using the OWASP LLM Top 10 (2025) + OWAS
    - FuzzyAI: single-turn jailbreak fuzzing (jailbreak, prompt injection, system prompt leak, PII extraction, XSS injection)
    - Garak: probe-based scanning (DAN, encoding attacks, data leakage, hallucination, malware generation)
    - promptfoo: plugin-based evaluation (134 plugins — excessive agency, RAG poisoning, reasoning DoS, MCP attacks)
-   - PyRIT: multi-turn orchestrated attacks (crescendo, jailbreak with configurable objectives)
 6. **Targeted multi-turn attacks** — based on Phase 2 results, runs focused attacks on weak categories (tool parameter fuzzing, authority marker rotation, multi-objective payloads)
 7. **Manual verification & PoC** — reproduces each finding with `http(action="request")`, saves confirmed exploits via `http(action="save_poc")`
 8. Calls `report(action="finding")` for every confirmed vulnerability — mapped to OWASP LLM category
@@ -312,14 +311,13 @@ Red-team assessment of AI/LLM endpoints using the OWASP LLM Top 10 (2025) + OWAS
 | FuzzyAI (CyberArk) | LLM01, LLM02, LLM05, LLM07 | Single-turn fuzzing |
 | Garak (NVIDIA) | LLM01, LLM02, LLM05, LLM07, LLM09 | Probe-based scanning |
 | promptfoo | LLM01, LLM05, LLM06, LLM08, LLM09, LLM10 | Plugin-based evaluation |
-| PyRIT (Microsoft) | LLM01, LLM02, LLM07, LLM09 | Multi-turn orchestration |
 
 **Depth presets:**
 
 | Depth | Tools | Cost | Time | Calls |
 |---|---|---|---|---|
 | `quick` | FuzzyAI (jailbreak + system-prompt-leak) | $0.10 | 10 min | 5 |
-| `standard` | FuzzyAI (all attacks) + Garak (top probes) + PyRIT (prompt_injection) | $0.50 | 30 min | 15 |
+| `standard` | FuzzyAI (all attacks) + Garak (top probes) + promptfoo (prompt-injection) | $0.50 | 30 min | 15 |
 | `thorough` | All 4 tools + multi-turn crescendo + manual follow-up | $2.00 | 90 min | 40 |
 
 ---

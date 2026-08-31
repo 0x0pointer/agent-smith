@@ -69,7 +69,7 @@ def _build_status_base(
         },
     }
     web_work_done = any(t in _st._effective_tools() for t in ("httpx", "spider", "ffuf", "nuclei"))
-    ai_work_done = any(t in _st._effective_tools() for t in ("fuzzyai", "garak", "pyrit", "promptfoo"))
+    ai_work_done = any(t in _st._effective_tools() for t in ("fuzzyai", "garak", "promptfoo"))
     if meta.get("total_cells", 0) == 0 and web_work_done and not _st._has_ctf_flag(data):
         result["coverage_warning"] = (
             "MATRIX EMPTY: web tools have run but no endpoints are registered. "

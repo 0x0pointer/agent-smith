@@ -88,7 +88,7 @@ async def container_running() -> bool:
 def _forward_ai_keys(environ) -> list[str]:
     """docker ``-e`` flags for the AI API keys forwarded into the Kali container. AITEST_ANTHROPIC_API_KEY
     (kept out of Claude Code's ANTHROPIC_API_KEY so it can't bill the Smith agent) is forwarded AS
-    ANTHROPIC_API_KEY for pyrit/tools; a bare ANTHROPIC_API_KEY (SMITH_USE_API_KEY=yes / legacy)
+    ANTHROPIC_API_KEY for the in-container tools; a bare ANTHROPIC_API_KEY (SMITH_USE_API_KEY=yes / legacy)
     overrides it when both are set."""
     fwd: dict[str, str] = {}
     for src, dst in (("OPENAI_API_KEY", "OPENAI_API_KEY"),

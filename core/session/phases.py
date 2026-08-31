@@ -74,7 +74,7 @@ _HUNT_SKILLS = frozenset({
 # fuzzyai/garak=AI, semgrep/trufflehog=code). Target-agnostic so non-web scans aren't stuck.
 _RECON_TOOLS = frozenset({
     "httpx", "spider", "ffuf", "naabu", "nmap", "subfinder", "nuclei", "mobsf", "mobsfscan",
-    "testssl", "fuzzyai", "garak", "pyrit", "promptfoo", "semgrep", "trufflehog",
+    "testssl", "fuzzyai", "garak", "promptfoo", "semgrep", "trufflehog",
 })
 
 # Cell types with no auto-closer — expected to linger pending; must not pin Phase B (mirrors

@@ -31,7 +31,7 @@ flowchart TD
     Agent["Your LLM client<br/>Claude Code · Codex · OpenCode · MCP-capable IDE"]
     MCP["mcp_server/<br/>5 consolidated tools<br/>scan · kali · http · report · session"]
     Docker["Docker containers<br/>ephemeral --rm · 2 GB RAM · 1.5 CPU<br/>nmap · nuclei · httpx · ffuf · semgrep · trufflehog"]
-    Kali["Kali Linux container<br/>persistent · port 5001<br/>nikto · sqlmap · hydra · testssl · pyrit"]
+    Kali["Kali Linux container<br/>persistent · port 5001<br/>nikto · sqlmap · hydra · testssl · garak"]
     Msf["Metasploit container<br/>persistent · port 5002"]
     Core["core/<br/>session · logger · findings · cost · coverage · api_server"]
     Dashboard["FastAPI dashboard<br/>localhost:7777<br/>Findings · Topology · Components · Coverage · Threat Model · Logs"]
@@ -61,7 +61,7 @@ mcp_server/              MCP tool layer — 5 consolidated tools (LLM-callable)
   __main__.py            entry point  →  python -m mcp_server
   _app.py                FastMCP singleton + shared helpers (_run, _clip)
   scan_tools/            scan()    — nmap · naabu · httpx · nuclei · ffuf · spider
-                                     subfinder · semgrep · trufflehog · fuzzyai · pyrit
+                                     subfinder · semgrep · trufflehog · fuzzyai · garak
                                      garak · promptfoo · metasploit · mobsf · mobsfscan
                                      (package; per-tool handlers in handlers_net · handlers_ai ·
                                       handlers_code · handlers_mobile · handlers_exploit)
@@ -99,7 +99,7 @@ tools/                   Docker tool definitions + runners
   base.py · docker_runner.py · kali_runner.py · metasploit_runner.py · sandbox_runner.py
   mobsf_runner.py · mobsfscan.py · docker_cli.py
   nmap / naabu / httpx / nuclei / ffuf / subfinder / semgrep / trufflehog / fuzzyai
-  kali/                  Kali image (Dockerfile + pyrit_runner.py + playwright_spider.py)
+  kali/                  Kali image (Dockerfile + playwright_spider.py)
   metasploit/            Metasploit image (Dockerfile + msfconsole HTTP shim)
 
 skills/                  Slash command definitions (git submodule)

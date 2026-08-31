@@ -22,7 +22,6 @@ Run any security scanner.
 | trufflehog | path | |
 | exec_sandbox | path (codebase) | cmd= (required), setup=, image=python:3.11-slim (any stack: node/golang/ruby/…), subdir=, timeout=180, allow_network=true — build/run WHITE-BOX code in a hardened, caps-dropped sandbox over a staged copy to CONFIRM a finding; returns an `artifact_id`. Network ON by default (deps install); allow_network=false to isolate untrusted code. Opt-in, fail-soft, never a completion gate. |
 | fuzzyai | URL | attack=jailbreak, provider=openai, model= |
-| pyrit | URL | attack=prompt_injection, objective=, max_turns=5, scorer=self_ask |
 | garak | URL | probes=dan,encoding,promptinject,..., generator=rest |
 | promptfoo | URL | plugins=prompt-injection,..., attack_strategies=jailbreak,crescendo |
 | metasploit | host/IP | module=, payload=, rport=, lhost=, lport=4444 |
@@ -125,7 +124,7 @@ Skills contain full structured workflows. In Codex they are installed as persona
 ## Project layout
 - `mcp_server/__main__.py` — entry point, crash logging, module imports
 - `mcp_server/_app.py` — FastMCP singleton, `_run()` dispatcher, `_clip()` helper
-- `mcp_server/scan_tools.py` — `scan()` tool (nmap, naabu, httpx, nuclei, ffuf, spider, semgrep, trufflehog, fuzzyai, pyrit)
+- `mcp_server/scan_tools.py` — `scan()` tool (nmap, naabu, httpx, nuclei, ffuf, spider, semgrep, trufflehog, fuzzyai, garak, promptfoo)
 - `mcp_server/kali_tools.py` — `kali()` tool (freeform Kali commands)
 - `mcp_server/http_tools.py` — `http()` tool (raw HTTP + PoC saving)
 - `mcp_server/report_tools.py` — `report()` tool (findings, diagrams, notes, dashboard)

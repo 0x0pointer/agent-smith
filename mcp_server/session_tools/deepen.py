@@ -36,7 +36,8 @@ def _deepen_steps_pass1(
     )
     if has_ai_ep or "ai-redteam" in skills_run:
         steps.append(
-            "Re-invoke /ai-redteam (SECOND PASS) — run PyRIT crescendo (10 turns); "
+            "Re-invoke /ai-redteam (SECOND PASS) — run promptfoo crescendo/jailbreak "
+            "strategies for the multi-turn escalation pass; "
             "Garak with the full probe set (dan,encoding,promptinject,leakreplay,xss,"
             "latentinjection,snowball,misleading,packagehallucination,malwaregen,gcg,"
             "glitch,grandma,goodside); promptfoo redteam (plugins prompt-injection,"
@@ -102,8 +103,9 @@ def _deepen_steps_pass2(
     )
     if has_ai_ep or "ai-redteam" in skills_run:
         steps.append(
-            "Re-invoke /ai-redteam (THIRD PASS) — run PyRIT with jailbreak + "
-            "crescendo + multi-turn prompt injection (15 turns each); "
+            "Re-invoke /ai-redteam (THIRD PASS) — run promptfoo redteam with the "
+            "jailbreak + crescendo strategies and FuzzyAI multi-turn prompt "
+            "injection (15 turns each); "
             "test excessive agency by attempting tool invocations with hidden params "
             "(include_internal=True, admin=True, debug=True, show_all=True); "
             "test indirect prompt injection via every data field the AI reads "
@@ -151,7 +153,7 @@ def _deepen_brief(iteration: int) -> str:
     # false-positive on paths like /detail, /email, /maintenance. Detect AI work by
     # the AI tools actually run, the ai-redteam skill, or any AI/MCP coverage cell.
     from core.coverage.classify import classify_endpoint
-    _AI_TOOLS = {"fuzzyai", "garak", "pyrit", "promptfoo"}
+    _AI_TOOLS = {"fuzzyai", "garak", "promptfoo"}
     _AI_CELL_PREFIXES = (
         "prompt_injection", "jailbreak", "system_prompt_leak", "sensitive_info_disclosure",
         "improper_output_handling", "excessive_agency", "misinformation",
