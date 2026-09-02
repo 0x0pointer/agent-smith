@@ -518,7 +518,7 @@
       gap: 0.2rem 0.75rem; line-height: 1.6;
     }
     .fadj-label { color: var(--text-dim); font-size: 0.76rem; white-space: nowrap; }
-    .fadj-value { color: var(--text); font-size: 0.76rem; }
+    .fadj-value { color: var(--text); font-size: 0.76rem; overflow-wrap: anywhere; }
     .fadj-sev-arrow { color: var(--text-dim); margin: 0 0.2rem; }
     .fadj-sev-old   { color: var(--text-dim); text-decoration: line-through; }
     .fadj-sev-new-up   { color: #ff4d4f; font-weight: 700; }
@@ -1309,17 +1309,17 @@
     }
     .trace-entrypoint .trace-node { border-color: var(--green); }
     .trace-sink       .trace-node { border-color: var(--sev-critical); background: rgba(255,77,79,.25); }
-    .trace-head { display: flex; align-items: baseline; gap: 0.6rem; flex-wrap: wrap; }
+    .trace-head { display: flex; align-items: baseline; gap: 0.6rem; flex-wrap: wrap; min-width: 0; }
     .trace-kind {
       font-family: var(--font-mono); font-size: 0.62rem; font-weight: 700;
       letter-spacing: 0.08em; padding: 0.08rem 0.4rem; border-radius: 3px;
-      background: var(--purple-dim); color: var(--purple);
+      background: var(--purple-dim); color: var(--purple); overflow-wrap: anywhere;
     }
     .trace-entrypoint .trace-kind { background: var(--green-dim); color: var(--green); }
     .trace-sink       .trace-kind { background: rgba(255,77,79,.15); color: var(--sev-critical); }
-    .trace-loc   { font-family: var(--font-mono); font-size: 0.76rem; color: var(--text); }
-    .trace-scope { font-family: var(--font-mono); font-size: 0.7rem; color: var(--text-dim); }
-    .trace-desc  { color: var(--text-muted); font-size: var(--fs-body); line-height: 1.55; margin-top: 0.2rem; }
+    .trace-loc   { font-family: var(--font-mono); font-size: 0.76rem; color: var(--text); overflow-wrap: anywhere; min-width: 0; }
+    .trace-scope { font-family: var(--font-mono); font-size: 0.7rem; color: var(--text-dim); overflow-wrap: anywhere; }
+    .trace-desc  { color: var(--text-muted); font-size: var(--fs-body); line-height: 1.55; margin-top: 0.2rem; overflow-wrap: anywhere; }
 
     /* ── Remediation ── */
     .rem-meta { margin: 0.4rem 0 0.6rem; display: flex; align-items: center; gap: 0.6rem; }
