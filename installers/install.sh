@@ -227,16 +227,16 @@ p.write_text('\n'.join(lines) + '\n')
 }
 
 # ── Provider API keys ─────────────────────────────────────────────────────────
-echo "  API keys — used by FuzzyAI and Garak for AI red-team testing."
+echo "  API keys — used by Garak for AI red-team scoring."
 echo "  Press Enter to skip any key you don't need right now."
 echo ""
 
 _ask_key "OPENAI_API_KEY" \
-    "Powers FuzzyAI and Garak scoring (openai provider)"
+    "Powers Garak scoring (openai provider)"
 _ask_key "AITEST_ANTHROPIC_API_KEY" \
-    "Powers FuzzyAI and Garak scoring (anthropic provider) — API key (sk-ant-...), NOT your Claude.ai login. Stored SEPARATELY (AITEST_) so it never bills your Smith agent's model calls."
+    "Powers Garak scoring (anthropic provider) — API key (sk-ant-...), NOT your Claude.ai login. Stored SEPARATELY (AITEST_) so it never bills your Smith agent's model calls."
 _ask_key "AZURE_OPENAI_API_KEY" \
-    "Powers FuzzyAI with azure provider"
+    "Powers Garak scoring (azure provider)"
 
 # ── Smith agent model auth: subscription (default) vs API key ─────────────────
 _set_env() {
@@ -485,7 +485,7 @@ if [[ "${_kali_answer:-Y}" =~ ^[Yy]$ ]]; then
     echo "    infra            internal net, AD, credentials, service enum, pivoting       ~5 min"
     echo "    mobile           Android/iOS reversing + Frida/objection dynamic analysis    ~4 min"
     echo "    cloud            AWS/GCP CLIs, Prowler, ScoutSuite, trivy, kube-bench        ~7 min"
-    echo "    ai               LLM red-team: Garak, promptfoo (heaviest: torch)            ~12 min"
+    echo "  (LLM red-team 'ai' is no longer a Kali module — Garak is its own image, built below.)"
     echo ""
     _kali_build_args=()
     _ask_kali_module() {  # $1=name  $2=build-arg  $3=default(Y|N)
@@ -505,7 +505,6 @@ if [[ "${_kali_answer:-Y}" =~ ^[Yy]$ ]]; then
     _ask_kali_module infra  INSTALL_INFRA  Y
     _ask_kali_module mobile INSTALL_MOBILE N
     _ask_kali_module cloud  INSTALL_CLOUD  N
-    _ask_kali_module ai     INSTALL_AI     N
     echo ""
     echo "  Building pentest-agent/kali-mcp (this may take a while)..."
     _build_image Kali pentest-agent/kali-mcp "$REPO_DIR/tools/kali/" "${_kali_build_args[@]}" || true
@@ -523,6 +522,18 @@ if [[ "${_msf_answer:-Y}" =~ ^[Yy]$ ]]; then
     _build_image Metasploit pentest-agent/metasploit "$REPO_DIR/tools/metasploit/" || true
 else
     warn "Metasploit build skipped — run later: docker build -t pentest-agent/metasploit $REPO_DIR/tools/metasploit/"
+fi
+
+# Garak image (build) — standalone LLM red-team scanner used by /ai-redteam.
+# Heavy (torch, ~6-7 GB). Optional here because it ALSO auto-builds on first
+# scan(tool="garak"); pre-build to avoid a ~5-min wait on first use.
+printf "  Build Garak image now? (~5 min — LLM red-team; else auto-builds on first use) [y/N]: "
+read -r _garak_answer || true
+if [[ "${_garak_answer:-N}" =~ ^[Yy]$ ]]; then
+    echo "  Building pentest-agent/garak..."
+    _build_image Garak pentest-agent/garak "$REPO_DIR/tools/garak/" || true
+else
+    warn "Garak build skipped — auto-builds on first scan(tool='garak'), or run: docker build -t pentest-agent/garak $REPO_DIR/tools/garak/"
 fi
 
 # MobSF needs no build — /android-security & /ios-security use the official MobSF
@@ -551,4 +562,5 @@ echo ""
 echo "  To rebuild images after adding new skills:"
 echo "    docker build -t pentest-agent/kali-mcp $REPO_DIR/tools/kali/"
 echo "    docker build -t pentest-agent/metasploit $REPO_DIR/tools/metasploit/"
+echo "    docker build -t pentest-agent/garak $REPO_DIR/tools/garak/   # LLM red-team (else auto-builds)"
 echo ""

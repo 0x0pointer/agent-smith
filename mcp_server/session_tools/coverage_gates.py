@@ -191,7 +191,7 @@ def _coverage_blockers(cov: dict, data: dict | None = None, ctf_mode: bool = Fal
 
     # Empty matrix gate — only enforced for non-CTF runs where web OR AI work happened.
     web_work_done = any(t in _st._effective_tools() for t in ("httpx", "spider", "ffuf", "nuclei"))
-    ai_work_done = any(t in _st._effective_tools() for t in ("fuzzyai", "garak", "promptfoo"))
+    ai_work_done = any(t in _st._effective_tools() for t in ("garak", "transform"))
     if total == 0:
         if not ctf_mode and web_work_done:
             blockers.append(
@@ -205,8 +205,8 @@ def _coverage_blockers(cov: dict, data: dict | None = None, ctf_mode: bool = Fal
             )
         elif not ctf_mode and ai_work_done:
             blockers.append(
-                "EMPTY AI COVERAGE MATRIX: AI red-team tools were run "
-                "(fuzzyai/garak/promptfoo) but no LLM/MCP endpoint was registered. "
+                "EMPTY AI COVERAGE MATRIX: AI red-team work happened "
+                "(garak and/or the transform() payload tool) but no LLM/MCP endpoint was registered. "
                 "Register the chat/LLM (or MCP) endpoint so each OWASP LLM/MCP category becomes a "
                 "closable cell: report(action='coverage', data={'type':'endpoint', 'path':'/...', "
                 "'method':'POST', 'params':[{'name':'message','type':'llm_prompt'}], "

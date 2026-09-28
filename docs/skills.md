@@ -294,11 +294,10 @@ Red-team assessment of AI/LLM endpoints using the OWASP LLM Top 10 (2025) + OWAS
 2. Calls `report(action="dashboard")` — live findings tracker
 3. **Recon & fingerprinting** — probes the endpoint for model identification, response format, rate limiting, tool/function calling surface, and hidden parameters
 4. Calls `report(action="diagram")` with an architecture diagram of the AI system (trust boundaries, guardrails, tool layer, RAG)
-5. **Automated scanning** — runs tools in parallel based on depth:
-   - FuzzyAI: single-turn jailbreak fuzzing (jailbreak, prompt injection, system prompt leak, PII extraction, XSS injection)
+5. **Automated scanning + manual battery** — based on depth:
    - Garak: probe-based scanning (DAN, encoding attacks, data leakage, hallucination, malware generation)
-   - promptfoo: plugin-based evaluation (134 plugins — excessive agency, RAG poisoning, reasoning DoS, MCP attacks)
-6. **Targeted multi-turn attacks** — based on Phase 2 results, runs focused attacks on weak categories (tool parameter fuzzing, authority marker rotation, multi-objective payloads)
+   - transform() manual battery: craft payloads and obfuscate them past the input filter (base64/homoglyph/zero-width encodings, mutation fuzzer, bijection scaffolds, token-bombs, invisible-Unicode steg), deliver via `http()`, decode the reply
+6. **Targeted multi-turn attacks** — the agent drives crescendo/jailbreak loops itself (craft → encode → send → read → escalate), plus tool-parameter fuzzing, authority-marker rotation, and multi-objective payloads on weak categories
 7. **Manual verification & PoC** — reproduces each finding with `http(action="request")`, saves confirmed exploits via `http(action="save_poc")`
 8. Calls `report(action="finding")` for every confirmed vulnerability — mapped to OWASP LLM category
 9. Produces OWASP coverage summary showing which categories were tested and what was found
@@ -308,17 +307,16 @@ Red-team assessment of AI/LLM endpoints using the OWASP LLM Top 10 (2025) + OWAS
 
 | Tool | Coverage | Type |
 |------|----------|------|
-| FuzzyAI (CyberArk) | LLM01, LLM02, LLM05, LLM07 | Single-turn fuzzing |
 | Garak (NVIDIA) | LLM01, LLM02, LLM05, LLM07, LLM09 | Probe-based scanning |
-| promptfoo | LLM01, LLM05, LLM06, LLM08, LLM09, LLM10 | Plugin-based evaluation |
+| transform() + manual | LLM01, LLM02, LLM05, LLM06, LLM07, LLM08, LLM10 + evasion | Agent-driven payload crafting (encodings/homoglyphs/zero-width/bijection/mutation/steg) |
 
 **Depth presets:**
 
 | Depth | Tools | Cost | Time | Calls |
 |---|---|---|---|---|
-| `quick` | FuzzyAI (jailbreak + system-prompt-leak) | $0.10 | 10 min | 5 |
-| `standard` | FuzzyAI (all attacks) + Garak (top probes) + promptfoo (prompt-injection) | $0.50 | 30 min | 15 |
-| `thorough` | All 4 tools + multi-turn crescendo + manual follow-up | $2.00 | 90 min | 40 |
+| `quick` | Garak (top probes) + short transform-encoded manual battery | $0.10 | 10 min | 5 |
+| `standard` | Garak (full probes) + transform-powered manual battery + MCP recon | $0.50 | 30 min | 15 |
+| `thorough` | Garak + agent-driven multi-turn crescendo + bijection/mutation/steg + manual follow-up | $2.00 | 90 min | 40 |
 
 ---
 

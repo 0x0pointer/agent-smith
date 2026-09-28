@@ -1,6 +1,7 @@
 # ── Scan output ──────────────────────────────────────────────────────────────
 artifacts/
 logs/
+.cache/
 findings.json
 coverage_matrix.json
 session.json

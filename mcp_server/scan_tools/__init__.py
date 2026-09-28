@@ -14,11 +14,7 @@ from mcp_server._app import mcp, _ensure_dict
 # ── Shared state + helpers (re-exported for consumers/tests) ────────────────────
 from ._common import (
     _strip_scheme,
-    _kali_target_url,
-    _stage_file_cmd,
-    _kali_scratch_dir,
     _ai_headers,
-    _ai_auth_headers,
     _SPIDER_HARD_FAIL_SIGNALS,
     _spider_succeeded,
 )
@@ -42,10 +38,8 @@ from .handlers_code import (
     _handle_exec_sandbox,
 )
 from .handlers_ai import (
-    _handle_fuzzyai,
     _load_role_confusion_payloads,
     _handle_garak,
-    _handle_promptfoo,
 )
 from .handlers_exploit import (
     _handle_metasploit,
@@ -68,9 +62,7 @@ _DISPATCH = {
     "trufflehog":  _handle_trufflehog,
     "mobsfscan":   _handle_mobsfscan,
     "mobsf":       _handle_mobsf,
-    "fuzzyai":     _handle_fuzzyai,
     "garak":       _handle_garak,
-    "promptfoo":   _handle_promptfoo,
     "metasploit":  _handle_metasploit,
     "exec_sandbox": _handle_exec_sandbox,
 }
@@ -97,10 +89,12 @@ async def scan(tool: str, target: str, flags: str = "", options: dict | str | No
     | semgrep    | path        |                                                   |
     | trufflehog | path        |                                                   |
     | exec_sandbox | path (codebase) | cmd= (required), setup=, image=python:3.11-slim, subdir=, timeout=180 — build/run white-box code in a network-isolated, caps-dropped sandbox to confirm a finding; returns an artifact_id |
-    | fuzzyai    | URL         | attack=jailbreak, provider=openai, model=         |
     | garak      | URL         | probes=dan,encoding,..., body_key=message, method=post, response_field=, headers={} (REST generator config auto-generated; -G) |
-    | promptfoo  | URL         | plugins=prompt-injection,..., attack_strategies=jailbreak,crescendo, body_key=prompt, response_field=, attacker_provider=, headers={} (config auto-generated; -c) |
     | metasploit | host/IP     | module=, payload=, rport=, lhost=, lport=4444     |
+
+    AI/LLM payload crafting is a separate tool: transform() (pure-Python, no
+    Docker) — encode/mutate/decode jailbreak & injection payloads. garak +
+    transform() + manual http() cover the LLM red-team surface.
     """
     options = _ensure_dict(options) or {}
 
