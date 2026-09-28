@@ -1,0 +1,26 @@
+{
+  // agent-smith dev container for GitHub Codespaces.
+  // The harness (agent-smith, MCP server, Claude Code, opencode) runs NATIVELY here,
+  // exactly like your local box. Only the hacking tools run in a container.
+  // Backend: Claude only (no local model, no DGX Spark).
+  //
+  // Codespaces secrets (Settings -> Codespaces -> Secrets):
+  //   ANTHROPIC_API_KEY  OR  CLAUDE_CODE_OAUTH_TOKEN   -> Claude auth
+  //   TS_AUTH_KEY                                       -> Tailscale (reach the lab + receive callbacks)
+  "name": "agent-smith",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu-24.04",
+  "features": {
+    // docker-in-docker: runs ONLY the hacking-tools container(s)
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {},
+    // Tailscale: joins the Codespace to your lab tailnet for bidirectional reachability
+    "ghcr.io/tailscale/codespace/tailscale:1": {},
+    // opencode needs Node 18+
+    "ghcr.io/devcontainers/features/node:1": {},
+    "ghcr.io/devcontainers/features/python:1": { "version": "3.12" }
+  },
+  // If tailscaled complains about /dev/net/tun, uncomment:
+  // "runArgs": ["--device=/dev/net/tun"],
+  "hostRequirements": { "cpus": 8, "memory": "16gb", "storage": "64gb" },
+  "postCreateCommand": "bash .devcontainer/setup.sh",
+  "customizations": { "vscode": { "extensions": ["anthropic.claude-code"] } }
+}
