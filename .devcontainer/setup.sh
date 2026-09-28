@@ -8,14 +8,58 @@ set -euo pipefail
 #   Tailscale joins the Codespace to your lab so tools can reach targets AND get callbacks.
 # ─────────────────────────────────────────────────────────────────────────────
 
+# ── Repo root (this script lives in .devcontainer/) ──────────────────────────
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
 # ── Harness CLIs (native) ────────────────────────────────────────────────────
 curl -fsSL https://claude.ai/install.sh | bash        # Claude Code (linux-x64)
 npm install -g opencode-ai                             # opencode (x64 native binary)
-[ -f requirements.txt ] && pip install --user -r requirements.txt
+
+# Poetry — the project's dependency manager. installers/run-mcp-server.sh resolves
+# it from ~/.local/bin/poetry and runs the MCP server out of the Poetry venv, so it
+# is REQUIRED for the native harness (there is no requirements.txt; deps live in
+# pyproject.toml). The official installer drops it in ~/.local/bin.
+if ! command -v poetry >/dev/null 2>&1 && [ ! -x "$HOME/.local/bin/poetry" ]; then
+  echo "Installing Poetry…"
+  curl -sSL https://install.python-poetry.org | python3 -
+fi
 
 grep -qxF 'export PATH="$HOME/.local/bin:$PATH"' ~/.bashrc \
   || echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 export PATH="$HOME/.local/bin:$PATH"
+
+# ── Native harness: Python deps + MCP SSE server ─────────────────────────────
+# The harness runs natively (not in a container). This mirrors installers/install.sh
+# MINUS the macOS launchd plist: installers/start-mcp-server.sh already falls back to
+# a self-managed nohup instance on Linux (it guards `command -v launchctl`), so no
+# plist / launchctl is involved here. Best-effort — warn, don't abort the Codespace.
+echo "Installing Python dependencies (poetry install)…"
+poetry -C "$REPO_ROOT" install --no-interaction \
+  || echo "WARN: 'poetry install' failed — MCP server won't start until deps install."
+
+echo "Starting MCP SSE server on localhost:7778…"
+chmod +x "$REPO_ROOT/installers/start-mcp-server.sh"
+"$REPO_ROOT/installers/start-mcp-server.sh" restart \
+  || echo "WARN: MCP server failed to start — start later: installers/start-mcp-server.sh restart"
+
+# Register the MCP server with Claude Code (SSE transport).
+if command -v claude >/dev/null 2>&1; then
+  claude mcp remove --scope user pentest-agent 2>/dev/null || true
+  if claude mcp add --scope user --transport sse pentest-agent http://127.0.0.1:7778/sse; then
+    echo "MCP server registered with Claude Code."
+  else
+    echo "WARN: 'claude mcp add' failed — register manually: claude mcp add --scope user --transport sse pentest-agent http://127.0.0.1:7778/sse"
+  fi
+fi
+
+# Register the MCP server with opencode (only if its config already exists).
+OPENCODE_CONFIG="$HOME/.config/opencode/opencode.json"
+if [ -f "$OPENCODE_CONFIG" ] && command -v jq >/dev/null 2>&1; then
+  jq '.mcp["pentest-agent"] = {"type":"remote","url":"http://127.0.0.1:7778/sse","enabled":true,"timeout":9000000}' \
+    "$OPENCODE_CONFIG" > "$OPENCODE_CONFIG.tmp" \
+    && mv "$OPENCODE_CONFIG.tmp" "$OPENCODE_CONFIG" \
+    && echo "MCP server registered with opencode."
+fi
 
 # ── Docker daemon (for the hacking-tools container only) ─────────────────────
 echo "Waiting for the Docker daemon…"
@@ -23,16 +67,10 @@ timeout 60 bash -c 'until docker info >/dev/null 2>&1; do sleep 2; done' \
   || { echo "ERROR: Docker daemon did not become ready"; exit 1; }
 
 # ── Hacking-tools container: build & pull ────────────────────────────────────
-# Only the tools are containerized (the harness runs natively — see top of file),
-# so this step builds the tool IMAGES only. The repo's real image mechanism is the
-# docker builds below — the same recipe installers/install.sh bakes in (tags
-# pentest-agent/kali-mcp + pentest-agent/metasploit, per tools/*_runner.py).
-#
-# We deliberately do NOT run installers/install.sh here: it is the macOS/native
-# full-harness installer (hard-requires poetry, runs `poetry install`, writes a
-# launchd plist and `launchctl load`) and would abort on this Linux Codespace.
-# A compose file, if the repo ever adds one, takes precedence.
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Only the tools are containerized (the harness runs natively — see above), so this
+# step builds the tool IMAGES only, using the repo's real recipe (same builds
+# installers/install.sh bakes in; tags pentest-agent/kali-mcp + pentest-agent/
+# metasploit, per tools/*_runner.py). A compose file, if ever added, takes precedence.
 if [ -f "$REPO_ROOT/docker-compose.yml" ] || [ -f "$REPO_ROOT/compose.yaml" ] || [ -f "$REPO_ROOT/compose.yml" ]; then
   ( cd "$REPO_ROOT" && { docker compose pull || true; } && docker compose build )
 else
