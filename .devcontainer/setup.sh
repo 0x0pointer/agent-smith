@@ -23,20 +23,36 @@ timeout 60 bash -c 'until docker info >/dev/null 2>&1; do sleep 2; done' \
   || { echo "ERROR: Docker daemon did not become ready"; exit 1; }
 
 # ── Hacking-tools container: build & pull ────────────────────────────────────
-# Only the tools are containerized. Use whatever your repo already defines.
-if [ -f ./install.sh ]; then
-  DEBIAN_FRONTEND=noninteractive bash ./install.sh     # repo's own tool-image build + MCP wiring
-elif [ -f docker-compose.yml ] || [ -f compose.yaml ]; then
-  docker compose pull || true
-  docker compose build
+# Only the tools are containerized (the harness runs natively — see top of file),
+# so this step builds the tool IMAGES only. The repo's real image mechanism is the
+# docker builds below — the same recipe installers/install.sh bakes in (tags
+# pentest-agent/kali-mcp + pentest-agent/metasploit, per tools/*_runner.py).
+#
+# We deliberately do NOT run installers/install.sh here: it is the macOS/native
+# full-harness installer (hard-requires poetry, runs `poetry install`, writes a
+# launchd plist and `launchctl load`) and would abort on this Linux Codespace.
+# A compose file, if the repo ever adds one, takes precedence.
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [ -f "$REPO_ROOT/docker-compose.yml" ] || [ -f "$REPO_ROOT/compose.yaml" ] || [ -f "$REPO_ROOT/compose.yml" ]; then
+  ( cd "$REPO_ROOT" && { docker compose pull || true; } && docker compose build )
 else
-  echo "No install.sh or compose file — add your tool-image build/pull here, e.g.:"
-  # docker build -t agent-smith-tools:local ./tools
+  # Kali image (recon + web/infra tooling) — required for most skills. A plain build
+  # uses the Dockerfile's default ARGs (INSTALL_WEB=1 INSTALL_INFRA=1), matching the
+  # installer's interactive defaults. Best-effort: warn, don't abort the Codespace.
+  echo "Building pentest-agent/kali-mcp (tools/kali) — this takes a while…"
+  docker build -t pentest-agent/kali-mcp "$REPO_ROOT/tools/kali/" \
+    || echo "WARN: kali-mcp build failed — rebuild later: docker build -t pentest-agent/kali-mcp $REPO_ROOT/tools/kali/"
+  # Metasploit image — heavier, only needed for the /metasploit skill. Best-effort.
+  echo "Building pentest-agent/metasploit (tools/metasploit)…"
+  docker build -t pentest-agent/metasploit "$REPO_ROOT/tools/metasploit/" \
+    || echo "WARN: metasploit build failed — rebuild later: docker build -t pentest-agent/metasploit $REPO_ROOT/tools/metasploit/"
+  # Lightweight scanner images (nmap/naabu/httpx/nuclei/subfinder/ffuf/semgrep/
+  # trufflehog) are public and auto-pull on first use — no build needed here.
 fi
 
 # IMPORTANT: run the tools container on the HOST network so it shares the
 # Codespace's tailnet interface — required to reach the lab AND to receive callbacks:
-#   docker run --network=host … agent-smith-tools:local
+#   docker run --network=host … pentest-agent/kali-mcp
 # (compose: set  network_mode: host  on the tools service)
 # Point reverse shells / handlers at the Codespace tailnet IP, not a public one.
 
