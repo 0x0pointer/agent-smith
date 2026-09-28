@@ -10,14 +10,13 @@
 # runner passes `sh -c "garak ... ; tail report"`.
 FROM python:3.11-slim
 
-# git: a couple of garak deps resolve from VCS/build sdists on some platforms.
+# Single layer: git (a couple of garak deps resolve from VCS/build sdists on some
+# platforms), garak itself, and a CLI sanity check that fails the build if the
+# binary isn't on PATH.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN pip install --no-cache-dir garak==0.15.0
-
-# Sanity: fail the build if the CLI isn't on PATH.
-RUN garak --version
+    && rm -rf /var/lib/apt/lists/* \
+    && pip install --no-cache-dir garak==0.15.0 \
+    && garak --version
 
 WORKDIR /work

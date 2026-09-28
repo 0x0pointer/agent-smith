@@ -81,67 +81,79 @@ async def redteam(action: str, target: str = "", options: dict | str | None = No
     return result
 
 
+def _do_techniques(target, opts):
+    return json.dumps({"techniques": _rt.list_techniques(opts.get("category"))}, indent=2)
+
+
+def _do_taxonomy(target, opts):
+    tax = _rt.taxonomy
+    if opts.get("code"):
+        node = tax.lookup(opts["code"])
+        return json.dumps({"node": node} if node
+                          else {"error": f"no PITAX node '{opts['code']}'"}, indent=2)
+    if opts.get("query"):
+        return json.dumps({"results": tax.search(opts["query"], int(opts.get("limit", 25)))}, indent=2)
+    if opts.get("pillar"):
+        return json.dumps({"pillar": opts["pillar"], "nodes": tax.nodes(opts["pillar"])}, indent=2)
+    return json.dumps({"source": "Arcanum PITAX (CC BY 4.0)", "pillars": tax.pillars(),
+                       "usage": "options={pillar|code|query}"}, indent=2)
+
+
+def _do_judge(target, opts):
+    v = _or.llm_judge(opts.get("text", ""), opts.get("goal", ""),
+                      success_markers=opts.get("success_markers"))
+    return json.dumps(v.__dict__, indent=2)
+
+
+def _do_calibrate(target, opts):
+    cal = _cal.calibrate(target or "http://127.0.0.1:9000")
+    _record_ai(lambda ar: ar.record_calibration(cal))
+    return json.dumps(cal, indent=2)
+
+
+def _do_filter_probe(target, opts):
+    if not target:
+        return json.dumps({"error": "filter_probe requires target=<URL>"})
+    send = _http_send_fn(target, opts.get("body_key", "message"),
+                         opts.get("reply_key", "reply"), opts.get("headers"))
+    res = _fp.probe_filter(send)
+    _record_ai(lambda ar: ar.record_filter_probe(res, target))
+    return json.dumps(res, indent=2)
+
+
+def _do_feedback_attack(target, opts):
+    if not target or not opts.get("goal"):
+        return json.dumps({"error": "feedback_attack requires target=<URL> and options.goal"})
+    send = _http_send_fn(target, opts.get("body_key", "message"),
+                         opts.get("reply_key", "reply"), opts.get("headers"))
+    goal = opts["goal"]
+    markers = opts.get("success_markers")
+    r = _rt.feedback_attack(goal, send, success_markers=markers,
+                            transforms=opts.get("transforms"),
+                            max_attempts=int(opts.get("max_attempts", 24)),
+                            seed=int(opts.get("seed", 0)))
+    n = int(opts.get("reproduce_n", 0) or 0)
+    if r["jailbroken"] and n:
+        # Replay the EXACT winning payload — the only way k/N measures the model's
+        # non-determinism rather than our (now creative/variant) render variance.
+        winning = (r.get("best") or {}).get("payload") or ""
+
+        def one_shot():
+            reply = send(winning if isinstance(winning, str) else winning[-1])
+            return _or.heuristic_judge(reply, goal, markers)
+        r["reproducibility"] = _rt.reproduce(one_shot, n=n)
+    r["transcript"] = r["transcript"][:12]   # trim for context
+    _record_ai(lambda ar: ar.record_attack(r, goal, target))
+    return json.dumps(r, indent=2)
+
+
+_DISPATCH = {"techniques": _do_techniques, "taxonomy": _do_taxonomy, "judge": _do_judge,
+             "calibrate": _do_calibrate, "filter_probe": _do_filter_probe,
+             "feedback_attack": _do_feedback_attack}
+
+
 def _dispatch(action: str, target: str, opts: dict) -> str:
-    if action == "techniques":
-        return json.dumps({"techniques": _rt.list_techniques(opts.get("category"))}, indent=2)
-
-    if action == "taxonomy":
-        tax = _rt.taxonomy
-        if opts.get("code"):
-            node = tax.lookup(opts["code"])
-            return json.dumps({"node": node} if node
-                              else {"error": f"no PITAX node '{opts['code']}'"}, indent=2)
-        if opts.get("query"):
-            return json.dumps({"results": tax.search(opts["query"], int(opts.get("limit", 25)))}, indent=2)
-        if opts.get("pillar"):
-            return json.dumps({"pillar": opts["pillar"], "nodes": tax.nodes(opts["pillar"])}, indent=2)
-        return json.dumps({"source": "Arcanum PITAX (CC BY 4.0)", "pillars": tax.pillars(),
-                           "usage": "options={pillar|code|query}"}, indent=2)
-
-    if action == "judge":
-        v = _or.llm_judge(opts.get("text", ""), opts.get("goal", ""),
-                          success_markers=opts.get("success_markers"))
-        return json.dumps(v.__dict__, indent=2)
-
-    if action == "calibrate":
-        cal = _cal.calibrate(target or "http://127.0.0.1:9000")
-        _record_ai(lambda ar: ar.record_calibration(cal))
-        return json.dumps(cal, indent=2)
-
-    body_key = opts.get("body_key", "message")
-    reply_key = opts.get("reply_key", "reply")
-
-    if action == "filter_probe":
-        if not target:
-            return json.dumps({"error": "filter_probe requires target=<URL>"})
-        send = _http_send_fn(target, body_key, reply_key, opts.get("headers"))
-        res = _fp.probe_filter(send)
-        _record_ai(lambda ar: ar.record_filter_probe(res, target))
-        return json.dumps(res, indent=2)
-
-    if action == "feedback_attack":
-        if not target or not opts.get("goal"):
-            return json.dumps({"error": "feedback_attack requires target=<URL> and options.goal"})
-        send = _http_send_fn(target, body_key, reply_key, opts.get("headers"))
-        goal = opts["goal"]
-        markers = opts.get("success_markers")
-        r = _rt.feedback_attack(goal, send, success_markers=markers,
-                                transforms=opts.get("transforms"),
-                                max_attempts=int(opts.get("max_attempts", 24)),
-                                seed=int(opts.get("seed", 0)))
-        n = int(opts.get("reproduce_n", 0) or 0)
-        if r["jailbroken"] and n:
-            # Replay the EXACT winning payload — the only way k/N measures the model's
-            # non-determinism rather than our (now creative/variant) render variance.
-            winning = (r.get("best") or {}).get("payload") or ""
-
-            def one_shot():
-                reply = send(winning if isinstance(winning, str) else winning[-1])
-                return _or.heuristic_judge(reply, goal, markers)
-            r["reproducibility"] = _rt.reproduce(one_shot, n=n)
-        r["transcript"] = r["transcript"][:12]   # trim for context
-        _record_ai(lambda ar: ar.record_attack(r, goal, target))
-        return json.dumps(r, indent=2)
-
-    return json.dumps({"error": f"unknown action '{action}'. "
-                       "Use: techniques, taxonomy, filter_probe, feedback_attack, judge, calibrate"})
+    fn = _DISPATCH.get(action)
+    if fn is None:
+        return json.dumps({"error": f"unknown action '{action}'. Use: " + ", ".join(_DISPATCH)})
+    return fn(target, opts)

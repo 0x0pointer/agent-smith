@@ -36,14 +36,17 @@ async def test_run_garak_builds_hardened_docker_run(monkeypatch, tmp_path):
     )
 
     argv = cap["argv"]
-    assert "run" in argv and "--rm" in argv
+    assert "run" in argv
+    assert "--rm" in argv
     assert "--add-host=host.docker.internal:host-gateway" in argv   # reach host target x-platform
     assert "--network=host" not in argv                             # host net doesn't work on Docker Desktop
-    assert "--cap-drop=ALL" in argv and "--security-opt=no-new-privileges" in argv
+    assert "--cap-drop=ALL" in argv
+    assert "--security-opt=no-new-privileges" in argv
     assert any(a.startswith("--memory=") for a in argv)
     assert gr.GARAK_IMAGE in argv
     # config-in / report-out over the /work mount
-    assert any(a == "-v" for a in argv) and any(a.endswith(":/work") for a in argv)
+    assert any(a == "-v" for a in argv)
+    assert any(a.endswith(":/work") for a in argv)
     assert any(a.endswith(":/root/.cache") for a in argv)   # persistent model cache
     sh_cmd = argv[-1]
     assert "garak --target_type rest -G /work/garak_rest.json" in sh_cmd

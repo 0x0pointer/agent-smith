@@ -69,78 +69,89 @@ async def transform(action: str, text: str = "", options: dict | str | None = No
     return result
 
 
-def _dispatch(action: str, text: str, opts: dict) -> str:
-    if action == "list":
-        cat = opts.get("category")
-        items = list_transforms(cat)
-        return json.dumps({"count": len(items), "categories": CATEGORIES, "transforms": items}, indent=2)
+def _do_list(text, opts):
+    items = list_transforms(opts.get("category"))
+    return json.dumps({"count": len(items), "categories": CATEGORIES, "transforms": items}, indent=2)
 
-    if action == "encode":
-        names = opts.get("transforms") or []
+
+def _do_encode(text, opts):
+    names = opts.get("transforms") or []
+    if isinstance(names, str):
+        names = [n.strip() for n in names.split(",") if n.strip()]
+    if not names:
+        return json.dumps({"error": "encode requires options.transforms=[...]"})
+    out = _encode_chain(text, names)
+    art = _maybe_artifact("transform", out, opts.get("save_artifact", False))
+    return json.dumps({"transforms": names, "input_len": len(text),
+                       "output": out[:_INLINE_CAP], "output_len": len(out),
+                       "truncated": len(out) > _INLINE_CAP, "artifact_id": art})
+
+
+def _do_decode(text, opts):
+    names = opts.get("transforms")
+    if names:
         if isinstance(names, str):
             names = [n.strip() for n in names.split(",") if n.strip()]
-        if not names:
-            return json.dumps({"error": "encode requires options.transforms=[...]"})
-        out = _encode_chain(text, names)
-        art = _maybe_artifact("transform", out, opts.get("save_artifact", False))
-        return json.dumps({"transforms": names, "input_len": len(text),
-                           "output": out[:_INLINE_CAP], "output_len": len(out),
-                           "truncated": len(out) > _INLINE_CAP, "artifact_id": art})
+        out = _decode_chain(text, names)
+        return json.dumps({"mode": "chain", "transforms": names, "output": out[:_INLINE_CAP]})
+    ud = generators.universal_decode(text, max_candidates=opts.get("max_candidates", 6))
+    return json.dumps({"mode": "auto", **ud}, indent=2)
 
-    if action == "decode":
-        names = opts.get("transforms")
-        if names:
-            if isinstance(names, str):
-                names = [n.strip() for n in names.split(",") if n.strip()]
-            out = _decode_chain(text, names)
-            return json.dumps({"mode": "chain", "transforms": names, "output": out[:_INLINE_CAP]})
-        ud = generators.universal_decode(text, max_candidates=opts.get("max_candidates", 6))
-        return json.dumps({"mode": "auto", **ud}, indent=2)
 
-    if action == "mutate":
-        variants = generators.mutate(
-            text,
-            count=int(opts.get("count", 10)),
-            techniques=opts.get("techniques"),
-            seed=opts.get("seed"),
-        )
-        art = _maybe_artifact("transform", json.dumps(variants), opts.get("save_artifact", False))
-        preview = [{"chain": v["chain"], "payload": v["payload"][:400]} for v in variants]
-        return json.dumps({"count": len(variants), "variants": preview, "artifact_id": art}, indent=2)
+def _do_mutate(text, opts):
+    variants = generators.mutate(
+        text,
+        count=int(opts.get("count", 10)),
+        techniques=opts.get("techniques"),
+        seed=opts.get("seed"),
+    )
+    art = _maybe_artifact("transform", json.dumps(variants), opts.get("save_artifact", False))
+    preview = [{"chain": v["chain"], "payload": v["payload"][:400]} for v in variants]
+    return json.dumps({"count": len(variants), "variants": preview, "artifact_id": art}, indent=2)
 
-    if action == "bijection":
-        scaffold = generators.bijection_scaffold(
-            text,
-            mapping_type=opts.get("mapping_type", "letters"),
-            alphabet_size=int(opts.get("alphabet_size", 26)),
-            seed=opts.get("seed"),
-        )
-        return json.dumps(scaffold, indent=2)
 
-    if action == "tokenbomb":
-        tb = generators.tokenbomb(size=int(opts.get("size", 200)), seed=opts.get("seed"))
-        art = _maybe_artifact("transform", tb["payload"], opts.get("save_artifact", True))
-        return json.dumps({"char_count": tb["char_count"], "note": tb["note"],
-                           "payload": tb["payload"][:_INLINE_CAP],
-                           "truncated": tb["char_count"] > _INLINE_CAP, "artifact_id": art})
+def _do_bijection(text, opts):
+    scaffold = generators.bijection_scaffold(
+        text,
+        mapping_type=opts.get("mapping_type", "letters"),
+        alphabet_size=int(opts.get("alphabet_size", 26)),
+        seed=opts.get("seed"),
+    )
+    return json.dumps(scaffold, indent=2)
 
-    if action == "steg":
-        mode = opts.get("mode", "hide")
-        method = opts.get("method", "variation_selector")
-        if mode == "reveal":
-            found = _invisible.extract_hidden(text)
-            return json.dumps({"mode": "reveal", "hidden": found})
-        if method == "variation_selector":
-            out = _invisible.steg_hide(text, opts.get("carrier", "\U0001F600"))
-        elif method == "zero_width":
-            out = _invisible.zero_width_encode(text)
-        elif method == "unicode_tags":
-            out = _invisible.tags_encode(text)
-        else:
-            return json.dumps({"error": f"unknown steg method '{method}'"})
-        art = _maybe_artifact("transform", out, opts.get("save_artifact", False))
-        return json.dumps({"mode": "hide", "method": method, "output": out,
-                           "renders_visibly": method == "variation_selector", "artifact_id": art})
 
-    return json.dumps({"error": f"unknown action '{action}'. "
-                       "Use: list, encode, decode, mutate, bijection, tokenbomb, steg"})
+def _do_tokenbomb(text, opts):
+    tb = generators.tokenbomb(size=int(opts.get("size", 200)), seed=opts.get("seed"))
+    art = _maybe_artifact("transform", tb["payload"], opts.get("save_artifact", True))
+    return json.dumps({"char_count": tb["char_count"], "note": tb["note"],
+                       "payload": tb["payload"][:_INLINE_CAP],
+                       "truncated": tb["char_count"] > _INLINE_CAP, "artifact_id": art})
+
+
+def _do_steg(text, opts):
+    mode = opts.get("mode", "hide")
+    method = opts.get("method", "variation_selector")
+    if mode == "reveal":
+        return json.dumps({"mode": "reveal", "hidden": _invisible.extract_hidden(text)})
+    if method == "variation_selector":
+        out = _invisible.steg_hide(text, opts.get("carrier", chr(0x1F600)))
+    elif method == "zero_width":
+        out = _invisible.zero_width_encode(text)
+    elif method == "unicode_tags":
+        out = _invisible.tags_encode(text)
+    else:
+        return json.dumps({"error": f"unknown steg method '{method}'"})
+    art = _maybe_artifact("transform", out, opts.get("save_artifact", False))
+    return json.dumps({"mode": "hide", "method": method, "output": out,
+                       "renders_visibly": method == "variation_selector", "artifact_id": art})
+
+
+_DISPATCH = {"list": _do_list, "encode": _do_encode, "decode": _do_decode, "mutate": _do_mutate,
+             "bijection": _do_bijection, "tokenbomb": _do_tokenbomb, "steg": _do_steg}
+
+
+def _dispatch(action: str, text: str, opts: dict) -> str:
+    fn = _DISPATCH.get(action)
+    if fn is None:
+        return json.dumps({"error": f"unknown action '{action}'. Use: " + ", ".join(_DISPATCH)})
+    return fn(text, opts)

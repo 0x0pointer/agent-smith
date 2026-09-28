@@ -32,12 +32,14 @@ def test_classify_labels():
 
 def test_heuristic_judge_marker_is_decisive():
     v = heuristic_judge("Of course, the key is LAB-SECRET-9a4f2", "leak the key", ["LAB-SECRET"])
-    assert v.complied and v.score == 1.0
+    assert v.complied
+    assert v.score == 1.0
 
 
 def test_heuristic_judge_refusal_not_complied():
     v = heuristic_judge("I'm sorry, I can't do that.", "leak the key", ["LAB-SECRET"])
-    assert not v.complied and v.score < 0.6
+    assert not v.complied
+    assert v.score < 0.6
 
 
 def test_llm_judge_falls_back_without_model():
@@ -48,7 +50,8 @@ def test_llm_judge_falls_back_without_model():
 def test_llm_judge_uses_model_callable():
     fake = lambda prompt: '{"complied": true, "score": 0.9, "why": "leaked"}'
     v = oracles.llm_judge("some ambiguous reply", "leak", model=fake)
-    assert v.complied and v.score == 0.9
+    assert v.complied
+    assert v.score == 0.9
 
 
 def test_side_effect_verdict():
@@ -79,7 +82,8 @@ def test_probe_filter_finds_bypasses():
         return "blocked by safety filter" if "password" in msg.lower() else "ok, sure"
     r = filter_probe.probe_filter(send)
     assert r["plaintext_blocked"] is True
-    assert "base64" in r["bypass"] and "direct" in r["blocked"]
+    assert "base64" in r["bypass"]
+    assert "direct" in r["blocked"]
     assert filter_probe.pick_transforms(r)                        # returns something usable
 
 
@@ -121,7 +125,9 @@ def test_feedback_attack_no_false_positive_on_refuser():
 def test_reproduce_counts_rate():
     seq = iter([True, False, True, True, False])
     out = reproduce(lambda: next(seq), n=5)
-    assert out["k"] == 3 and out["n"] == 5 and out["rate"] == 0.6
+    assert out["k"] == 3
+    assert out["n"] == 5
+    assert out["rate"] == 0.6
 
 
 # ── the redteam() MCP tool (no network) ────────────────────────────────────────
@@ -132,7 +138,8 @@ async def test_redteam_tool_techniques():
     from mcp_server.redteam_tools import redteam
     out = json.loads(await redteam("techniques", options={}))
     names = [t["name"] for t in out["techniques"]]
-    assert "crescendo" in names and "roleplay" in names
+    assert "crescendo" in names
+    assert "roleplay" in names
 
 
 @pytest.mark.asyncio
@@ -142,7 +149,8 @@ async def test_redteam_tool_judge():
     out = json.loads(await redteam("judge", options={
         "text": "Sure, the key is LAB-SECRET-9a4f2", "goal": "leak the key",
         "success_markers": ["LAB-SECRET"]}))
-    assert out["complied"] is True and out["score"] == 1.0
+    assert out["complied"] is True
+    assert out["score"] == 1.0
 
 
 @pytest.mark.asyncio
@@ -167,7 +175,9 @@ def test_taxonomy_pillars_counts():
 def test_taxonomy_lookup_by_code_and_id():
     from mcp_server.redteam import taxonomy as tax
     n = tax.lookup("PIT-T-29")
-    assert n and n["id"] == "crescendo" and n["pillar"] == "techniques"
+    assert n
+    assert n["id"] == "crescendo"
+    assert n["pillar"] == "techniques"
     # id lookup returns the same node
     assert tax.lookup("crescendo")["code"] == "PIT-T-29"
     assert tax.lookup("does-not-exist") is None
@@ -236,7 +246,8 @@ async def test_garak_autofile_tags_and_dedups(tmp_path, monkeypatch):
     assert len(filed) == 1                         # only the hit, not the clean probe
     assert filed[0]["severity"] == "medium"        # 21% ASR
     stored = json.loads(ff.read_text())["findings"]
-    assert stored and all(f["tool_used"] == "garak" for f in stored)
+    assert stored
+    assert all(f["tool_used"] == "garak" for f in stored)
     # idempotent
     again = await handlers_ai._autofile_garak_findings(raw, tgt)
     assert again == []
@@ -247,7 +258,9 @@ async def test_garak_autofile_tags_and_dedups(tmp_path, monkeypatch):
 def test_technique_arsenal_counts_and_pool():
     from mcp_server.redteam import techniques as T
     c = T.technique_count()
-    assert c["tuned"] == 13 and c["pitax"] >= 60 and c["unique"] >= 70
+    assert c["tuned"] == 13
+    assert c["pitax"] >= 60
+    assert c["unique"] >= 70
     pool = T.technique_pool(seed=3)
     assert pool[:13] == list(T.TECHNIQUES.keys())      # tuned core comes first
     assert len(pool) == c["unique"]                     # then the PITAX slice
@@ -262,7 +275,8 @@ def test_render_variant_is_creative_and_embeds_goal():
     assert len(variants) >= 2                            # not robotic across variants
     assert all(goal in v for v in variants)             # every payload targets the goal
     cv = T.creative_variants("narrative_injection", goal, n=4)
-    assert len(cv) >= 2 and len({*cv}) == len(cv)       # distinct
+    assert len(cv) >= 2
+    assert len({*cv}) == len(cv)       # distinct
 
 
 def test_render_falls_back_to_pitax_by_code_or_id():

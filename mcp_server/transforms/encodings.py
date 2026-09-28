@@ -248,9 +248,9 @@ def _atbash(t: str) -> str:
     out = []
     for ch in t:
         if "a" <= ch <= "z":
-            out.append(chr(219 - ord(ch)))       # 97+122 = 219
+            out.append(chr(219 - ord(ch)))       # atbash reflects a<->z around code point 219
         elif "A" <= ch <= "Z":
-            out.append(chr(155 - ord(ch)))       # 65+90 = 155
+            out.append(chr(155 - ord(ch)))       # atbash reflects A<->Z around code point 155
         else:
             out.append(ch)
     return "".join(out)

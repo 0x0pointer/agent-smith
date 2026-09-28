@@ -102,22 +102,27 @@ def mutate(text: str, count: int = 10, techniques: list[str] | None = None,
     while len(variants) < count and attempts < count * 8:
         attempts += 1
         chain = rng.sample(pool, rng.randint(1, min(3, len(pool))))
-        out = text
-        applied = []
-        for name in chain:
-            if name == "homoglyph_mix":
-                out = _homoglyph_mix(out, rng)
-                applied.append("homoglyph_mix")
-            elif name in TRANSFORMS:
-                try:
-                    out = TRANSFORMS[name]["encode"](out)
-                    applied.append(name)
-                except Exception:
-                    continue
+        out, applied = _apply_chain(text, chain, rng)
         if out and out != text and out not in seen:
             seen.add(out)
             variants.append({"chain": applied, "payload": out})
     return variants
+
+
+def _apply_chain(text: str, chain: list[str], rng: random.Random) -> tuple[str, list[str]]:
+    """Apply a transform chain left-to-right; return (output, names-actually-applied)."""
+    out, applied = text, []
+    for name in chain:
+        if name == "homoglyph_mix":
+            out = _homoglyph_mix(out, rng)
+            applied.append("homoglyph_mix")
+        elif name in TRANSFORMS:
+            try:
+                out = TRANSFORMS[name]["encode"](out)
+                applied.append(name)
+            except Exception:
+                continue
+    return out, applied
 
 
 def _homoglyph_mix(text: str, rng: random.Random) -> str:

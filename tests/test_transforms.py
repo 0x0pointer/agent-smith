@@ -59,7 +59,8 @@ def test_every_spec_well_formed():
 
 def test_reversible_set_matches_flags():
     for name in REVERSIBLE:
-        assert TRANSFORMS[name]["reversible"] and TRANSFORMS[name]["decode"]
+        assert TRANSFORMS[name]["reversible"]
+        assert TRANSFORMS[name]["decode"]
 
 
 # ── round-trips ───────────────────────────────────────────────────────────────
@@ -164,7 +165,8 @@ def test_tokenbomb_expands_beyond_visible():
 
 def test_list_transforms_filter():
     base = list_transforms("base")
-    assert base and all(t["category"] == "base" for t in base)
+    assert base
+    assert all(t["category"] == "base" for t in base)
     assert len(list_transforms()) == len(TRANSFORMS)
 
 

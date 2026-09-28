@@ -114,42 +114,43 @@ async def _autofile_garak_findings(raw: str, target: str) -> list[dict]:
     return filed
 
 
-async def _handle_garak(target, flags, options):
-    from tools import garak_runner
-
-    _record("garak")  # track for coverage/skill-worked gates
-    probes     = options.get("probes", "dan,encoding,promptinject,leakreplay,xss")
-    timeout    = options.get("timeout", 900)
-    body_key   = options.get("body_key", "message")
-    method     = options.get("method", "post")
-    resp_field = options.get("response_field", "")  # JSONPath to the reply text
-
-    # garak 0.15.0 wants canonical probe names WITHOUT a "probes." prefix:
-    # both "dan" and "dan.Dan_11_0" are accepted, but "probes.dan[.Class]" is
-    # REJECTED ("Unknown probes" -> garak runs nothing). Strip any stray prefix;
-    # never add one.
-    qualified = ",".join(
+def _normalize_probes(probes: str) -> str:
+    """garak 0.15.0 wants canonical probe names WITHOUT a "probes." prefix: both
+    "dan" and "dan.Dan_11_0" are accepted, but "probes.dan[.Class]" is REJECTED
+    ("Unknown probes" -> garak runs nothing). Strip any stray prefix; never add one."""
+    return ",".join(
         p[len("probes."):] if p.startswith("probes.") else p
-        for p in (s.strip() for s in probes.split(",")) if p
+        for p in (part.strip() for part in probes.split(",")) if p
     )
 
-    # REST-generator config (-G). Provides the request body ($INPUT slot) and, if
-    # given, the response parser — without both, every probe scores empty output.
-    # Rewrite localhost/127.0.0.1 → host.docker.internal so the garak container
-    # (bridge net + --add-host=host-gateway) reaches a target on the host — works
-    # on macOS AND Linux (--network=host does not, on Docker Desktop).
+
+def _build_garak_rest_cfg(target, options) -> dict:
+    """REST-generator config (-G): the request body ($INPUT slot) and, if given, the
+    response parser — without both, every probe scores empty output. localhost is
+    rewritten to host.docker.internal so the bridge-net container reaches the host
+    (works on macOS AND Linux; --network=host does not on Docker Desktop)."""
     from tools.kali_runner import _host_rewrite
     gen = {
         "name":    "agent-smith-target",
         "uri":     _host_rewrite(target),
-        "method":  method,
+        "method":  options.get("method", "post"),
         "headers": _ai_headers(options),
-        "req_template_json_object": {body_key: "$INPUT"},
+        "req_template_json_object": {options.get("body_key", "message"): "$INPUT"},
     }
+    resp_field = options.get("response_field", "")  # JSONPath to the reply text
     if resp_field:
         gen["response_json"] = True
         gen["response_json_field"] = resp_field
-    rest_cfg = {"rest": {"RestGenerator": gen}}
+    return {"rest": {"RestGenerator": gen}}
+
+
+async def _handle_garak(target, flags, options):
+    from tools import garak_runner
+
+    _record("garak")  # track for coverage/skill-worked gates
+    timeout = options.get("timeout", 900)
+    qualified = _normalize_probes(options.get("probes", "dan,encoding,promptinject,leakreplay,xss"))
+    rest_cfg = _build_garak_rest_cfg(target, options)
 
     log.tool_call("garak", {"target": target, "probes": qualified})
     call_id = cost_tracker.start("garak")

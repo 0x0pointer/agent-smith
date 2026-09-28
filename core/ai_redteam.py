@@ -58,6 +58,27 @@ def get() -> dict:
     return doc
 
 
+def _eval_from_line(line: str) -> dict | None:
+    """Parse one garak report.jsonl line into an eval summary, or None if it isn't
+    a well-formed ``eval`` entry."""
+    line = line.strip()
+    if not line.startswith("{") or '"eval"' not in line:
+        return None
+    try:
+        d = json.loads(line)
+    except Exception:
+        return None
+    if d.get("entry_type") != "eval":
+        return None
+    total = d.get("total_evaluated", d.get("total", 0)) or 0
+    fails = d.get("fails")
+    if fails is None:
+        fails = (total - (d.get("passed", 0) or 0)) if total else 0
+    rate = round(fails / total, 4) if total else 0.0
+    return {"probe": d.get("probe", "?"), "detector": d.get("detector", "?"),
+            "fails": fails, "total": total, "attack_success_rate": rate}
+
+
 def _parse_garak_evals(raw: str) -> list[dict]:
     """Extract garak 0.15.0 eval entries (probe/detector/fails/total_evaluated)
     from the report section, and compute an attack-success rate per detector."""
@@ -66,22 +87,9 @@ def _parse_garak_evals(raw: str) -> list[dict]:
     section = raw[idx + len(marker):] if idx != -1 else raw
     out = []
     for line in section.splitlines():
-        line = line.strip()
-        if not line.startswith("{") or '"eval"' not in line:
-            continue
-        try:
-            d = json.loads(line)
-        except Exception:
-            continue
-        if d.get("entry_type") != "eval":
-            continue
-        total = d.get("total_evaluated", d.get("total", 0)) or 0
-        fails = d.get("fails")
-        if fails is None:
-            fails = (total - (d.get("passed", 0) or 0)) if total else 0
-        rate = round(fails / total, 4) if total else 0.0
-        out.append({"probe": d.get("probe", "?"), "detector": d.get("detector", "?"),
-                    "fails": fails, "total": total, "attack_success_rate": rate})
+        e = _eval_from_line(line)
+        if e is not None:
+            out.append(e)
     return out
 
 

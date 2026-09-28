@@ -86,7 +86,7 @@ def _roman_encode(t: str) -> str:
 
 def _roman_decode(t: str) -> str:
     import re
-    return re.sub(r"[MDCLXVI]{1,}", lambda m: str(_roman_to_int(m.group())), t)
+    return re.sub(r"[MDCLXVI]+", lambda m: str(_roman_to_int(m.group())), t)
 
 
 # ── Zalgo (deterministic: seeded by the input) ───────────────────────────────

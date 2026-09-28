@@ -245,7 +245,7 @@ def creative_variants(name: str, goal: str, n: int = 5, seed: int = 0) -> list[s
     """Up to `n` distinct payloads for one technique (creative diversity)."""
     seen, out = set(), []
     for v in range(max(1, n) * 2):
-        p = render_variant(name, goal, v)
+        p = render_variant(name, goal, seed + v)
         key = p if isinstance(p, str) else " | ".join(p)
         if key not in seen:
             seen.add(key)
