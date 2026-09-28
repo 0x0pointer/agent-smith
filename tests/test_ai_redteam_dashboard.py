@@ -103,7 +103,8 @@ def test_toolchain_status_shape_and_cache(store):
     store._HEALTH_CACHE.update(ts=0, data=None)
     s = store.toolchain_status()
     assert "ready" in s
-    assert isinstance(s["components"], list) and s["components"]
+    assert isinstance(s["components"], list)
+    assert s["components"]
     assert any(c["name"].startswith("transform") for c in s["components"])
     assert any(c["name"].startswith("redteam") for c in s["components"])
     # a second call within the TTL returns the cached object

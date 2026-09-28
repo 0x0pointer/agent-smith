@@ -57,6 +57,43 @@ def _garak_severity(rate: float) -> str:
     return "low"
 
 
+def _existing_finding_keys() -> set:
+    """(target, title) pairs already on disk — for idempotent auto-filing."""
+    from core import paths as _paths
+    seen = set()
+    try:
+        ff = _paths.FINDINGS_FILE
+        if ff.exists():
+            for f in json.loads(ff.read_text()).get("findings", []):
+                seen.add((f.get("target", ""), f.get("title", "")))
+    except Exception:
+        pass
+    return seen
+
+
+def _garak_finding_fields(e: dict, tgt: str) -> dict:
+    """Build title/severity/description/evidence for one garak hit."""
+    probe = e.get("probe", "?")
+    detector = e.get("detector", "?")
+    fails = e.get("fails") or 0
+    total = e.get("total") or 0
+    rate = e.get("attack_success_rate")
+    if rate is None:
+        rate = (fails / total) if total else 0.0
+    pct = round(rate * 100, 1)
+    return {
+        "title": f"garak: '{probe}' probe bypassed model safety",
+        "severity": _garak_severity(rate),
+        "asr": pct,
+        "description": (f"garak automated probe '{probe}' (detector {detector}) succeeded on "
+                        f"{fails}/{total} generations — a {pct}% attack-success rate. This is an "
+                        f"AUTOMATED result: verify the transcript and adjudicate severity before "
+                        f"reporting it externally."),
+        "evidence": (f"garak eval — probe={probe} detector={detector} fails={fails}/{total} "
+                     f"ASR={pct}% target={tgt}"),
+    }
+
+
 async def _autofile_garak_findings(raw: str, target: str) -> list[dict]:
     """Auto-file one finding per garak probe HIT, tagged ``tool_used="garak"``.
 
@@ -67,48 +104,24 @@ async def _autofile_garak_findings(raw: str, target: str) -> list[dict]:
     """
     from core import ai_redteam as _ar
     from core import findings as _fs
-    from core import paths as _paths
 
-    evals = _ar._parse_garak_evals(raw or "")
-    hits = [e for e in evals if (e.get("fails") or 0) > 0]
+    hits = [e for e in _ar._parse_garak_evals(raw or "") if (e.get("fails") or 0) > 0]
     if not hits:
         return []
-
-    seen = set()
-    try:
-        ff = _paths.FINDINGS_FILE
-        if ff.exists():
-            for f in json.loads(ff.read_text()).get("findings", []):
-                seen.add((f.get("target", ""), f.get("title", "")))
-    except Exception:
-        pass
-
+    seen = _existing_finding_keys()
     tgt = target or "LLM endpoint"
     filed: list[dict] = []
     for e in hits:
-        probe = e.get("probe", "?")
-        detector = e.get("detector", "?")
-        fails = e.get("fails") or 0
-        total = e.get("total") or 0
-        rate = e.get("attack_success_rate")
-        if rate is None:
-            rate = (fails / total) if total else 0.0
-        pct = round(rate * 100, 1)
-        sev = _garak_severity(rate)
-        title = f"garak: '{probe}' probe bypassed model safety"
-        if (tgt, title) in seen:
+        f = _garak_finding_fields(e, tgt)
+        if (tgt, f["title"]) in seen:
             continue
-        desc = (f"garak automated probe '{probe}' (detector {detector}) succeeded on "
-                f"{fails}/{total} generations — a {pct}% attack-success rate. This is an "
-                f"AUTOMATED result: verify the transcript and adjudicate severity before "
-                f"reporting it externally.")
-        ev = (f"garak eval — probe={probe} detector={detector} fails={fails}/{total} "
-              f"ASR={pct}% target={tgt}")
         try:
-            entry = await _fs.add_finding(title=title, severity=sev, target=tgt,
-                                          description=desc, evidence=ev, tool_used="garak")
-            filed.append({"id": entry.get("id"), "title": title, "severity": sev, "asr": pct})
-            seen.add((tgt, title))
+            entry = await _fs.add_finding(title=f["title"], severity=f["severity"], target=tgt,
+                                          description=f["description"], evidence=f["evidence"],
+                                          tool_used="garak")
+            filed.append({"id": entry.get("id"), "title": f["title"],
+                          "severity": f["severity"], "asr": f["asr"]})
+            seen.add((tgt, f["title"]))
         except Exception:
             pass
     return filed

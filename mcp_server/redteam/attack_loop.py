@@ -106,6 +106,42 @@ class _Run:
         return _result(self.jailbroken(), self.best, self.transcript, self.attempts)
 
 
+def _phase_breadth(run, techs, breadth_cap, goal, rng):
+    """Phase 1 — one attempt per technique across the breadth slice."""
+    for tname in techs[:breadth_cap]:
+        if run.exhausted():
+            break
+        if run.attempt(render_variant(tname, goal, rng.randint(0, 3)), 1, tname, None):
+            return True
+    return False
+
+
+def _phase_depth(run, tfs, goal, rng):
+    """Phase 2 — hill-climb from the top families, stacking bypass encodings."""
+    for tname in run.top_techniques(3):
+        for tf in tfs:
+            if run.exhausted():
+                break
+            if run.attempt(_encode_variant(tname, goal, tf, rng), 2, tname, tf):
+                return True
+    return False
+
+
+def _phase_mutate(run, goal, seed, max_attempts):
+    """Phase 3 — obfuscate the strongest plaintext payload with random multi-transform
+    chains (homoglyph / zero-width / base64 combos) the single-transform sweep never
+    reaches, so the attack stays unpredictable."""
+    base_payload = run.best[3]
+    if run.jailbroken() or run.exhausted() or not isinstance(base_payload, str):
+        return False
+    for m in _mutate(base_payload, count=min(max_attempts - run.attempts, 6), seed=seed):
+        if run.exhausted():
+            break
+        if run.attempt(m["payload"], 3, run.best[1], "+".join(m["chain"]) or "mutate"):
+            return True
+    return False
+
+
 def feedback_attack(goal: str,
                     send_fn: Callable[..., str],
                     success_markers: list[str] | None = None,
@@ -131,32 +167,10 @@ def feedback_attack(goal: str,
 
     run = _Run(judge, _make_deliver(send_fn, rng), max_attempts, goal)
 
-    # phase 1 — breadth: one attempt per technique across the breadth slice
-    for tname in techs[:breadth_cap]:
-        if run.exhausted():
-            break
-        if run.attempt(render_variant(tname, goal, rng.randint(0, 3)), 1, tname, None):
-            return run.result()
-
-    # phase 2 — depth: hill-climb from the top families, stacking bypass encodings
-    for tname in run.top_techniques(3):
-        for tf in tfs:
-            if run.exhausted():
-                break
-            if run.attempt(_encode_variant(tname, goal, tf, rng), 2, tname, tf):
-                return run.result()
-
-    # phase 3 — creative mutation: obfuscate the strongest plaintext payload with
-    # random multi-transform chains (homoglyph / zero-width / base64 combos) the
-    # single-transform sweep never reaches, so the attack stays unpredictable.
-    base_payload = run.best[3]
-    if not run.jailbroken() and not run.exhausted() and isinstance(base_payload, str):
-        for m in _mutate(base_payload, count=min(max_attempts - run.attempts, 6), seed=seed):
-            if run.exhausted():
-                break
-            if run.attempt(m["payload"], 3, run.best[1], "+".join(m["chain"]) or "mutate"):
-                return run.result()
-
+    # Run the phases in order; `or` short-circuits as soon as one jailbreaks.
+    (_phase_breadth(run, techs, breadth_cap, goal, rng)
+     or _phase_depth(run, tfs, goal, rng)
+     or _phase_mutate(run, goal, seed, max_attempts))
     return run.result()
 
 
