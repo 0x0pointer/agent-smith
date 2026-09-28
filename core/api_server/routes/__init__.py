@@ -27,6 +27,7 @@ from . import setup_gate_routes  # noqa: E402,F401
 from . import triage_routes  # noqa: E402,F401
 from . import smith_routes  # noqa: E402,F401
 from . import misc_routes  # noqa: E402,F401
+from . import ai_redteam_routes  # noqa: E402,F401
 
 # Re-export handler functions for consumers/tests that import them by name.
 from .dashboard_routes import (  # noqa: E402,F401
@@ -73,6 +74,7 @@ from .smith_routes import (  # noqa: E402,F401
     api_watchdog_status,
     api_restart_smith,
 )
+from .ai_redteam_routes import api_ai_redteam  # noqa: E402,F401
 from .misc_routes import (  # noqa: E402,F401
     api_qa,
     api_steering,

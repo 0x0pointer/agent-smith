@@ -37,14 +37,24 @@ def _parse_garak_evals(section: str) -> list[dict]:
 
 
 def _collect_garak_hits(evals: list[dict], result: SummaryResult) -> list[dict]:
-    """Append a per-probe fact line to `result` for each eval; return the ones with hits."""
+    """Append a per-probe fact line to `result` for each eval; return the ones with hits.
+
+    garak 0.15.0 eval entries carry an explicit ``fails`` count and
+    ``total_evaluated`` (NOT ``total``). We prefer those; a missing ``fails``
+    falls back to ``total - passed`` so older/simpler shapes still parse. Using
+    ``e.get("total")`` alone silently reported 0 hits on real 0.15.0 output — a
+    false negative that hid genuine garak findings.
+    """
     hits: list[dict] = []
     for e in evals:
         probe    = e.get("probe", "?")
         detector = e.get("detector", "?")
-        total    = e.get("total", 0) or 0
+        total    = e.get("total_evaluated", e.get("total", 0)) or 0
         passed   = e.get("passed", 0) or 0
-        failed   = total - passed if total else 0
+        failed   = e.get("fails")
+        if failed is None:
+            failed = (total - passed) if total else 0
+        failed = failed or 0
         result.facts.append(f"{probe}/{detector}: {failed}/{total} hit(s)")
         if failed > 0:
             hits.append({"probe": probe, "detector": detector, "failed": failed, "total": total})
@@ -59,7 +69,9 @@ def _summarize_garak(raw: str, _ctx: dict) -> SummaryResult:
     evals = _parse_garak_evals(section)
 
     if not evals:
-        result.summary = "garak ran — no structured eval entries parsed (check artifact / REST config)"
+        result.summary = ("garak ran — no eval entries parsed. Likely an INCOMPLETE run "
+                          "(timeout on a slow real LLM endpoint — cut probes or use -g 1) or "
+                          "the REST config never reached the target (check response_field).")
         result.facts = [l.strip()[:200] for l in raw.strip().splitlines()[:5] if l.strip()]
         result.evidence = {"eval_entries": 0}
         result.recommended.append(
@@ -68,17 +80,26 @@ def _summarize_garak(raw: str, _ctx: dict) -> SummaryResult:
         return result
 
     hits = _collect_garak_hits(evals, result)
+    autofiled = _ctx.get("autofiled") or []
 
     if hits:
         result.summary = f"garak: {len(hits)} probe(s) with hits across {len(evals)} eval(s)"
         for h in hits[:10]:
             result.anomalies.append(f"garak hit: {h['probe']}/{h['detector']} {h['failed']}/{h['total']}")
-        result.recommended.append(
-            "File report(action='finding') per garak hit, then close the matching LLM coverage "
-            "cell vulnerable with this artifact_id"
-        )
+        if autofiled:
+            result.facts.append(f"auto-filed {len(autofiled)} finding(s) tagged tool_used='garak'")
+            result.recommended.append(
+                f"{len(autofiled)} garak finding(s) were auto-filed (tool_used='garak'). VERIFY each "
+                "transcript, adjudicate severity, then close the matching LLM coverage cell vulnerable "
+                "with its finding_id + this artifact_id"
+            )
+        else:
+            result.recommended.append(
+                "File report(action='finding') per garak hit, then close the matching LLM coverage "
+                "cell vulnerable with this artifact_id"
+            )
     else:
         result.summary = f"garak: no hits across {len(evals)} eval(s) — model resisted all probes"
-    result.evidence = {"eval_entries": len(evals), "hits": hits[:20]}
+    result.evidence = {"eval_entries": len(evals), "hits": hits[:20], "autofiled": autofiled}
     return result
 

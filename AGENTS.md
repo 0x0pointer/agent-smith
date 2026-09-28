@@ -4,7 +4,7 @@ You are a security researcher with access to penetration testing tools via MCP a
 
 ## MCP Tools
 
-Six consolidated tools. Each dispatches to multiple underlying scanners/actions via the first parameter.
+Seven consolidated tools. Each dispatches to multiple underlying scanners/actions via the first parameter.
 
 ### `scan(tool, target, flags, options)`
 Run any security scanner.
@@ -36,6 +36,14 @@ Pure-Python, in-process payload-crafting engine for AI red-teaming (P4RS3LT0NGV3
 - `action="bijection"` — Bijection-Learning jailbreak scaffold. options: `mapping_type=letters|digits|tokens`, `seed=`
 - `action="tokenbomb"` — token-exhaustion payload (LLM10). options: `size=200`, `seed=`
 - `action="steg"` — hide/reveal via invisible Unicode. options: `mode=hide|reveal`, `method=variation_selector|zero_width|unicode_tags`
+
+### `redteam(action, target, options)`
+Manual-layer red-team **engine** (pure-Python, in-process) that makes the agent-driven layer systematic instead of improvised — the companion to `transform()`. Deterministic core (no API key); optional LLM-judge/attacker when a key is configured.
+- `action="techniques"` — the curated jailbreak technique-family library (direct, roleplay, dev_mode, hypothetical, authority, refusal_suppression, payload_split, virtualization, many_shot, repeat_above, cot_forgery, bad_likert, crescendo). options: `category=`
+- `action="filter_probe"` — canary each encoding to learn which the target's input filter lets through, so payloads only use bypassing transforms. options: `body_key=message`, `reply_key=reply`, `headers={}`
+- `action="feedback_attack"` — feedback-guided (PAIR/TAP-style) hill-climb on an oracle score: breadth-sweep the technique families, then stack bypass encodings on the best. options: `goal` (required), `success_markers=[...]`, `transforms=[...]`, `max_attempts=24`, `reproduce_n=0` (auto k/N on success), `body_key=`, `reply_key=`, `headers={}`
+- `action="judge"` — score a response (refusal classifier + marker match + optional LLM-judge). options: `text`, `goal`, `success_markers=[...]`
+- `action="calibrate"` — canary self-test the engine against the OWASP labs (must catch known vulns + not flag a refuse-always control) before you trust a clean result. `target=` labs base URL
 
 ### `http(action, url, method, headers, body, options)`
 Raw HTTP requests and PoC saving.
@@ -136,6 +144,7 @@ Skills contain full structured workflows. In Codex they are installed as persona
 - `mcp_server/kali_tools.py` — `kali()` tool (freeform Kali commands)
 - `mcp_server/http_tools.py` — `http()` tool (raw HTTP + PoC saving)
 - `mcp_server/transform_tools.py` — `transform()` tool (payload encode/mutate/decode; engine in `mcp_server/transforms/`)
+- `mcp_server/redteam_tools.py` — `redteam()` tool (manual-layer engine: techniques, filter-probe, feedback attack, judge, calibration; in `mcp_server/redteam/`)
 - `mcp_server/report_tools.py` — `report()` tool (findings, diagrams, notes, dashboard)
 - `mcp_server/session_tools.py` — `session()` tool (scan lifecycle, Kali infra, codebase target)
 - `core/` — server infrastructure (session, cost tracking, logging, findings, dashboard)

@@ -1881,3 +1881,151 @@
     }
     #log-filter { border-radius: 6px; }
     #log-filter:focus { outline: none; border-color: var(--green); }
+
+/* ── AI Red Team tab ──────────────────────────────────────────────────────── */
+/* KPI tiles */
+.air-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(158px, 1fr)); gap: 12px; margin: 8px 0 20px; }
+.air-tile { background: rgba(255,255,255,.028); border: 1px solid #262d36; border-radius: 12px; padding: 15px 17px;
+            transition: border-color .15s ease, transform .15s ease; }
+.air-tile:hover { border-color: #3d444d; transform: translateY(-1px); }
+.air-tile-val { font-size: 2.05rem; font-weight: 700; line-height: 1.05; letter-spacing: -.02em; }
+.air-tile-of { font-size: 1.05rem; color: #7d8590; font-weight: 500; }
+.air-tile-label { font-size: .8rem; letter-spacing: .03em; text-transform: uppercase; color: #9da7b3; margin-top: 6px; }
+.air-tile-sub { font-size: .78rem; color: #7d8590; margin-top: 3px; }
+
+/* sub-tab nav — a segmented button control */
+.air-subnav { display: inline-flex; gap: 3px; background: #161b22; border: 1px solid #262d36;
+              border-radius: 10px; padding: 4px; margin-bottom: 20px; flex-wrap: wrap; }
+.air-subbtn { background: transparent; border: 1px solid transparent; border-radius: 7px; color: #9da7b3;
+              padding: 8px 18px; font-size: .88rem; font-weight: 500; cursor: pointer; transition: all .15s ease; }
+.air-subbtn:hover { color: #e6edf3; background: rgba(255,255,255,.06); }
+.air-subbtn.active { color: #fff; background: #1f6feb; font-weight: 600; }
+.air-subbtn:focus-visible { outline: 2px solid #58a6ff; outline-offset: 2px; }
+
+/* cards */
+.air-card { background: rgba(255,255,255,.02); border: 1px solid #262d36; border-radius: 12px;
+            padding: 18px 20px; margin-bottom: 16px; }
+.air-card-title { font-size: 1rem; font-weight: 600; color: #f0f3f6; margin-bottom: 14px; display: flex;
+                  align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.air-sub-note { color: #9da7b3; font-size: .8rem; font-weight: 400; }
+.air-grid-title { font-size: .76rem; letter-spacing: .07em; color: #9da7b3; text-transform: uppercase; margin-bottom: 10px; }
+
+/* calibration banner */
+.air-banner { display: flex; align-items: flex-start; gap: 12px; background: rgba(255,255,255,.02);
+              border: 1px solid #262d36; border-left: 4px solid; border-radius: 10px; padding: 14px 16px; margin-bottom: 18px; line-height: 1.5; }
+.air-cal-dot { width: 10px; height: 10px; border-radius: 50%; margin-top: 6px; flex: 0 0 auto; }
+
+/* OWASP category grid */
+.air-cat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 9px; }
+.air-cat { display: flex; align-items: center; gap: 11px; background: rgba(255,255,255,.022);
+           border: 1px solid #262d36; border-left: 4px solid; border-radius: 9px; padding: 11px 13px; min-width: 0; }
+.air-cat-code { font-size: .74rem; font-weight: 700; color: #9da7b3; font-family: ui-monospace, monospace; flex: 0 0 46px; }
+.air-cat-name { flex: 1 1 auto; font-size: .88rem; color: #f0f3f6; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.air-pill { flex: 0 0 auto; font-size: .68rem; font-weight: 700; letter-spacing: .04em; border: 1px solid;
+            border-radius: 11px; padding: 2px 9px; white-space: nowrap; }
+
+/* meters / rows (reproducibility + garak) */
+.air-repro-row, .air-bar-row { display: flex; align-items: center; gap: 13px; margin: 9px 0; }
+.air-kn { font-weight: 700; font-size: .85rem; border: 1px solid; border-radius: 7px; padding: 3px 9px; flex: 0 0 auto; min-width: 54px; text-align: center; }
+.air-row-label { font-size: .84rem; color: #d5dbe2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.air-bar-label { flex: 0 0 320px; max-width: 42%; font-size: .82rem; color: #d5dbe2; font-family: ui-monospace, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.air-bar-val { flex: 0 0 auto; font-size: .82rem; font-weight: 600; min-width: 100px; text-align: right; }
+.air-meter { flex: 1 1 auto; height: 9px; background: #262d36; border-radius: 5px; overflow: hidden; min-width: 70px; }
+.air-meter-fill { height: 100%; border-radius: 5px; transition: width .3s ease; }
+
+/* transcripts — collapsible button rows with a chevron */
+.air-tx { border: 1px solid #262d36; border-radius: 10px; margin: 9px 0; background: rgba(255,255,255,.02); overflow: hidden; }
+.air-tx summary { cursor: pointer; padding: 12px 15px; font-size: .84rem; display: flex; align-items: center;
+                  gap: 9px; list-style: none; transition: background .15s ease; }
+.air-tx summary:hover { background: rgba(255,255,255,.04); }
+.air-tx summary:focus-visible { outline: 2px solid #58a6ff; outline-offset: -2px; }
+.air-tx summary::-webkit-details-marker { display: none; }
+.air-tx summary::before { content: '▸'; color: #7d8590; font-size: .8rem; transition: transform .15s ease; flex: 0 0 auto; }
+.air-tx[open] summary::before { transform: rotate(90deg); }
+.air-tx-body { padding: 4px 16px 14px 38px; }
+.air-turn { border-left: 2px solid #3d444d; padding: 6px 0 6px 13px; margin: 8px 0; }
+.air-turn-meta { font-size: .76rem; color: #9da7b3; font-family: ui-monospace, monospace; }
+.air-turn-resp { font-size: .84rem; color: #d5dbe2; margin-top: 4px; line-height: 1.45; word-break: break-word; }
+
+/* filter bypass chips */
+.air-fchips { display: flex; flex-wrap: wrap; gap: 8px; }
+.air-fchip { display: inline-block; padding: 5px 11px; border: 1px solid; border-radius: 9px; font-size: .8rem;
+             background: rgba(255,255,255,.02); font-family: ui-monospace, monospace; }
+/* Defenses tab — two-column bypass/blocked layout */
+.air-def-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+.air-def-col { background: rgba(255,255,255,.02); border: 1px solid #262d36; border-radius: 10px; padding: 14px 16px; }
+.air-def-col-title { font-size: .82rem; font-weight: 700; letter-spacing: .03em; margin-bottom: 10px; }
+/* AI Red Team rail icon — a robot/bot (was falling back to a plain square) */
+#tab-btn-ai-redteam::before { -webkit-mask-image: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2024%2024'%20fill='none'%20stroke='white'%20stroke-width='2'%20stroke-linecap='round'%20stroke-linejoin='round'%3E%3Cpath%20d='M12%208V4H8'/%3E%3Crect%20width='16'%20height='12'%20x='4'%20y='8'%20rx='2'/%3E%3Cpath%20d='M2%2014h2'/%3E%3Cpath%20d='M20%2014h2'/%3E%3Cpath%20d='M15%2013v2'/%3E%3Cpath%20d='M9%2013v2'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2024%2024'%20fill='none'%20stroke='white'%20stroke-width='2'%20stroke-linecap='round'%20stroke-linejoin='round'%3E%3Cpath%20d='M12%208V4H8'/%3E%3Crect%20width='16'%20height='12'%20x='4'%20y='8'%20rx='2'/%3E%3Cpath%20d='M2%2014h2'/%3E%3Cpath%20d='M20%2014h2'/%3E%3Cpath%20d='M15%2013v2'/%3E%3Cpath%20d='M9%2013v2'/%3E%3C/svg%3E"); }
+/* Toolchain readiness list */
+.air-ready-list { margin-top: 8px; display: flex; flex-direction: column; gap: 5px; }
+.air-ready-row { display: flex; align-items: baseline; gap: 9px; font-size: .82rem; }
+.air-ready-ic { font-weight: 700; flex: 0 0 14px; }
+.air-ready-name { color: #e6edf3; font-weight: 600; flex: 0 0 140px; }
+/* transcript — two-party exchange (attacker vs AI app) */
+.air-xchg { margin: 12px 0; padding-top: 6px; border-top: 1px dashed #262d36; }
+.air-xchg:first-child { border-top: none; }
+.air-xchg-n { font-size: .7rem; letter-spacing: .05em; text-transform: uppercase; color: #7d8590; margin-bottom: 6px; }
+.air-msg { border-radius: 9px; padding: 9px 12px; margin: 5px 0; border: 1px solid #262d36; border-left-width: 3px; }
+.air-msg-atk { border-left-color: #f0883e; background: rgba(240,136,62,.06); margin-right: 12%; }
+.air-msg-ai  { border-left-color: #58a6ff; background: rgba(88,166,255,.06); margin-left: 12%; }
+.air-msg-head { display: flex; align-items: center; gap: 10px; margin-bottom: 5px; flex-wrap: wrap; }
+.air-who { font-size: .7rem; font-weight: 800; letter-spacing: .05em; padding: 2px 8px; border-radius: 6px; white-space: nowrap; }
+.air-who-atk { color: #f0883e; background: rgba(240,136,62,.14); }
+.air-who-ai  { color: #58a6ff; background: rgba(88,166,255,.14); }
+.air-tech { font-size: .74rem; color: #9da7b3; font-family: ui-monospace, monospace; }
+.air-verdict { font-size: .74rem; font-weight: 700; }
+.air-msg-body { font-size: .83rem; color: #d5dbe2; line-height: 1.5; word-break: break-word; font-family: ui-monospace, monospace; }
+
+
+/* OWASP coverage ledger v19 */
+.air-ow-sec { margin-bottom: 20px; }
+.air-ow { display: grid; grid-template-columns: 52px minmax(0,1fr) 110px 62px 128px; align-items: center;
+          gap: 12px; padding: 9px 13px; margin: 6px 0; border: 1px solid #232a33;
+          border-radius: 8px; background: rgba(255,255,255,.018); }
+.air-ow-idle { opacity: .45; }
+.air-ow-code { font-family: ui-monospace, monospace; font-weight: 700; font-size: .8rem; }
+.air-ow-name { font-size: .9rem; color: #f0f3f6; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.air-ow-bar { height: 7px; border-radius: 4px; background: rgba(255,255,255,.08); overflow: hidden; }
+.air-ow-fill { height: 100%; border-radius: 4px; transition: width .4s ease; }
+.air-ow-frac { font-size: .8rem; color: #b7c0cc; font-family: ui-monospace, monospace; text-align: right; white-space: nowrap; }
+.air-ow-vuln { color: #f85149; font-weight: 700; }
+.air-ow .air-pill { text-align: center; min-width: 88px; }
+@media (max-width: 720px) {
+  .air-ow { grid-template-columns: 46px 1fr auto; }
+  .air-ow-bar, .air-ow-frac { display: none; }
+}
+
+
+/* OWASP ledger drill-down + PITAX v21 */
+.air-ow-end { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+.air-ow-click { cursor: pointer; }
+.air-ow-click:hover { background: rgba(88,166,255,.07); border-color: #30475e; }
+.air-ow-chev { font-size: .72rem; color: #9da7b3; font-family: ui-monospace, monospace; white-space: nowrap; }
+.air-ow-arw { display: inline-block; transition: transform .15s ease; }
+.air-ow-open .air-ow-arw { transform: rotate(90deg); }
+.air-ow-open { border-color: #30475e; background: rgba(88,166,255,.05); }
+.air-ow-detail { margin: -2px 0 8px 14px; padding-left: 12px; border-left: 2px solid #30363d;
+                 display: flex; flex-direction: column; gap: 5px; }
+.air-ow-find { display: flex; align-items: center; gap: 10px; text-decoration: none;
+               padding: 7px 10px; border: 1px solid #232a33; border-radius: 7px;
+               background: rgba(255,255,255,.02); color: #e6edf3; transition: background .12s, border-color .12s; }
+.air-ow-find:hover { background: rgba(88,166,255,.09); border-color: #3a5a7a; }
+.air-ow-find-title { flex: 1 1 auto; font-size: .84rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.air-ow-find-go { flex: 0 0 auto; font-size: .76rem; color: #58a6ff; font-weight: 600; }
+
+/* PITAX taxonomy card */
+.air-pitax-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.air-pitax-tile { border: 1px solid #262d36; border-radius: 9px; padding: 12px 13px; background: rgba(255,255,255,.02); }
+.air-pitax-count { font-size: 1.5rem; font-weight: 700; color: #f0f3f6; line-height: 1; }
+.air-pitax-name { font-size: .82rem; color: #e6edf3; text-transform: capitalize; margin-top: 3px; font-weight: 600; }
+.air-pitax-code { font-size: .68rem; color: #9da7b3; font-family: ui-monospace, monospace; }
+.air-pitax-ans { font-size: .72rem; color: #8b949e; margin-top: 5px; line-height: 1.35; }
+.air-pitax-eng { margin: 14px 0 10px; font-size: .82rem; color: #c8d1da; line-height: 1.5; }
+.air-pitax-eng code { background: rgba(255,255,255,.06); padding: 1px 6px; border-radius: 5px; font-size: .78rem; }
+.air-pitax-fams { display: flex; flex-wrap: wrap; gap: 6px; }
+.air-pitax-fam { font-size: .72rem; color: #b7c0cc; border: 1px solid #262d36; border-radius: 6px;
+                 padding: 3px 8px; font-family: ui-monospace, monospace; }
+.air-pitax-fam b { color: #58a6ff; font-weight: 600; }
+.air-pitax-attr { margin-top: 12px; font-size: .74rem; color: #8b949e; }
+.air-pitax-attr a { color: #58a6ff; }

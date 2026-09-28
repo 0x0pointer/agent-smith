@@ -132,7 +132,16 @@ async def run_garak(rest_config: dict, probes: str, flags: str = "", timeout: in
         )
         if flags:
             garak_cmd += f" {shlex.join(shlex.split(flags))}"
-        garak_cmd += "; echo '=== GARAK REPORT JSONL ==='; tail -n 300 /work/run.report.jsonl 2>/dev/null"
+        # Read the report back. Extract EVERY eval entry with grep (regardless of
+        # report size) then a short tail for human context. A plain `tail -n N`
+        # silently DROPS the eval lines on large runs — the many attempt lines
+        # push the (few) eval lines out of the tail window, which then reads as
+        # "0 eval entries / model resisted" even when garak found hits.
+        garak_cmd += (
+            "; echo '=== GARAK REPORT JSONL ==='"
+            "; grep -E '\"entry_type\": ?\"eval\"' /work/run.report.jsonl 2>/dev/null"
+            "; tail -n 20 /work/run.report.jsonl 2>/dev/null"
+        )
 
         cmd = [
             docker_executable(), "run", "--rm",

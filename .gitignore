@@ -4,6 +4,7 @@ logs/
 .cache/
 findings.json
 coverage_matrix.json
+ai_redteam.json
 session.json
 session_cost.json
 pocs/

@@ -1,0 +1,55 @@
+<!-- ── Tab: AI Red Team ──────────────────────────────────────────────────── -->
+<div id="tab-ai-redteam" class="tab-content">
+  <div class="tab-head">
+    <h2>AI Red Team</h2>
+    <p>OWASP LLM &amp; Agentic assessment — at-a-glance status, then drill into attacks, the automated scanner, and target defenses.</p>
+  </div>
+
+  <!-- KPI tiles (at-a-glance widgets) -->
+  <div id="air-kpis" class="air-kpis"></div>
+
+  <!-- sub-tab nav -->
+  <div class="air-subnav" role="tablist">
+    <button class="air-subbtn active" data-sub="overview" onclick="switchAiSub('overview')">Overview</button>
+    <button class="air-subbtn"        data-sub="attacks"  onclick="switchAiSub('attacks')">Attacks &amp; k/N</button>
+    <button class="air-subbtn"        data-sub="garak"    onclick="switchAiSub('garak')">Automated (garak)</button>
+    <button class="air-subbtn"        data-sub="defenses" onclick="switchAiSub('defenses')">Defenses</button>
+  </div>
+
+  <!-- Overview -->
+  <section class="air-sub" id="air-sub-overview">
+    <div id="air-readiness"></div>
+    <div class="air-card">
+      <div class="air-card-title">OWASP coverage</div>
+      <div id="air-grid"><div class="empty-placeholder">No AI coverage cells yet — run /ai-redteam.</div></div>
+    </div>
+  </section>
+
+  <!-- Attacks & reproducibility -->
+  <section class="air-sub" id="air-sub-attacks" hidden>
+    <div class="air-card">
+      <div class="air-card-title">Reproducibility <span class="air-sub-note">k/N — LLM output is non-deterministic, so a 1/1 is noise</span></div>
+      <div id="air-repro"><div class="empty-placeholder">No reproduced attacks yet.</div></div>
+    </div>
+    <div class="air-card">
+      <div class="air-card-title">Attack transcripts</div>
+      <div id="air-transcripts"><div class="empty-placeholder">No feedback attacks yet.</div></div>
+    </div>
+  </section>
+
+  <!-- Automated (garak) -->
+  <section class="air-sub" id="air-sub-garak" hidden>
+    <div class="air-card">
+      <div class="air-card-title">garak attack-success rates <span class="air-sub-note">automated probe sweep — red ≥ 20%</span></div>
+      <div id="air-garak"><div class="empty-placeholder">No garak runs yet.</div></div>
+    </div>
+  </section>
+
+  <!-- Defenses -->
+  <section class="air-sub" id="air-sub-defenses" hidden>
+    <div class="air-card">
+      <div class="air-card-title">Input-filter bypass map <span class="air-sub-note">which encodings slip past the target's filter</span></div>
+      <div id="air-filter"><div class="empty-placeholder">No filter probe yet — run redteam(action="filter_probe").</div></div>
+    </div>
+  </section>
+</div>

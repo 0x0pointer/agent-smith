@@ -125,6 +125,33 @@ def test_garak_summarizer_extracts_hits():
     assert any("dan.DanInTheWild" in a for a in r.anomalies)
 
 
+def test_garak_summarizer_parses_0_15_fails_format():
+    """garak 0.15.0 eval entries use `fails` + `total_evaluated` (NOT `total`).
+    Regression guard: reading `total` alone reported 0 hits on real output — a
+    false negative that hid genuine findings (seen live: encoding.InjectBase64
+    53/256). This is the exact shape garak 0.15.0 emits."""
+    raw = "progress\n=== GARAK REPORT JSONL ===\n" + "\n".join([
+        '{"entry_type":"eval","probe":"encoding.InjectBase64","detector":"encoding.DecodeMatch","passed":203,"fails":53,"nones":0,"total_evaluated":256}',
+        '{"entry_type":"eval","probe":"encoding.InjectBase64","detector":"encoding.DecodeApprox","passed":197,"fails":59,"nones":0,"total_evaluated":256}',
+    ])
+    r = summarize("garak", raw, {"target": "x"})
+    assert r.evidence["eval_entries"] == 2
+    assert len(r.evidence["hits"]) == 2                      # both must register as hits
+    assert r.evidence["hits"][0]["failed"] == 53
+    assert r.evidence["hits"][0]["total"] == 256
+    assert "2 probe(s) with hits" in r.summary
+
+
+def test_garak_summarizer_clean_when_no_fails():
+    """A garak 0.15.0 eval with fails=0 must read as clean (no false positive)."""
+    raw = ("=== GARAK REPORT JSONL ===\n"
+           '{"entry_type":"eval","probe":"dan.DanInTheWild","detector":"mitigation.MitigationBypass","passed":256,"fails":0,"total_evaluated":256}')
+    r = summarize("garak", raw, {"target": "x"})
+    assert r.evidence["eval_entries"] == 1
+    assert r.evidence["hits"] == []
+    assert "no hits" in r.summary
+
+
 def test_tested_by_derived_from_artifact_id():
     """bulk_tested closures backed by artifact_id alone must not read as 'untooled'."""
     from core.coverage.operations import _tested_by_from_artifact

@@ -63,6 +63,13 @@ async def api_clear() -> JSONResponse:
     except Exception:
         pass
 
+    # ai_redteam.json — reset the AI Red Team tab's store
+    try:
+        from core import ai_redteam
+        ai_redteam.reset()
+    except Exception:
+        pass
+
     _RECOVERY_SNAP = _api._REPO_ROOT / "recovery_latest.json"
     _METRICS_FILE  = _api._REPO_ROOT / "pentest_metrics.jsonl"
     # _COVERAGE_FILE is intentionally omitted — reset() above already wrote the empty state.

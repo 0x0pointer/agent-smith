@@ -30,7 +30,7 @@ If the skill tool returns "skill not found" or your client doesn't list it among
 
 ## MCP Tools
 
-Six consolidated tools. Each dispatches to multiple underlying scanners/actions via the first parameter.
+Seven consolidated tools. Each dispatches to multiple underlying scanners/actions via the first parameter.
 
 ### `scan(tool, target, flags, options)`
 Run any security scanner.
@@ -47,7 +47,7 @@ Run any security scanner.
 | semgrep | path | |
 | trufflehog | path | |
 | exec_sandbox | path (codebase) | cmd= (required), setup=, image=python:3.11-slim (any stack: node/golang/ruby/…), subdir=, timeout=180, allow_network=true — build/run WHITE-BOX target code in a hardened, caps-dropped sandbox over a staged copy to CONFIRM a finding; returns an `artifact_id`. Network is ON by default (deps install); set allow_network=false to isolate untrusted code. Opt-in, fail-soft, never a completion gate. |
-| garak | URL | probes=dan,encoding,promptinject,..., generator=rest — the remaining automated LLM scanner, now in its OWN image `pentest-agent/garak` (auto-built on first use, no longer in Kali). Payload crafting is the separate `transform()` tool. |
+| garak | URL | probes=dan,encoding,promptinject,..., generator=rest — the remaining automated LLM scanner, now in its OWN image `pentest-agent/garak` (auto-built on first use, no longer in Kali). Payload crafting is the separate `transform()` tool. **Each probe HIT is auto-filed as a finding tagged `tool_used="garak"`** (severity scaled from the attack-success rate, idempotent per target+probe) — VERIFY the transcript + adjudicate severity, then close the matching LLM cell with its `finding_id`. |
 | metasploit | host/IP | module=, payload=, rport=, lhost=, lport=4444 |
 | mobsf | path to `.apk`/`.ipa`/`.appx`/source `.zip` | MobSF static analysis → MASVS-mapped report; auto-starts the MobSF container. Used by `/android-security` & `/ios-security`. |
 | mobsfscan | path (mobile source tree) | mobile SOURCE static analysis (MASVS/OWASP-Mobile tagged) — like semgrep for Android/iOS source |
@@ -66,6 +66,15 @@ Typical loop: **craft → `transform(action="encode")` → `http(action="request
 - `action="bijection"` — Bijection-Learning jailbreak scaffold (teach the model a private cipher in-context, then deliver the payload in it). options: `mapping_type=letters|digits|tokens`, `alphabet_size=26`, `seed=`
 - `action="tokenbomb"` — token-exhaustion payload for LLM10 (unbounded consumption). options: `size=200`, `seed=`, `save_artifact=true`
 - `action="steg"` — hide/reveal via invisible Unicode. options: `mode=hide|reveal`, `method=variation_selector|zero_width|unicode_tags`, `carrier=`
+
+### `redteam(action, target, options)`
+Manual-layer red-team **engine** (pure-Python, in-process) that makes the agent-driven layer systematic instead of improvised — the companion to `transform()`. Deterministic core (no API key); optional LLM-judge/attacker when a key is configured.
+- `action="techniques"` — the curated jailbreak technique-family library (direct, roleplay, dev_mode, hypothetical, authority, refusal_suppression, payload_split, virtualization, many_shot, repeat_above, cot_forgery, bad_likert, crescendo). options: `category=`
+- `action="filter_probe"` — canary each encoding to learn which the target's input filter lets through, so payloads only use bypassing transforms. options: `body_key=message`, `reply_key=reply`, `headers={}`
+- `action="feedback_attack"` — feedback-guided (PAIR/TAP-style) hill-climb on an oracle score: breadth-sweep the technique families, then stack bypass encodings on the best. options: `goal` (required), `success_markers=[...]`, `transforms=[...]`, `max_attempts=24`, `reproduce_n=0` (auto k/N on success), `body_key=`, `reply_key=`, `headers={}`
+- `action="judge"` — score a response (refusal classifier + marker match + optional LLM-judge). options: `text`, `goal`, `success_markers=[...]`
+- `action="calibrate"` — canary self-test the engine against the OWASP labs (must catch known vulns + not flag a refuse-always control) before you trust a clean result. `target=` labs base URL
+- `action="taxonomy"` — the **Arcanum Prompt Injection Taxonomy** (PITAX, CC BY 4.0): 172 nodes across 4 pillars — intents (PIT-I), techniques (PIT-T), evasions (PIT-E), inputs (PIT-N), each with example prompts + OWASP/MITRE-ATLAS/garak cross-refs. options: `pillar=intents|techniques|evasions|inputs`, `code=PIT-x-NN` (full node), `query=<text>` (search). No args = overview. The `techniques` families carry their `pit` cross-reference code.
 
 ### `http(action, url, method, headers, body, options)`
 Raw HTTP requests and PoC saving.
@@ -209,6 +218,7 @@ Skills are slash commands that contain full structured workflows. In Claude Code
 - `mcp_server/kali_tools.py` — `kali()` tool (freeform Kali commands)
 - `mcp_server/http_tools.py` — `http()` tool (raw HTTP + PoC saving)
 - `mcp_server/transform_tools.py` — `transform()` tool (payload encode/mutate/decode; engine in `mcp_server/transforms/`)
+- `mcp_server/redteam_tools.py` — `redteam()` tool (manual-layer engine: techniques, filter-probe, feedback attack, judge, calibration; in `mcp_server/redteam/`)
 - `mcp_server/report_tools.py` — `report()` tool (findings, diagrams, notes, dashboard)
 - `mcp_server/session_tools.py` — `session()` tool (scan lifecycle, Kali infra, codebase target)
 - `core/` — server infrastructure (session, cost tracking, logging, findings, dashboard)

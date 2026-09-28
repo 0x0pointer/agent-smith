@@ -159,6 +159,11 @@ def _do_set_skill(opts):
     # (optimistic default). Fail-soft: a parse/load problem never breaks set_skill.
     setup_note = _enqueue_setup_gates(skill_name)
 
+    # AI red-team always gets the dashboard — auto-start it (idempotent) so the
+    # operator has the AI Red Team tab live from the moment the skill is chained,
+    # regardless of whether the workflow later calls report(action='dashboard').
+    dash_note = _autostart_dashboard() if skill_name == "ai-redteam" else ""
+
     # Detect post-compaction resume: skill was already in history before this call
     if is_resume:
         recovery_brief = _st._do_recovery()
@@ -168,12 +173,34 @@ def _do_set_skill(opts):
         )
         if satisfied_gates:
             msg += f"\n\n(satisfied gate(s): {', '.join(satisfied_gates)})"
-        return msg + setup_note
+        return msg + setup_note + dash_note
 
     msg = f"Skill '{skill_name}' logged"
     if satisfied_gates:
         msg += f" (satisfied gate(s): {', '.join(satisfied_gates)})"
-    return msg + setup_note
+    return msg + setup_note + dash_note
+
+
+def _autostart_dashboard() -> str:
+    """Serve the dashboard (idempotent) and return an operator note with the URL.
+    Fire-and-forget: serve() is async and runs as a background task so set_skill
+    never blocks. Fail-soft — a serve error never breaks skill selection."""
+    try:
+        from core import api_server, dashboard_auth
+        _t = asyncio.create_task(api_server.serve(7777))
+        _st._background_tasks.add(_t)
+        _t.add_done_callback(_st._background_tasks.discard)
+        tok = ""
+        try:
+            tok = dashboard_auth.read_token() or ""
+        except Exception:
+            pass
+        url = f"http://127.0.0.1:7777/#k={tok}" if tok else "http://127.0.0.1:7777"
+        return (f"\n\n📊 AI Red Team dashboard starting → open {url} and select the "
+                f"'AI Red Team' tab (OWASP grid, k/N, garak rates, filter-bypass, calibration). "
+                f"It populates as garak / redteam() / coverage run.")
+    except Exception:
+        return ""
 
 
 def _enqueue_setup_gates(skill_name: str) -> str:
