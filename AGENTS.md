@@ -4,7 +4,7 @@ You are a security researcher with access to penetration testing tools via MCP a
 
 ## MCP Tools
 
-Five consolidated tools. Each dispatches to multiple underlying scanners/actions via the first parameter.
+Seven consolidated tools. Each dispatches to multiple underlying scanners/actions via the first parameter.
 
 ### `scan(tool, target, flags, options)`
 Run any security scanner.
@@ -21,13 +21,29 @@ Run any security scanner.
 | semgrep | path | |
 | trufflehog | path | |
 | exec_sandbox | path (codebase) | cmd= (required), setup=, image=python:3.11-slim (any stack: node/golang/ruby/…), subdir=, timeout=180, allow_network=true — build/run WHITE-BOX code in a hardened, caps-dropped sandbox over a staged copy to CONFIRM a finding; returns an `artifact_id`. Network ON by default (deps install); allow_network=false to isolate untrusted code. Opt-in, fail-soft, never a completion gate. |
-| fuzzyai | URL | attack=jailbreak, provider=openai, model= |
-| garak | URL | probes=dan,encoding,promptinject,..., generator=rest |
-| promptfoo | URL | plugins=prompt-injection,..., attack_strategies=jailbreak,crescendo |
+| garak | URL | probes=dan,encoding,promptinject,..., generator=rest — the remaining automated LLM scanner, now in its OWN image `pentest-agent/garak` (auto-built on first use, no longer in Kali). Payload crafting is the separate `transform()` tool. |
 | metasploit | host/IP | module=, payload=, rport=, lhost=, lport=4444 |
 
 ### `kali(command, timeout)`
 Run any command in the Kali container (auto-starts if needed). Hundreds of tools: nikto, sqlmap, gobuster, hydra, testssl, enum4linux-ng, wapiti, searchsploit, etc.
+
+### `transform(action, text, options)`
+Pure-Python, in-process payload-crafting engine for AI red-teaming (P4RS3LT0NGV3-style techniques, clean-room). No Docker/npm/pip/API keys. Obfuscate a jailbreak/injection payload past input filters, then decode an obfuscated reply. 64 transforms across 8 categories (base, cipher, radio, homoglyph, invisible, script, word, case).
+- `action="list"` — available transforms. options: `category=`
+- `action="encode"` — apply a transform chain. options: `transforms=[...]`, `save_artifact=false`
+- `action="decode"` — reverse a known chain (`transforms=[...]`) or auto-detect (universal decoder)
+- `action="mutate"` — N obfuscated variants (fuzzer). options: `count=10`, `techniques=[...]`, `seed=`
+- `action="bijection"` — Bijection-Learning jailbreak scaffold. options: `mapping_type=letters|digits|tokens`, `seed=`
+- `action="tokenbomb"` — token-exhaustion payload (LLM10). options: `size=200`, `seed=`
+- `action="steg"` — hide/reveal via invisible Unicode. options: `mode=hide|reveal`, `method=variation_selector|zero_width|unicode_tags`
+
+### `redteam(action, target, options)`
+Manual-layer red-team **engine** (pure-Python, in-process) that makes the agent-driven layer systematic instead of improvised — the companion to `transform()`. Deterministic core (no API key); optional LLM-judge/attacker when a key is configured.
+- `action="techniques"` — the curated jailbreak technique-family library (direct, roleplay, dev_mode, hypothetical, authority, refusal_suppression, payload_split, virtualization, many_shot, repeat_above, cot_forgery, bad_likert, crescendo). options: `category=`
+- `action="filter_probe"` — canary each encoding to learn which the target's input filter lets through, so payloads only use bypassing transforms. options: `body_key=message`, `reply_key=reply`, `headers={}`
+- `action="feedback_attack"` — feedback-guided (PAIR/TAP-style) hill-climb on an oracle score: breadth-sweep the technique families, then stack bypass encodings on the best. options: `goal` (required), `success_markers=[...]`, `transforms=[...]`, `max_attempts=24`, `reproduce_n=0` (auto k/N on success), `body_key=`, `reply_key=`, `headers={}`
+- `action="judge"` — score a response (refusal classifier + marker match + optional LLM-judge). options: `text`, `goal`, `success_markers=[...]`
+- `action="calibrate"` — canary self-test the engine against the OWASP labs (must catch known vulns + not flag a refuse-always control) before you trust a clean result. `target=` labs base URL
 
 ### `http(action, url, method, headers, body, options)`
 Raw HTTP requests and PoC saving.
@@ -124,9 +140,11 @@ Skills contain full structured workflows. In Codex they are installed as persona
 ## Project layout
 - `mcp_server/__main__.py` — entry point, crash logging, module imports
 - `mcp_server/_app.py` — FastMCP singleton, `_run()` dispatcher, `_clip()` helper
-- `mcp_server/scan_tools.py` — `scan()` tool (nmap, naabu, httpx, nuclei, ffuf, spider, semgrep, trufflehog, fuzzyai, garak, promptfoo)
+- `mcp_server/scan_tools.py` — `scan()` tool (nmap, naabu, httpx, nuclei, ffuf, spider, semgrep, trufflehog, garak)
 - `mcp_server/kali_tools.py` — `kali()` tool (freeform Kali commands)
 - `mcp_server/http_tools.py` — `http()` tool (raw HTTP + PoC saving)
+- `mcp_server/transform_tools.py` — `transform()` tool (payload encode/mutate/decode; engine in `mcp_server/transforms/`)
+- `mcp_server/redteam_tools.py` — `redteam()` tool (manual-layer engine: techniques, filter-probe, feedback attack, judge, calibration; in `mcp_server/redteam/`)
 - `mcp_server/report_tools.py` — `report()` tool (findings, diagrams, notes, dashboard)
 - `mcp_server/session_tools.py` — `session()` tool (scan lifecycle, Kali infra, codebase target)
 - `core/` — server infrastructure (session, cost tracking, logging, findings, dashboard)
@@ -146,3 +164,4 @@ cd /path/to/agent-smith
 - **Lightweight tools** (nmap, naabu, httpx, nuclei, ffuf, subfinder, semgrep, trufflehog): public Docker Hub images. Auto-pull on first use. Call `session(action="pull_images")` to pre-fetch.
 - **kali-mcp**: custom image — must be built locally with `docker build -t pentest-agent/kali-mcp ./tools/kali/`. Container auto-starts on first `kali()` call and persists until `session(action="stop_kali")`. Uses the kali-server-mcp HTTP API on port 5001.
 - **metasploit**: custom image — `docker build -t pentest-agent/metasploit ./tools/metasploit/`. Auto-starts on first `scan(tool="metasploit")` call. API on port 5002.
+- **garak**: custom image `pentest-agent/garak` (`tools/garak/Dockerfile`) — **auto-built on first `scan(tool="garak")` call** by `tools/garak_runner.py` (or pre-build with `docker build -t pentest-agent/garak ./tools/garak/`). Runs ephemerally (`docker run --rm`) with a persistent model cache under `.cache/garak/`. Moved out of the Kali image (it added ~14 GB of torch). Disable autobuild with `SMITH_GARAK_AUTOBUILD=0`.

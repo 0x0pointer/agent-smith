@@ -3,12 +3,14 @@ Pentest Agent MCP Server
 ========================
 Thin entry point — loads .env, imports all tool modules, starts the server.
 
-Consolidated tools (5 MCP tools, down from 24):
-  mcp_server/scan_tools.py    — scan()    : nmap, naabu, subfinder, httpx, nuclei, ffuf, spider, semgrep, trufflehog, fuzzyai, garak, promptfoo
+Consolidated tools (7 MCP tools, down from 24):
+  mcp_server/scan_tools.py    — scan()    : nmap, naabu, subfinder, httpx, nuclei, ffuf, spider, semgrep, trufflehog, garak
   mcp_server/kali_tools.py    — kali()    : freeform Kali container commands
   mcp_server/http_tools.py    — http()    : raw HTTP requests + PoC saving
   mcp_server/report_tools.py  — report()  : findings, diagrams, notes, dashboard
   mcp_server/session_tools.py — session() : scan lifecycle, Kali infra, codebase target
+  mcp_server/transform_tools.py — transform() : payload encode/mutate/decode (P4RS3LT0NGV3-style, pure-Python)
+  mcp_server/redteam_tools.py — redteam() : manual-layer engine (techniques, filter-probe, feedback attack, judge, calibration)
 
 Register (run ./installers/install.sh — switches to persistent SSE daemon on port 7778)
 """
@@ -208,6 +210,8 @@ _safe_import("mcp_server.kali_tools")
 _safe_import("mcp_server.http_tools")
 _safe_import("mcp_server.report_tools")
 _safe_import("mcp_server.session_tools")
+_safe_import("mcp_server.transform_tools")
+_safe_import("mcp_server.redteam_tools")
 
 
 # ── Tool registration audit ───────────────────────────────────────────────────

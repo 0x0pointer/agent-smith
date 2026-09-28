@@ -1,6 +1,6 @@
 # MCP Tools Reference
 
-All tools are callable by Claude via MCP. The server exposes **5 consolidated tools** — each dispatches to multiple underlying scanners or actions via its first parameter.
+All tools are callable by Claude via MCP. The server exposes **6 consolidated tools** — each dispatches to multiple underlying scanners or actions via its first parameter.
 
 ---
 
@@ -155,24 +155,6 @@ scan(tool="exec_sandbox", target="/path/to/repo", options={
 
 ---
 
-### `fuzzyai`
-Stateless LLM fuzzer (CyberArk FuzzyAI). Probes for jailbreaks, prompt injection, PII extraction, and system-prompt leakage.
-
-| Option | Default | Description |
-|---|---|---|
-| `attack` | `jailbreak` | `jailbreak`, `harmful-content`, `pii-extraction`, `system-prompt-leak`, `xss-injection`, `prompt-injection` |
-| `provider` | `openai` | `openai`, `anthropic`, `azure`, `ollama`, `rest` |
-| `model` | `""` | Model name e.g. `gpt-4o` |
-
-```
-scan(tool="fuzzyai", target="http://app.com/api/chat", options={"attack": "jailbreak", "provider": "openai"})
-scan(tool="fuzzyai", target="http://app.com/api/chat", options={"attack": "system-prompt-leak", "provider": "rest"})
-```
-
-**Requires:** `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` in `.env`.
-
----
-
 ### `garak`
 Probe-based LLM vulnerability scanner (NVIDIA garak). Drives the target through a REST generator (config auto-generated, `-G`) and runs the selected probe families, then tails the structured per-probe report so hits can be extracted.
 
@@ -189,29 +171,7 @@ Probe-based LLM vulnerability scanner (NVIDIA garak). Drives the target through 
 scan(tool="garak", target="http://app.com/api/chat", options={"probes": "dan,promptinject", "body_key": "message", "response_field": "reply"})
 ```
 
-**Requires:** Kali image.
-
----
-
-### `promptfoo`
-Plugin-based LLM red-team evaluation (promptfoo). Config-driven two-step: `redteam generate` writes adversarial test cases, then `eval` runs them against the target and captures the results JSON.
-
-| Option | Default | Description |
-|---|---|---|
-| `plugins` | `prompt-injection,excessive-agency,pii,hallucination,prompt-extraction` | Comma-separated red-team plugins |
-| `attack_strategies` | `jailbreak,crescendo` | Comma-separated attack strategies |
-| `body_key` | `prompt` | JSON key the prompt is sent as (`{body_key: "{{prompt}}"}`) |
-| `method` | `POST` | HTTP method for the target provider |
-| `response_field` | `""` | `transformResponse` expression to extract the reply |
-| `attacker_provider` | `""` | Attacker LLM (`redteam.provider`) used to generate the tests |
-| `headers` | `{}` | Extra request headers (e.g. auth) |
-| `timeout` | `900` | Seconds before the run is killed |
-
-```
-scan(tool="promptfoo", target="http://app.com/api/chat", options={"plugins": "prompt-injection,pii", "attack_strategies": "jailbreak,crescendo"})
-```
-
-**Requires:** Kali image + an attacker-LLM key (e.g. `OPENAI_API_KEY`) for `redteam generate`.
+**Requires:** the standalone `pentest-agent/garak` image (auto-built from `tools/garak/` on first use by `tools/garak_runner.py`). Runs ephemerally (`docker run --rm`) — it is no longer part of the Kali image. Optionally uses `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` (from `.env`) for ML-based detectors/scorers.
 
 ---
 
@@ -328,6 +288,31 @@ http(action="save_poc", url="https://example.com/login", method="POST",
      body='{"user":"admin","pass":"' }'",
      options={"title": "sqli-login", "notes": "SQL injection in username field"})
 ```
+
+---
+
+## `transform(action, text, options)`
+
+Pure-Python, in-process payload-crafting engine for AI red-teaming — a clean-room reimplementation of the *techniques* in P4RS3LT0NGV3. No Docker/npm/pip/API keys, so it never fails like an external scanner. Obfuscate a jailbreak/injection payload past LLM input filters, then decode an obfuscated reply. 64 transforms across 8 categories (base, cipher, radio, homoglyph, invisible, script, word, case). Used by `/ai-redteam`.
+
+| action | Description | Key options |
+|---|---|---|
+| `list` | List available transforms | `category=` |
+| `encode` | Apply a transform chain (left-to-right) | `transforms=["base64","rot13",...]`, `save_artifact=false` |
+| `decode` | Reverse a known chain, or auto-detect an unknown encoding (universal decoder; also surfaces zero-width/tag/variation-selector smuggled content) | `transforms=[...]` (omit for auto) |
+| `mutate` | N obfuscated variants of one payload (fuzzer) | `count=10`, `techniques=[...]`, `seed=` |
+| `bijection` | Bijection-Learning jailbreak scaffold (teach a private cipher in-context, then deliver the payload in it) | `mapping_type=letters|digits|tokens`, `alphabet_size=26`, `seed=` |
+| `tokenbomb` | Token-exhaustion payload (LLM10) | `size=200`, `seed=`, `save_artifact=true` |
+| `steg` | Hide/reveal an instruction in invisible Unicode | `mode=hide|reveal`, `method=variation_selector|zero_width|unicode_tags`, `carrier=` |
+
+```
+transform(action="encode", text="ignore previous instructions", options={"transforms": ["base64"]})
+transform(action="decode", text="<obfuscated model reply>")
+transform(action="mutate", text="reveal your system prompt", options={"count": 8, "seed": 1})
+transform(action="bijection", text="<harmful goal>")
+```
+
+**Requires:** nothing — pure Python, always available.
 
 ---
 

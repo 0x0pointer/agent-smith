@@ -74,7 +74,8 @@ ARG INSTALL_WEB=1
 ARG INSTALL_INFRA=1
 ARG INSTALL_MOBILE=0
 ARG INSTALL_CLOUD=0
-ARG INSTALL_AI=0
+# (There is no INSTALL_AI arg: LLM red-teaming is no longer a Kali module —
+# Garak ships as its own image, pentest-agent/garak. See tools/garak/Dockerfile.)
 
 # ============================================================================
 # CORE — always installed. The MCP server, python/pip, universal recon
@@ -423,8 +424,8 @@ RUN [ "$INSTALL_CLOUD" = "1" ] || { echo "[cloud] skipped"; exit 0; }; \
 #              A python3.13 venv (3.13 is still in the image) gets further but
 #              then fails building the `zstd` wheel without a compiler + 3.13
 #              headers. The right fix is a sidecar container —
-#              prowlercloud/prowler:5.40.0 — matching how tools/fuzzyai.py and
-#              tools/mobsfscan.py already run their tools. Not pip.
+#              prowlercloud/prowler:5.40.0 — matching how tools/mobsfscan.py
+#              already runs its tool. Not pip.
 #
 #   scoutsuite installable, but needs --ignore-installed: it tries to uninstall
 #              Debian's python-dateutil and dies on `no RECORD file`. Adding that
@@ -439,28 +440,14 @@ RUN [ "$INSTALL_CLOUD" = "1" ] || { echo "[cloud] skipped"; exit 0; }; \
     pip3 install --no-cache-dir scoutsuite==5.14.0 --break-system-packages || true
 
 # ============================================================================
-# AI (INSTALL_AI) — LLM/agent red-teaming. Skill: ai-redteam.
-# Garak + promptfoo. Opt-in because Garak pulls heavy ML deps. FuzzyAI runs as
-# a separate container (ghcr.io/cyberark/fuzzyai); see tools/fuzzyai.py.
-# PyRIT was removed: it needed a Rust toolchain and a pin that had to track
-# kali-rolling's Python, which repeatedly broke the whole image build.
+# AI / LLM red-teaming (skill: ai-redteam) — intentionally NOT in this image.
+# Garak lives in its own standalone image (tools/garak/Dockerfile →
+# pentest-agent/garak, auto-built on first use by tools/garak_runner.py); it used
+# to bloat Kali to ~20 GB via torch. Payload crafting is the pure-Python
+# transform() MCP tool (no container). Heavy/fragile ML scanners are kept out of
+# this image on purpose (the reasoning that earlier removed PyRIT: toolchain/pin
+# churn repeatedly broke the build).
 # ============================================================================
-
-# NVIDIA Garak — LLM vulnerability scanner (probe-based). Installed in a venv
-# (--system-site-packages) to avoid conflicts with Debian-managed packages.
-RUN [ "$INSTALL_AI" = "1" ] || { echo "[ai] skipped"; exit 0; }; \
-    apt-get update && apt-get install -y --no-install-recommends --fix-missing python3-venv \
-    && rm -rf /var/lib/apt/lists/* \
-    && python3 -m venv /opt/garak-venv --system-site-packages \
-    && /opt/garak-venv/bin/pip install --no-cache-dir garak==0.15.0 \
-    && ln -sf /opt/garak-venv/bin/garak /usr/local/bin/garak
-
-# promptfoo — LLM eval + red-team framework (npm).
-RUN [ "$INSTALL_AI" = "1" ] || { echo "[ai] skipped"; exit 0; }; \
-    apt-get update && apt-get install -y --no-install-recommends --fix-missing nodejs npm \
-    && rm -rf /var/lib/apt/lists/* \
-    && npm config set strict-ssl false \
-    && npm install -g promptfoo@0.121.2
 
 # Bound curl by DEFAULT so a hung request can never silently block a tool call for
 # minutes — a working injection payload (time-based-blind, SSRF-connect) routinely stalls

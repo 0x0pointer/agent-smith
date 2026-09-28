@@ -29,6 +29,7 @@ REPO_ROOT = Path(__file__).parent.parent.resolve()
 SESSION_FILE     = REPO_ROOT / "session.json"
 FINDINGS_FILE    = REPO_ROOT / "findings.json"
 COVERAGE_FILE    = REPO_ROOT / "coverage_matrix.json"
+AI_REDTEAM_FILE  = REPO_ROOT / "ai_redteam.json"
 QA_STATE_FILE    = REPO_ROOT / "qa_state.json"
 STEERING_FILE    = REPO_ROOT / "steering_queue.json"
 WISHLIST_FILE    = REPO_ROOT / "wishlist_queue.json"

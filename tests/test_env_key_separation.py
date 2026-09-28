@@ -1,7 +1,6 @@
 """API-key separation (PR #162): the AI-testing anthropic key (AITEST_ANTHROPIC_API_KEY) reaches the
 red-team tools AS ANTHROPIC_API_KEY, while no bare ANTHROPIC_API_KEY is exposed for an interactive
-`claude` to bill to your account."""
-import tools.fuzzyai
+`claude` to bill to your account. (Garak, in its standalone image, is the remaining consumer.)"""
 import tools.kali_runner as kali
 
 
@@ -23,9 +22,3 @@ def test_kali_forwards_openai_and_azure_directly():
 
 def test_kali_no_keys_gives_no_flags():
     assert kali._forward_ai_keys({}) == []
-
-
-def test_fuzzyai_forwards_the_renamed_key_as_alias():
-    fe = tools.fuzzyai.TOOL.forward_env
-    assert "AITEST_ANTHROPIC_API_KEY:ANTHROPIC_API_KEY" in fe   # renamed key mapped into the tool
-    assert "OPENAI_API_KEY" in fe

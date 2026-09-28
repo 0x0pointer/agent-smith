@@ -18,7 +18,7 @@
   <script src="/static/js/vendor/mermaid.min.js"></script>
   <script src="/static/js/vendor/marked.min.js"></script>
   <script src="/static/js/vendor/cytoscape.min.js"></script>
-  <link rel="stylesheet" href="/static/css/dashboard.css?v=12">
+  <link rel="stylesheet" href="/static/css/dashboard.css?v=23">
 </head>
 <body>
 <div class="app-shell">
@@ -38,6 +38,8 @@
     <button class="tab-btn active" id="tab-btn-findings"     onclick="switchTab('findings')">Findings</button>
     <button class="tab-btn"        id="tab-btn-topology"     onclick="switchTab('topology')">Topology</button>
     <button class="tab-btn"        id="tab-btn-components"   onclick="switchTab('components')">Components</button>
+    <div class="rail-group">AI Red Team</div>
+    <button class="tab-btn"        id="tab-btn-ai-redteam"  onclick="switchTab('ai-redteam')">AI Red Team</button>
     <div class="rail-group">Progress</div>
     <button class="tab-btn"        id="tab-btn-coverage"     onclick="switchTab('coverage')">Coverage</button>
     <button class="tab-btn"        id="tab-btn-skills"       onclick="switchTab('skills')">Skills</button>
@@ -176,6 +178,7 @@
 {% include 'tabs/findings.html' %}
 {% include 'tabs/topology.html' %}
 {% include 'tabs/components.html' %}
+{% include 'tabs/ai-redteam.html' %}
 {% include 'tabs/coverage.html' %}
 {% include 'tabs/skills.html' %}
 {% include 'tabs/activity.html' %}
@@ -193,6 +196,7 @@
 <script src="/static/js/findings.js?v=5"></script>
 <script src="/static/js/topology.js?v=2"></script>
 <script src="/static/js/components.js"></script>
+<script src="/static/js/ai-redteam.js?v=23"></script>
 <script src="/static/js/coverage.js"></script>
 <script src="/static/js/world-model.js?v=6"></script>
 <script src="/static/js/threat-model.js?v=2"></script>

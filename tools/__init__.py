@@ -10,7 +10,6 @@ To add a new tool:
 """
 from __future__ import annotations
 
-from tools.fuzzyai    import TOOL as _fuzzyai
 from tools.httpx      import TOOL as _httpx
 from tools.mobsfscan  import TOOL as _mobsfscan
 from tools.naabu      import TOOL as _naabu
@@ -23,8 +22,9 @@ from tools.trufflehog import TOOL as _trufflehog
 # fmt: off
 # REGISTRY contains tools that run as standalone Docker containers
 # via _run() / docker_runner.run_container().
-# Tools that run inside the Kali container (ffuf, spider, garak, promptfoo)
-# use kali_runner.exec_command() directly instead.
+# Tools that run inside the Kali container (ffuf, spider) use
+# kali_runner.exec_command() directly instead; garak runs in its own standalone
+# image via tools/garak_runner.py.
 REGISTRY = {
     _nmap.name:       _nmap,        # nmap       — port scanner
     _naabu.name:      _naabu,       # naabu      — fast port scanner
@@ -34,7 +34,6 @@ REGISTRY = {
     _semgrep.name:    _semgrep,     # semgrep    — static code analysis
     _trufflehog.name: _trufflehog,  # trufflehog — secret scanner
     _mobsfscan.name:  _mobsfscan,   # mobsfscan  — mobile SOURCE static analysis (MASVS)
-    _fuzzyai.name:    _fuzzyai,     # fuzzyai    — CyberArk AI/LLM fuzzer (own Docker image)
 }
 # fmt: on
 

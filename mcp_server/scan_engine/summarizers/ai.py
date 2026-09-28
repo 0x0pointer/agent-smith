@@ -1,12 +1,11 @@
-"""AI red-team summarizers (garak / promptfoo / fuzzyai).
+"""AI red-team summarizer (garak: probe-based LLM scanning).
 
-These parse the structured output the AI scan handlers now append to the raw
-tool stdout (garak's report.jsonl, promptfoo's results JSON) or the printed
-transcript (fuzzyai). They surface per-probe/plugin HITS as anomalies
-and recommend filing a finding + closing the matching LLM coverage cell, so a
-confirmed jailbreak is no longer lost in clipped console text. Success
-detection is best-effort/heuristic — the skill must still verify before
-filing — but a parse failure degrades to a useful summary, never a crash.
+This parses the structured output the garak handler appends to the raw tool
+stdout (garak's report.jsonl) and surfaces per-probe HITS as anomalies,
+recommending a finding + closing the matching LLM coverage cell, so a confirmed
+jailbreak is no longer lost in clipped console text. Success detection is
+best-effort/heuristic — the skill must still verify before filing — but a parse
+failure degrades to a useful summary, never a crash.
 """
 from __future__ import annotations
 
@@ -38,14 +37,24 @@ def _parse_garak_evals(section: str) -> list[dict]:
 
 
 def _collect_garak_hits(evals: list[dict], result: SummaryResult) -> list[dict]:
-    """Append a per-probe fact line to `result` for each eval; return the ones with hits."""
+    """Append a per-probe fact line to `result` for each eval; return the ones with hits.
+
+    garak 0.15.0 eval entries carry an explicit ``fails`` count and
+    ``total_evaluated`` (NOT ``total``). We prefer those; a missing ``fails``
+    falls back to ``total - passed`` so older/simpler shapes still parse. Using
+    ``e.get("total")`` alone silently reported 0 hits on real 0.15.0 output — a
+    false negative that hid genuine garak findings.
+    """
     hits: list[dict] = []
     for e in evals:
         probe    = e.get("probe", "?")
         detector = e.get("detector", "?")
-        total    = e.get("total", 0) or 0
+        total    = e.get("total_evaluated", e.get("total", 0)) or 0
         passed   = e.get("passed", 0) or 0
-        failed   = total - passed if total else 0
+        failed   = e.get("fails")
+        if failed is None:
+            failed = (total - passed) if total else 0
+        failed = failed or 0
         result.facts.append(f"{probe}/{detector}: {failed}/{total} hit(s)")
         if failed > 0:
             hits.append({"probe": probe, "detector": detector, "failed": failed, "total": total})
@@ -60,7 +69,9 @@ def _summarize_garak(raw: str, _ctx: dict) -> SummaryResult:
     evals = _parse_garak_evals(section)
 
     if not evals:
-        result.summary = "garak ran — no structured eval entries parsed (check artifact / REST config)"
+        result.summary = ("garak ran — no eval entries parsed. Likely an INCOMPLETE run "
+                          "(timeout on a slow real LLM endpoint — cut probes or use -g 1) or "
+                          "the REST config never reached the target (check response_field).")
         result.facts = [l.strip()[:200] for l in raw.strip().splitlines()[:5] if l.strip()]
         result.evidence = {"eval_entries": 0}
         result.recommended.append(
@@ -69,101 +80,26 @@ def _summarize_garak(raw: str, _ctx: dict) -> SummaryResult:
         return result
 
     hits = _collect_garak_hits(evals, result)
+    autofiled = _ctx.get("autofiled") or []
 
     if hits:
         result.summary = f"garak: {len(hits)} probe(s) with hits across {len(evals)} eval(s)"
         for h in hits[:10]:
             result.anomalies.append(f"garak hit: {h['probe']}/{h['detector']} {h['failed']}/{h['total']}")
-        result.recommended.append(
-            "File report(action='finding') per garak hit, then close the matching LLM coverage "
-            "cell vulnerable with this artifact_id"
-        )
+        if autofiled:
+            result.facts.append(f"auto-filed {len(autofiled)} finding(s) tagged tool_used='garak'")
+            result.recommended.append(
+                f"{len(autofiled)} garak finding(s) were auto-filed (tool_used='garak'). VERIFY each "
+                "transcript, adjudicate severity, then close the matching LLM coverage cell vulnerable "
+                "with its finding_id + this artifact_id"
+            )
+        else:
+            result.recommended.append(
+                "File report(action='finding') per garak hit, then close the matching LLM coverage "
+                "cell vulnerable with this artifact_id"
+            )
     else:
         result.summary = f"garak: no hits across {len(evals)} eval(s) — model resisted all probes"
-    result.evidence = {"eval_entries": len(evals), "hits": hits[:20]}
+    result.evidence = {"eval_entries": len(evals), "hits": hits[:20], "autofiled": autofiled}
     return result
 
-
-def _parse_promptfoo_section(raw: str) -> dict | None:
-    """Extract + parse the promptfoo results JSON block; None if absent/unparseable."""
-    section = _section_after(raw, "=== PROMPTFOO RESULTS JSON ===").strip()
-    if not section.startswith("{"):
-        return None
-    try:
-        data = json.loads(section)
-    except json.JSONDecodeError:
-        return None
-    return data if isinstance(data, dict) else None
-
-
-def _promptfoo_plugin_id(r: dict) -> str:
-    """Best-effort plugin/strategy id from a single promptfoo result row."""
-    tc = r.get("testCase") if isinstance(r.get("testCase"), dict) else {}
-    meta = tc.get("metadata") if isinstance(tc.get("metadata"), dict) else {}
-    return meta.get("pluginId") or meta.get("strategyId") or "?"
-
-
-def _summarize_promptfoo(raw: str, _ctx: dict) -> SummaryResult:
-    """Parse promptfoo's results JSON; a failed assertion = attack succeeded."""
-    result = SummaryResult()
-    data = _parse_promptfoo_section(raw)
-
-    if data is None:
-        result.summary = "promptfoo ran — could not parse results JSON (check artifact)"
-        result.facts = [l.strip()[:200] for l in raw.strip().splitlines()[:5] if l.strip()]
-        result.evidence = {"parsed": False}
-        result.recommended.append(
-            "Verify promptfoo redteam config + attacker_provider (needs an attacker-LLM key); inspect the artifact"
-        )
-        return result
-
-    res = data.get("results", data)
-    stats = res.get("stats", {}) if isinstance(res, dict) else {}
-    items = res.get("results", []) if isinstance(res, dict) else []
-    if not isinstance(items, list):
-        items = []
-    # In a redteam eval, success=False means the safety assertion failed → the
-    # attack got through.
-    failed = [r for r in items if isinstance(r, dict) and r.get("success") is False]
-
-    if isinstance(stats, dict) and stats:
-        result.facts.append(
-            f"passed={stats.get('successes')} failed/attacks-through={stats.get('failures')}"
-        )
-    result.summary = (
-        f"promptfoo: {len(failed)} failing test(s) — attack got through"
-        if failed else
-        f"promptfoo: {len(items)} test(s), no failures parsed"
-    )
-    for r in failed[:10]:
-        result.anomalies.append(f"promptfoo hit: plugin/strategy={_promptfoo_plugin_id(r)}")
-    if failed:
-        result.recommended.append(
-            "File a finding per promptfoo failure, then close the matching LLM cell vulnerable with this artifact_id"
-        )
-    result.evidence = {"total": len(items), "failed": len(failed), "stats": stats if isinstance(stats, dict) else {}}
-    return result
-
-
-def _summarize_fuzzyai(raw: str, ctx: dict) -> SummaryResult:
-    """Surface FuzzyAI jailbreak/bypass success signals (heuristic)."""
-    result = SummaryResult()
-    lines = raw.strip().splitlines()
-    attack = ctx.get("attack", ctx.get("_tool", "?"))
-    hit_lines = [
-        l.strip() for l in lines
-        if any(k in l.lower() for k in ("jailbroken", "jailbreak success", "bypassed", "vulnerable", "success: true"))
-    ]
-    result.summary = (
-        f"fuzzyai {attack}: {len(hit_lines)} success/jailbreak signal(s)"
-        if hit_lines else
-        f"fuzzyai {attack}: ran ({len(lines)} lines), no explicit success signal"
-    )
-    result.facts = hit_lines[:10] or [l[:200] for l in lines[:5] if l]
-    if hit_lines:
-        result.anomalies.append("FuzzyAI reported a jailbreak/bypass — verify and file a finding")
-        result.recommended.append(
-            "Reproduce via http(action='request'), then close the jailbreak cell vulnerable with the artifact_id"
-        )
-    result.evidence = {"attack": attack, "hit_signals": len(hit_lines)}
-    return result

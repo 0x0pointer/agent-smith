@@ -57,15 +57,16 @@ flowchart TD
 ## Project layout
 
 ```
-mcp_server/              MCP tool layer — 5 consolidated tools (LLM-callable)
+mcp_server/              MCP tool layer — 6 consolidated tools (LLM-callable)
   __main__.py            entry point  →  python -m mcp_server
   _app.py                FastMCP singleton + shared helpers (_run, _clip)
   scan_tools/            scan()    — nmap · naabu · httpx · nuclei · ffuf · spider
-                                     subfinder · semgrep · trufflehog · fuzzyai · garak
-                                     garak · promptfoo · metasploit · mobsf · mobsfscan
+                                     subfinder · semgrep · trufflehog · garak
+                                     metasploit · mobsf · mobsfscan
                                      (package; per-tool handlers in handlers_net · handlers_ai ·
                                       handlers_code · handlers_mobile · handlers_exploit)
   kali_tools.py          kali()    — freeform commands in the Kali container
+  transform_tools.py     transform() — pure-Python payload crafting (engine in transforms/)
   http_tools.py          http()    — raw HTTP requests + PoC saving
   report_tools/          report()  — findings · diagrams · notes · dashboard · coverage (package)
   session_tools/         session() — scan lifecycle · Kali infra · codebase target (package)
@@ -96,9 +97,9 @@ core/                    Server infrastructure (packages)
   wishlist.py            Non-blocking agent→operator resource backlog
 
 tools/                   Docker tool definitions + runners
-  base.py · docker_runner.py · kali_runner.py · metasploit_runner.py · sandbox_runner.py
+  base.py · docker_runner.py · kali_runner.py · garak_runner.py · metasploit_runner.py · sandbox_runner.py
   mobsf_runner.py · mobsfscan.py · docker_cli.py
-  nmap / naabu / httpx / nuclei / ffuf / subfinder / semgrep / trufflehog / fuzzyai
+  nmap / naabu / httpx / nuclei / ffuf / subfinder / semgrep / trufflehog
   kali/                  Kali image (Dockerfile + playwright_spider.py)
   metasploit/            Metasploit image (Dockerfile + msfconsole HTTP shim)
 

@@ -9,7 +9,6 @@ from tools.httpx import _build_args as httpx_args
 from tools.nuclei import _build_args as nuclei_args
 from mcp_server.scan_tools import _build_ffuf_cmd as ffuf_args
 from tools.subfinder import _build_args as subfinder_args
-from tools.fuzzyai import _build_args as fuzzyai_args
 
 
 # ── nmap ──────────────────────────────────────────────────────────────────────
@@ -157,39 +156,3 @@ def test_subfinder_extra_flags():
     assert "-timeout" in args
     assert "30" in args
 
-
-# ── fuzzyai ───────────────────────────────────────────────────────────────────
-
-def test_fuzzyai_target_included():
-    args = fuzzyai_args("http://example.com/chat")
-    assert "http://example.com/chat" in args
-
-def test_fuzzyai_default_attack():
-    args = fuzzyai_args("http://example.com/chat")
-    assert "--attack" in args
-    idx = args.index("--attack")
-    assert args[idx + 1] == "jailbreak"
-
-def test_fuzzyai_custom_attack():
-    args = fuzzyai_args("http://example.com/chat", attack="prompt-injection")
-    idx = args.index("--attack")
-    assert args[idx + 1] == "prompt-injection"
-
-def test_fuzzyai_provider():
-    args = fuzzyai_args("http://example.com/chat", provider="anthropic")
-    idx = args.index("--provider")
-    assert args[idx + 1] == "anthropic"
-
-def test_fuzzyai_model_included():
-    args = fuzzyai_args("http://example.com/chat", model="gpt-4o")
-    assert "--model" in args
-    idx = args.index("--model")
-    assert args[idx + 1] == "gpt-4o"
-
-def test_fuzzyai_no_model_by_default():
-    args = fuzzyai_args("http://example.com/chat")
-    assert "--model" not in args
-
-def test_fuzzyai_extra_flags():
-    args = fuzzyai_args("http://example.com/chat", flags="--verbose")
-    assert "--verbose" in args

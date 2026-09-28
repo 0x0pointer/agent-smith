@@ -50,8 +50,6 @@ from .net import (
 from .ai import (
     _section_after,
     _summarize_garak,
-    _summarize_promptfoo,
-    _summarize_fuzzyai,
 )
 from .generic import _summarize_generic
 
@@ -77,6 +75,4 @@ _SUMMARIZERS: dict[str, Any] = {
     "ffuf": _summarize_ffuf,
     "spider": _summarize_spider,
     "garak": _summarize_garak,
-    "promptfoo": _summarize_promptfoo,
-    "fuzzyai": _summarize_fuzzyai,
 }
