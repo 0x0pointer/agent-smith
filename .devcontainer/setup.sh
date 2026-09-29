@@ -215,21 +215,43 @@ if command -v poetry >/dev/null 2>&1; then
   done
 fi
 
-# IMPORTANT: run the tools container on the HOST network so it shares the
-# Codespace's tailnet interface — required to reach the lab AND to receive callbacks:
-#   docker run --network=host … pentest-agent/kali-mcp
-# (compose: set  network_mode: host  on the tools service)
-# Point reverse shells / handlers at the Codespace tailnet IP, not a public one.
+# Tool-container networking: the Kali/metasploit containers run on the default
+# bridge and PUBLISH specific listener ports (tools/kali_runner.py,
+# tools/metasploit_runner.py): metasploit 4444 (meterpreter handler) and Kali
+# 1080/8888/8889/11601 (chisel SOCKS/C2, HTTP file server, ligolo) on 0.0.0.0, so
+# those land on the Codespace's tailscale0 and a tailnet target can reach them.
+# The command APIs (5001/5002) stay loopback-only. NOTE: host networking is NOT
+# used — it would expose those root-RCE APIs on the tailnet.
 
-# ── Tailscale status ─────────────────────────────────────────────────────────
-if command -v tailscale >/dev/null 2>&1; then
-  if tailscale status >/dev/null 2>&1; then
-    echo "Tailscale up. Codespace tailnet IP: $(tailscale ip -4 2>/dev/null || true)"
-    echo "  -> use this IP as the callback/LHOST for reverse shells."
+# ── Tailscale + reverse-shell callback wiring ────────────────────────────────
+# Callbacks (reverse shells, OOB http mode) can ONLY reach this Codespace over the
+# tailnet: there is no public inbound IP and Codespaces forwarding is HTTPS-only
+# (no raw TCP). So the routable listener address IS the Codespace's Tailscale IP.
+# Publish it to the agent as SMITH_LHOST (host[:port]) — the reverse-shell /
+# metasploit skills use it as a real callback endpoint and the QA placeholder-LHOST
+# check goes quiet. :4444 = the metasploit meterpreter handler (published), so an
+# msf multi/handler on 4444 is reachable at <tailnet-ip>:4444.
+_ENVF="$REPO_ROOT/.env"
+if command -v tailscale >/dev/null 2>&1 && tailscale status >/dev/null 2>&1; then
+  _TS_IP="$(tailscale ip -4 2>/dev/null | head -1 || true)"
+  if [ -n "${_TS_IP:-}" ]; then
+    echo "Tailscale up. Codespace tailnet IP: $_TS_IP"
+    touch "$_ENVF"
+    grep -v '^SMITH_LHOST=' "$_ENVF" > "$_ENVF.tmp" 2>/dev/null || true
+    echo "SMITH_LHOST=${_TS_IP}:4444" >> "$_ENVF.tmp"
+    mv "$_ENVF.tmp" "$_ENVF"
+    echo "  SMITH_LHOST=${_TS_IP}:4444 written to .env — restarting MCP to load it…"
+    "$REPO_ROOT/installers/start-mcp-server.sh" restart >/dev/null 2>&1 || true
+    echo "  Reverse shells: catch on the metasploit multi/handler (LPORT 4444). The"
+    echo "  target must be on your tailnet (or behind a Tailscale subnet router)."
   else
-    echo "Tailscale installed but not up — set the TS_AUTH_KEY secret, or run:"
-    echo "  sudo tailscale up --accept-routes"
+    echo "Tailscale up but no IPv4 yet — once 'tailscale ip -4' resolves, run:"
+    echo "  echo SMITH_LHOST=\$(tailscale ip -4):4444 >> $_ENVF && installers/start-mcp-server.sh restart"
   fi
+else
+  echo "Tailscale NOT up — reverse-shell callbacks cannot reach this Codespace yet."
+  echo "  Set the TS_AUTH_KEY Codespaces secret, or run:  sudo tailscale up --accept-routes"
+  echo "  Then:  echo SMITH_LHOST=\$(tailscale ip -4):4444 >> $_ENVF && installers/start-mcp-server.sh restart"
 fi
 
 # ── Claude auth: API key -> OAuth token -> browser login ─────────────────────
