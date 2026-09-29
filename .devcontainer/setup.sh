@@ -61,14 +61,78 @@ if command -v claude >/dev/null 2>&1; then
   fi
 fi
 
-# Register the MCP server with opencode (only if its config already exists).
-OPENCODE_CONFIG="$HOME/.config/opencode/opencode.json"
-if [ -f "$OPENCODE_CONFIG" ] && command -v jq >/dev/null 2>&1; then
-  jq '.mcp["pentest-agent"] = {"type":"remote","url":"http://127.0.0.1:7778/sse","enabled":true,"timeout":9000000}' \
-    "$OPENCODE_CONFIG" > "$OPENCODE_CONFIG.tmp" \
-    && mv "$OPENCODE_CONFIG.tmp" "$OPENCODE_CONFIG" \
-    && echo "MCP server registered with opencode."
+# ── opencode client assets (config + skills + plugin) ────────────────────────
+# The Codespace also ships the opencode CLI, so wire it up the way
+# installers/install_opencode.sh does — MINUS the image build / MCP start /
+# supervisor (setup.sh already did those). The Codespace runs CLOUD Claude, so
+# the installer's LOCAL-model context-window tuning does not apply; we set only
+# the model-independent keys it sets (MCP entry, permissions, steps, compaction,
+# CLAUDE.md instruction). opencode reads agent-callable skills from
+# ~/.config/opencode/skills/<name>/SKILL.md and human /slash commands from
+# ~/.config/opencode/commands/<name>.md — both get populated. It also uses the
+# pentester-opencode client variant (which the Claude install above skips).
+OPENCODE_CONFIG_DIR="$HOME/.config/opencode"
+OPENCODE_CONFIG="$OPENCODE_CONFIG_DIR/opencode.json"
+mkdir -p "$OPENCODE_CONFIG_DIR/commands" "$OPENCODE_CONFIG_DIR/skills" "$OPENCODE_CONFIG_DIR/plugins"
+
+# Compaction-recovery plugin (preserves scan state across context compaction).
+cp -f "$REPO_ROOT/installers/opencode-pentest-recovery.mjs" \
+      "$OPENCODE_CONFIG_DIR/plugins/opencode-pentest-recovery.mjs" 2>/dev/null || true
+
+# /pentester — prefer the opencode-specific variant, fall back to skills/pentester.md.
+_oc_pentester=""
+[ -f "$REPO_ROOT/skills/pentester-opencode/SKILL.md" ] && _oc_pentester="$REPO_ROOT/skills/pentester-opencode/SKILL.md"
+[ -z "$_oc_pentester" ] && [ -f "$REPO_ROOT/skills/pentester.md" ] && _oc_pentester="$REPO_ROOT/skills/pentester.md"
+if [ -n "$_oc_pentester" ]; then
+  cp -f "$_oc_pentester" "$OPENCODE_CONFIG_DIR/commands/pentester.md"
+  mkdir -p "$OPENCODE_CONFIG_DIR/skills/pentester"
+  cp -f "$_oc_pentester" "$OPENCODE_CONFIG_DIR/skills/pentester/SKILL.md"
 fi
+
+# Every other skill → flat command (.md) + agent-skill folder (SKILL.md + refs).
+_oc_cmd=0; _oc_skill=0
+while IFS= read -r _skill_file; do
+  [ -e "$_skill_file" ] || continue
+  _skill_dir="$(dirname "$_skill_file")"
+  _skill_name="$(basename "$_skill_dir")"
+  [ "$_skill_name" = "pentester-opencode" ] && continue
+  cp -f "$_skill_file" "$OPENCODE_CONFIG_DIR/commands/$_skill_name.md" 2>/dev/null && _oc_cmd=$((_oc_cmd + 1))
+  rm -rf "$OPENCODE_CONFIG_DIR/skills/$_skill_name"
+  mkdir -p "$OPENCODE_CONFIG_DIR/skills/$_skill_name"
+  cp -R "$_skill_dir"/. "$OPENCODE_CONFIG_DIR/skills/$_skill_name"/ 2>/dev/null && _oc_skill=$((_oc_skill + 1))
+done < <(find "$REPO_ROOT/skills" -mindepth 2 -maxdepth 3 -name SKILL.md 2>/dev/null)
+echo "  opencode: $_oc_cmd slash commands + $_oc_skill agent skills installed"
+
+# MCP server + permissions + CLAUDE.md instruction in opencode.json (created if
+# missing). Model-independent subset of installers/install_opencode.sh — no local
+# provider here, so its context-window detection is intentionally omitted.
+OPENCODE_CONFIG="$OPENCODE_CONFIG" REPO_DIR="$REPO_ROOT" python3 - <<'PYEOF' || echo "WARN: opencode config write failed — register manually per installers/install_opencode.sh"
+import json, os
+from pathlib import Path
+p = Path(os.environ["OPENCODE_CONFIG"]); repo = Path(os.environ["REPO_DIR"])
+try:
+    data = json.loads(p.read_text()) if p.exists() else {}
+except Exception:
+    data = {}
+# opencode's schema uses "remote" for any HTTP/SSE MCP server (no "sse" type).
+# 2.5h timeout keeps long tools (spider/sqlmap/kali) from tripping opencode's 5s default.
+data.setdefault("mcp", {})["pentest-agent"] = {
+    "type": "remote", "url": "http://127.0.0.1:7778/sse", "enabled": True, "timeout": 9_000_000,
+}
+perm = data.setdefault("permission", {})
+perm["doom_loop"] = "allow"                      # pentest fuzzing is legitimate repeated tool use
+for k in ("bash", "edit", "webfetch", "external_directory"):
+    perm.setdefault(k, "allow")
+data.setdefault("agent", {}).setdefault("build", {}).setdefault("steps", 10000)
+comp = data.setdefault("compaction", {}); comp["auto"] = True; comp.setdefault("prune", True)
+comp["reserved"] = max(comp.get("reserved", 0), 16000)   # cloud-model fallback (beats opencode's 10k default)
+instr = data.setdefault("instructions", [])
+entry = str(repo / "CLAUDE.md")
+if entry not in instr:
+    instr.append(entry)
+p.write_text(json.dumps(data, indent=2) + "\n")
+print(f"  opencode: MCP server + CLAUDE.md registered in {p}")
+PYEOF
 
 # ── Security-analysis skills (Claude Code) ───────────────────────────────────
 # Mirror installers/install.sh: install the /pentester slash command, then every
