@@ -8,6 +8,7 @@ ai_redteam.json
 session.json
 session_cost.json
 pocs/
+engagements/
 gh-issues.md
 threat-model/
 quick_log.json

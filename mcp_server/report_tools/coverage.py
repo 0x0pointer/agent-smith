@@ -172,6 +172,212 @@ async def _do_coverage_import(cov_type: str, data):
             "The matrix is your test plan — move to per-cell testing (or report(coverage type='sweep')).")
 
 
+def _prior_norm(s: str) -> str:
+    import re
+    return re.sub(r"\s+", " ", (s or "").strip().lower())
+
+
+def _prior_base_domain(host: str) -> str:
+    """Crude registrable domain: strip scheme/port/path, keep the last two labels
+    (www.foo.bar.com -> bar.com). Good enough to relate a target to a store."""
+    import re
+    host = re.sub(r"^\w+://", "", (host or "").strip().lower()).split("/")[0].split(":")[0]
+    parts = [p for p in host.split(".") if p]
+    return ".".join(parts[-2:]) if len(parts) >= 2 else host
+
+
+def _find_prior_stores(target: str) -> list:
+    """Scan engagements/*/resume.json and score each against `target`. Returns
+    candidates sorted by score desc. Scoring: exact target=100; substring either
+    way=80; shared base-domain (incl. the store's known_assets.domains)=70; target
+    is an IP in the store's known_assets.ips=70; else dropped. Deliberately strict —
+    a weak/ambiguous match must NOT be used to auto-skip cells."""
+    import glob
+    import os
+    ct = _prior_norm(target)
+    cbd = _prior_base_domain(target)
+    cands = []
+    for rp in sorted(glob.glob("engagements/*/resume.json")):
+        try:
+            with open(rp) as fh:
+                r = json.load(fh)
+        except Exception:
+            continue
+        st = _prior_norm(r.get("target", ""))
+        score = 0
+        if ct and st:
+            if ct == st:
+                score = 100
+            elif ct in st or st in ct:
+                score = 80
+        if not score and cbd:
+            sdoms = {_prior_base_domain(d) for d in (r.get("known_assets", {}).get("domains") or [])}
+            if cbd == _prior_base_domain(r.get("target", "")) or cbd in sdoms:
+                score = 70
+        if not score and target.strip() in set(r.get("known_assets", {}).get("ips") or []):
+            score = 70
+        if score:
+            cands.append({
+                "name": os.path.basename(os.path.dirname(rp)),
+                "path": os.path.dirname(rp),
+                "store_target": r.get("target", ""),
+                "score": score,
+                "stats": r.get("stats", {}),
+            })
+    return sorted(cands, key=lambda c: c["score"], reverse=True)
+
+
+async def _do_coverage_import_prior(data, cov: Any) -> str:
+    """Phase 1 of the prior-engagement store: ingest a durable engagements/<name>/
+    store (built by scripts/build_engagement_digest.py) into the LIVE scan so a
+    stopped scan can resume instead of restarting cold.
+
+    - merges the prior known_assets (creds/tokens/endpoints/tech/ports/domains)
+    - re-registers the prior endpoints (regenerating their cells)
+    - mode=resume (default): TRUST & SKIP — marks the prior tested_clean AND
+      vulnerable cells 'skipped' so the agent spends effort on pending cells only.
+      Only sound for an UNCHANGED target; resume.json carries the source timestamp.
+    - returns a compact prior-findings brief so the agent knows what's already
+      confirmed (and the dedup gate won't re-block it).
+
+    Fail-soft throughout: a malformed/partial store degrades to "assets merged,
+    nothing skipped" — it never raises into the scan.
+    """
+    import os
+    path = (data.get("path") or "").strip()
+    mode = (data.get("mode") or "resume").strip().lower()
+
+    # Auto-select the store by the CURRENT scan target when no explicit path is
+    # given. Safe rule: use a store ONLY on a confident, unambiguous match (best
+    # ≥80% and ≥20 ahead of the runner-up); otherwise LIST candidates and require
+    # an explicit path — never guess, because a wrong store skips untested cells.
+    if not path or path.lower() == "auto":
+        cur = scan_session.get() or {}
+        tgt = cur.get("target", "")
+        cands = _find_prior_stores(tgt)
+        if not cands:
+            return (f"import_prior(auto): no engagements/ store matches the current target "
+                    f"'{tgt}'. See `ls engagements/`, then pass path='engagements/<name>'.")
+        top = cands[0]
+        runner = cands[1]["score"] if len(cands) > 1 else 0
+        if top["score"] >= 80 and (top["score"] - runner) >= 20:
+            path = top["path"]
+            note_auto = f"auto-matched '{top['name']}' (target='{top['store_target']}', {top['score']}% match)"
+        else:
+            lines = [f"  • {c['name']}  target='{c['store_target']}'  match={c['score']}%  "
+                     f"({c['stats'].get('findings', 0)} findings, {c['stats'].get('pending', '?')} pending)  "
+                     f"→ path='{c['path']}'" for c in cands[:8]]
+            return ("import_prior(auto): the current target "
+                    f"'{tgt}' matches {len(cands)} stores ambiguously — pass an explicit path=:\n"
+                    + "\n".join(lines))
+    else:
+        note_auto = ""
+
+    resume_path = path if path.endswith(".json") else os.path.join(path, "resume.json")
+    if not os.path.exists(resume_path):
+        return (f"import_prior: no resume.json at {resume_path}. Build the store first: "
+                f"python3 scripts/build_engagement_digest.py --out {path}")
+    try:
+        with open(resume_path) as fh:
+            prior = json.load(fh)
+    except Exception as e:
+        return f"import_prior: could not read {resume_path}: {e}"
+
+    notes: list[str] = []
+
+    # 1) merge known_assets (reuse the exact accessor the scan uses)
+    merged = 0
+    try:
+        from core.session import assets as _sess_assets
+        for atype, items in (prior.get("known_assets") or {}).items():
+            if isinstance(items, list) and items:
+                _sess_assets.update_known_assets(atype, items)
+                merged += len(items)
+    except Exception as e:
+        notes.append(f"asset merge partial ({e})")
+
+    # 2) re-register prior endpoints (old-id -> (path, method) map for cell matching)
+    old_ep = {}
+    registered = 0
+    for ep in (prior.get("endpoints") or []):
+        if not isinstance(ep, dict):
+            continue
+        p = ep.get("path") or ep.get("_normalized")
+        m = (ep.get("method") or "GET").upper()
+        if not p:
+            continue
+        old_ep[ep.get("id")] = (p, m)
+        try:
+            res = await cov.add_endpoint(
+                path=p, method=m,
+                params=_coerce_endpoint_params(ep.get("params", [])),
+                discovered_by="prior-import",
+                auth_context=ep.get("auth_context", "none"),
+            )
+            if not res.get("dedup"):
+                registered += 1
+        except Exception:
+            continue
+
+    # 3) trust & skip prior tested_clean + vulnerable cells (mode=resume)
+    skipped = 0
+    if mode == "resume":
+        try:
+            matrix = cov.get_matrix()
+            new_eps = {e["id"]: e for e in matrix.get("endpoints", [])}
+            # index NEW cells by (path, method, param, injection_type) -> cell_id
+            idx = {}
+            for c in matrix.get("matrix", []):
+                e = new_eps.get(c.get("endpoint_id"), {})
+                key = ((e.get("path") or "").strip(), (e.get("method") or "GET").upper(),
+                       c.get("param", ""), c.get("injection_type", ""))
+                idx[key] = c.get("id")
+            updates = []
+            src = prior.get("generated_from", {}).get("session_id", "prior scan")
+            for kind in ("tested_clean_cells", "vulnerable_cells"):
+                for pc in (prior.get(kind) or []):
+                    p, m = old_ep.get(pc.get("endpoint_id"), (None, None))
+                    if not p:
+                        continue
+                    cid = idx.get((p.strip(), m, pc.get("param", ""), pc.get("injection_type", "")))
+                    if cid:
+                        was = "vulnerable" if kind.startswith("vuln") else "tested_clean"
+                        updates.append({"cell_id": cid, "status": "skipped",
+                                        "notes": f"prior resume: {was} in {src}"})
+            if updates:
+                r = await cov.bulk_update(updates)
+                skipped = r.get("updated", len(updates)) if isinstance(r, dict) else len(updates)
+                await _emit_coverage_event()
+        except Exception as e:
+            notes.append(f"skip pass partial ({e})")
+    else:
+        notes.append("mode=context — prior results loaded as context only, nothing skipped")
+
+    # 4) prior-findings brief (so the agent knows what's already confirmed)
+    findings = prior.get("findings") or []
+    sev_rank = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+    findings = sorted(findings, key=lambda f: sev_rank.get(str(f.get("severity", "")).lower(), 5))
+    brief_lines = [f"  • [{str(f.get('severity','?')).upper()}] {f.get('title','')}"
+                   f"{' ' + f.get('cve') if f.get('cve') else ''}"
+                   for f in findings[:20]]
+    more = f"\n  … and {len(findings) - 20} more" if len(findings) > 20 else ""
+    src_status = prior.get("generated_from", {}).get("source_status")
+
+    return (
+        f"📥 import_prior ({mode}) from {path}:\n"
+        + (f"  • {note_auto}\n" if note_auto else "")
+        + f"  • known_assets merged: {merged} item(s)\n"
+        f"  • endpoints registered: {registered}\n"
+        f"  • cells trust-skipped (already tested/found): {skipped}\n"
+        + (f"  • notes: {'; '.join(notes)}\n" if notes else "")
+        + f"  • prior source status: {src_status}\n"
+        + (f"\nAlready-confirmed findings ({len(findings)}) — do NOT re-file, build on these:\n"
+           + "\n".join(brief_lines) + more if findings else "\nNo prior findings recorded.")
+        + "\n\nResume plan: work the PENDING cells (report(action='coverage', type='list', "
+          "status='pending')); re-verify a skipped cell only if the app may have changed."
+    )
+
+
 async def _fire_oob_ssrf_probes(target, eps, ssrf_cells, base, mode) -> list:
     """Mint a unique OOB callback per ssrf cell, embed it in the param, fire the
     probe. Returns [(cell, correlation_id)] for the poll pass."""
@@ -543,11 +749,13 @@ async def _do_coverage(data):
         return await _do_coverage_sweep(data, cov)
     if cov_type in ("import_openapi", "import_graphql"):
         return await _do_coverage_import(cov_type, data)
+    if cov_type == "import_prior":
+        return await _do_coverage_import_prior(data, cov)
     if cov_type == "auto_crosscutting":
         return await _do_coverage_auto_crosscutting(data, cov)
     return (
         f"Unknown coverage type '{cov_type}'. Use: endpoint, tested, bulk_tested, list, next_batch, "
-        f"sweep, import_openapi, import_graphql, auto_crosscutting, reset. "
+        f"sweep, import_openapi, import_graphql, import_prior, auto_crosscutting, reset. "
         f"Example: report(action='coverage', data={{type:'endpoint', path:'/login', method:'GET', "
         f"params:[{{name:'user', type:'query', value_hint:'string'}}]}})"
     )

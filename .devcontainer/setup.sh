@@ -11,6 +11,15 @@ set -euo pipefail
 # ── Repo root (this script lives in .devcontainer/) ──────────────────────────
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# ── Skills submodule ─────────────────────────────────────────────────────────
+# Codespaces doesn't always init submodules; the skill files live in the skills/
+# submodule (https), so ensure it's checked out before installing skills below.
+if [ -f "$REPO_ROOT/.gitmodules" ]; then
+  git -C "$REPO_ROOT" submodule update --init --recursive --remote skills 2>/dev/null \
+    || git -C "$REPO_ROOT" submodule update --init --recursive skills 2>/dev/null \
+    || echo "WARN: could not init the skills submodule — skills will be missing."
+fi
+
 # ── Harness CLIs (native) ────────────────────────────────────────────────────
 curl -fsSL https://claude.ai/install.sh | bash        # Claude Code (linux-x64)
 npm install -g opencode-ai                             # opencode (x64 native binary)
@@ -52,14 +61,104 @@ if command -v claude >/dev/null 2>&1; then
   fi
 fi
 
-# Register the MCP server with opencode (only if its config already exists).
-OPENCODE_CONFIG="$HOME/.config/opencode/opencode.json"
-if [ -f "$OPENCODE_CONFIG" ] && command -v jq >/dev/null 2>&1; then
-  jq '.mcp["pentest-agent"] = {"type":"remote","url":"http://127.0.0.1:7778/sse","enabled":true,"timeout":9000000}' \
-    "$OPENCODE_CONFIG" > "$OPENCODE_CONFIG.tmp" \
-    && mv "$OPENCODE_CONFIG.tmp" "$OPENCODE_CONFIG" \
-    && echo "MCP server registered with opencode."
+# ── opencode client assets (config + skills + plugin) ────────────────────────
+# The Codespace also ships the opencode CLI, so wire it up the way
+# installers/install_opencode.sh does — MINUS the image build / MCP start /
+# supervisor (setup.sh already did those). The Codespace runs CLOUD Claude, so
+# the installer's LOCAL-model context-window tuning does not apply; we set only
+# the model-independent keys it sets (MCP entry, permissions, steps, compaction,
+# CLAUDE.md instruction). opencode reads agent-callable skills from
+# ~/.config/opencode/skills/<name>/SKILL.md and human /slash commands from
+# ~/.config/opencode/commands/<name>.md — both get populated. It also uses the
+# pentester-opencode client variant (which the Claude install above skips).
+OPENCODE_CONFIG_DIR="$HOME/.config/opencode"
+OPENCODE_CONFIG="$OPENCODE_CONFIG_DIR/opencode.json"
+mkdir -p "$OPENCODE_CONFIG_DIR/commands" "$OPENCODE_CONFIG_DIR/skills" "$OPENCODE_CONFIG_DIR/plugins"
+
+# Compaction-recovery plugin (preserves scan state across context compaction).
+cp -f "$REPO_ROOT/installers/opencode-pentest-recovery.mjs" \
+      "$OPENCODE_CONFIG_DIR/plugins/opencode-pentest-recovery.mjs" 2>/dev/null || true
+
+# /pentester — prefer the opencode-specific variant, fall back to skills/pentester.md.
+_oc_pentester=""
+[ -f "$REPO_ROOT/skills/pentester-opencode/SKILL.md" ] && _oc_pentester="$REPO_ROOT/skills/pentester-opencode/SKILL.md"
+[ -z "$_oc_pentester" ] && [ -f "$REPO_ROOT/skills/pentester.md" ] && _oc_pentester="$REPO_ROOT/skills/pentester.md"
+if [ -n "$_oc_pentester" ]; then
+  cp -f "$_oc_pentester" "$OPENCODE_CONFIG_DIR/commands/pentester.md"
+  mkdir -p "$OPENCODE_CONFIG_DIR/skills/pentester"
+  cp -f "$_oc_pentester" "$OPENCODE_CONFIG_DIR/skills/pentester/SKILL.md"
 fi
+
+# Every other skill → flat command (.md) + agent-skill folder (SKILL.md + refs).
+_oc_cmd=0; _oc_skill=0
+while IFS= read -r _skill_file; do
+  [ -e "$_skill_file" ] || continue
+  _skill_dir="$(dirname "$_skill_file")"
+  _skill_name="$(basename "$_skill_dir")"
+  [ "$_skill_name" = "pentester-opencode" ] && continue
+  cp -f "$_skill_file" "$OPENCODE_CONFIG_DIR/commands/$_skill_name.md" 2>/dev/null && _oc_cmd=$((_oc_cmd + 1))
+  rm -rf "$OPENCODE_CONFIG_DIR/skills/$_skill_name"
+  mkdir -p "$OPENCODE_CONFIG_DIR/skills/$_skill_name"
+  cp -R "$_skill_dir"/. "$OPENCODE_CONFIG_DIR/skills/$_skill_name"/ 2>/dev/null && _oc_skill=$((_oc_skill + 1))
+done < <(find "$REPO_ROOT/skills" -mindepth 2 -maxdepth 3 -name SKILL.md 2>/dev/null)
+echo "  opencode: $_oc_cmd slash commands + $_oc_skill agent skills installed"
+
+# MCP server + permissions + CLAUDE.md instruction in opencode.json (created if
+# missing). Model-independent subset of installers/install_opencode.sh — no local
+# provider here, so its context-window detection is intentionally omitted.
+OPENCODE_CONFIG="$OPENCODE_CONFIG" REPO_DIR="$REPO_ROOT" python3 - <<'PYEOF' || echo "WARN: opencode config write failed — register manually per installers/install_opencode.sh"
+import json, os
+from pathlib import Path
+p = Path(os.environ["OPENCODE_CONFIG"]); repo = Path(os.environ["REPO_DIR"])
+try:
+    data = json.loads(p.read_text()) if p.exists() else {}
+except Exception:
+    data = {}
+# opencode's schema uses "remote" for any HTTP/SSE MCP server (no "sse" type).
+# 2.5h timeout keeps long tools (spider/sqlmap/kali) from tripping opencode's 5s default.
+data.setdefault("mcp", {})["pentest-agent"] = {
+    "type": "remote", "url": "http://127.0.0.1:7778/sse", "enabled": True, "timeout": 9_000_000,
+}
+perm = data.setdefault("permission", {})
+perm["doom_loop"] = "allow"                      # pentest fuzzing is legitimate repeated tool use
+for k in ("bash", "edit", "webfetch", "external_directory"):
+    perm.setdefault(k, "allow")
+data.setdefault("agent", {}).setdefault("build", {}).setdefault("steps", 10000)
+comp = data.setdefault("compaction", {}); comp["auto"] = True; comp.setdefault("prune", True)
+comp["reserved"] = max(comp.get("reserved", 0), 16000)   # cloud-model fallback (beats opencode's 10k default)
+instr = data.setdefault("instructions", [])
+entry = str(repo / "CLAUDE.md")
+if entry not in instr:
+    instr.append(entry)
+p.write_text(json.dumps(data, indent=2) + "\n")
+print(f"  opencode: MCP server + CLAUDE.md registered in {p}")
+PYEOF
+
+# ── Security-analysis skills (Claude Code) ───────────────────────────────────
+# Mirror installers/install.sh: install the /pentester slash command, then every
+# skill folder into ~/.claude/skills/<leaf-name>/ (flat), discovered from both
+# skills/<name>/SKILL.md and skills/<domain>/<name>/SKILL.md. Fresh env → overwrite.
+echo "Installing security-analysis skills into ~/.claude…"
+mkdir -p "$HOME/.claude/commands" "$HOME/.claude/skills"
+if [ -f "$REPO_ROOT/skills/pentester.md" ]; then
+  cp -f "$REPO_ROOT/skills/pentester.md" "$HOME/.claude/commands/pentester.md"
+fi
+_skill_count=0
+while IFS= read -r _skill_file; do
+  [ -e "$_skill_file" ] || continue
+  _skill_dir="$(dirname "$_skill_file")"
+  _skill_name="$(basename "$_skill_dir")"
+  # opencode has a client-specific variant; Claude uses skills/pentester.md.
+  [ "$_skill_name" = "pentester-opencode" ] && continue
+  rm -rf "$HOME/.claude/skills/$_skill_name"
+  mkdir -p "$HOME/.claude/skills/$_skill_name"
+  if cp -R "$_skill_dir"/. "$HOME/.claude/skills/$_skill_name"/ 2>/dev/null; then
+    _skill_count=$((_skill_count + 1))
+  else
+    echo "  WARN: failed to install skill /$_skill_name"
+  fi
+done < <(find "$REPO_ROOT/skills" -mindepth 2 -maxdepth 3 -name SKILL.md 2>/dev/null)
+echo "  installed $_skill_count skills + /pentester command"
 
 # ── Docker daemon (for the hacking-tools container only) ─────────────────────
 echo "Waiting for the Docker daemon…"
@@ -74,35 +173,85 @@ timeout 60 bash -c 'until docker info >/dev/null 2>&1; do sleep 2; done' \
 if [ -f "$REPO_ROOT/docker-compose.yml" ] || [ -f "$REPO_ROOT/compose.yaml" ] || [ -f "$REPO_ROOT/compose.yml" ]; then
   ( cd "$REPO_ROOT" && { docker compose pull || true; } && docker compose build )
 else
-  # Kali image (recon + web/infra tooling) — required for most skills. A plain build
-  # uses the Dockerfile's default ARGs (INSTALL_WEB=1 INSTALL_INFRA=1), matching the
-  # installer's interactive defaults. Best-effort: warn, don't abort the Codespace.
-  echo "Building pentest-agent/kali-mcp (tools/kali) — this takes a while…"
-  docker build -t pentest-agent/kali-mcp "$REPO_ROOT/tools/kali/" \
-    || echo "WARN: kali-mcp build failed — rebuild later: docker build -t pentest-agent/kali-mcp $REPO_ROOT/tools/kali/"
+  # Kali image — the Codespace bakes in EVERY module (web + infra + mobile + cloud
+  # + ai), not just the web+infra defaults, so all skills work out of the box. This
+  # is a heavy build (the ai module pulls torch — expect a long first create).
+  # Best-effort: warn, don't abort the Codespace.
+  _KALI_ARGS=(
+    --build-arg INSTALL_WEB=1
+    --build-arg INSTALL_INFRA=1
+    --build-arg INSTALL_MOBILE=1
+    --build-arg INSTALL_CLOUD=1
+    --build-arg INSTALL_AI=1
+  )
+  echo "Building pentest-agent/kali-mcp (tools/kali) with ALL modules — this takes a while…"
+  docker build "${_KALI_ARGS[@]}" -t pentest-agent/kali-mcp "$REPO_ROOT/tools/kali/" \
+    || echo "WARN: kali-mcp build failed — rebuild later: docker build ${_KALI_ARGS[*]} -t pentest-agent/kali-mcp $REPO_ROOT/tools/kali/"
   # Metasploit image — heavier, only needed for the /metasploit skill. Best-effort.
   echo "Building pentest-agent/metasploit (tools/metasploit)…"
   docker build -t pentest-agent/metasploit "$REPO_ROOT/tools/metasploit/" \
     || echo "WARN: metasploit build failed — rebuild later: docker build -t pentest-agent/metasploit $REPO_ROOT/tools/metasploit/"
-  # Lightweight scanner images (nmap/naabu/httpx/nuclei/subfinder/ffuf/semgrep/
-  # trufflehog) are public and auto-pull on first use — no build needed here.
+  # Scanner images (recon: nmap/naabu/httpx/nuclei/subfinder + fuzzyai) are pulled
+  # in the step below. ffuf/spider/garak/promptfoo run INSIDE the Kali image built
+  # above — they are not separate images.
 fi
 
-# IMPORTANT: run the tools container on the HOST network so it shares the
-# Codespace's tailnet interface — required to reach the lab AND to receive callbacks:
-#   docker run --network=host … pentest-agent/kali-mcp
-# (compose: set  network_mode: host  on the tools service)
-# Point reverse shells / handlers at the Codespace tailnet IP, not a public one.
+# ── Pre-pull scanner images ──────────────────────────────────────────────────
+# Parity with installers/install.sh (which pre-pulls these). Enumerate the exact
+# refs from the tool REGISTRY — the same set the `pull_images` action fetches, and
+# digest-pinned — so this never drifts from a hardcoded tag list. Best-effort: any
+# image not pulled here still auto-pulls on first `docker run`. The needs_mount
+# tools (semgrep/trufflehog/mobsfscan) auto-pull when a codebase/target is first
+# mounted, matching pull_images, so they are intentionally not fetched here.
+if command -v poetry >/dev/null 2>&1; then
+  echo "Pre-pulling scanner images (from the tool registry)…"
+  _imgs="$( ( cd "$REPO_ROOT" && poetry run python -c 'from tools import REGISTRY; print("\n".join(sorted({t.image for t in REGISTRY.values() if not getattr(t,"needs_mount",False) and getattr(t,"image","")})))' ) 2>/dev/null || true )"
+  for _img in $_imgs; do
+    if docker pull "$_img" >/dev/null 2>&1; then
+      echo "  pulled $_img"
+    else
+      echo "  WARN: pull failed (auto-pulls on first use): $_img"
+    fi
+  done
+fi
 
-# ── Tailscale status ─────────────────────────────────────────────────────────
-if command -v tailscale >/dev/null 2>&1; then
-  if tailscale status >/dev/null 2>&1; then
-    echo "Tailscale up. Codespace tailnet IP: $(tailscale ip -4 2>/dev/null || true)"
-    echo "  -> use this IP as the callback/LHOST for reverse shells."
+# Tool-container networking: the Kali/metasploit containers run on the default
+# bridge and PUBLISH specific listener ports (tools/kali_runner.py,
+# tools/metasploit_runner.py): metasploit 4444 (meterpreter handler) and Kali
+# 1080/8888/8889/11601 (chisel SOCKS/C2, HTTP file server, ligolo) on 0.0.0.0, so
+# those land on the Codespace's tailscale0 and a tailnet target can reach them.
+# The command APIs (5001/5002) stay loopback-only. NOTE: host networking is NOT
+# used — it would expose those root-RCE APIs on the tailnet.
+
+# ── Tailscale + reverse-shell callback wiring ────────────────────────────────
+# Callbacks (reverse shells, OOB http mode) can ONLY reach this Codespace over the
+# tailnet: there is no public inbound IP and Codespaces forwarding is HTTPS-only
+# (no raw TCP). So the routable listener address IS the Codespace's Tailscale IP.
+# Publish it to the agent as SMITH_LHOST (host[:port]) — the reverse-shell /
+# metasploit skills use it as a real callback endpoint and the QA placeholder-LHOST
+# check goes quiet. :4444 = the metasploit meterpreter handler (published), so an
+# msf multi/handler on 4444 is reachable at <tailnet-ip>:4444.
+_ENVF="$REPO_ROOT/.env"
+if command -v tailscale >/dev/null 2>&1 && tailscale status >/dev/null 2>&1; then
+  _TS_IP="$(tailscale ip -4 2>/dev/null | head -1 || true)"
+  if [ -n "${_TS_IP:-}" ]; then
+    echo "Tailscale up. Codespace tailnet IP: $_TS_IP"
+    touch "$_ENVF"
+    grep -v '^SMITH_LHOST=' "$_ENVF" > "$_ENVF.tmp" 2>/dev/null || true
+    echo "SMITH_LHOST=${_TS_IP}:4444" >> "$_ENVF.tmp"
+    mv "$_ENVF.tmp" "$_ENVF"
+    echo "  SMITH_LHOST=${_TS_IP}:4444 written to .env — restarting MCP to load it…"
+    "$REPO_ROOT/installers/start-mcp-server.sh" restart >/dev/null 2>&1 || true
+    echo "  Reverse shells: catch on the metasploit multi/handler (LPORT 4444). The"
+    echo "  target must be on your tailnet (or behind a Tailscale subnet router)."
   else
-    echo "Tailscale installed but not up — set the TS_AUTH_KEY secret, or run:"
-    echo "  sudo tailscale up --accept-routes"
+    echo "Tailscale up but no IPv4 yet — once 'tailscale ip -4' resolves, run:"
+    echo "  echo SMITH_LHOST=\$(tailscale ip -4):4444 >> $_ENVF && installers/start-mcp-server.sh restart"
   fi
+else
+  echo "Tailscale NOT up — reverse-shell callbacks cannot reach this Codespace yet."
+  echo "  Set the TS_AUTH_KEY Codespaces secret, or run:  sudo tailscale up --accept-routes"
+  echo "  Then:  echo SMITH_LHOST=\$(tailscale ip -4):4444 >> $_ENVF && installers/start-mcp-server.sh restart"
 fi
 
 # ── Claude auth: API key -> OAuth token -> browser login ─────────────────────

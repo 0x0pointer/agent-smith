@@ -33,10 +33,23 @@ SYSTEMD_UNIT="agent-smith-mcp.service"
 # `systemctl --user` needs a live user D-Bus session; absent in many containers,
 # `ssh host cmd` invocations and minimal WSL distros. `systemctl --user cat` is
 # the existence check — list-unit-files exits 0 even when it matches nothing.
+#
+# The D-Bus session and unit file can BOTH be present while no `systemd --user`
+# manager is actually running the units (common in Codespaces / docker-in-docker
+# base images that don't run systemd as PID 1). There `start`/`restart` return 0
+# but nothing launches — a silent failure. Gate on `is-system-running` so we only
+# take the systemd branch when the manager is genuinely operational; otherwise we
+# fall through to the self-managed nohup path. We match the STATE string (not the
+# exit code, which is non-zero for the healthy `degraded` state) and accept the
+# states in which the manager can run units; offline/unknown/no-bus → fall back.
 _systemd_loaded() {
-    command -v systemctl >/dev/null 2>&1 \
-        && systemctl --user show-environment >/dev/null 2>&1 \
-        && systemctl --user cat "$SYSTEMD_UNIT" >/dev/null 2>&1
+    command -v systemctl >/dev/null 2>&1 || return 1
+    systemctl --user show-environment >/dev/null 2>&1 || return 1
+    case "$(systemctl --user is-system-running 2>/dev/null)" in
+        running|degraded|starting|initializing) ;;   # user manager is up (or coming up)
+        *) return 1 ;;                                 # offline|unknown|"" → no usable manager
+    esac
+    systemctl --user cat "$SYSTEMD_UNIT" >/dev/null 2>&1
 }
 _systemd_pid() {
     local pid
