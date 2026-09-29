@@ -172,6 +172,132 @@ async def _do_coverage_import(cov_type: str, data):
             "The matrix is your test plan — move to per-cell testing (or report(coverage type='sweep')).")
 
 
+async def _do_coverage_import_prior(data, cov: Any) -> str:
+    """Phase 1 of the prior-engagement store: ingest a durable engagements/<name>/
+    store (built by scripts/build_engagement_digest.py) into the LIVE scan so a
+    stopped scan can resume instead of restarting cold.
+
+    - merges the prior known_assets (creds/tokens/endpoints/tech/ports/domains)
+    - re-registers the prior endpoints (regenerating their cells)
+    - mode=resume (default): TRUST & SKIP — marks the prior tested_clean AND
+      vulnerable cells 'skipped' so the agent spends effort on pending cells only.
+      Only sound for an UNCHANGED target; resume.json carries the source timestamp.
+    - returns a compact prior-findings brief so the agent knows what's already
+      confirmed (and the dedup gate won't re-block it).
+
+    Fail-soft throughout: a malformed/partial store degrades to "assets merged,
+    nothing skipped" — it never raises into the scan.
+    """
+    import os
+    path = (data.get("path") or "").strip()
+    mode = (data.get("mode") or "resume").strip().lower()
+    if not path:
+        return ("import_prior needs a 'path' to an engagements/<name>/ store "
+                "(build one with scripts/build_engagement_digest.py).")
+    resume_path = path if path.endswith(".json") else os.path.join(path, "resume.json")
+    if not os.path.exists(resume_path):
+        return (f"import_prior: no resume.json at {resume_path}. Build the store first: "
+                f"python3 scripts/build_engagement_digest.py --out {path}")
+    try:
+        with open(resume_path) as fh:
+            prior = json.load(fh)
+    except Exception as e:
+        return f"import_prior: could not read {resume_path}: {e}"
+
+    notes: list[str] = []
+
+    # 1) merge known_assets (reuse the exact accessor the scan uses)
+    merged = 0
+    try:
+        from core.session import assets as _sess_assets
+        for atype, items in (prior.get("known_assets") or {}).items():
+            if isinstance(items, list) and items:
+                _sess_assets.update_known_assets(atype, items)
+                merged += len(items)
+    except Exception as e:
+        notes.append(f"asset merge partial ({e})")
+
+    # 2) re-register prior endpoints (old-id -> (path, method) map for cell matching)
+    old_ep = {}
+    registered = 0
+    for ep in (prior.get("endpoints") or []):
+        if not isinstance(ep, dict):
+            continue
+        p = ep.get("path") or ep.get("_normalized")
+        m = (ep.get("method") or "GET").upper()
+        if not p:
+            continue
+        old_ep[ep.get("id")] = (p, m)
+        try:
+            res = await cov.add_endpoint(
+                path=p, method=m,
+                params=_coerce_endpoint_params(ep.get("params", [])),
+                discovered_by="prior-import",
+                auth_context=ep.get("auth_context", "none"),
+            )
+            if not res.get("dedup"):
+                registered += 1
+        except Exception:
+            continue
+
+    # 3) trust & skip prior tested_clean + vulnerable cells (mode=resume)
+    skipped = 0
+    if mode == "resume":
+        try:
+            matrix = cov.get_matrix()
+            new_eps = {e["id"]: e for e in matrix.get("endpoints", [])}
+            # index NEW cells by (path, method, param, injection_type) -> cell_id
+            idx = {}
+            for c in matrix.get("matrix", []):
+                e = new_eps.get(c.get("endpoint_id"), {})
+                key = ((e.get("path") or "").strip(), (e.get("method") or "GET").upper(),
+                       c.get("param", ""), c.get("injection_type", ""))
+                idx[key] = c.get("id")
+            updates = []
+            src = prior.get("generated_from", {}).get("session_id", "prior scan")
+            for kind in ("tested_clean_cells", "vulnerable_cells"):
+                for pc in (prior.get(kind) or []):
+                    p, m = old_ep.get(pc.get("endpoint_id"), (None, None))
+                    if not p:
+                        continue
+                    cid = idx.get((p.strip(), m, pc.get("param", ""), pc.get("injection_type", "")))
+                    if cid:
+                        was = "vulnerable" if kind.startswith("vuln") else "tested_clean"
+                        updates.append({"cell_id": cid, "status": "skipped",
+                                        "notes": f"prior resume: {was} in {src}"})
+            if updates:
+                r = await cov.bulk_update(updates)
+                skipped = r.get("updated", len(updates)) if isinstance(r, dict) else len(updates)
+                await _emit_coverage_event()
+        except Exception as e:
+            notes.append(f"skip pass partial ({e})")
+    else:
+        notes.append("mode=context — prior results loaded as context only, nothing skipped")
+
+    # 4) prior-findings brief (so the agent knows what's already confirmed)
+    findings = prior.get("findings") or []
+    sev_rank = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+    findings = sorted(findings, key=lambda f: sev_rank.get(str(f.get("severity", "")).lower(), 5))
+    brief_lines = [f"  • [{str(f.get('severity','?')).upper()}] {f.get('title','')}"
+                   f"{' ' + f.get('cve') if f.get('cve') else ''}"
+                   for f in findings[:20]]
+    more = f"\n  … and {len(findings) - 20} more" if len(findings) > 20 else ""
+    src_status = prior.get("generated_from", {}).get("source_status")
+
+    return (
+        f"📥 import_prior ({mode}) from {path}:\n"
+        f"  • known_assets merged: {merged} item(s)\n"
+        f"  • endpoints registered: {registered}\n"
+        f"  • cells trust-skipped (already tested/found): {skipped}\n"
+        + (f"  • notes: {'; '.join(notes)}\n" if notes else "")
+        + f"  • prior source status: {src_status}\n"
+        + (f"\nAlready-confirmed findings ({len(findings)}) — do NOT re-file, build on these:\n"
+           + "\n".join(brief_lines) + more if findings else "\nNo prior findings recorded.")
+        + "\n\nResume plan: work the PENDING cells (report(action='coverage', type='list', "
+          "status='pending')); re-verify a skipped cell only if the app may have changed."
+    )
+
+
 async def _fire_oob_ssrf_probes(target, eps, ssrf_cells, base, mode) -> list:
     """Mint a unique OOB callback per ssrf cell, embed it in the param, fire the
     probe. Returns [(cell, correlation_id)] for the poll pass."""
@@ -543,11 +669,13 @@ async def _do_coverage(data):
         return await _do_coverage_sweep(data, cov)
     if cov_type in ("import_openapi", "import_graphql"):
         return await _do_coverage_import(cov_type, data)
+    if cov_type == "import_prior":
+        return await _do_coverage_import_prior(data, cov)
     if cov_type == "auto_crosscutting":
         return await _do_coverage_auto_crosscutting(data, cov)
     return (
         f"Unknown coverage type '{cov_type}'. Use: endpoint, tested, bulk_tested, list, next_batch, "
-        f"sweep, import_openapi, import_graphql, auto_crosscutting, reset. "
+        f"sweep, import_openapi, import_graphql, import_prior, auto_crosscutting, reset. "
         f"Example: report(action='coverage', data={{type:'endpoint', path:'/login', method:'GET', "
         f"params:[{{name:'user', type:'query', value_hint:'string'}}]}})"
     )
