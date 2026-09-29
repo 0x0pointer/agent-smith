@@ -54,6 +54,14 @@
   "otherPortsAttributes": { "onAutoForward": "silent" },
 
   "hostRequirements": { "cpus": 8, "memory": "16gb", "storage": "64gb" },
+  // postCreate runs ONCE (first build) — full setup. postStart runs on EVERY
+  // container start (incl. Codespaces resume after an idle stop), re-ensuring the
+  // MCP SSE daemon: on Linux there's no systemd user manager, so setup.sh's start
+  // falls back to a nohup process that does NOT survive a container stop. Without
+  // this, a resumed Codespace has the MCP registered but nothing listening on
+  // 7778, and /pentester silently fails. start-mcp-server.sh is idempotent (no-op
+  // if already up); '|| true' keeps a resume from failing if deps aren't ready yet.
   "postCreateCommand": "bash .devcontainer/setup.sh",
+  "postStartCommand": "bash installers/start-mcp-server.sh start || true",
   "customizations": { "vscode": { "extensions": ["anthropic.claude-code"] } }
 }
