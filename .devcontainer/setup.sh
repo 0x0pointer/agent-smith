@@ -11,6 +11,15 @@ set -euo pipefail
 # ── Repo root (this script lives in .devcontainer/) ──────────────────────────
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# ── Skills submodule ─────────────────────────────────────────────────────────
+# Codespaces doesn't always init submodules; the skill files live in the skills/
+# submodule (https), so ensure it's checked out before installing skills below.
+if [ -f "$REPO_ROOT/.gitmodules" ]; then
+  git -C "$REPO_ROOT" submodule update --init --recursive --remote skills 2>/dev/null \
+    || git -C "$REPO_ROOT" submodule update --init --recursive skills 2>/dev/null \
+    || echo "WARN: could not init the skills submodule — skills will be missing."
+fi
+
 # ── Harness CLIs (native) ────────────────────────────────────────────────────
 curl -fsSL https://claude.ai/install.sh | bash        # Claude Code (linux-x64)
 npm install -g opencode-ai                             # opencode (x64 native binary)
@@ -60,6 +69,32 @@ if [ -f "$OPENCODE_CONFIG" ] && command -v jq >/dev/null 2>&1; then
     && mv "$OPENCODE_CONFIG.tmp" "$OPENCODE_CONFIG" \
     && echo "MCP server registered with opencode."
 fi
+
+# ── Security-analysis skills (Claude Code) ───────────────────────────────────
+# Mirror installers/install.sh: install the /pentester slash command, then every
+# skill folder into ~/.claude/skills/<leaf-name>/ (flat), discovered from both
+# skills/<name>/SKILL.md and skills/<domain>/<name>/SKILL.md. Fresh env → overwrite.
+echo "Installing security-analysis skills into ~/.claude…"
+mkdir -p "$HOME/.claude/commands" "$HOME/.claude/skills"
+if [ -f "$REPO_ROOT/skills/pentester.md" ]; then
+  cp -f "$REPO_ROOT/skills/pentester.md" "$HOME/.claude/commands/pentester.md"
+fi
+_skill_count=0
+while IFS= read -r _skill_file; do
+  [ -e "$_skill_file" ] || continue
+  _skill_dir="$(dirname "$_skill_file")"
+  _skill_name="$(basename "$_skill_dir")"
+  # opencode has a client-specific variant; Claude uses skills/pentester.md.
+  [ "$_skill_name" = "pentester-opencode" ] && continue
+  rm -rf "$HOME/.claude/skills/$_skill_name"
+  mkdir -p "$HOME/.claude/skills/$_skill_name"
+  if cp -R "$_skill_dir"/. "$HOME/.claude/skills/$_skill_name"/ 2>/dev/null; then
+    _skill_count=$((_skill_count + 1))
+  else
+    echo "  WARN: failed to install skill /$_skill_name"
+  fi
+done < <(find "$REPO_ROOT/skills" -mindepth 2 -maxdepth 3 -name SKILL.md 2>/dev/null)
+echo "  installed $_skill_count skills + /pentester command"
 
 # ── Docker daemon (for the hacking-tools container only) ─────────────────────
 echo "Waiting for the Docker daemon…"
