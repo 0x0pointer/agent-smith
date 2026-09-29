@@ -1,0 +1,19 @@
+<!-- ── Tab: Session Log ──────────────────────────────────────────────────── -->
+<!-- Read-only replay of a single session's reasoning stream (issue #186), served
+     from /api/session-log over logs/smith-events/<engagement_id>.jsonl. -->
+<div id="tab-session-log" class="tab-content">
+  <div class="tab-head">
+    <h2>Session Log</h2>
+    <p>Per-session reasoning trail captured at the MCP tool boundary — notes, decisions, and the action+summary floor. Pick any past session to replay it.</p>
+  </div>
+  <div id="session-log-toolbar">
+    <select id="session-log-select" onchange="onSessionLogChange()"
+      style="background:var(--bg-card);border:1px solid var(--border);color:var(--text);border-radius:4px;
+             padding:0.2rem 0.5rem;font-size:0.76rem;font-family:'IBM Plex Mono',monospace;max-width:360px">
+      <option value="">newest session</option>
+    </select>
+    <input id="session-log-filter" type="text" placeholder="Filter…" oninput="renderSessionLog()">
+    <span id="session-log-meta" class="air-sub-note"></span>
+  </div>
+  <div id="session-log-output"><div class="empty-placeholder">No reasoning events yet.</div></div>
+</div>

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "note-event.schema.json",
+  "title": "Note event (issue #186)",
+  "description": "A free-text reasoning note the agent recorded via report(action='note') at the MCP tool boundary. The client-agnostic reasoning channel alongside decision events; a note is NOT the decision behind an action, so it carries no caused_by linkage to the following tool call. The message is redacted at capture (it is validated by the eventstore leak-scan and rendered on the dashboard).",
+  "allOf": [
+    { "$ref": "event-envelope.schema.json" },
+    {
+      "type": "object",
+      "properties": {
+        "event_type": { "const": "note" },
+        "note": {
+          "type": "object",
+          "properties": {
+            "message": { "type": "string", "description": "Redacted free-text reasoning note." }
+          },
+          "required": ["message"]
+        }
+      },
+      "required": ["note"]
+    }
+  ]
+}

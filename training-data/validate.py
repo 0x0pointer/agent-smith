@@ -30,6 +30,7 @@ SCHEMA_BY_ID = {sid: res.contents for sid, res in RESOURCES}
 EVENT_SCHEMA = {
     "observation": "observation-event.schema.json",
     "decision": "decision-event.schema.json",
+    "note": "note-event.schema.json",
     "action": "action-event.schema.json",
     "result": "result-event.schema.json",
     "adjudication": "adjudication-event.schema.json",
