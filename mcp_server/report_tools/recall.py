@@ -42,6 +42,66 @@ def _read(path: str) -> str:
         return ""
 
 
+_REASONING_TYPES = ("note", "decision", "result")     # the redacted reasoning/summary events (PR #194)
+_MAX_STREAM_LINES = 40_000                             # cap events scanned per session log
+
+
+def _flatten_text(obj) -> str:
+    """Collect every string leaf of a JSON value into one blob (for scoring)."""
+    out: list[str] = []
+
+    def walk(o):
+        if isinstance(o, str):
+            out.append(o)
+        elif isinstance(o, dict):
+            for v in o.values():
+                walk(v)
+        elif isinstance(o, (list, tuple)):
+            for v in o:
+                walk(v)
+
+    walk(obj)
+    return " ".join(out)
+
+
+def _gather_reasoning(jsonl_path: str, name: str) -> list[tuple[str, str]]:
+    """Extract searchable reasoning docs from a per-session smith-events .jsonl
+    (issue #186 / PR #194): one doc per note/decision (few, high signal — the
+    agent's 'why'), plus ONE combined doc of the result summaries. Bounded and
+    fail-soft; the events are already redacted at capture."""
+    if not os.path.exists(jsonl_path):
+        return []
+    docs: list[tuple[str, str]] = []
+    result_lines: list[str] = []
+    per_event = 0
+    try:
+        with open(jsonl_path, "r", errors="replace") as fh:
+            for i, ln in enumerate(fh):
+                if i >= _MAX_STREAM_LINES or len(docs) >= _MAX_DOCS:
+                    break
+                try:
+                    e = json.loads(ln)
+                except Exception:
+                    continue
+                et = e.get("event_type")
+                if et not in _REASONING_TYPES:
+                    continue
+                text = _flatten_text(e.get(et) if e.get(et) is not None else e).strip()
+                if not text:
+                    continue
+                if et == "result":
+                    if len(result_lines) < 3_000:
+                        result_lines.append(text[:300])
+                else:                                   # note / decision — index individually
+                    docs.append((f"{name} · {et} #{e.get('sequence', '?')}", text))
+                    per_event += 1
+    except Exception:
+        return docs
+    if result_lines:
+        docs.append((f"{name} · result summaries ({len(result_lines)})", "\n".join(result_lines)))
+    return docs
+
+
 def _gather_docs(store_dir: str) -> list[tuple[str, str]]:
     """Return [(source_label, text)] for one engagements/<name>/ store."""
     docs: list[tuple[str, str]] = []
@@ -79,10 +139,15 @@ def _gather_docs(store_dir: str) -> list[tuple[str, str]]:
             sid = None
         if sid:
             bundle = os.path.join("logs", "smith-events", sid)
+            # 4a) raw tool-output artifacts
             for art in sorted(glob.glob(os.path.join(bundle, "*.txt"))):
                 if len(docs) >= _MAX_DOCS:
                     break
                 docs.append((f"{name} · artifact: {os.path.basename(art)}", _read(art)))
+            # 4b) the reasoning stream — prior notes/decisions/result summaries, so
+            #     recall surfaces prior REASONING, not just tool output (PR #194). The
+            #     event log is a SIBLING of the artifact dir: smith-events/<sid>.jsonl.
+            docs.extend(_gather_reasoning(f"{bundle}.jsonl", name))
     return docs
 
 
