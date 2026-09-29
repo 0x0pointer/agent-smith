@@ -191,9 +191,16 @@ else
   echo "Building pentest-agent/metasploit (tools/metasploit)…"
   docker build -t pentest-agent/metasploit "$REPO_ROOT/tools/metasploit/" \
     || echo "WARN: metasploit build failed — rebuild later: docker build -t pentest-agent/metasploit $REPO_ROOT/tools/metasploit/"
+  # Garak image (AI red-team) — its OWN image (tools/garak/Dockerfile; kept out of
+  # Kali because `pip install garak` pulls torch and bloated Kali to ~20 GB). Slow,
+  # best-effort: prebuild it here so the first scan(tool="garak") isn't stalled ~30
+  # min auto-building it (tools/garak_runner.py builds it on first use otherwise).
+  echo "Building pentest-agent/garak (tools/garak — pulls torch, slow)…"
+  docker build -t pentest-agent/garak "$REPO_ROOT/tools/garak/" \
+    || echo "WARN: garak build failed — auto-builds on first scan(tool=garak): docker build -t pentest-agent/garak $REPO_ROOT/tools/garak/"
   # Scanner images (recon: nmap/naabu/httpx/nuclei/subfinder + fuzzyai) are pulled
-  # in the step below. ffuf/spider/garak/promptfoo run INSIDE the Kali image built
-  # above — they are not separate images.
+  # in the step below. ffuf/spider/promptfoo run INSIDE the Kali image built above;
+  # garak is the exception — its own image, built just above.
 fi
 
 # ── Pre-pull scanner images ──────────────────────────────────────────────────
