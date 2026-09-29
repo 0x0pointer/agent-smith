@@ -91,8 +91,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends --fix-missing \
 
 # Core network + shell tooling (nmap/ncat are used by the scan() dispatchers and
 # nearly every skill; openssl backs TLS probing everywhere).
+# iputils-ping/iproute2/traceroute/file/xxd are BASE utilities that the
+# --no-install-recommends base image drops but nearly every network, recon and
+# post-exploit skill shells out to (ping, ip, traceroute, file, xxd).
 RUN apt-get update && apt-get install -y --no-install-recommends --fix-missing \
     nmap ncat fping openssl \
+    iputils-ping iproute2 traceroute file xxd \
     && rm -rf /var/lib/apt/lists/*
 
 # DNS / subdomain / OSINT recon — the reconnaissance backbone shared by web,
@@ -106,7 +110,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends --fix-missing \
 RUN apt-get update && apt-get install -y --no-install-recommends --fix-missing \
     socat proxychains4 curl wget \
     seclists wordlists \
-    unrar p7zip-full poppler-utils \
+    unrar p7zip-full poppler-utils libimage-exiftool-perl \
     && rm -rf /var/lib/apt/lists/*
 
 # ProjectDiscovery recon suite via apt (katana ships per-domain in web).
@@ -279,11 +283,24 @@ RUN [ "$INSTALL_INFRA" = "1" ] || { echo "[infra] skipped"; exit 0; }; \
     masscan hping3 arp-scan nbtscan tcpdump tshark \
     && rm -rf /var/lib/apt/lists/*
 
-# Credential testing.
+# Credential testing. sshpass — non-interactive SSH password auth (heavily used by
+# credential-audit / lateral-movement); hashcat — offline hash cracking.
 RUN [ "$INSTALL_INFRA" = "1" ] || { echo "[infra] skipped"; exit 0; }; \
     apt-get update && apt-get install -y --no-install-recommends --fix-missing \
-    hydra ncrack john cewl crunch medusa \
+    hydra ncrack john cewl crunch medusa sshpass hashcat \
     && rm -rf /var/lib/apt/lists/*
+
+# Best-effort infra extras whose package names vary across Kali snapshots — a miss
+# must NEVER fail the build. ntpq (NTP recon), python-evtx + pandas (Windows event
+# log + data parsing used by some post-exploit one-liners).
+RUN [ "$INSTALL_INFRA" = "1" ] || { echo "[infra] skipped"; exit 0; }; \
+    apt-get update || true; \
+    apt-get install -y --no-install-recommends --fix-missing ntpsec 2>/dev/null \
+      || apt-get install -y --no-install-recommends --fix-missing ntp 2>/dev/null \
+      || echo "WARN: no ntpq package available (continuing)"; \
+    pip3 install --no-cache-dir --break-system-packages python-evtx pandas 2>/dev/null \
+      || echo "WARN: pip python-evtx/pandas failed (continuing)"; \
+    rm -rf /var/lib/apt/lists/*
 
 # SMB / Windows / AD. rpcclient is bundled inside smbclient.
 # certipy-ad — ADCS enumeration/exploitation (ESC1-ESC8); bloodhound.py — AD
