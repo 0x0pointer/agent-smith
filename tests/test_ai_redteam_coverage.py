@@ -2,7 +2,7 @@
 Tests for the AI/LLM/MCP red-team additions:
   - core.taxonomy: LLM/MCP applicability, endpoint classification, gate types
   - core.coverage.add_endpoint: LLM endpoints fan out to LLM cells (+ endpoint-level)
-  - scan_engine.summarizers: garak/promptfoo/fuzzyai structured parsing
+  - scan_engine.summarizers: garak structured parsing
 """
 import json
 import pytest
@@ -125,16 +125,32 @@ def test_garak_summarizer_extracts_hits():
     assert any("dan.DanInTheWild" in a for a in r.anomalies)
 
 
-def test_promptfoo_summarizer_flags_failures():
-    raw = '=== PROMPTFOO RESULTS JSON ===\n' + json.dumps({
-        "results": {"stats": {"successes": 4, "failures": 1},
-                    "results": [{"success": True},
-                                {"success": False,
-                                 "testCase": {"metadata": {"pluginId": "prompt-injection"}}}]}
-    })
-    r = summarize("promptfoo", raw, {"target": "x"})
-    assert r.evidence["failed"] == 1
-    assert any("prompt-injection" in a for a in r.anomalies)
+def test_garak_summarizer_parses_0_15_fails_format():
+    """garak 0.15.0 eval entries use `fails` + `total_evaluated` (NOT `total`).
+    Regression guard: reading `total` alone reported 0 hits on real output — a
+    false negative that hid genuine findings (seen live: encoding.InjectBase64
+    53/256). This is the exact shape garak 0.15.0 emits."""
+    raw = "progress\n=== GARAK REPORT JSONL ===\n" + "\n".join([
+        '{"entry_type":"eval","probe":"encoding.InjectBase64","detector":"encoding.DecodeMatch","passed":203,"fails":53,"nones":0,"total_evaluated":256}',
+        '{"entry_type":"eval","probe":"encoding.InjectBase64","detector":"encoding.DecodeApprox","passed":197,"fails":59,"nones":0,"total_evaluated":256}',
+    ])
+    r = summarize("garak", raw, {"target": "x"})
+    assert r.evidence["eval_entries"] == 2
+    assert len(r.evidence["hits"]) == 2                      # both must register as hits
+    assert r.evidence["hits"][0]["failed"] == 53
+    assert r.evidence["hits"][0]["total"] == 256
+    assert "2 probe(s) with hits" in r.summary
+
+
+def test_garak_summarizer_clean_when_no_fails():
+    """A garak 0.15.0 eval with fails=0 must read as clean (no false positive)."""
+    raw = ("=== GARAK REPORT JSONL ===\n"
+           '{"entry_type":"eval","probe":"dan.DanInTheWild","detector":"mitigation.MitigationBypass","passed":256,"fails":0,"total_evaluated":256}')
+    r = summarize("garak", raw, {"target": "x"})
+    assert r.evidence["eval_entries"] == 1
+    assert r.evidence["hits"] == []
+    assert "no hits" in r.summary
+
 
 def test_tested_by_derived_from_artifact_id():
     """bulk_tested closures backed by artifact_id alone must not read as 'untooled'."""
@@ -156,8 +172,6 @@ def test_target_is_web_suppresses_web_mandate_on_ai_only():
 def test_ai_summarizers_degrade_without_crashing():
     # No structured section present — must produce a useful summary, not raise.
     assert summarize("garak", "garbage", {}).summary
-    assert summarize("promptfoo", "garbage", {}).summary
-    assert summarize("fuzzyai", "ran some stuff", {}).summary
 
 
 # ---------------------------------------------------------------------------
@@ -169,6 +183,15 @@ def test_empty_matrix_with_ai_tool_blocks_completion(monkeypatch):
     (previously: no blocker fired because only web tools were checked)."""
     import mcp_server.session_tools as st
     monkeypatch.setattr(st, "_session_tools_called", {"garak"})
+    blockers = st._coverage_blockers({"meta": {"total_cells": 0}}, ctf_mode=False)
+    assert any("EMPTY AI COVERAGE MATRIX" in b for b in blockers)
+
+
+def test_empty_matrix_with_transform_tool_blocks_completion(monkeypatch):
+    """A transforms-driven manual AI assessment (no garak) with an empty matrix
+    must still hit the AI empty-matrix blocker."""
+    import mcp_server.session_tools as st
+    monkeypatch.setattr(st, "_session_tools_called", {"transform"})
     blockers = st._coverage_blockers({"meta": {"total_cells": 0}}, ctf_mode=False)
     assert any("EMPTY AI COVERAGE MATRIX" in b for b in blockers)
 
@@ -201,63 +224,45 @@ def test_deepen_brief_detects_ai_surface_via_tool(monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_garak_handler_builds_rest_config_invocation(monkeypatch):
-    """Lock the garak invocation verified against the installed garak 0.15.0:
-    config-driven REST generator via `--model_type rest -G`, not the old
-    no-op `--generator_option api_base=`."""
-    import tools.kali_runner as kr
+    """garak now runs via the standalone garak_runner. Lock the REST-generator
+    config it hands the runner (uri + $INPUT body slot) and the bare probe list."""
+    import tools.garak_runner as gr
     import mcp_server.scan_engine as se
     cap = {}
-    async def fake_exec(cmd, timeout=900):
-        cap["cmd"] = cmd
+    async def fake_run(rest_config, probes, flags="", timeout=900):
+        cap["config"] = rest_config
+        cap["probes"] = probes
         return "raw"
-    monkeypatch.setattr(kr, "exec_command", fake_exec)
+    monkeypatch.setattr(gr, "run_garak", fake_run)
     monkeypatch.setattr(se, "wrap", lambda tool, raw, ctx=None: f"WRAP:{tool}")
     from mcp_server.scan_tools import _handle_garak
-    out = await _handle_garak("http://t/chat", "", {"probes": "dan,encoding"})
+    out = await _handle_garak("http://localhost:8899/chat", "", {"probes": "dan,encoding", "body_key": "message"})
     assert out == "WRAP:garak"
-    assert "--target_type rest -G" in cap["cmd"]   # not the deprecated --model_type
-    assert "garak_rest.json" in cap["cmd"]
-    assert "api_base=" not in cap["cmd"]           # the old broken form is gone
-    # garak 0.15.0 rejects "probes." prefixes — names must be passed bare.
-    assert "--probes dan,encoding" in cap["cmd"]
-    assert "probes.dan" not in cap["cmd"]
+    gen = cap["config"]["rest"]["RestGenerator"]
+    # localhost is rewritten so the bridge-networked garak container reaches the host
+    assert gen["uri"] == "http://host.docker.internal:8899/chat"
+    assert gen["req_template_json_object"] == {"message": "$INPUT"}
+    # garak 0.15.0 rejects "probes." prefixes — names are passed bare.
+    assert cap["probes"] == "dan,encoding"
 
 
 @pytest.mark.asyncio
 async def test_garak_handler_strips_stray_probes_prefix(monkeypatch):
     """A caller that mistakenly supplies a 'probes.'-prefixed name gets it stripped
     (garak 0.15.0 only accepts the bare form, incl. module.Class like dan.Dan_11_0)."""
-    import tools.kali_runner as kr
+    import tools.garak_runner as gr
     import mcp_server.scan_engine as se
     cap = {}
-    async def fake_exec(cmd, timeout=900):
-        cap["cmd"] = cmd
+    async def fake_run(rest_config, probes, flags="", timeout=900):
+        cap["probes"] = probes
         return "raw"
-    monkeypatch.setattr(kr, "exec_command", fake_exec)
+    monkeypatch.setattr(gr, "run_garak", fake_run)
     monkeypatch.setattr(se, "wrap", lambda tool, raw, ctx=None: f"WRAP:{tool}")
     from mcp_server.scan_tools import _handle_garak
     await _handle_garak("http://t/chat", "", {"probes": "probes.dan.Dan_11_0,probes.encoding"})
-    assert "--probes dan.Dan_11_0,encoding" in cap["cmd"]
-    assert "probes.dan" not in cap["cmd"]
+    assert cap["probes"] == "dan.Dan_11_0,encoding"
+    assert "probes." not in cap["probes"]
 
-
-@pytest.mark.asyncio
-async def test_promptfoo_handler_builds_generate_then_eval(monkeypatch):
-    """Lock the two-step verified against promptfoo 0.121.2: `redteam generate`
-    then `eval -o <results.json>` (NOT `redteam run -o`, where -o is the test file)."""
-    import tools.kali_runner as kr
-    import mcp_server.scan_engine as se
-    cap = {}
-    async def fake_exec(cmd, timeout=900):
-        cap["cmd"] = cmd
-        return "raw"
-    monkeypatch.setattr(kr, "exec_command", fake_exec)
-    monkeypatch.setattr(se, "wrap", lambda tool, raw, ctx=None: f"WRAP:{tool}")
-    from mcp_server.scan_tools import _handle_promptfoo
-    out = await _handle_promptfoo("http://t/chat", "", {})
-    assert out == "WRAP:promptfoo"
-    assert "promptfoo redteam generate -c" in cap["cmd"]
-    assert "promptfoo eval -c" in cap["cmd"] and "promptfoo_out.json" in cap["cmd"]
 
 def test_role_confusion_library_loads_and_interpolates():
     """The shipped payload library interpolates {GOAL}/{STYLE_HINTS}. Skipped when

@@ -199,9 +199,9 @@ function Set-EnvKey {
 Write-Host ''
 Write-Host '  API keys for AI red-teaming tools. Press Enter to skip any.'
 Write-Host ''
-Set-EnvKey 'OPENAI_API_KEY'        'OpenAI key — FuzzyAI + Garak scoring'
-Set-EnvKey 'ANTHROPIC_API_KEY'     'Anthropic key — FuzzyAI anthropic provider'
-Set-EnvKey 'AZURE_OPENAI_API_KEY'  'Azure OpenAI key — FuzzyAI azure provider'
+Set-EnvKey 'OPENAI_API_KEY'        'OpenAI key — Garak scoring'
+Set-EnvKey 'ANTHROPIC_API_KEY'     'Anthropic key — Garak anthropic provider'
+Set-EnvKey 'AZURE_OPENAI_API_KEY'  'Azure OpenAI key — Garak azure provider'
 
 Write-Host ''
 Write-Host '  Telegram bridge (optional) — HIR / status alerts on your phone.'
@@ -302,15 +302,14 @@ if (Confirm-Yes '  Build Kali image? (required for most skills)') {
     Write-Host '    infra            internal net, AD, credentials, service enum, pivot ~5 min'
     Write-Host '    mobile           Android/iOS reversing + Frida dynamic analysis     ~4 min'
     Write-Host '    cloud            AWS/GCP CLIs, Prowler, ScoutSuite, trivy           ~7 min'
-    Write-Host '    ai               LLM red-team: Garak, promptfoo (heaviest)          ~12 min'
+    Write-Host '  (LLM red-team ''ai'' is no longer a Kali module - Garak is its own image, built below.)'
     Write-Host ''
     $kaliArgs = @()
     foreach ($m in @(
         @{ Name = 'web';    Arg = 'INSTALL_WEB';    Def = $true  },
         @{ Name = 'infra';  Arg = 'INSTALL_INFRA';  Def = $true  },
         @{ Name = 'mobile'; Arg = 'INSTALL_MOBILE'; Def = $false },
-        @{ Name = 'cloud';  Arg = 'INSTALL_CLOUD';  Def = $false },
-        @{ Name = 'ai';     Arg = 'INSTALL_AI';     Def = $false }
+        @{ Name = 'cloud';  Arg = 'INSTALL_CLOUD';  Def = $false }
     )) {
         $val = if (Confirm-Default ("    Include {0} module?" -f $m.Name) $m.Def) { '1' } else { '0' }
         $kaliArgs += '--build-arg'; $kaliArgs += ('{0}={1}' -f $m.Arg, $val)
@@ -338,6 +337,20 @@ if (Confirm-Yes '  Build Metasploit image? (~5 min — required for /metasploit 
     }
 } else {
     Write-Warn "Metasploit build skipped — run later: docker build -t pentest-agent/metasploit $MsfCtx"
+}
+
+Write-Host ''
+$GarakCtx = Join-Path $RepoDir 'tools\garak\'
+if (Confirm-Default '  Build Garak image now? (~5 min - LLM red-team; else auto-builds on first use)' $false) {
+    Write-Host '  Building pentest-agent/garak...'
+    docker build -t pentest-agent/garak $GarakCtx
+    if ($LASTEXITCODE -eq 0) {
+        Write-Ok 'Garak image built: pentest-agent/garak'
+    } else {
+        Write-Warn "Garak build failed — run manually: docker build -t pentest-agent/garak $GarakCtx"
+    }
+} else {
+    Write-Warn "Garak build skipped — auto-builds on first scan(tool='garak'), or run: docker build -t pentest-agent/garak $GarakCtx"
 }
 
 # ── Done ─────────────────────────────────────────────────────────────────────

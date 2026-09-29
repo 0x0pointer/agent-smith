@@ -116,18 +116,11 @@ The container starts automatically on the first `kali(command=…)` call and per
 
 ## AI / LLM red-teaming
 
-| Command | Purpose |
-|---|---|
-| `garak --model_type rest -G <config> --probes dan,promptinject` | Probe-based LLM vulnerability scan |
-| `promptfoo redteam run` | Plugin-based red-team eval (jailbreak/crescendo strategies) |
-
-**Note:** these ship **only with the opt-in AI domain** — present only when the image is
-built with `--build-arg INSTALL_AI=1` (default OFF), so a default
-`docker build ./tools/kali/` does **not** include them. They need `OPENAI_API_KEY` set in
-the container environment. Set it via:
-```
-kali(command="export OPENAI_API_KEY=sk-...")
-```
+**No longer part of the Kali image.** Garak moved to its own standalone image
+(`pentest-agent/garak`, auto-built on first `scan(tool="garak")` by
+`tools/garak_runner.py`) so it stops bloating Kali with torch. Payload crafting
+is the pure-Python `transform()` MCP tool (no container). See `docs/tools.md` for
+both.
 
 ---
 
