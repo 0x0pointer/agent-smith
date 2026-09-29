@@ -273,6 +273,11 @@ def _spawn_child_env(client: str) -> dict:
     if client == "claude" and not _use_api_key:
         env.pop("ANTHROPIC_API_KEY", None)
         env.pop("ANTHROPIC_AUTH_TOKEN", None)
+    # Mark the child as auto-started so a session it COLD-STARTS (a fresh id, not a
+    # resume) is badged "watchdog" in the dashboard Sessions panel (issue #187).
+    # meta.json is write-once, so a resumed session keeps its original operator
+    # origin; only a genuinely new session created by this child picks this up.
+    env["SMITH_SESSION_ORIGIN"] = "watchdog"
     return env
 
 
