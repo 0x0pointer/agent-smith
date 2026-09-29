@@ -3,6 +3,7 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+OS_NAME="$(uname -s)"
 
 # GUI-launched shells can omit common macOS CLI locations. Keep installer
 # prerequisite checks aligned with the MCP launcher runtime.
@@ -44,21 +45,28 @@ echo "Installing Python dependencies..."
 poetry -C "$REPO_DIR" install --no-interaction
 ok "Poetry dependencies installed"
 
-# ── Disarm any existing launchd plist before restarting the MCP ──────────────
-# launchd's plist runs start-mcp-server.sh every 5 s under KeepAlive=true. If a
-# previous install left one loaded — especially one pointing at a different
-# REPO_DIR — both that script and ours race `lsof -ti tcp:7778 | xargs kill -9`,
-# SIGKILLing each other. Unload first; we reload the rewritten plist after the
-# MCP is up.
-PLIST_DST="$HOME/Library/LaunchAgents/com.agent-smith.mcp-sse.plist"
-if [[ -f "$PLIST_DST" ]]; then
-    _OLD_REPO="$(awk '/WorkingDirectory/{getline; gsub(/^[[:space:]]*<string>|<\/string>[[:space:]]*$/, ""); print; exit}' "$PLIST_DST")"
-    if [[ -n "$_OLD_REPO" && "$_OLD_REPO" != "$REPO_DIR" ]]; then
-        warn "Existing launchd plist points at: $_OLD_REPO"
-        warn "This install will replace it to point at: $REPO_DIR"
-    fi
-    launchctl unload "$PLIST_DST" 2>/dev/null || true
-fi
+# ── Disarm any existing supervisor before restarting the MCP ─────────────────
+# An already-loaded supervisor can restart the old daemon while this installer
+# is replacing it. Stop it first; the platform-specific setup below reloads it.
+case "$OS_NAME" in
+    Darwin)
+        PLIST_DST="$HOME/Library/LaunchAgents/com.agent-smith.mcp-sse.plist"
+        if [[ -f "$PLIST_DST" ]]; then
+            _OLD_REPO="$(awk '/WorkingDirectory/{getline; gsub(/^[[:space:]]*<string>|<\/string>[[:space:]]*$/, ""); print; exit}' "$PLIST_DST")"
+            if [[ -n "$_OLD_REPO" && "$_OLD_REPO" != "$REPO_DIR" ]]; then
+                warn "Existing launchd plist points at: $_OLD_REPO"
+                warn "This install will replace it to point at: $REPO_DIR"
+            fi
+            launchctl unload "$PLIST_DST" 2>/dev/null || true
+        fi
+        ;;
+    Linux)
+        UNIT_DST="$HOME/.config/systemd/user/agent-smith-mcp-sse.service"
+        if command -v systemctl >/dev/null 2>&1 && [[ -f "$UNIT_DST" ]]; then
+            systemctl --user stop agent-smith-mcp-sse.service 2>/dev/null || true
+        fi
+        ;;
+esac
 
 # ── Start MCP SSE daemon ──────────────────────────────────────────────────────
 echo ""
@@ -80,24 +88,54 @@ OPENCODE_CONFIG="$HOME/.config/opencode/opencode.json"
 if [[ -f "$OPENCODE_CONFIG" ]]; then
     echo ""
     echo "Registering pentest-agent MCP server with opencode..."
-    jq '.mcp["pentest-agent"] = {"type": "remote", "url": "http://127.0.0.1:7778/sse", "enabled": true, "timeout": 9000000}' \
-        "$OPENCODE_CONFIG" > "$OPENCODE_CONFIG.tmp" \
-        && mv "$OPENCODE_CONFIG.tmp" "$OPENCODE_CONFIG"
+    # Use Python (not jq — not guaranteed to be installed) to merge the MCP entry.
+    python3 -c "
+import json, pathlib, sys
+p = pathlib.Path(sys.argv[1])
+data = json.loads(p.read_text()) if p.stat().st_size else {}
+data.setdefault('mcp', {})['pentest-agent'] = {
+    'type': 'remote', 'url': 'http://127.0.0.1:7778/sse', 'enabled': True, 'timeout': 9000000,
+}
+p.write_text(json.dumps(data, indent=2) + '\n')
+" "$OPENCODE_CONFIG"
     ok "MCP server registered with opencode"
 else
     echo "  (opencode config not found at $OPENCODE_CONFIG — skipping opencode registration)"
 fi
 
-# ── Install launchd plist for auto-start on login ────────────────────────────
-# PLIST_DST was set earlier (pre-disarm step); the unload is a no-op now but
-# keeps this section idempotent if someone runs it standalone.
+# ── Install auto-start service for the MCP server (login / crash restart) ────
 echo ""
-echo "Installing launchd plist..."
-PLIST_SRC="$REPO_DIR/installers/com.agent-smith.mcp-sse.plist"
-sed "s|REPO_DIR|$REPO_DIR|g" "$PLIST_SRC" > "$PLIST_DST"
-launchctl unload "$PLIST_DST" 2>/dev/null || true
-launchctl load "$PLIST_DST"
-ok "launchd plist installed — MCP server auto-starts on login and restarts on crash"
+case "$OS_NAME" in
+    Darwin)
+        echo "Installing launchd plist..."
+        PLIST_SRC="$REPO_DIR/installers/com.agent-smith.mcp-sse.plist"
+        PLIST_DST_DIR="$HOME/Library/LaunchAgents"
+        PLIST_DST="$PLIST_DST_DIR/com.agent-smith.mcp-sse.plist"
+        mkdir -p "$PLIST_DST_DIR"
+        sed "s|REPO_DIR|$REPO_DIR|g" "$PLIST_SRC" > "$PLIST_DST"
+        launchctl unload "$PLIST_DST" 2>/dev/null || true
+        launchctl load "$PLIST_DST"
+        ok "launchd plist installed — MCP server auto-starts on login and restarts on crash"
+        ;;
+    Linux)
+        if command -v systemctl >/dev/null 2>&1; then
+            echo "Installing systemd user service..."
+            UNIT_SRC="$REPO_DIR/installers/agent-smith-mcp-sse.service"
+            UNIT_DST_DIR="$HOME/.config/systemd/user"
+            UNIT_DST="$UNIT_DST_DIR/agent-smith-mcp-sse.service"
+            mkdir -p "$UNIT_DST_DIR"
+            sed "s|REPO_DIR|$REPO_DIR|g" "$UNIT_SRC" > "$UNIT_DST"
+            systemctl --user daemon-reload
+            systemctl --user enable --now agent-smith-mcp-sse.service
+            ok "systemd user service installed — MCP server auto-starts on login and restarts on crash"
+        else
+            warn "systemctl not found — skipping auto-start service (run $REPO_DIR/installers/start-mcp-server.sh manually after reboot)"
+        fi
+        ;;
+    *)
+        warn "Unrecognized OS ($(uname -s)) — skipping auto-start service (run $REPO_DIR/installers/start-mcp-server.sh manually after reboot)"
+        ;;
+esac
 
 # ── Ask whether to overwrite existing skill files ────────────────────────────
 echo ""

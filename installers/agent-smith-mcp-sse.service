@@ -1,0 +1,18 @@
+[Unit]
+Description=agent-smith MCP SSE server
+After=network.target
+
+[Service]
+Type=forking
+WorkingDirectory=REPO_DIR
+ExecStart=/bin/bash REPO_DIR/installers/start-mcp-server.sh start
+ExecStop=/bin/bash REPO_DIR/installers/start-mcp-server.sh stop
+ExecReload=/bin/bash REPO_DIR/installers/start-mcp-server.sh restart
+PIDFile=REPO_DIR/logs/mcp_sse.pid
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:REPO_DIR/logs/mcp_sse.log
+StandardError=append:REPO_DIR/logs/mcp_sse.log
+
+[Install]
+WantedBy=default.target

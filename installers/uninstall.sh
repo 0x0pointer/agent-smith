@@ -39,6 +39,31 @@ for skill_dir in "$HOME/.claude/skills/analyze-cve" "$HOME/.claude/skills/threat
     fi
 done
 
+# ── Remove auto-start service ─────────────────────────────────────────────────
+case "$(uname -s)" in
+    Darwin)
+        PLIST_DST="$HOME/Library/LaunchAgents/com.agent-smith.mcp-sse.plist"
+        if [ -f "$PLIST_DST" ]; then
+            launchctl unload "$PLIST_DST" 2>/dev/null || true
+            rm "$PLIST_DST"
+            ok "launchd plist removed"
+        else
+            warn "launchd plist not found (skipping)"
+        fi
+        ;;
+    Linux)
+        UNIT_DST="$HOME/.config/systemd/user/agent-smith-mcp-sse.service"
+        if command -v systemctl >/dev/null 2>&1 && [ -f "$UNIT_DST" ]; then
+            systemctl --user disable --now agent-smith-mcp-sse.service 2>/dev/null || true
+            rm "$UNIT_DST"
+            systemctl --user daemon-reload
+            ok "systemd user service removed"
+        else
+            warn "systemd user service not found (skipping)"
+        fi
+        ;;
+esac
+
 # ── Stop Kali container if running ───────────────────────────────────────────
 if command -v docker >/dev/null 2>&1; then
     if docker inspect pentest-kali --format='{{.State.Running}}' 2>/dev/null | grep -q true; then
