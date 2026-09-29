@@ -33,7 +33,7 @@ from core import paths as _paths
 
 _SCHEMA_VERSION = "smith-event/1.0"
 _CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"  # ULID base32 (schema ulid pattern)
-_EVENTS_DIR = _paths.REPO_ROOT / "logs" / "smith-events"  # module-level so tests can redirect it
+_EVENTS_DIR = _paths.SMITH_EVENTS_DIR  # module-level so tests can redirect it
 
 _lock = threading.Lock()
 _seq: dict[str, int] = {}  # engagement_id -> last allocated sequence (in-memory, seeded from disk)
@@ -98,6 +98,17 @@ def _redact_command(cmd: str) -> str:
         return _redact_cmd(str(cmd))
     except Exception:
         return str(cmd)[:220]
+
+
+def _redact_text(text: str) -> str:
+    """Mask credential/token values before they enter the per-session stream — which is
+    both validated by the eventstore's leak-scan and rendered verbatim on the dashboard.
+    Reuses the logger's redactor; fail-soft (raw text on any error)."""
+    try:
+        from core.logger import _redact
+        return _redact(str(text))
+    except Exception:
+        return str(text)
 
 
 def _params(ctx: dict) -> dict:
@@ -174,9 +185,14 @@ def emit_decision(data: dict) -> str | None:
         supporting = [{"artifact_ref": a, "visible_at_decision": True}
                       for a in (data.get("supporting_observations") or [])
                       if isinstance(a, str) and a.startswith("sha256:")]
+        # Free-text reasoning fields are rendered verbatim on the dashboard's Session Log
+        # tab and scanned by the eventstore leak-scan, so redact them at capture — same
+        # contract as emit_note and the result summary.
+        raw_params = data.get("params") if isinstance(data.get("params"), dict) else {}
+        params = {k: (_redact_text(v) if isinstance(v, str) else v) for k, v in raw_params.items()}
         decision = {
-            "goal": str(data.get("goal") or ""),
-            "hypothesis": data.get("hypothesis"),
+            "goal": _redact_text(str(data.get("goal") or "")),
+            "hypothesis": (_redact_text(str(data["hypothesis"])) if data.get("hypothesis") else None),
             "supporting_observations": supporting,
             "target_ref": data.get("target_ref"),
             "technique": data.get("technique"),
@@ -186,8 +202,8 @@ def emit_decision(data: dict) -> str | None:
             "stop_condition": _captured(data.get("stop_condition")),
             "chosen_tool": str(data.get("chosen_tool") or ""),
             "operation": str(data.get("operation") or "call"),
-            "params": data.get("params") if isinstance(data.get("params"), dict) else {},
-            "explanation": (str(data["explanation"])[:400] if data.get("explanation") else None),
+            "params": params,
+            "explanation": (_redact_text(str(data["explanation"]))[:400] if data.get("explanation") else None),
             "provenance": _provenance(),
             "context_manifest_id": data.get("context_manifest_id"),
         }
@@ -197,6 +213,36 @@ def emit_decision(data: dict) -> str | None:
             with path.open("a", encoding="utf-8") as f:
                 f.write(json.dumps({**env, "decision": decision}, ensure_ascii=False) + "\n")
             _current_decision[engagement] = env["event_id"]
+        return env["event_id"]
+    except Exception:
+        return None
+
+
+def emit_note(message: str) -> str | None:
+    """Emit a schema-valid ``note`` event from a free-text reasoning note the agent recorded
+    via ``report(action='note')`` (§3, issue #186). This is the client-agnostic reasoning
+    channel alongside ``decision`` — captured at the MCP boundary so every runtime (Claude
+    Code / opencode / Codex / watchdog-spawned) yields the same per-session trail.
+
+    Unlike ``emit_decision`` this deliberately does NOT set ``_current_decision``: a note is
+    not the decision behind the next action, so the following tool call must not link
+    ``caused_by`` it. The note text is REDACTED at capture — it feeds both the eventstore
+    leak-scan and the dashboard verbatim. Returns the event id, or None. Fail-soft."""
+    if not _enabled():
+        return None
+    try:
+        if not str(message or "").strip():
+            return None  # an empty note is noise — no blank card on the dashboard
+        engagement = _engagement_id()
+        if not engagement:
+            return None
+        text = _redact_text(str(message))
+        _EVENTS_DIR.mkdir(parents=True, exist_ok=True)
+        path = _EVENTS_DIR / f"{engagement}.jsonl"
+        with _lock:
+            env = _envelope("note", engagement, _next_seq(engagement, path))
+            with path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps({**env, "note": {"message": text}}, ensure_ascii=False) + "\n")
         return env["event_id"]
     except Exception:
         return None
@@ -354,6 +400,14 @@ def emit_tool_call(tool: str, ctx: dict, result: Any, artifact_id: str = "") -> 
             observed = {"execution_status": "error" if ev.get("error") else "ok",
                         "result_class": _result_class(result)}
             result_obj = {"observed": observed}
+            # Human-readable one-line summary of what the call did — the "action-and-summary"
+            # floor (issue #186): even a session that records no explicit reasoning yields a
+            # reconstructable trail. Persist the CLEAN summarizer output (result.summary), not
+            # the wrap() local that has "EXECUTE NEXT: ..." appended. Redacted + bounded (the
+            # full body already lives in the copied artifact .txt).
+            summary_text = getattr(result, "summary", "") or ""
+            if summary_text:
+                result_obj["summary"] = _redact_text(str(summary_text))[:2000]
             if artifact_id:
                 result_obj["artifact_id"] = artifact_id  # -> logs/smith-events/<engagement>/<id>.txt
             res = {**_envelope("result", engagement, _next_seq(engagement, path),

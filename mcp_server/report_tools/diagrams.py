@@ -209,6 +209,16 @@ async def _do_note(data):
     message = data.get("message", "")
     log.note(message)
 
+    # Per-session reasoning stream (issue #186) — client-agnostic capture at the MCP
+    # boundary, landing in logs/smith-events/<engagement_id>.jsonl alongside pentest.log
+    # so a single session's reasoning is reliably replayable. Fail-soft: must never
+    # change _do_note's return contract or break the note.
+    try:
+        from mcp_server.scan_engine.smith_events import emit_note
+        emit_note(message)
+    except Exception:
+        pass
+
     # ── Auto-trigger gates based on note content ─────────────────────────────
     gates_triggered = _auto_trigger_note_gates(message)
     # ── Compositional bridge: dead-end note + a finding that provides the primitive ──

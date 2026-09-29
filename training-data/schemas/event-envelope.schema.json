@@ -9,7 +9,7 @@
     "engagement_id": { "type": "string" },
     "event_type": {
       "type": "string",
-      "enum": ["observation", "decision", "action", "result", "adjudication", "state_snapshot", "intervention", "finding", "coverage_transition", "chain_transition"]
+      "enum": ["observation", "decision", "note", "action", "result", "adjudication", "state_snapshot", "intervention", "finding", "coverage_transition", "chain_transition"]
     },
     "sequence": { "type": "integer", "minimum": 0, "description": "Monotonic per-engagement, allocated by ONE event-store authority. Authoritative practical order." },
     "occurred_at": { "$ref": "common.schema.json#/$defs/iso8601", "description": "Source-reported time (may drift across clocks)." },

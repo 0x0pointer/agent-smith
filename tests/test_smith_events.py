@@ -16,7 +16,8 @@ _RES = [(json.loads(f.read_text())["$id"], Resource.from_contents(json.loads(f.r
 _REG = Registry().with_resources(_RES)
 _BY = {i: r.contents for i, r in _RES}
 _SCHEMA_FOR = {"action": "action-event.schema.json", "result": "result-event.schema.json",
-               "decision": "decision-event.schema.json", "finding": "finding-event.schema.json",
+               "decision": "decision-event.schema.json", "note": "note-event.schema.json",
+               "finding": "finding-event.schema.json",
                "coverage_transition": "coverage-transition-event.schema.json"}
 
 
@@ -150,6 +151,77 @@ def test_emit_decision_no_session_returns_none(tmp_path, monkeypatch):
     import core.session as cs
     monkeypatch.setattr(cs, "get", lambda: None)
     assert se.emit_decision({"goal": "g", "chosen_tool": "x"}) is None
+    assert not list(tmp_path.glob("*.jsonl"))
+
+
+def test_result_event_persists_bounded_redacted_summary(emit_env):
+    fr = FakeResult()
+    fr.summary = "Found 3 open ports; leaked token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NSJ9.abcDEF123_-xyz"
+    se.emit_tool_call("nmap", {"target": "h"}, fr)
+    r = _events(emit_env)[1]
+    _validate(r)
+    assert "summary" in r["result"]                              # the action-and-summary floor
+    assert "Found 3 open ports" in r["result"]["summary"]
+    assert "eyJhbGc" not in r["result"]["summary"]               # JWT redacted before it hits the stream
+    assert r["result"]["observed"] == {"execution_status": "ok", "result_class": "ok"}  # summary is a sibling, not in observed
+
+
+def test_result_event_omits_summary_when_absent(emit_env):
+    se.emit_tool_call("nmap", {"target": "h"}, FakeResult())     # FakeResult has no .summary
+    assert "summary" not in _events(emit_env)[1]["result"]
+
+
+def test_emit_note_schema_valid_and_redacted(emit_env):
+    nid = se.emit_note("pivoting via SSRF; captured Authorization: Bearer eyJhbGciOiJodHRwOi8vZXhhbXBsZQ")
+    assert nid
+    n = _events(emit_env)[0]
+    _validate(n)
+    assert n["event_type"] == "note"
+    assert "pivoting via SSRF" in n["note"]["message"]
+    assert "eyJhbGc" not in json.dumps(n)                        # token redacted out of the note
+
+
+def test_emit_note_does_not_link_following_action(emit_env):
+    # A note is NOT the decision behind the next action — the following tool call must
+    # stay unattributed, never caused_by the note (contrast emit_decision).
+    se.emit_note("just a thought")
+    se.emit_tool_call("httpx", {"target": "x"}, FakeResult())
+    n, a, r = _events(emit_env)
+    assert n["event_type"] == "note"
+    assert "caused_by" not in a and "correlation_id" not in a
+
+
+def test_emit_note_empty_message_skipped(emit_env):
+    assert se.emit_note("") is None
+    assert se.emit_note("   ") is None
+    assert not _events(emit_env)                                 # no blank note card on the dashboard
+
+
+def test_emit_decision_redacts_free_text(emit_env):
+    se.emit_decision({"goal": "exfil via Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.abcDEF123_-xyz",
+                      "explanation": "saw token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ5In0.ghiJKL456_-uvw",
+                      "chosen_tool": "http_request", "operation": "request"})
+    d = _events(emit_env)[0]
+    _validate(d)
+    assert "eyJhbGc" not in json.dumps(d)                        # decision free-text redacted at capture
+
+
+def test_emit_note_no_session_returns_none(tmp_path, monkeypatch):
+    monkeypatch.setattr(se, "_EVENTS_DIR", tmp_path)
+    monkeypatch.setattr(se, "_seq", {})
+    import core.session as cs
+    monkeypatch.setattr(cs, "get", lambda: None)
+    assert se.emit_note("x") is None
+    assert not list(tmp_path.glob("*.jsonl"))
+
+
+def test_emit_note_disabled_via_env(tmp_path, monkeypatch):
+    monkeypatch.setattr(se, "_EVENTS_DIR", tmp_path)
+    monkeypatch.setattr(se, "_seq", {})
+    monkeypatch.setenv("SMITH_EVENTS_DISABLED", "1")
+    import core.session as cs
+    monkeypatch.setattr(cs, "get", lambda: {"id": "e"})
+    assert se.emit_note("x") is None
     assert not list(tmp_path.glob("*.jsonl"))
 
 

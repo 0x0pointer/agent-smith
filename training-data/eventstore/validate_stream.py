@@ -29,6 +29,7 @@ _REG = Registry().with_resources(_RES)
 _BY = {i: r.contents for i, r in _RES}
 EVENT_SCHEMA = {
     "observation": "observation-event.schema.json", "decision": "decision-event.schema.json",
+    "note": "note-event.schema.json",
     "action": "action-event.schema.json", "result": "result-event.schema.json",
     "adjudication": "adjudication-event.schema.json", "finding": "finding-event.schema.json",
     "coverage_transition": "coverage-transition-event.schema.json",

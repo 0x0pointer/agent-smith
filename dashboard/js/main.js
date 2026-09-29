@@ -114,6 +114,7 @@
   // counter must keep ticking regardless of which menu item is open.
   setInterval(() => { if (!scanDone && lastOk) updateFreshness(); }, 1000);
   setInterval(() => { if (!scanDone && _activeTab === 'logs') pollLogs(); }, 3000);
+  setInterval(() => { if (!scanDone && _activeTab === 'session-log') pollSessionLog(); }, 3000);
   setInterval(() => { if (_activeTab === 'overview') pollOverview(); }, POLL_MS);
   setInterval(() => { if (_activeTab === 'world-model') pollWorldModel(); }, POLL_MS);
   setInterval(() => { if (_activeTab === 'ai-redteam') pollAiRedteam(); }, POLL_MS);

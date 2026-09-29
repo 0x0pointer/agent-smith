@@ -1024,6 +1024,29 @@
     .log-line.warning     { color: #faad14; }
     .log-line.error       { color: #ff4d4f; }
 
+    /* ── Session Log tab (issue #186) ─────────────────────────────────────── */
+    #session-log-toolbar { display: flex; align-items: center; gap: 1rem; margin-bottom: 0.75rem; font-size: 0.8rem; flex-wrap: wrap; }
+    #session-log-filter {
+      background: var(--bg-card); border: 1px solid var(--border); color: var(--text);
+      border-radius: 4px; padding: 0.2rem 0.6rem; font-size: 0.76rem; width: 200px;
+      font-family: 'IBM Plex Mono', monospace;
+    }
+    #session-log-filter:focus { outline: 1px solid var(--green); }
+    /* Raw console-style reasoning log — one line per captured event. */
+    #session-log-output {
+      background: var(--bg-deep); border: 1px solid var(--border-subtle); border-radius: 6px;
+      padding: 0.7rem 0.9rem; height: 620px; overflow-y: auto;
+      font-family: 'IBM Plex Mono', monospace; font-size: 0.76rem; line-height: 1.6;
+    }
+    .sl-line   { display: block; white-space: pre-wrap; word-break: break-word; }
+    .sl-gutter { color: var(--text-muted); }
+    .sl-tag    { font-weight: 700; }
+    .sl-text   { color: var(--text); }
+    .sl-line.sl-note .sl-text    { color: #c4b5fd; }
+    .sl-line.sl-decision .sl-text{ color: #bfdbfe; }
+    .sl-line.sl-finding .sl-text { color: #fca5a5; font-weight: 600; }
+    .sl-line.sl-coverage .sl-text{ color: #fde68a; }
+
     /* ══════════════════════════════════════════════════════════════════════════
        REDESIGN — left-rail shell + sticky status. Rules below intentionally
        override the legacy .tab-nav / .tab-btn / body layout via cascade order.

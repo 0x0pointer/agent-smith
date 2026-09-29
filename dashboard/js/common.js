@@ -73,7 +73,7 @@
 
   // ── Tab switching ─────────────────────────────────────────────────────────
   // Order MUST match the .tab-btn DOM order in index.html's sidebar (switchTab maps by index).
-  const TAB_NAMES = ['findings', 'topology', 'components', 'ai-redteam', 'coverage', 'skills', 'activity', 'world-model', 'threat-model', 'metrics', 'setup-gates', 'logs'];
+  const TAB_NAMES = ['findings', 'topology', 'components', 'ai-redteam', 'coverage', 'skills', 'activity', 'world-model', 'threat-model', 'metrics', 'setup-gates', 'logs', 'session-log'];
 
   function switchTab(name) {
     _activeTab = name;
@@ -103,6 +103,7 @@
     if (name === 'threat-model')  pollThreatModel();
     if (name === 'setup-gates')   pollSetupGates();
     if (name === 'logs')          pollLogs();
+    if (name === 'session-log')   pollSessionLog();
   }
 
   // ── HIR panel ────────────────────────────────────────────────────────────
