@@ -60,6 +60,7 @@ from .diagrams import (
     _DASHBOARD_CANONICAL_PORT,
     _LEGACY_DASHBOARD_PORTS,
 )
+from .recall import _do_recall
 from .coverage import (
     _coerce_endpoint_params,
     _infer_coverage_type,
@@ -202,6 +203,8 @@ async def report(action: str, data: Any) -> str:
         return await _do_chain(data)
     elif action == "decision":
         return _do_decision(data)
+    elif action == "recall":
+        return await _do_recall(data)
     else:
         return ("Unknown action '{}'. Use: finding, update_finding, delete_finding, diagram, note, "
-                "dashboard, coverage, chain, decision").format(action)
+                "dashboard, coverage, chain, decision, recall").format(action)
