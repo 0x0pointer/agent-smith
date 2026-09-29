@@ -20,6 +20,32 @@
   },
   // If tailscaled complains about /dev/net/tun, uncomment:
   // "runArgs": ["--device=/dev/net/tun"],
+
+  // ── Ports (SECURITY-SENSITIVE — this is offensive tooling) ────────────────
+  // Keep EVERY port PRIVATE (the Codespaces default: reachable only by you, via a
+  // GitHub-authenticated URL). NEVER switch these to Public:
+  //   7778  MCP SSE server   — drives all tools; public = RCE-as-a-service
+  //   5001  Kali API         — command execution surface
+  //   1080/8888/8889/11601   — SOCKS/chisel-C2/HTTP-file-server/ligolo listeners
+  //   7777  dashboard        — control plane that steers a permission-skipping agent
+  // Targets/lab reach the tunnel & C2 listeners over TAILSCALE (the tools container
+  // runs on the host network / tailnet), NOT via Codespaces forwarding — point
+  // reverse shells at the Codespace tailnet IP. Only the dashboard is forwarded for
+  // convenience; open the tokenized URL (…/#k=<token>) that the scan prints.
+  "forwardPorts": [7777],
+  "portsAttributes": {
+    "7777":  { "label": "agent-smith dashboard (open the tokenized URL the scan prints)", "onAutoForward": "notify" },
+    "7778":  { "label": "MCP SSE — local only, do NOT expose", "onAutoForward": "ignore" },
+    "5001":  { "label": "Kali API — internal, do NOT expose", "onAutoForward": "ignore" },
+    "1080":  { "label": "SOCKS5 (chisel) — reach via Tailscale", "onAutoForward": "silent" },
+    "8888":  { "label": "chisel C2 — reach via Tailscale", "onAutoForward": "silent" },
+    "8889":  { "label": "HTTP file server — reach via Tailscale", "onAutoForward": "silent" },
+    "11601": { "label": "ligolo-ng — reach via Tailscale", "onAutoForward": "silent" }
+  },
+  // Silence every other auto-forwarded port (docker-proxy, VS Code internals) so the
+  // Ports panel isn't noise; they stay private regardless.
+  "otherPortsAttributes": { "onAutoForward": "silent" },
+
   "hostRequirements": { "cpus": 8, "memory": "16gb", "storage": "64gb" },
   "postCreateCommand": "bash .devcontainer/setup.sh",
   "customizations": { "vscode": { "extensions": ["anthropic.claude-code"] } }
