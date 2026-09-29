@@ -180,7 +180,7 @@ else
   _KALI_ARGS=(
     --build-arg INSTALL_WEB=1
     --build-arg INSTALL_INFRA=1
-    --build-arg INSTALL_MOBILE=1
+    --build-arg INSTALL_MOBILE=0
     --build-arg INSTALL_CLOUD=1
     --build-arg INSTALL_AI=1
   )
