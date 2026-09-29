@@ -1,10 +1,18 @@
 """
 Coverage matrix actions: endpoint registration, cell updates, dispatch.
 """
+import asyncio
 import json
 from typing import Any
 
 from ._common import log, scan_session
+
+
+def _read_json_file(path):
+    """Blocking read + parse of a JSON file. Call via ``asyncio.to_thread`` from async
+    code so the event loop isn't blocked on disk I/O (S7493)."""
+    with open(path) as fh:
+        return json.load(fh)
 from .coverage_extra import (
     _autofile_crosscutting_findings,
     _do_coverage_auto_crosscutting,
@@ -199,8 +207,7 @@ def _find_prior_stores(target: str) -> list:
     cands = []
     for rp in sorted(glob.glob("engagements/*/resume.json")):
         try:
-            with open(rp) as fh:
-                r = json.load(fh)
+            r = _read_json_file(rp)
         except Exception:
             continue
         st = _prior_norm(r.get("target", ""))
@@ -278,8 +285,7 @@ async def _do_coverage_import_prior(data, cov: Any) -> str:
         return (f"import_prior: no resume.json at {resume_path}. Build the store first: "
                 f"python3 scripts/build_engagement_digest.py --out {path}")
     try:
-        with open(resume_path) as fh:
-            prior = json.load(fh)
+        prior = await asyncio.to_thread(_read_json_file, resume_path)
     except Exception as e:
         return f"import_prior: could not read {resume_path}: {e}"
 
