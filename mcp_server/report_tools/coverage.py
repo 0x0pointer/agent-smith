@@ -172,6 +172,61 @@ async def _do_coverage_import(cov_type: str, data):
             "The matrix is your test plan — move to per-cell testing (or report(coverage type='sweep')).")
 
 
+def _prior_norm(s: str) -> str:
+    import re
+    return re.sub(r"\s+", " ", (s or "").strip().lower())
+
+
+def _prior_base_domain(host: str) -> str:
+    """Crude registrable domain: strip scheme/port/path, keep the last two labels
+    (www.foo.bar.com -> bar.com). Good enough to relate a target to a store."""
+    import re
+    host = re.sub(r"^\w+://", "", (host or "").strip().lower()).split("/")[0].split(":")[0]
+    parts = [p for p in host.split(".") if p]
+    return ".".join(parts[-2:]) if len(parts) >= 2 else host
+
+
+def _find_prior_stores(target: str) -> list:
+    """Scan engagements/*/resume.json and score each against `target`. Returns
+    candidates sorted by score desc. Scoring: exact target=100; substring either
+    way=80; shared base-domain (incl. the store's known_assets.domains)=70; target
+    is an IP in the store's known_assets.ips=70; else dropped. Deliberately strict —
+    a weak/ambiguous match must NOT be used to auto-skip cells."""
+    import glob
+    import os
+    ct = _prior_norm(target)
+    cbd = _prior_base_domain(target)
+    cands = []
+    for rp in sorted(glob.glob("engagements/*/resume.json")):
+        try:
+            with open(rp) as fh:
+                r = json.load(fh)
+        except Exception:
+            continue
+        st = _prior_norm(r.get("target", ""))
+        score = 0
+        if ct and st:
+            if ct == st:
+                score = 100
+            elif ct in st or st in ct:
+                score = 80
+        if not score and cbd:
+            sdoms = {_prior_base_domain(d) for d in (r.get("known_assets", {}).get("domains") or [])}
+            if cbd == _prior_base_domain(r.get("target", "")) or cbd in sdoms:
+                score = 70
+        if not score and target.strip() in set(r.get("known_assets", {}).get("ips") or []):
+            score = 70
+        if score:
+            cands.append({
+                "name": os.path.basename(os.path.dirname(rp)),
+                "path": os.path.dirname(rp),
+                "store_target": r.get("target", ""),
+                "score": score,
+                "stats": r.get("stats", {}),
+            })
+    return sorted(cands, key=lambda c: c["score"], reverse=True)
+
+
 async def _do_coverage_import_prior(data, cov: Any) -> str:
     """Phase 1 of the prior-engagement store: ingest a durable engagements/<name>/
     store (built by scripts/build_engagement_digest.py) into the LIVE scan so a
@@ -191,9 +246,33 @@ async def _do_coverage_import_prior(data, cov: Any) -> str:
     import os
     path = (data.get("path") or "").strip()
     mode = (data.get("mode") or "resume").strip().lower()
-    if not path:
-        return ("import_prior needs a 'path' to an engagements/<name>/ store "
-                "(build one with scripts/build_engagement_digest.py).")
+
+    # Auto-select the store by the CURRENT scan target when no explicit path is
+    # given. Safe rule: use a store ONLY on a confident, unambiguous match (best
+    # ≥80% and ≥20 ahead of the runner-up); otherwise LIST candidates and require
+    # an explicit path — never guess, because a wrong store skips untested cells.
+    if not path or path.lower() == "auto":
+        cur = scan_session.get() or {}
+        tgt = cur.get("target", "")
+        cands = _find_prior_stores(tgt)
+        if not cands:
+            return (f"import_prior(auto): no engagements/ store matches the current target "
+                    f"'{tgt}'. See `ls engagements/`, then pass path='engagements/<name>'.")
+        top = cands[0]
+        runner = cands[1]["score"] if len(cands) > 1 else 0
+        if top["score"] >= 80 and (top["score"] - runner) >= 20:
+            path = top["path"]
+            note_auto = f"auto-matched '{top['name']}' (target='{top['store_target']}', {top['score']}% match)"
+        else:
+            lines = [f"  • {c['name']}  target='{c['store_target']}'  match={c['score']}%  "
+                     f"({c['stats'].get('findings', 0)} findings, {c['stats'].get('pending', '?')} pending)  "
+                     f"→ path='{c['path']}'" for c in cands[:8]]
+            return ("import_prior(auto): the current target "
+                    f"'{tgt}' matches {len(cands)} stores ambiguously — pass an explicit path=:\n"
+                    + "\n".join(lines))
+    else:
+        note_auto = ""
+
     resume_path = path if path.endswith(".json") else os.path.join(path, "resume.json")
     if not os.path.exists(resume_path):
         return (f"import_prior: no resume.json at {resume_path}. Build the store first: "
@@ -286,7 +365,8 @@ async def _do_coverage_import_prior(data, cov: Any) -> str:
 
     return (
         f"📥 import_prior ({mode}) from {path}:\n"
-        f"  • known_assets merged: {merged} item(s)\n"
+        + (f"  • {note_auto}\n" if note_auto else "")
+        + f"  • known_assets merged: {merged} item(s)\n"
         f"  • endpoints registered: {registered}\n"
         f"  • cells trust-skipped (already tested/found): {skipped}\n"
         + (f"  • notes: {'; '.join(notes)}\n" if notes else "")
