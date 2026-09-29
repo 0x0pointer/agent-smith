@@ -73,7 +73,7 @@
 
   // ── Tab switching ─────────────────────────────────────────────────────────
   // Order MUST match the .tab-btn DOM order in index.html's sidebar (switchTab maps by index).
-  const TAB_NAMES = ['findings', 'topology', 'components', 'coverage', 'skills', 'activity', 'world-model', 'threat-model', 'metrics', 'setup-gates', 'logs'];
+  const TAB_NAMES = ['findings', 'topology', 'components', 'ai-redteam', 'coverage', 'skills', 'activity', 'world-model', 'threat-model', 'metrics', 'setup-gates', 'logs'];
 
   function switchTab(name) {
     _activeTab = name;
@@ -84,6 +84,7 @@
     document.getElementById(`tab-${name}`).classList.add('active');
     if (name === 'topology')      renderTopology(allData.diagrams || []);
     if (name === 'components')    renderComponentMap(allData.findings || []);
+    if (name === 'ai-redteam')    pollAiRedteam();
     if (name === 'coverage')      pollCoverage();
     if (name === 'skills')        pollSkills();
     if (name === 'activity') {

@@ -116,6 +116,7 @@
   setInterval(() => { if (!scanDone && _activeTab === 'logs') pollLogs(); }, 3000);
   setInterval(() => { if (_activeTab === 'overview') pollOverview(); }, POLL_MS);
   setInterval(() => { if (_activeTab === 'world-model') pollWorldModel(); }, POLL_MS);
+  setInterval(() => { if (_activeTab === 'ai-redteam') pollAiRedteam(); }, POLL_MS);
 
   // Request browser notification permission on load
   _requestNotifPermission();

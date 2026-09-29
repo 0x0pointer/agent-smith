@@ -36,17 +36,18 @@ def _deepen_steps_pass1(
     )
     if has_ai_ep or "ai-redteam" in skills_run:
         steps.append(
-            "Re-invoke /ai-redteam (SECOND PASS) — run promptfoo crescendo/jailbreak "
-            "strategies for the multi-turn escalation pass; "
+            "Re-invoke /ai-redteam (SECOND PASS) — drive the agent-driven multi-turn "
+            "escalation loop (craft -> transform(action='encode'/'mutate') -> http send -> "
+            "read -> escalate) for crescendo/jailbreak on every AI endpoint; "
             "Garak with the full probe set (dan,encoding,promptinject,leakreplay,xss,"
             "latentinjection,snowball,misleading,packagehallucination,malwaregen,gcg,"
-            "glitch,grandma,goodside); promptfoo redteam (plugins prompt-injection,"
-            "excessive-agency,pii,rag-poisoning,prompt-extraction; strategies jailbreak,"
-            "crescendo); plus manual multi-objective authority-marker payloads on all AI "
-            "endpoints. Close each OWASP LLM/MCP coverage cell with the run's artifact_id, "
-            "and re-run every confirmed jailbreak/injection N times to record a k/N "
-            "reproducibility rate (report(action='update_finding', adjudication=...)) before "
-            "filing — LLM outputs are non-deterministic."
+            "glitch,grandma,goodside); plus transform-crafted payloads for excessive "
+            "agency, RAG poisoning, and unbounded consumption, and manual multi-objective "
+            "authority-marker payloads on all AI endpoints. Close each OWASP LLM/MCP "
+            "coverage cell with the run's artifact_id, and re-run every confirmed "
+            "jailbreak/injection N times to record a k/N reproducibility rate "
+            "(report(action='update_finding', adjudication=...)) before filing — LLM "
+            "outputs are non-deterministic."
         )
     steps.append(
         "Re-run nuclei with ALL template categories: "
@@ -103,13 +104,15 @@ def _deepen_steps_pass2(
     )
     if has_ai_ep or "ai-redteam" in skills_run:
         steps.append(
-            "Re-invoke /ai-redteam (THIRD PASS) — run promptfoo redteam with the "
-            "jailbreak + crescendo strategies and FuzzyAI multi-turn prompt "
-            "injection (15 turns each); "
+            "Re-invoke /ai-redteam (THIRD PASS) — run the agent-driven multi-turn "
+            "jailbreak + crescendo loop (15+ turns each), escalating with "
+            "transform(action='mutate'/'bijection') payload variants and encoding "
+            "bypasses (base64/homoglyph/zero-width) to defeat the input filter; "
             "test excessive agency by attempting tool invocations with hidden params "
             "(include_internal=True, admin=True, debug=True, show_all=True); "
             "test indirect prompt injection via every data field the AI reads "
-            "(usernames, transaction notes, profile fields, filenames)."
+            "(usernames, transaction notes, profile fields, filenames), using "
+            "transform(action='steg') to smuggle instructions in invisible Unicode."
         )
     steps.append(
         "Run kali(command='nikto -h TARGET -C all -maxtime 300') for full server "
@@ -153,7 +156,7 @@ def _deepen_brief(iteration: int) -> str:
     # false-positive on paths like /detail, /email, /maintenance. Detect AI work by
     # the AI tools actually run, the ai-redteam skill, or any AI/MCP coverage cell.
     from core.coverage.classify import classify_endpoint
-    _AI_TOOLS = {"fuzzyai", "garak", "promptfoo"}
+    _AI_TOOLS = {"garak", "transform"}
     _AI_CELL_PREFIXES = (
         "prompt_injection", "jailbreak", "system_prompt_leak", "sensitive_info_disclosure",
         "improper_output_handling", "excessive_agency", "misinformation",

@@ -209,9 +209,9 @@ p.write_text('\n'.join(lines) + '\n')
     fi
 }
 
-_ask_key "OPENAI_API_KEY"       "OpenAI key - FuzzyAI and Garak attacker/scorer"
-_ask_key "ANTHROPIC_API_KEY"    "Anthropic key - FuzzyAI anthropic provider"
-_ask_key "AZURE_OPENAI_API_KEY" "Azure OpenAI key - FuzzyAI azure provider"
+_ask_key "OPENAI_API_KEY"       "OpenAI key - Garak scorer"
+_ask_key "ANTHROPIC_API_KEY"    "Anthropic key - Garak anthropic provider"
+_ask_key "AZURE_OPENAI_API_KEY" "Azure OpenAI key - Garak azure provider"
 
 echo ""
 echo "  Telegram bridge (optional) - get HIR / scan-complete alerts on your phone."
@@ -384,10 +384,9 @@ if [[ "${_kali_answer:-Y}" =~ ^[Yy]$ ]]; then
     echo "    infra            internal net, AD, credentials, service enum, pivoting       ~5 min"
     echo "    mobile           Android/iOS reversing + Frida/objection dynamic analysis    ~4 min"
     echo "    cloud            AWS/GCP CLIs, Prowler, ScoutSuite, trivy, kube-bench        ~7 min"
-    echo "    ai               LLM red-team: Garak, promptfoo (heaviest: torch)            ~12 min"
+    echo "  (LLM red-team 'ai' is no longer a Kali module — Garak is its own image, built below.)"
     echo ""
     _kali_build_args=()
-    _kali_install_ai=0
     _ask_kali_module() {  # args: name  build-arg  default(Y|N)
         local _def="$3" _ans _hint
         [ "$_def" = "Y" ] && _hint="Y/n" || _hint="y/N"
@@ -396,20 +395,16 @@ if [[ "${_kali_answer:-Y}" =~ ^[Yy]$ ]]; then
         _ans="${_ans:-$_def}"
         if [[ "$_ans" =~ ^[Yy]$ ]]; then
             _kali_build_args+=(--build-arg "$2=1")
-            [[ "$2" == "INSTALL_AI" ]] && _kali_install_ai=1
         else
             _kali_build_args+=(--build-arg "$2=0")
-            [[ "$2" == "INSTALL_AI" ]] && _kali_install_ai=0
         fi
-        # The trailing [[ ]] tests above return 1 for every non-AI module. Without
-        # this, `set -e` kills the installer on the first module prompt.
+        # Explicit success so a non-zero from the branch test can't trip `set -e`.
         return 0
     }
     _ask_kali_module web    INSTALL_WEB    Y
     _ask_kali_module infra  INSTALL_INFRA  Y
     _ask_kali_module mobile INSTALL_MOBILE N
     _ask_kali_module cloud  INSTALL_CLOUD  N
-    _ask_kali_module ai     INSTALL_AI     N
     echo ""
     echo "  Building pentest-agent/kali-mcp (this may take a while)..."
     _build_image Kali pentest-agent/kali-mcp "$REPO_DIR/tools/kali/" "${_kali_build_args[@]}" || true
@@ -426,6 +421,20 @@ if [[ "${_msf_answer:-Y}" =~ ^[Yy]$ ]]; then
     _build_image Metasploit pentest-agent/metasploit "$REPO_DIR/tools/metasploit/" || true
 else
     warn "Metasploit build skipped - run later: docker build -t pentest-agent/metasploit $REPO_DIR/tools/metasploit/"
+fi
+
+echo ""
+
+# Garak image (build) — standalone LLM red-team scanner used by /ai-redteam.
+# Heavy (torch, ~6-7 GB). Optional here because it ALSO auto-builds on first
+# scan(tool="garak"); pre-build to avoid a ~5-min wait on first use.
+printf "  Build Garak image now? (~5 min - LLM red-team; else auto-builds on first use) [y/N]: "
+read -r _garak_answer || true
+if [[ "${_garak_answer:-N}" =~ ^[Yy]$ ]]; then
+    echo "  Building pentest-agent/garak..."
+    _build_image Garak pentest-agent/garak "$REPO_DIR/tools/garak/" || true
+else
+    warn "Garak build skipped - auto-builds on first scan(tool='garak'), or run: docker build -t pentest-agent/garak $REPO_DIR/tools/garak/"
 fi
 
 echo ""

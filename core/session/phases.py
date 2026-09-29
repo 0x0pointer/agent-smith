@@ -71,10 +71,10 @@ _HUNT_SKILLS = frozenset({
 
 # Recon-class tools across ALL target types — any one means the surface is mapped enough to
 # judge depth (httpx=web, naabu/nmap=network, subfinder=host, mobsf=mobile, testssl=TLS,
-# fuzzyai/garak=AI, semgrep/trufflehog=code). Target-agnostic so non-web scans aren't stuck.
+# garak/transform=AI, semgrep/trufflehog=code). Target-agnostic so non-web scans aren't stuck.
 _RECON_TOOLS = frozenset({
     "httpx", "spider", "ffuf", "naabu", "nmap", "subfinder", "nuclei", "mobsf", "mobsfscan",
-    "testssl", "fuzzyai", "garak", "promptfoo", "semgrep", "trufflehog",
+    "testssl", "garak", "transform", "semgrep", "trufflehog",
 })
 
 # Cell types with no auto-closer — expected to linger pending; must not pin Phase B (mirrors
