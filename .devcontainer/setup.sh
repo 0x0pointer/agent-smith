@@ -74,12 +74,20 @@ timeout 60 bash -c 'until docker info >/dev/null 2>&1; do sleep 2; done' \
 if [ -f "$REPO_ROOT/docker-compose.yml" ] || [ -f "$REPO_ROOT/compose.yaml" ] || [ -f "$REPO_ROOT/compose.yml" ]; then
   ( cd "$REPO_ROOT" && { docker compose pull || true; } && docker compose build )
 else
-  # Kali image (recon + web/infra tooling) — required for most skills. A plain build
-  # uses the Dockerfile's default ARGs (INSTALL_WEB=1 INSTALL_INFRA=1), matching the
-  # installer's interactive defaults. Best-effort: warn, don't abort the Codespace.
-  echo "Building pentest-agent/kali-mcp (tools/kali) — this takes a while…"
-  docker build -t pentest-agent/kali-mcp "$REPO_ROOT/tools/kali/" \
-    || echo "WARN: kali-mcp build failed — rebuild later: docker build -t pentest-agent/kali-mcp $REPO_ROOT/tools/kali/"
+  # Kali image — the Codespace bakes in EVERY module (web + infra + mobile + cloud
+  # + ai), not just the web+infra defaults, so all skills work out of the box. This
+  # is a heavy build (the ai module pulls torch — expect a long first create).
+  # Best-effort: warn, don't abort the Codespace.
+  _KALI_ARGS=(
+    --build-arg INSTALL_WEB=1
+    --build-arg INSTALL_INFRA=1
+    --build-arg INSTALL_MOBILE=1
+    --build-arg INSTALL_CLOUD=1
+    --build-arg INSTALL_AI=1
+  )
+  echo "Building pentest-agent/kali-mcp (tools/kali) with ALL modules — this takes a while…"
+  docker build "${_KALI_ARGS[@]}" -t pentest-agent/kali-mcp "$REPO_ROOT/tools/kali/" \
+    || echo "WARN: kali-mcp build failed — rebuild later: docker build ${_KALI_ARGS[*]} -t pentest-agent/kali-mcp $REPO_ROOT/tools/kali/"
   # Metasploit image — heavier, only needed for the /metasploit skill. Best-effort.
   echo "Building pentest-agent/metasploit (tools/metasploit)…"
   docker build -t pentest-agent/metasploit "$REPO_ROOT/tools/metasploit/" \
