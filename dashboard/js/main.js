@@ -110,6 +110,10 @@
   setInterval(pollThreatModel,   POLL_MS);
   setInterval(pollQA,            POLL_MS);
   setInterval(pollMetrics,       POLL_MS * 6);
+  // Sessions: poll in the background (not tab-gated) so a newly auto-started /
+  // watchdog-respawned session toasts and appears within seconds, even when the
+  // operator is on another tab (issue #187, acceptance #1 & #4).
+  setInterval(pollSessions,      POLL_MS * 2);
   // #status is a shared header shown on every tab, so the "last updated Ns ago"
   // counter must keep ticking regardless of which menu item is open.
   setInterval(() => { if (!scanDone && lastOk) updateFreshness(); }, 1000);
@@ -133,3 +137,4 @@
   pollLogs();
   pollQA();
   pollMetrics();
+  pollSessions();

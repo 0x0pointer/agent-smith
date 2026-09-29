@@ -337,6 +337,12 @@ def _snapshot_meta(engagement: str) -> None:
         from core import session
         s = session.get() or {}
         snap = {k: s.get(k) for k in ("id", "target", "scan_phase", "model_profile", "started")}
+        # Origin: how this session FIRST came to exist (meta.json is write-once, so it
+        # records the creation trigger, not later respawns). A spawned child (watchdog
+        # or /api/restart-smith) carries SMITH_SESSION_ORIGIN in its env (see
+        # spawn._spawn_child_env); a fresh operator/CLI start has none → "operator".
+        # Lets the dashboard's Sessions panel badge auto-started sessions (issue #187).
+        snap["origin"] = os.environ.get("SMITH_SESSION_ORIGIN", "").strip() or "operator"
         dst_dir.mkdir(parents=True, exist_ok=True)
         meta.write_text(json.dumps(snap, ensure_ascii=False, indent=2))
     except Exception:

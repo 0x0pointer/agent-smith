@@ -1,0 +1,13 @@
+<!-- ── Tab: Sessions ─────────────────────────────────────────────────────── -->
+<!-- Lists every scan session — operator, watchdog-respawned, or implicit — from
+     /api/sessions (over the per-session smith-events streams, immune to the
+     session.json single-current clobber). Auto-started sessions are badged;
+     sessions new since the last view are highlighted (issue #187). -->
+<div id="tab-sessions" class="tab-content">
+  <div class="tab-head">
+    <h2>Sessions</h2>
+    <p>Every scan session from this workspace, whatever started it. <span class="badge-auto">AUTO</span> marks a watchdog/auto-spawned session. A row highlighted is new since you last looked. Click a row to replay its reasoning in the Session Log.</p>
+  </div>
+  <div id="sessions-summary" class="air-sub-note"></div>
+  <div id="sessions-output"><div class="empty-placeholder">No sessions yet.</div></div>
+</div>

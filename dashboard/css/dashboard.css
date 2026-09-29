@@ -2052,3 +2052,35 @@
 .air-pitax-fam b { color: #58a6ff; font-weight: 600; }
 .air-pitax-attr { margin-top: 12px; font-size: .74rem; color: #8b949e; }
 .air-pitax-attr a { color: #58a6ff; }
+
+/* ── Sessions tab (issue #187) ─────────────────────────────────────────────── */
+.sessions-table { width:100%; border-collapse:collapse; font-size:0.8rem; }
+.sessions-table th {
+  text-align:left; padding:0.45rem 0.6rem; color:var(--text-muted);
+  font-weight:600; border-bottom:1px solid var(--border);
+  font-family:var(--font-mono); font-size:0.7rem; text-transform:uppercase; letter-spacing:0.04em;
+}
+.sessions-table td { padding:0.45rem 0.6rem; border-bottom:1px solid var(--border-subtle); color:var(--text); vertical-align:middle; }
+.sess-row { cursor:pointer; transition:background 0.12s; }
+.sess-row:hover { background:var(--purple-dim); }
+.sess-id { font-family:var(--font-mono); color:var(--text-dim); font-size:0.72rem; }
+
+/* New since last viewed — a left accent + faint glow. */
+.sess-new { box-shadow:inset 3px 0 0 var(--purple); background:var(--purple-dim); }
+.sess-new:hover { background:var(--purple-glow, var(--purple-dim)); }
+
+/* Origin badges. */
+.badge-auto, .badge-op, .badge-cur {
+  display:inline-block; padding:0.08rem 0.4rem; border-radius:3px;
+  font-family:var(--font-mono); font-size:0.64rem; font-weight:700;
+  text-transform:uppercase; letter-spacing:0.03em; white-space:nowrap;
+}
+.badge-auto { background:rgba(250,140,22,0.18); color:var(--sev-high); border:1px solid rgba(250,140,22,0.4); }
+.badge-op   { background:var(--border-subtle); color:var(--text-muted); border:1px solid var(--border-subtle); }
+.badge-cur  { background:var(--green-dim); color:var(--green); border:1px solid rgba(91,242,155,0.4); margin-left:0.25rem; }
+
+/* Status colouring. */
+.sess-status { font-family:var(--font-mono); font-size:0.72rem; }
+.sess-running  { color:var(--green); }
+.sess-complete { color:var(--text-muted); }
+.sess-inactive { color:var(--text-dim); }
