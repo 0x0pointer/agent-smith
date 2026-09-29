@@ -122,45 +122,72 @@ async def ensure_running() -> tuple[bool, str]:
         env_flags: list[str] = _forward_ai_keys(os.environ)
 
         _token = _kali_token()
-        proc = await asyncio.create_subprocess_exec(
-            docker_executable(), "run", "-d",
-            "--name", KALI_CONTAINER,
-            # SECURITY: publish the command API to LOOPBACK ONLY. It is unauthenticated
-            # root RCE — on 0.0.0.0 any host on the LAN could drive it. The MCP reaches it
-            # at localhost:5001; the LAN cannot.
-            "-p", f"127.0.0.1:{KALI_PORT}:5000",
-            # Tunnel/listener ports stay on 0.0.0.0 — targets must reach them for
-            # reverse tunnels / file transfer during a pentest (that is their purpose).
-            "-p", "1080:1080",          # SOCKS5 proxy (chisel reverse tunnel)
-            "-p", "8888:8888",          # chisel server listener
-            "-p", "8889:8889",          # python HTTP server (file transfer to targets)
-            "-p", "11601:11601",        # ligolo-ng proxy listener
-            "--rm",
-            "--cap-add=NET_RAW",
-            "--cap-add=NET_ADMIN",
-            "--device=/dev/net/tun:/dev/net/tun",
-            "--add-host=host.docker.internal:host-gateway",
-            # Front the API with the loopback auth guard (token + Host allowlist) so a local
-            # process or a DNS-rebinding page that reaches loopback still can't drive it. The
-            # guard is MOUNTED so this is live without an image rebuild; the Dockerfile bakes
-            # the same guard for clean builds.
-            "-v", f"{_GUARD_SRC}:/usr/local/bin/kali-api-guard:ro",
-            "-e", f"KALI_API_TOKEN={_token}",
-            "-e", f"KALI_UPSTREAM_PORT={_KALI_UPSTREAM_PORT}",
-            "-e", "KALI_GUARD_PORT=5000",
-            *env_flags,
-            KALI_IMAGE,
-            # Override CMD: kali-server-mcp bound LOOPBACK-only inside the container; the
-            # guard listens on the published :5000 and forwards to it after auth.
-            "sh", "-c",
-            f"kali-server-mcp --ip 127.0.0.1 --port {_KALI_UPSTREAM_PORT} & "
-            "exec python3 /usr/local/bin/kali-api-guard",
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, stderr = await proc.communicate()
-        if proc.returncode != 0:
-            return False, f"docker run failed: {stderr.decode().strip()}"
+        # Opt-in extra reverse-shell listener ports (e.g. "443,80,53"), gated on
+        # SMITH_EXTRA_LISTENER_PORTS — EMPTY BY DEFAULT so local/macOS runs are
+        # unchanged; the Codespace sets it so a shell forced onto a common egress
+        # port is catchable at <tailnet-ip>:<port>. Published on 0.0.0.0 like the
+        # tunnel ports (targets must reach them); the loopback-only command API is
+        # unaffected. A clash (e.g. :53 vs a host resolver) is handled by the
+        # retry-without-extras fallback below, so it can never sink Kali startup.
+        _extra_ports: list[str] = []
+        for _raw in os.environ.get("SMITH_EXTRA_LISTENER_PORTS", "").split(","):
+            _raw = _raw.strip()
+            if _raw.isdigit() and 0 < int(_raw) < 65536:
+                _extra_ports += ["-p", f"{_raw}:{_raw}"]
+
+        def _run_argv(extra: list[str]) -> list[str]:
+            return [
+                docker_executable(), "run", "-d",
+                "--name", KALI_CONTAINER,
+                # SECURITY: publish the command API to LOOPBACK ONLY. It is unauthenticated
+                # root RCE — on 0.0.0.0 any host on the LAN could drive it. The MCP reaches it
+                # at localhost:5001; the LAN cannot.
+                "-p", f"127.0.0.1:{KALI_PORT}:5000",
+                # Tunnel/listener ports stay on 0.0.0.0 — targets must reach them for
+                # reverse tunnels / file transfer during a pentest (that is their purpose).
+                "-p", "1080:1080",          # SOCKS5 proxy (chisel reverse tunnel)
+                "-p", "8888:8888",          # chisel server listener
+                "-p", "8889:8889",          # python HTTP server (file transfer to targets)
+                "-p", "11601:11601",        # ligolo-ng proxy listener
+                *extra,                     # opt-in reverse-shell listener ports
+                "--rm",
+                "--cap-add=NET_RAW",
+                "--cap-add=NET_ADMIN",
+                "--device=/dev/net/tun:/dev/net/tun",
+                "--add-host=host.docker.internal:host-gateway",
+                # Front the API with the loopback auth guard (token + Host allowlist) so a local
+                # process or a DNS-rebinding page that reaches loopback still can't drive it. The
+                # guard is MOUNTED so this is live without an image rebuild; the Dockerfile bakes
+                # the same guard for clean builds.
+                "-v", f"{_GUARD_SRC}:/usr/local/bin/kali-api-guard:ro",
+                "-e", f"KALI_API_TOKEN={_token}",
+                "-e", f"KALI_UPSTREAM_PORT={_KALI_UPSTREAM_PORT}",
+                "-e", "KALI_GUARD_PORT=5000",
+                *env_flags,
+                KALI_IMAGE,
+                # Override CMD: kali-server-mcp bound LOOPBACK-only inside the container; the
+                # guard listens on the published :5000 and forwards to it after auth.
+                "sh", "-c",
+                f"kali-server-mcp --ip 127.0.0.1 --port {_KALI_UPSTREAM_PORT} & "
+                "exec python3 /usr/local/bin/kali-api-guard",
+            ]
+
+        async def _docker_run(argv: list[str]) -> tuple[int, str]:
+            p = await asyncio.create_subprocess_exec(
+                *argv, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+            )
+            _, err = await p.communicate()
+            return (p.returncode or 0), err.decode().strip()
+
+        rc, err = await _docker_run(_run_argv(_extra_ports))
+        if rc != 0 and _extra_ports:
+            # A published extra port likely clashed with a host listener (e.g. :53).
+            # Don't let that sink Kali — retry with only the fixed ports.
+            print(f"[kali] extra listener ports failed to publish ({err}); "
+                  "retrying without SMITH_EXTRA_LISTENER_PORTS", flush=True)
+            rc, err = await _docker_run(_run_argv([]))
+        if rc != 0:
+            return False, f"docker run failed: {err}"
 
     # Poll /health until the Flask server is ready (up to 30 s)
     for _ in range(30):

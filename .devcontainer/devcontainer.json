@@ -21,6 +21,13 @@
   // If tailscaled complains about /dev/net/tun, uncomment:
   // "runArgs": ["--device=/dev/net/tun"],
 
+  // Codespace-only: publish these extra reverse-shell listener ports on the Kali
+  // container (tools/kali_runner.py) so a shell forced onto a common egress port
+  // (443/80/53) is catchable at the tailnet IP. Unset elsewhere → local/macOS runs
+  // keep the minimal published-port set. A port that clashes with a host listener
+  // is dropped by the runner's retry-without-extras fallback, so Kali still starts.
+  "containerEnv": { "SMITH_EXTRA_LISTENER_PORTS": "443,80,53" },
+
   // ── Ports (SECURITY-SENSITIVE — this is offensive tooling) ────────────────
   // Keep EVERY port PRIVATE (the Codespaces default: reachable only by you, via a
   // GitHub-authenticated URL). NEVER switch these to Public:
