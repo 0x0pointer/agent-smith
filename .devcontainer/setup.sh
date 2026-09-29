@@ -84,8 +84,28 @@ else
   echo "Building pentest-agent/metasploit (tools/metasploit)…"
   docker build -t pentest-agent/metasploit "$REPO_ROOT/tools/metasploit/" \
     || echo "WARN: metasploit build failed — rebuild later: docker build -t pentest-agent/metasploit $REPO_ROOT/tools/metasploit/"
-  # Lightweight scanner images (nmap/naabu/httpx/nuclei/subfinder/ffuf/semgrep/
-  # trufflehog) are public and auto-pull on first use — no build needed here.
+  # Scanner images (recon: nmap/naabu/httpx/nuclei/subfinder + fuzzyai) are pulled
+  # in the step below. ffuf/spider/garak/promptfoo run INSIDE the Kali image built
+  # above — they are not separate images.
+fi
+
+# ── Pre-pull scanner images ──────────────────────────────────────────────────
+# Parity with installers/install.sh (which pre-pulls these). Enumerate the exact
+# refs from the tool REGISTRY — the same set the `pull_images` action fetches, and
+# digest-pinned — so this never drifts from a hardcoded tag list. Best-effort: any
+# image not pulled here still auto-pulls on first `docker run`. The needs_mount
+# tools (semgrep/trufflehog/mobsfscan) auto-pull when a codebase/target is first
+# mounted, matching pull_images, so they are intentionally not fetched here.
+if command -v poetry >/dev/null 2>&1; then
+  echo "Pre-pulling scanner images (from the tool registry)…"
+  _imgs="$( ( cd "$REPO_ROOT" && poetry run python -c 'from tools import REGISTRY; print("\n".join(sorted({t.image for t in REGISTRY.values() if not getattr(t,"needs_mount",False) and getattr(t,"image","")})))' ) 2>/dev/null || true )"
+  for _img in $_imgs; do
+    if docker pull "$_img" >/dev/null 2>&1; then
+      echo "  pulled $_img"
+    else
+      echo "  WARN: pull failed (auto-pulls on first use): $_img"
+    fi
+  done
 fi
 
 # IMPORTANT: run the tools container on the HOST network so it shares the
