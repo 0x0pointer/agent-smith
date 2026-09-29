@@ -100,6 +100,13 @@ def _neighbors(out: dict, inc: dict, node_id: str, rel: Rel) -> list[tuple[Edge,
     return res
 
 
+def _normalize_kinds(edge_kinds: str | Iterable[str] | None) -> set[str] | None:
+    """A single edge kind, an iterable of kinds, or None → a set of kinds or None."""
+    if isinstance(edge_kinds, str):
+        return {edge_kinds}
+    return set(edge_kinds) if edge_kinds else None
+
+
 def _validate_pattern(pattern: list) -> None:
     if not pattern or len(pattern) % 2 == 0:
         raise ValueError("pattern must be a non-empty, odd-length list: NodeM, Rel, NodeM, ...")
@@ -111,6 +118,54 @@ def _validate_pattern(pattern: list) -> None:
 
 # ── fixed-length pattern matching ───────────────────────────────────────────────
 
+@dataclass
+class _ChainQuery:
+    """Immutable per-query context threaded through the fixed-length DFS."""
+    g: Graph
+    out: dict[str, list[Edge]]
+    inc: dict[str, list[Edge]]
+    node_specs: list[NodeM]
+    rel_specs: list[Rel]
+    limit: int
+
+
+def _chain_match(node_specs: list[NodeM], path_nodes: list[Node], path_edges: list[Edge]) -> Match:
+    """Build the Match for a completed path, binding each spec's ``var``."""
+    bindings = {s.var: n for s, n in zip(node_specs, path_nodes) if s.var}
+    return Match(nodes=list(path_nodes), edges=list(path_edges), vars=bindings)
+
+
+def _chain_extensions(q: _ChainQuery, last: Node, rel: Rel, nxt_spec: NodeM,
+                      seen: set[str]) -> list[tuple[Edge, Node]]:
+    """(edge, node) pairs that extend the path by one valid, unvisited hop."""
+    exts: list[tuple[Edge, Node]] = []
+    for edge, nid in _neighbors(q.out, q.inc, last.id, rel):
+        if nid in seen:  # simple path — no revisits
+            continue
+        nn = q.g.nodes.get(nid)
+        if nn is None or not nxt_spec.matches(nn):
+            continue
+        exts.append((edge, nn))
+    return exts
+
+
+def _chain_dfs(q: _ChainQuery, path_nodes: list[Node], path_edges: list[Edge],
+               seen: set[str], matches: list[Match]) -> None:
+    """Depth-first extend the current path, appending completed Matches."""
+    if len(matches) >= q.limit:
+        return
+    pos = len(path_nodes) - 1
+    if pos == len(q.node_specs) - 1:
+        matches.append(_chain_match(q.node_specs, path_nodes, path_edges))
+        return
+    rel = q.rel_specs[pos]
+    nxt_spec = q.node_specs[pos + 1]
+    for edge, nn in _chain_extensions(q, path_nodes[-1], rel, nxt_spec, seen):
+        _chain_dfs(q, path_nodes + [nn], path_edges + [edge], seen | {nn.id}, matches)
+        if len(matches) >= q.limit:
+            return
+
+
 def match_chain(g: Graph, pattern: list, limit: int = 200) -> list[Match]:
     """Find every simple path matching a fixed node–rel–node pattern.
 
@@ -119,35 +174,15 @@ def match_chain(g: Graph, pattern: list, limit: int = 200) -> list[Match]:
     single hop. Returns up to ``limit`` Matches (deterministic order)."""
     _validate_pattern(pattern)
     out, inc = _adjacency(g)
-    node_specs = pattern[0::2]
-    rel_specs = pattern[1::2]
+    q = _ChainQuery(g=g, out=out, inc=inc,
+                    node_specs=pattern[0::2], rel_specs=pattern[1::2], limit=limit)
     matches: list[Match] = []
-
-    def _extend(path_nodes: list[Node], path_edges: list[Edge], seen: set[str]) -> None:
-        pos = len(path_nodes) - 1
-        if len(matches) >= limit:
-            return
-        if pos == len(node_specs) - 1:
-            bindings = {s.var: n for s, n in zip(node_specs, path_nodes) if s.var}
-            matches.append(Match(nodes=list(path_nodes), edges=list(path_edges), vars=bindings))
-            return
-        rel = rel_specs[pos]
-        nxt_spec = node_specs[pos + 1]
-        for edge, nid in _neighbors(out, inc, path_nodes[-1].id, rel):
-            if nid in seen:  # simple path — no revisits
-                continue
-            nn = g.nodes.get(nid)
-            if nn is None or not nxt_spec.matches(nn):
-                continue
-            _extend(path_nodes + [nn], path_edges + [edge], seen | {nid})
-            if len(matches) >= limit:
-                return
-
     for start in g.nodes.values():
-        if node_specs[0].matches(start):
-            _extend([start], [], {start.id})
-            if len(matches) >= limit:
-                break
+        if not q.node_specs[0].matches(start):
+            continue
+        _chain_dfs(q, [start], [], {start.id}, matches)
+        if len(matches) >= limit:
+            break
     return matches[:limit]
 
 
@@ -160,6 +195,57 @@ def _resolve_starts(g: Graph, src) -> list[Node]:
         n = g.nodes.get(src)
         return [n] if n else []
     raise TypeError("src must be a node id (str) or a NodeM")
+
+
+@dataclass
+class _ReachQuery:
+    """Immutable per-query context threaded through the reachability BFS."""
+    g: Graph
+    out: dict[str, list[Edge]]
+    inc: dict[str, list[Edge]]
+    target: NodeM
+    hop_rel: Rel
+    kinds: set[str] | None
+    min_hops: int
+    max_hops: int
+    limit: int
+
+
+def _reachable_step(q: _ReachQuery, node_id: str) -> list[str]:
+    """Neighbor ids reachable in one hop, filtered by the allowed edge kinds."""
+    nbrs = _neighbors(q.out, q.inc, node_id, q.hop_rel)
+    return [nid for e, nid in nbrs if q.kinds is None or e.kind in q.kinds]
+
+
+def _reachable_hit(q: _ReachQuery, node_id: str, depth: int) -> bool:
+    """True when a path of ``depth`` hops ending at ``node_id`` matches the target."""
+    if depth < q.min_hops or depth < 1:
+        return False
+    node = q.g.nodes.get(node_id)
+    return node is not None and q.target.matches(node)
+
+
+def _reachable_enqueue(q: _ReachQuery, frontier: deque, cur: str, path: list[str]) -> None:
+    """Push each unvisited, in-graph neighbor onto the BFS frontier."""
+    for nid in _reachable_step(q, cur):
+        if nid in path or nid not in q.g.nodes:  # simple path
+            continue
+        frontier.append((nid, path + [nid]))
+
+
+def _reachable_bfs(q: _ReachQuery, start_id: str, paths: list[list[str]]) -> None:
+    """BFS by depth from one start, appending matching simple paths to ``paths``."""
+    frontier: deque[tuple[str, list[str]]] = deque([(start_id, [start_id])])
+    while frontier and len(paths) < q.limit:
+        cur, path = frontier.popleft()
+        depth = len(path) - 1
+        if _reachable_hit(q, cur, depth):
+            paths.append(path)
+            if len(paths) >= q.limit:
+                return
+        if depth >= q.max_hops:
+            continue
+        _reachable_enqueue(q, frontier, cur, path)
 
 
 def reachable(g: Graph, src, target, edge_kinds: str | Iterable[str] | None = None,
@@ -175,34 +261,35 @@ def reachable(g: Graph, src, target, edge_kinds: str | Iterable[str] | None = No
         raise ValueError(f"direction must be one of {_DIRECTIONS}")
     if not isinstance(target, NodeM):
         raise TypeError("target must be a NodeM")
-    kinds = {edge_kinds} if isinstance(edge_kinds, str) else (set(edge_kinds) if edge_kinds else None)
     out, inc = _adjacency(g)
-    hop_rel = Rel(kind=None, direction=direction)
-
-    def _step(node_id: str) -> list[str]:
-        nbrs = _neighbors(out, inc, node_id, hop_rel)
-        return [nid for e, nid in nbrs if kinds is None or e.kind in kinds]
-
-    paths: list[list[str]] = []
+    q = _ReachQuery(g=g, out=out, inc=inc, target=target,
+                    hop_rel=Rel(kind=None, direction=direction),
+                    kinds=_normalize_kinds(edge_kinds),
+                    min_hops=min_hops, max_hops=max_hops, limit=limit)
     # BFS by depth so shorter routes surface first; deque of (node_id, path).
+    paths: list[list[str]] = []
     for start in _resolve_starts(g, src):
-        frontier: deque[tuple[str, list[str]]] = deque([(start.id, [start.id])])
-        while frontier and len(paths) < limit:
-            cur, path = frontier.popleft()
-            depth = len(path) - 1
-            if depth >= min_hops and depth >= 1:
-                node = g.nodes.get(cur)
-                if node is not None and target.matches(node):
-                    paths.append(path)
-                    if len(paths) >= limit:
-                        break
-            if depth >= max_hops:
-                continue
-            for nid in _step(cur):
-                if nid in path or nid not in g.nodes:  # simple path
-                    continue
-                frontier.append((nid, path + [nid]))
+        if len(paths) >= limit:
+            break
+        _reachable_bfs(q, start.id, paths)
     return paths[:limit]
+
+
+def _shortest_expand(out: dict, inc: dict, hop_rel: Rel, kinds: set[str] | None,
+                     path: list[str], dst_id: str, visited: set[str],
+                     frontier: deque) -> list[str] | None:
+    """Expand ``path`` by one hop: return the completed path if it reaches
+    ``dst_id``, otherwise enqueue each unvisited neighbor and return None."""
+    for edge, nid in _neighbors(out, inc, path[-1], hop_rel):
+        if kinds is not None and edge.kind not in kinds:
+            continue
+        if nid in visited:
+            continue
+        if nid == dst_id:
+            return path + [nid]
+        visited.add(nid)
+        frontier.append(path + [nid])
+    return None
 
 
 def shortest_path(g: Graph, src_id: str, dst_id: str,
@@ -213,7 +300,7 @@ def shortest_path(g: Graph, src_id: str, dst_id: str,
         return None
     if src_id == dst_id:
         return [src_id]
-    kinds = {edge_kinds} if isinstance(edge_kinds, str) else (set(edge_kinds) if edge_kinds else None)
+    kinds = _normalize_kinds(edge_kinds)
     out, inc = _adjacency(g)
     hop_rel = Rel(kind=None, direction=direction)
     frontier: deque[list[str]] = deque([[src_id]])
@@ -222,15 +309,9 @@ def shortest_path(g: Graph, src_id: str, dst_id: str,
         path = frontier.popleft()
         if len(path) - 1 >= max_hops:
             continue
-        for edge, nid in _neighbors(out, inc, path[-1], hop_rel):
-            if kinds is not None and edge.kind not in kinds:
-                continue
-            if nid in visited:
-                continue
-            if nid == dst_id:
-                return path + [nid]
-            visited.add(nid)
-            frontier.append(path + [nid])
+        found = _shortest_expand(out, inc, hop_rel, kinds, path, dst_id, visited, frontier)
+        if found is not None:
+            return found
     return None
 
 

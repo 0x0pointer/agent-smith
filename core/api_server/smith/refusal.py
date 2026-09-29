@@ -139,22 +139,34 @@ def _terminal_assistant_text(events: list) -> str:
     return ""
 
 
+def _event_content_blocks(event) -> list:
+    """The message content-block list of one transcript event, or [] when the event
+    has no list-shaped content (a string turn, a malformed entry)."""
+    msg = event.get("message") if isinstance(event, dict) else None
+    content = msg.get("content") if isinstance(msg, dict) else None
+    return content if isinstance(content, list) else []
+
+
+def _is_pentest_tool_use(block) -> bool:
+    """True when a message content block is a pentest-agent MCP tool call (either the
+    Claude Code ``mcp__pentest-agent__*`` form or the opencode/codex ``pentest-agent_*``
+    form)."""
+    if not (isinstance(block, dict) and block.get("type") == "tool_use"):
+        return False
+    name = str(block.get("name", ""))
+    return "pentest-agent" in name or name.startswith("mcp__pentest")
+
+
 def _tail_has_pentest_tooluse(events: list) -> bool:
     """True when the tail contains a pentest-agent MCP tool call — the signal that
     this transcript is the SCAN driver, not an unrelated dev/chat conversation in
     the same repo. Used to avoid mis-identifying the operator's own Claude Code
     session as the wedged scan."""
-    for e in events:
-        msg = e.get("message") if isinstance(e, dict) else None
-        content = msg.get("content") if isinstance(msg, dict) else None
-        if not isinstance(content, list):
-            continue
-        for b in content:
-            if isinstance(b, dict) and b.get("type") == "tool_use":
-                name = str(b.get("name", ""))
-                if "pentest-agent" in name or name.startswith("mcp__pentest"):
-                    return True
-    return False
+    return any(
+        _is_pentest_tool_use(b)
+        for e in events
+        for b in _event_content_blocks(e)
+    )
 
 
 def _evaluate_transcript(path: pathlib.Path, require_scan_relevance: bool):

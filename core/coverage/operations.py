@@ -169,6 +169,55 @@ async def add_endpoint(
     return result
 
 
+def _find_cell(matrix: list[dict], cell_id: str) -> dict | None:
+    """Return the first matrix cell whose id matches, or None if none do."""
+    for cell in matrix:
+        if cell["id"] == cell_id:
+            return cell
+    return None
+
+
+def _write_cell_fields(
+    cell: dict,
+    status: str,
+    notes: str,
+    tested_by: str,
+    artifact_id: str,
+    finding_id: str | None,
+) -> None:
+    """Write a closure's fields onto a cell in-place (shared by single + bulk update).
+
+    tested_by falls back to the tool derived from artifact_id; finding_id is only
+    stored when truthy so a closure without a linked finding leaves the prior value.
+    """
+    cell["status"]      = status
+    cell["notes"]       = notes
+    cell["tested_by"]   = tested_by or _tested_by_from_artifact(artifact_id)
+    cell["artifact_id"] = artifact_id
+    if finding_id:
+        cell["finding_id"] = finding_id
+    cell["tested_at"] = datetime.now(timezone.utc).isoformat()
+
+
+def _reject_single_cell_update(
+    cell: dict, matrix: list[dict], artifact_id: str, status: str
+) -> str | None:
+    """Run the per-cell closure gates for update_cell. Returns a rejection string,
+    or None when the update may proceed."""
+    # Auth-failure block: a 401/403 on an injection cell is not clean,
+    # it's untested. Force Smith to authenticate and retry.
+    auth_reject = _validate_auth_response(artifact_id, status, cell)
+    if auth_reject:
+        return auth_reject
+    # Artifact-reuse block: a single request can't legitimately test
+    # multiple distinct injection types — see _validate_artifact_reuse.
+    from core.coverage.validation import _validate_artifact_reuse
+    reuse_reject = _validate_artifact_reuse(artifact_id, status, cell, matrix)
+    if reuse_reject:
+        return reuse_reject
+    return None
+
+
 async def update_cell(
     cell_id: str,
     status: str,
@@ -201,34 +250,22 @@ async def update_cell(
 
     async with _cov._lock:
         data = _cov._load()
-        for cell in data["matrix"]:
-            if cell["id"] == cell_id:
-                # Auth-failure block: a 401/403 on an injection cell is not clean,
-                # it's untested. Force Smith to authenticate and retry.
-                auth_reject = _validate_auth_response(artifact_id, status, cell)
-                if auth_reject:
-                    return auth_reject
-                # Artifact-reuse block: a single request can't legitimately test
-                # multiple distinct injection types — see _validate_artifact_reuse.
-                from core.coverage.validation import _validate_artifact_reuse
-                reuse_reject = _validate_artifact_reuse(artifact_id, status, cell, data["matrix"])
-                if reuse_reject:
-                    return reuse_reject
-                warning = _integrity_warning_for_status(
-                    cell_id, cell["status"], status,
-                    cell.get("injection_type", ""), notes,
-                )
-                cell["status"]      = status
-                cell["notes"]       = notes
-                cell["tested_by"]   = tested_by or _tested_by_from_artifact(artifact_id)
-                cell["artifact_id"] = artifact_id
-                if finding_id:
-                    cell["finding_id"] = finding_id
-                cell["tested_at"] = datetime.now(timezone.utc).isoformat()
-                _cov._recount(data)
-                _cov._save(data)
-                return warning if warning else True
-    return False
+        cell = _find_cell(data["matrix"], cell_id)
+        if cell is None:
+            return False
+
+        gate_reject = _reject_single_cell_update(cell, data["matrix"], artifact_id, status)
+        if gate_reject:
+            return gate_reject
+
+        warning = _integrity_warning_for_status(
+            cell_id, cell["status"], status,
+            cell.get("injection_type", ""), notes,
+        )
+        _write_cell_fields(cell, status, notes, tested_by, artifact_id, finding_id)
+        _cov._recount(data)
+        _cov._save(data)
+        return warning if warning else True
 
 
 def _apply_bulk_cell(cell: dict, upd: dict, warnings: list[str]) -> None:
@@ -245,13 +282,38 @@ def _apply_bulk_cell(cell: dict, upd: dict, warnings: list[str]) -> None:
     )
     if warning:
         warnings.append(warning)
-    cell["status"]      = st
-    cell["notes"]       = notes_text
-    cell["tested_by"]   = upd.get("tested_by") or _tested_by_from_artifact(upd.get("artifact_id", ""))
-    cell["artifact_id"] = upd.get("artifact_id", "")
-    if upd.get("finding_id"):
-        cell["finding_id"] = upd["finding_id"]
-    cell["tested_at"] = datetime.now(timezone.utc).isoformat()
+    _write_cell_fields(
+        cell, st, notes_text,
+        upd.get("tested_by", ""), upd.get("artifact_id", ""), upd.get("finding_id", ""),
+    )
+
+
+def _reject_bulk_final_update(
+    upd: dict, st: str, cell: dict, matrix: list[dict]
+) -> str | None:
+    """Run the tested_clean / vulnerable closure gates for one bulk-update entry.
+
+    Returns the rejection reason (artifact, auth, finding-link, or artifact-reuse),
+    or None when the entry passes every gate. The reuse gate reads ``matrix`` so it
+    sees closures pre-applied earlier in the same batch.
+    """
+    artifact_id = upd.get("artifact_id", "")
+    rejection = _validate_artifact(artifact_id, st)
+    if rejection:
+        return rejection
+    auth_reject = _validate_auth_response(artifact_id, st, cell)
+    if auth_reject:
+        return auth_reject
+    # Vulnerable cells must already have a finding_id — force Smith
+    # to call report(action='finding') first instead of auto-filing.
+    link_reject = _validate_finding_link(st, upd.get("finding_id", ""))
+    if link_reject:
+        return link_reject
+    # Artifact-reuse block. Pre-apply the in-flight cell's artifact_id
+    # onto its matrix entry so updates later in THIS batch citing the
+    # same artifact see prior closures and get rejected accordingly.
+    from core.coverage.validation import _validate_artifact_reuse
+    return _validate_artifact_reuse(artifact_id, st, cell, matrix)
 
 
 async def bulk_update(updates: list[dict]) -> dict:
@@ -278,34 +340,9 @@ async def bulk_update(updates: list[dict]) -> dict:
             if st not in valid or cid not in cell_map:
                 continue
             if st in _TESTED_FINAL:
-                rejection = _validate_artifact(upd.get("artifact_id", ""), st)
+                rejection = _reject_bulk_final_update(upd, st, cell_map[cid], data["matrix"])
                 if rejection:
                     warnings.append(f"REJECTED cell {cid}: {rejection}")
-                    rejected += 1
-                    continue
-                auth_reject = _validate_auth_response(
-                    upd.get("artifact_id", ""), st, cell_map[cid],
-                )
-                if auth_reject:
-                    warnings.append(f"REJECTED cell {cid}: {auth_reject}")
-                    rejected += 1
-                    continue
-                # Vulnerable cells must already have a finding_id — force Smith
-                # to call report(action='finding') first instead of auto-filing.
-                link_reject = _validate_finding_link(st, upd.get("finding_id", ""))
-                if link_reject:
-                    warnings.append(f"REJECTED cell {cid}: {link_reject}")
-                    rejected += 1
-                    continue
-                # Artifact-reuse block. Pre-apply the in-flight cell's artifact_id
-                # onto its matrix entry so updates later in THIS batch citing the
-                # same artifact see prior closures and get rejected accordingly.
-                from core.coverage.validation import _validate_artifact_reuse
-                reuse_reject = _validate_artifact_reuse(
-                    upd.get("artifact_id", ""), st, cell_map[cid], data["matrix"],
-                )
-                if reuse_reject:
-                    warnings.append(f"REJECTED cell {cid}: {reuse_reject}")
                     rejected += 1
                     continue
             _apply_bulk_cell(cell_map[cid], upd, warnings)
@@ -429,6 +466,52 @@ async def get_next_batch(count: int = 10, endpoint_id: str | None = None) -> dic
     return select_next_batch(data, count, endpoint_id)
 
 
+def _cell_matches_filters(
+    cell: dict,
+    ep: dict,
+    endpoint_path: str | None,
+    method: str | None,
+    status: str | None,
+    injection_type: str | None,
+    param_name: str | None,
+) -> bool:
+    """AND-combined filter predicate for list_cells.
+
+    Substring (case-insensitive) match on endpoint_path and param_name; exact
+    match on method, status, and injection_type. A falsy filter is ignored.
+    """
+    if endpoint_path and endpoint_path.lower() not in (ep.get("path") or "").lower():
+        return False
+    if method and method.upper() != (ep.get("method") or "").upper():
+        return False
+    if status and status != cell.get("status"):
+        return False
+    if injection_type and injection_type != cell.get("injection_type"):
+        return False
+    if param_name and param_name.lower() not in (cell.get("param") or "").lower():
+        return False
+    return True
+
+
+def _project_cell_with_endpoint(cell: dict, ep: dict) -> dict:
+    """Project a matrix cell joined with its endpoint context into the stable
+    read-back shape — same keys for every cell, null for fields that aren't set."""
+    return {
+        "cell_id":         cell.get("id"),
+        "endpoint_path":   ep.get("path"),
+        "method":          ep.get("method"),
+        "param_name":      cell.get("param"),
+        "param_type":      cell.get("param_type"),
+        "injection_type":  cell.get("injection_type"),
+        "status":          cell.get("status"),
+        "finding_id":      cell.get("finding_id"),
+        "tested_by":       cell.get("tested_by"),
+        "tested_at":       cell.get("tested_at"),
+        "auth_context":    ep.get("auth_context"),
+        "notes":           cell.get("notes"),
+    }
+
+
 async def list_cells(
     endpoint_path: str | None = None,
     method:        str | None = None,
@@ -463,42 +546,21 @@ async def list_cells(
     endpoints_by_id = {ep["id"]: ep for ep in data.get("endpoints", [])}
     all_cells = data.get("matrix", [])
 
-    def _matches(cell: dict) -> bool:
-        ep = endpoints_by_id.get(cell.get("endpoint_id"), {})
-        if endpoint_path and endpoint_path.lower() not in (ep.get("path") or "").lower():
-            return False
-        if method and method.upper() != (ep.get("method") or "").upper():
-            return False
-        if status and status != cell.get("status"):
-            return False
-        if injection_type and injection_type != cell.get("injection_type"):
-            return False
-        if param_name and param_name.lower() not in (cell.get("param") or "").lower():
-            return False
-        return True
-
-    matched = [c for c in all_cells if _matches(c)]
+    matched = [
+        c for c in all_cells
+        if _cell_matches_filters(
+            c, endpoints_by_id.get(c.get("endpoint_id"), {}),
+            endpoint_path, method, status, injection_type, param_name,
+        )
+    ]
 
     # Project each cell with its endpoint context so Smith doesn't have to
     # cross-reference two lists. Keep response shape stable: same keys for
     # every cell, null for fields that aren't set.
-    out = []
-    for cell in matched[:max(0, limit)]:
-        ep = endpoints_by_id.get(cell.get("endpoint_id"), {})
-        out.append({
-            "cell_id":         cell.get("id"),
-            "endpoint_path":   ep.get("path"),
-            "method":          ep.get("method"),
-            "param_name":      cell.get("param"),
-            "param_type":      cell.get("param_type"),
-            "injection_type":  cell.get("injection_type"),
-            "status":          cell.get("status"),
-            "finding_id":      cell.get("finding_id"),
-            "tested_by":       cell.get("tested_by"),
-            "tested_at":       cell.get("tested_at"),
-            "auth_context":    ep.get("auth_context"),
-            "notes":           cell.get("notes"),
-        })
+    out = [
+        _project_cell_with_endpoint(cell, endpoints_by_id.get(cell.get("endpoint_id"), {}))
+        for cell in matched[:max(0, limit)]
+    ]
 
     return {"cells": out, "total": len(all_cells), "filtered": len(matched)}
 

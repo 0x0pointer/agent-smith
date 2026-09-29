@@ -6,13 +6,6 @@ import json
 from typing import Any
 
 from ._common import log, scan_session
-
-
-def _read_json_file(path):
-    """Blocking read + parse of a JSON file. Call via ``asyncio.to_thread`` from async
-    code so the event loop isn't blocked on disk I/O (S7493)."""
-    with open(path) as fh:
-        return json.load(fh)
 from .coverage_extra import (
     _autofile_crosscutting_findings,
     _do_coverage_auto_crosscutting,
@@ -194,6 +187,55 @@ def _prior_base_domain(host: str) -> str:
     return ".".join(parts[-2:]) if len(parts) >= 2 else host
 
 
+def _load_prior_store(path: str):
+    """Read+parse a resume.json store; None on any read/parse error (fail-soft)."""
+    try:
+        with open(path) as fh:
+            return json.load(fh)
+    except Exception:
+        return None
+
+
+def _read_json_file(path):
+    """Blocking read+parse of a JSON file that RAISES on error. Call via
+    asyncio.to_thread from async code so the event loop isn't blocked (S7493)."""
+    with open(path) as fh:
+        return json.load(fh)
+
+
+def _store_domain_matches(r: dict, cbd: str) -> bool:
+    """True when the target's base domain `cbd` matches the store's target base
+    domain or any of its known_assets.domains base domains."""
+    if not cbd:
+        return False
+    if cbd == _prior_base_domain(r.get("target", "")):
+        return True
+    sdoms = {_prior_base_domain(d) for d in (r.get("known_assets", {}).get("domains") or [])}
+    return cbd in sdoms
+
+
+def _store_ip_matches(r: dict, target: str) -> bool:
+    """True when `target` is an IP listed in the store's known_assets.ips."""
+    return target.strip() in set(r.get("known_assets", {}).get("ips") or [])
+
+
+def _score_prior_store(r: dict, target: str, ct: str, cbd: str) -> int:
+    """Score one resume.json store `r` against `target`. exact target=100; substring
+    either way=80; shared base-domain=70; target IP in known_assets.ips=70; else 0.
+    `ct`/`cbd` are the pre-normalized target and its base domain."""
+    st = _prior_norm(r.get("target", ""))
+    if ct and st:
+        if ct == st:
+            return 100
+        if ct in st or st in ct:
+            return 80
+    if _store_domain_matches(r, cbd):
+        return 70
+    if _store_ip_matches(r, target):
+        return 70
+    return 0
+
+
 def _find_prior_stores(target: str) -> list:
     """Scan engagements/*/resume.json and score each against `target`. Returns
     candidates sorted by score desc. Scoring: exact target=100; substring either
@@ -206,92 +248,57 @@ def _find_prior_stores(target: str) -> list:
     cbd = _prior_base_domain(target)
     cands = []
     for rp in sorted(glob.glob("engagements/*/resume.json")):
-        try:
-            r = _read_json_file(rp)
-        except Exception:
+        r = _load_prior_store(rp)
+        if r is None:
             continue
-        st = _prior_norm(r.get("target", ""))
-        score = 0
-        if ct and st:
-            if ct == st:
-                score = 100
-            elif ct in st or st in ct:
-                score = 80
-        if not score and cbd:
-            sdoms = {_prior_base_domain(d) for d in (r.get("known_assets", {}).get("domains") or [])}
-            if cbd == _prior_base_domain(r.get("target", "")) or cbd in sdoms:
-                score = 70
-        if not score and target.strip() in set(r.get("known_assets", {}).get("ips") or []):
-            score = 70
-        if score:
-            cands.append({
-                "name": os.path.basename(os.path.dirname(rp)),
-                "path": os.path.dirname(rp),
-                "store_target": r.get("target", ""),
-                "score": score,
-                "stats": r.get("stats", {}),
-            })
+        score = _score_prior_store(r, target, ct, cbd)
+        if not score:
+            continue
+        cands.append({
+            "name": os.path.basename(os.path.dirname(rp)),
+            "path": os.path.dirname(rp),
+            "store_target": r.get("target", ""),
+            "score": score,
+            "stats": r.get("stats", {}),
+        })
     return sorted(cands, key=lambda c: c["score"], reverse=True)
 
 
-async def _do_coverage_import_prior(data, cov: Any) -> str:
-    """Phase 1 of the prior-engagement store: ingest a durable engagements/<name>/
-    store (built by scripts/build_engagement_digest.py) into the LIVE scan so a
-    stopped scan can resume instead of restarting cold.
-
-    - merges the prior known_assets (creds/tokens/endpoints/tech/ports/domains)
-    - re-registers the prior endpoints (regenerating their cells)
-    - mode=resume (default): TRUST & SKIP — marks the prior tested_clean AND
-      vulnerable cells 'skipped' so the agent spends effort on pending cells only.
-      Only sound for an UNCHANGED target; resume.json carries the source timestamp.
-    - returns a compact prior-findings brief so the agent knows what's already
-      confirmed (and the dedup gate won't re-block it).
-
-    Fail-soft throughout: a malformed/partial store degrades to "assets merged,
-    nothing skipped" — it never raises into the scan.
-    """
-    import os
+def _resolve_import_prior_path(data) -> tuple:
+    """Resolve the prior-store path for import_prior. When `path` is empty or 'auto',
+    auto-select by the CURRENT scan target: use a store ONLY on a confident,
+    unambiguous match (best ≥80% and ≥20 ahead of the runner-up); otherwise never
+    guess. Returns (path, note_auto, err): on success err is None; when auto-select
+    can't pick one, path is '' and err is the operator-facing message to return."""
     path = (data.get("path") or "").strip()
-    mode = (data.get("mode") or "resume").strip().lower()
+    if path and path.lower() != "auto":
+        return path, "", None
 
-    # Auto-select the store by the CURRENT scan target when no explicit path is
-    # given. Safe rule: use a store ONLY on a confident, unambiguous match (best
-    # ≥80% and ≥20 ahead of the runner-up); otherwise LIST candidates and require
-    # an explicit path — never guess, because a wrong store skips untested cells.
-    if not path or path.lower() == "auto":
-        cur = scan_session.get() or {}
-        tgt = cur.get("target", "")
-        cands = _find_prior_stores(tgt)
-        if not cands:
-            return (f"import_prior(auto): no engagements/ store matches the current target "
-                    f"'{tgt}'. See `ls engagements/`, then pass path='engagements/<name>'.")
-        top = cands[0]
-        runner = cands[1]["score"] if len(cands) > 1 else 0
-        if top["score"] >= 80 and (top["score"] - runner) >= 20:
-            path = top["path"]
-            note_auto = f"auto-matched '{top['name']}' (target='{top['store_target']}', {top['score']}% match)"
-        else:
-            lines = [f"  • {c['name']}  target='{c['store_target']}'  match={c['score']}%  "
-                     f"({c['stats'].get('findings', 0)} findings, {c['stats'].get('pending', '?')} pending)  "
-                     f"→ path='{c['path']}'" for c in cands[:8]]
-            return ("import_prior(auto): the current target "
+    cur = scan_session.get() or {}
+    tgt = cur.get("target", "")
+    cands = _find_prior_stores(tgt)
+    if not cands:
+        return "", "", (
+            f"import_prior(auto): no engagements/ store matches the current target "
+            f"'{tgt}'. See `ls engagements/`, then pass path='engagements/<name>'.")
+    top = cands[0]
+    runner = cands[1]["score"] if len(cands) > 1 else 0
+    if top["score"] >= 80 and (top["score"] - runner) >= 20:
+        note_auto = f"auto-matched '{top['name']}' (target='{top['store_target']}', {top['score']}% match)"
+        return top["path"], note_auto, None
+
+    lines = [f"  • {c['name']}  target='{c['store_target']}'  match={c['score']}%  "
+             f"({c['stats'].get('findings', 0)} findings, {c['stats'].get('pending', '?')} pending)  "
+             f"→ path='{c['path']}'" for c in cands[:8]]
+    return "", "", ("import_prior(auto): the current target "
                     f"'{tgt}' matches {len(cands)} stores ambiguously — pass an explicit path=:\n"
                     + "\n".join(lines))
-    else:
-        note_auto = ""
 
-    resume_path = path if path.endswith(".json") else os.path.join(path, "resume.json")
-    if not os.path.exists(resume_path):
-        return (f"import_prior: no resume.json at {resume_path}. Build the store first: "
-                f"python3 scripts/build_engagement_digest.py --out {path}")
-    try:
-        prior = await asyncio.to_thread(_read_json_file, resume_path)
-    except Exception as e:
-        return f"import_prior: could not read {resume_path}: {e}"
 
-    notes: list[str] = []
-
-    # 1) merge known_assets (reuse the exact accessor the scan uses)
+def _merge_prior_assets(prior: dict, notes: list) -> int:
+    """Merge the prior store's known_assets into the live session (reusing the exact
+    accessor the scan uses). Returns the count of merged items; appends a note on
+    partial failure. Fail-soft."""
     merged = 0
     try:
         from core.session import assets as _sess_assets
@@ -301,9 +308,14 @@ async def _do_coverage_import_prior(data, cov: Any) -> str:
                 merged += len(items)
     except Exception as e:
         notes.append(f"asset merge partial ({e})")
+    return merged
 
-    # 2) re-register prior endpoints (old-id -> (path, method) map for cell matching)
-    old_ep = {}
+
+async def _reregister_prior_endpoints(prior: dict, cov: Any) -> tuple:
+    """Re-register the prior store's endpoints (regenerating their cells). Returns
+    (old_ep, registered): old_ep maps each prior endpoint id -> (path, method) for
+    later cell matching; registered counts the non-dedup registrations."""
+    old_ep: dict = {}
     registered = 0
     for ep in (prior.get("endpoints") or []):
         if not isinstance(ep, dict):
@@ -324,42 +336,64 @@ async def _do_coverage_import_prior(data, cov: Any) -> str:
                 registered += 1
         except Exception:
             continue
+    return old_ep, registered
 
-    # 3) trust & skip prior tested_clean + vulnerable cells (mode=resume)
-    skipped = 0
-    if mode == "resume":
-        try:
-            matrix = cov.get_matrix()
-            new_eps = {e["id"]: e for e in matrix.get("endpoints", [])}
-            # index NEW cells by (path, method, param, injection_type) -> cell_id
-            idx = {}
-            for c in matrix.get("matrix", []):
-                e = new_eps.get(c.get("endpoint_id"), {})
-                key = ((e.get("path") or "").strip(), (e.get("method") or "GET").upper(),
-                       c.get("param", ""), c.get("injection_type", ""))
-                idx[key] = c.get("id")
-            updates = []
-            src = prior.get("generated_from", {}).get("session_id", "prior scan")
-            for kind in ("tested_clean_cells", "vulnerable_cells"):
-                for pc in (prior.get(kind) or []):
-                    p, m = old_ep.get(pc.get("endpoint_id"), (None, None))
-                    if not p:
-                        continue
-                    cid = idx.get((p.strip(), m, pc.get("param", ""), pc.get("injection_type", "")))
-                    if cid:
-                        was = "vulnerable" if kind.startswith("vuln") else "tested_clean"
-                        updates.append({"cell_id": cid, "status": "skipped",
-                                        "notes": f"prior resume: {was} in {src}"})
-            if updates:
-                r = await cov.bulk_update(updates)
-                skipped = r.get("updated", len(updates)) if isinstance(r, dict) else len(updates)
-                await _emit_coverage_event()
-        except Exception as e:
-            notes.append(f"skip pass partial ({e})")
-    else:
+
+def _index_new_cells_by_key(matrix: dict) -> dict:
+    """Index the live matrix cells by (path, method, param, injection_type) -> cell_id."""
+    new_eps = {e["id"]: e for e in matrix.get("endpoints", [])}
+    idx = {}
+    for c in matrix.get("matrix", []):
+        e = new_eps.get(c.get("endpoint_id"), {})
+        key = ((e.get("path") or "").strip(), (e.get("method") or "GET").upper(),
+               c.get("param", ""), c.get("injection_type", ""))
+        idx[key] = c.get("id")
+    return idx
+
+
+def _build_prior_skip_updates(prior: dict, old_ep: dict, idx: dict) -> list:
+    """Build the 'skipped' bulk-update list for the prior tested_clean + vulnerable
+    cells that map onto a live cell (via old_ep -> (path, method) -> idx cell_id)."""
+    updates = []
+    src = prior.get("generated_from", {}).get("session_id", "prior scan")
+    for kind in ("tested_clean_cells", "vulnerable_cells"):
+        for pc in (prior.get(kind) or []):
+            p, m = old_ep.get(pc.get("endpoint_id"), (None, None))
+            if not p:
+                continue
+            cid = idx.get((p.strip(), m, pc.get("param", ""), pc.get("injection_type", "")))
+            if cid:
+                was = "vulnerable" if kind.startswith("vuln") else "tested_clean"
+                updates.append({"cell_id": cid, "status": "skipped",
+                                "notes": f"prior resume: {was} in {src}"})
+    return updates
+
+
+async def _trust_skip_prior_cells(prior: dict, cov: Any, old_ep: dict, mode: str, notes: list) -> int:
+    """mode=resume: TRUST & SKIP the prior tested_clean + vulnerable cells so effort
+    goes to pending cells only. Returns the count skipped; appends a note on partial
+    failure (or in mode=context, that nothing was skipped). Fail-soft."""
+    if mode != "resume":
         notes.append("mode=context — prior results loaded as context only, nothing skipped")
+        return 0
+    skipped = 0
+    try:
+        matrix = cov.get_matrix()
+        idx = _index_new_cells_by_key(matrix)
+        updates = _build_prior_skip_updates(prior, old_ep, idx)
+        if updates:
+            r = await cov.bulk_update(updates)
+            skipped = r.get("updated", len(updates)) if isinstance(r, dict) else len(updates)
+            await _emit_coverage_event()
+    except Exception as e:
+        notes.append(f"skip pass partial ({e})")
+    return skipped
 
-    # 4) prior-findings brief (so the agent knows what's already confirmed)
+
+def _format_import_prior_result(prior: dict, path: str, mode: str, note_auto: str,
+                                merged: int, registered: int, skipped: int, notes: list) -> str:
+    """Render the operator-facing import_prior summary + the prior-findings brief (so
+    the agent knows what's already confirmed and the dedup gate won't re-block it)."""
     findings = prior.get("findings") or []
     sev_rank = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
     findings = sorted(findings, key=lambda f: sev_rank.get(str(f.get("severity", "")).lower(), 5))
@@ -382,6 +416,46 @@ async def _do_coverage_import_prior(data, cov: Any) -> str:
         + "\n\nResume plan: work the PENDING cells (report(action='coverage', type='list', "
           "status='pending')); re-verify a skipped cell only if the app may have changed."
     )
+
+
+async def _do_coverage_import_prior(data, cov: Any) -> str:
+    """Phase 1 of the prior-engagement store: ingest a durable engagements/<name>/
+    store (built by scripts/build_engagement_digest.py) into the LIVE scan so a
+    stopped scan can resume instead of restarting cold.
+
+    - merges the prior known_assets (creds/tokens/endpoints/tech/ports/domains)
+    - re-registers the prior endpoints (regenerating their cells)
+    - mode=resume (default): TRUST & SKIP — marks the prior tested_clean AND
+      vulnerable cells 'skipped' so the agent spends effort on pending cells only.
+      Only sound for an UNCHANGED target; resume.json carries the source timestamp.
+    - returns a compact prior-findings brief so the agent knows what's already
+      confirmed (and the dedup gate won't re-block it).
+
+    Fail-soft throughout: a malformed/partial store degrades to "assets merged,
+    nothing skipped" — it never raises into the scan.
+    """
+    import os
+    mode = (data.get("mode") or "resume").strip().lower()
+
+    path, note_auto, err = _resolve_import_prior_path(data)
+    if err is not None:
+        return err
+
+    resume_path = path if path.endswith(".json") else os.path.join(path, "resume.json")
+    if not os.path.exists(resume_path):
+        return (f"import_prior: no resume.json at {resume_path}. Build the store first: "
+                f"python3 scripts/build_engagement_digest.py --out {path}")
+    try:
+        prior = await asyncio.to_thread(_read_json_file, resume_path)
+    except Exception as e:
+        return f"import_prior: could not read {resume_path}: {e}"
+
+    notes: list[str] = []
+    merged = _merge_prior_assets(prior, notes)
+    old_ep, registered = await _reregister_prior_endpoints(prior, cov)
+    skipped = await _trust_skip_prior_cells(prior, cov, old_ep, mode, notes)
+    return _format_import_prior_result(
+        prior, path, mode, note_auto, merged, registered, skipped, notes)
 
 
 async def _fire_oob_ssrf_probes(target, eps, ssrf_cells, base, mode) -> list:
@@ -513,13 +587,64 @@ def _sqlmap_auth_blocked(body: str) -> bool:
     ))
 
 
+async def _run_http_probe(probe: dict) -> tuple:
+    """Fire the http sweep probe, self-healing a 401/403 by retrying once with the
+    session's captured auth. Returns (status, body, content)."""
+    import json as _json
+    from mcp_server.http_tools import http_probe
+
+    base = probe.get("headers") or {}
+    resp = await http_probe(probe["url"], probe["method"], headers=base or None)
+    # Self-heal auth: a 401/403 means auth blocked the payload before it reached
+    # the code path under test — so RETRY once with the session's captured auth
+    # (Bearer token and/or session cookies from known_assets), testing the cell
+    # UNDER auth instead of recording a permanent auth-block. The sweep adds auth
+    # itself when it sees the gate, rather than leaving hundreds of cells stuck.
+    if resp.get("status") in (401, 403):
+        auth = _sweep_auth_headers()
+        if auth:
+            healed = await http_probe(probe["url"], probe["method"], headers={**base, **auth})
+            if healed.get("status") not in (401, 403):
+                resp = healed
+    status, body = resp.get("status", 0), resp.get("body", "")
+    content = _json.dumps(resp)[:20_000]
+    return status, body, content
+
+
+async def _run_kali_probe(probe: dict, c):
+    """Fire the kali (sqlmap) sweep probe, threading session auth into the command so
+    it tests UNDER auth. Returns (status, body, content) — or None when sqlmap's own
+    output shows it was auth-blocked (inconclusive, not clean)."""
+    from tools import kali_runner
+    import shlex as _shlex
+
+    cmd = probe["cmd"]
+    # Thread session auth into sqlmap so it tests UNDER auth. Otherwise it hits
+    # 401/403, reports "not injectable", and the sweep records a FALSE
+    # tested_clean — the kali branch sets status=0, which bypasses the 401/403
+    # rejection guard that protects the http branch. Mirrors the http self-heal.
+    auth = _sweep_auth_headers()
+    if auth.get("Authorization"):
+        cmd += f" --header={_shlex.quote('Authorization: ' + auth['Authorization'])}"
+    if auth.get("Cookie"):
+        cmd += f" --cookie={_shlex.quote(auth['Cookie'])}"
+    # Bound the sub-probe: one sqlmap cell must not burn the default 600s and
+    # stall the whole sweep (the model then hand-calls sweep in a loop).
+    body = await kali_runner.exec_command(cmd, timeout=90)
+    status, content = 0, body[:20_000]
+    # Never let an auth-blocked sqlmap run masquerade as tested_clean: if the
+    # output shows it never got past auth, it's inconclusive, not clean.
+    if _sqlmap_auth_blocked(body):
+        log.note(f"sweep: sqlmap on cell {c['id']} appears auth-blocked — inconclusive, not clean")
+        return None
+    return status, body, content
+
+
 async def _run_sweep_probe(c, ep, target):
     """Build + run the probe for one cell, store the artifact, evaluate it.
     Returns (artifact_id, verdict_dict) — or None when the probe couldn't run
     (no probe built / execution error), which the caller counts as inconclusive."""
-    import json as _json
     from core.coverage import sweep as _sweep
-    from mcp_server.http_tools import http_probe
     from mcp_server.scan_engine import planner as _planner
     from mcp_server.scan_engine.envelope import store_artifact
 
@@ -530,46 +655,15 @@ async def _run_sweep_probe(c, ep, target):
         return None
     try:
         if probe["kind"] == "http":
-            base = probe.get("headers") or {}
-            resp = await http_probe(probe["url"], probe["method"], headers=base or None)
-            # Self-heal auth: a 401/403 means auth blocked the payload before it reached
-            # the code path under test — so RETRY once with the session's captured auth
-            # (Bearer token and/or session cookies from known_assets), testing the cell
-            # UNDER auth instead of recording a permanent auth-block. The sweep adds auth
-            # itself when it sees the gate, rather than leaving hundreds of cells stuck.
-            if resp.get("status") in (401, 403):
-                auth = _sweep_auth_headers()
-                if auth:
-                    healed = await http_probe(probe["url"], probe["method"], headers={**base, **auth})
-                    if healed.get("status") not in (401, 403):
-                        resp = healed
-            status, body = resp.get("status", 0), resp.get("body", "")
-            content = _json.dumps(resp)[:20_000]
+            outcome = await _run_http_probe(probe)
         else:  # kali — sqlmap runs its own oracle
-            from tools import kali_runner
-            import shlex as _shlex
-            cmd = probe["cmd"]
-            # Thread session auth into sqlmap so it tests UNDER auth. Otherwise it hits
-            # 401/403, reports "not injectable", and the sweep records a FALSE
-            # tested_clean — the kali branch sets status=0, which bypasses the 401/403
-            # rejection guard that protects the http branch. Mirrors the http self-heal.
-            auth = _sweep_auth_headers()
-            if auth.get("Authorization"):
-                cmd += f" --header={_shlex.quote('Authorization: ' + auth['Authorization'])}"
-            if auth.get("Cookie"):
-                cmd += f" --cookie={_shlex.quote(auth['Cookie'])}"
-            # Bound the sub-probe: one sqlmap cell must not burn the default 600s and
-            # stall the whole sweep (the model then hand-calls sweep in a loop).
-            body = await kali_runner.exec_command(cmd, timeout=90)
-            status, content = 0, body[:20_000]
-            # Never let an auth-blocked sqlmap run masquerade as tested_clean: if the
-            # output shows it never got past auth, it's inconclusive, not clean.
-            if _sqlmap_auth_blocked(body):
-                log.note(f"sweep: sqlmap on cell {c['id']} appears auth-blocked — inconclusive, not clean")
-                return None
+            outcome = await _run_kali_probe(probe, c)
     except Exception as exc:  # fail-soft — one dead probe never aborts the sweep
         log.note(f"sweep probe error on cell {c['id']}: {exc}")
         return None
+    if outcome is None:  # kali sqlmap auth-blocked → inconclusive, not clean
+        return None
+    status, body, content = outcome
 
     artifact_id = store_artifact("sweep", content)
     v = _sweep.evaluate_probe(c["injection_type"], probe.get("payload", ""), status, body)
