@@ -229,7 +229,7 @@ async def test_garak_handler_builds_rest_config_invocation(monkeypatch):
     import tools.garak_runner as gr
     import mcp_server.scan_engine as se
     cap = {}
-    async def fake_run(rest_config, probes, flags="", timeout=900, on_progress=None):
+    async def fake_run(rest_config, probes, flags="", timeout=900, on_progress=None, on_status=None):
         cap["config"] = rest_config
         cap["probes"] = probes
         return "raw"
@@ -253,7 +253,7 @@ async def test_garak_handler_strips_stray_probes_prefix(monkeypatch):
     import tools.garak_runner as gr
     import mcp_server.scan_engine as se
     cap = {}
-    async def fake_run(rest_config, probes, flags="", timeout=900, on_progress=None):
+    async def fake_run(rest_config, probes, flags="", timeout=900, on_progress=None, on_status=None):
         cap["probes"] = probes
         return "raw"
     monkeypatch.setattr(gr, "run_garak", fake_run)

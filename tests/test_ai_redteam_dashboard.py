@@ -231,4 +231,13 @@ def test_overview_surfaces_garak_and_subtab_badges():
     tab = open("dashboard/tabs/ai-redteam.html").read()
     assert 'id="air-garak-lite"' in tab
     shell = client.get("/").text
-    assert "ai-redteam.js?v=24" in shell
+    assert "ai-redteam.js?v=25" in shell
+
+
+def test_record_garak_status(store):
+    store.record_garak_status({"running": True, "probe": "dan.DanInTheWild", "attempts": 42})
+    gs = store.get()["garak_status"]
+    assert gs["running"] is True and gs["probe"] == "dan.DanInTheWild" and gs["attempts"] == 42
+    assert gs["ts"]
+    store.record_garak_status({"running": False})
+    assert store.get()["garak_status"]["running"] is False

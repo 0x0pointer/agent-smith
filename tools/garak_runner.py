@@ -45,6 +45,8 @@ _PROGRESS_SECS = max(3, int(os.environ.get("SMITH_GARAK_PROGRESS_SECS", "15")))
 
 _EVAL_RE = re.compile(r'"entry_type":\s*"eval"')
 _EXIT_RE = re.compile(r"=== GARAK EXIT (\d+) ===")
+_ATTEMPT_RE = re.compile(r'"entry_type":\s*"attempt"')
+_PROBE_RE = re.compile(r'"probe_classname":\s*"([^"]+)"')
 
 
 def _garak_exit_code(text: str):
@@ -236,7 +238,14 @@ def _read_new_evals(path: str, state: dict) -> str:
         state["carry"] = data
         return ""
     complete, state["carry"] = data[:nl], data[nl + 1:]
-    new = [ln for ln in complete.decode("utf-8", "replace").split("\n") if _EVAL_RE.search(ln)]
+    lines = complete.decode("utf-8", "replace").split("\n")
+    for ln in lines:                              # track live progress from attempt lines,
+        m = _PROBE_RE.search(ln)                  # so the card can show "running probe X" even
+        if m:                                     # BETWEEN probe completions (no new evals)
+            state["probe"] = m.group(1)
+        if _ATTEMPT_RE.search(ln):
+            state["attempts"] = state.get("attempts", 0) + 1
+    new = [ln for ln in lines if _EVAL_RE.search(ln)]
     if not new:
         return ""
     state["evals"].extend(new)
@@ -277,23 +286,33 @@ async def _kill_container(name: str) -> None:
         pass
 
 
-async def _stream_progress(workdir: str, on_progress, interval: int) -> None:
+async def _stream_progress(workdir: str, on_progress, interval: int, on_status=None) -> None:
     """Push newly-appended eval rows to `on_progress` every `interval`s so the AI
     Red Team dashboard fills in probe-by-probe instead of only when the run ends.
+
+    Also fires `on_status` EVERY tick (a heartbeat) with the current probe and
+    generations-so-far, so the card can show "⟳ running probe X" between probe
+    completions instead of looking frozen.
 
     The file read/parse runs in a worker THREAD (asyncio.to_thread) and is
     INCREMENTAL (only the delta since last tick), so a large, actively-written
     report can never block the event loop — which is what previously delayed
     run_garak's own timeout and left runs un-reaped. Cancelled when the run exits."""
     path = str(Path(workdir) / "run.report.jsonl")
-    state = {"pos": 0, "carry": b"", "evals": []}
+    state = {"pos": 0, "carry": b"", "evals": [], "probe": "", "attempts": 0}
     try:
         while True:
             await asyncio.sleep(interval)
             block = await asyncio.to_thread(_read_new_evals, path, state)
-            if block:
+            if block and on_progress:
                 try:
                     on_progress(block)
+                except Exception:
+                    pass
+            if on_status:                          # heartbeat even between probe completions
+                try:
+                    on_status({"probe": state["probe"], "attempts": state["attempts"],
+                               "scored": len(state["evals"])})
                 except Exception:
                     pass
     except asyncio.CancelledError:
@@ -301,7 +320,7 @@ async def _stream_progress(workdir: str, on_progress, interval: int) -> None:
 
 
 async def run_garak(rest_config: dict, probes: str, flags: str = "", timeout: int = 900,
-                    on_progress=None) -> str:
+                    on_progress=None, on_status=None) -> str:
     """Run garak REST-generator probes ephemerally.
 
     Writes `rest_config` into a per-call /work mount, runs the selected probes, and
@@ -341,8 +360,9 @@ async def run_garak(rest_config: dict, probes: str, flags: str = "", timeout: in
         proc = await asyncio.create_subprocess_exec(
             *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
-        if on_progress:
-            progress_task = asyncio.create_task(_stream_progress(workdir, on_progress, _PROGRESS_SECS))
+        if on_progress or on_status:
+            progress_task = asyncio.create_task(
+                _stream_progress(workdir, on_progress, _PROGRESS_SECS, on_status))
         try:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except asyncio.TimeoutError:

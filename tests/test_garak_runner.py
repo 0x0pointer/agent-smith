@@ -385,3 +385,17 @@ async def test_run_garak_clean_exit_no_stderr_note(monkeypatch):
 
     out = await gr.run_garak({"rest": {}}, "dan", timeout=30)
     assert "exited abnormally" not in out     # rc=0 → clean, no crash note
+
+
+def test_read_new_evals_tracks_probe_and_attempts(tmp_path):
+    # the live-progress heartbeat needs the current probe + generations, parsed from
+    # attempt lines even when no new eval has landed yet.
+    p = tmp_path / "run.report.jsonl"
+    p.write_text(
+        '{"entry_type": "attempt", "probe_classname": "dan.DanInTheWild"}\n'
+        '{"entry_type": "attempt", "probe_classname": "dan.DanInTheWild"}\n',
+        encoding="utf-8")
+    state = {"pos": 0, "carry": b"", "evals": [], "probe": "", "attempts": 0}
+    assert gr._read_new_evals(str(p), state) == ""     # no eval yet
+    assert state["probe"] == "dan.DanInTheWild"        # ...but probe + attempts tracked
+    assert state["attempts"] == 2

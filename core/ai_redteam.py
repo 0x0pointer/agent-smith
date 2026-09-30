@@ -38,7 +38,17 @@ def _load() -> dict:
 
 
 def _empty() -> dict:
-    return {"garak": [], "filter": None, "calibration": None, "attacks": [], "updated_at": None}
+    return {"garak": [], "filter": None, "calibration": None, "attacks": [],
+            "garak_status": None, "updated_at": None}
+
+
+def record_garak_status(status: dict) -> None:
+    """Live garak run status for the dashboard card (running flag + current probe +
+    generations so far), so a long probe doesn't look frozen between results."""
+    with _LOCK:
+        doc = get()
+        doc["garak_status"] = {**(status or {}), "ts": _now()}
+        _save(doc)
 
 
 def _save(doc: dict) -> None:
