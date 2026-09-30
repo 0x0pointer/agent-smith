@@ -44,6 +44,23 @@ _PARALLEL = max(1, int(os.environ.get("SMITH_GARAK_PARALLEL", "8")))
 _PROGRESS_SECS = max(3, int(os.environ.get("SMITH_GARAK_PROGRESS_SECS", "15")))
 
 _EVAL_RE = re.compile(r'"entry_type":\s*"eval"')
+_EXIT_RE = re.compile(r"=== GARAK EXIT (\d+) ===")
+
+
+def _garak_exit_code(text: str):
+    """garak's own exit code from the '=== GARAK EXIT N ===' marker (last one wins),
+    or None if absent. Non-zero means garak crashed / stopped early."""
+    m = None
+    for m in _EXIT_RE.finditer(text or ""):
+        pass
+    return int(m.group(1)) if m else None
+
+
+def _report_eval_count(text: str) -> int:
+    """How many eval lines the report produced (to say how far garak got)."""
+    idx = (text or "").find("=== GARAK REPORT JSONL ===")
+    section = text[idx:] if idx != -1 else (text or "")
+    return sum(1 for ln in section.splitlines() if _EVAL_RE.search(ln))
 
 # AI keys garak's generators/scorers may use. "SRC:DST" forwards SRC's value
 # under the name DST (same convention as _app._run / kali_runner._forward_ai_keys):
@@ -120,19 +137,40 @@ async def ensure_image() -> tuple[bool, str]:
 
 
 _PROBE_LIST_CACHE: dict = {}   # per-process cache of `garak --list_probes` raw output
+# `garak --list_probes` loads every probe module (torch import) so it can be slow on
+# a cold run — give it room, else it times out empty and validation falls back to
+# passthrough (letting an unknown probe abort the actual run).
+_LIST_PROBES_TIMEOUT = int(os.environ.get("SMITH_GARAK_LIST_TIMEOUT", "240"))
+
+
+def _probe_list_file() -> Path:
+    """Disk cache for the probe list, under the persistent model cache — survives
+    restarts so the FIRST garak run after a restart isn't cold."""
+    return Path(_cache_dir()) / "probe_list.txt"
 
 
 async def list_probes() -> str:
-    """Raw `garak --list_probes` output from the image, for probe-name validation
-    (garak 0.15 ABORTS the whole run on any unknown probe). Cached per process;
-    returns '' if the image is unavailable or the call fails (caller then skips
-    validation and runs as-is)."""
-    if "raw" in _PROBE_LIST_CACHE:
+    """Raw `garak --list_probes` output for probe-name validation (garak 0.15 ABORTS
+    the whole run on any unknown probe). Cached in-process AND on disk, so it survives
+    restarts and the first run after one isn't cold.
+
+    An EMPTY/failed result is NEVER cached — a cold miss is retried next call rather
+    than poisoning validation for the whole process (the old bug: one 120s timeout at
+    startup cached '' forever, so every run passed unknown probes straight through)."""
+    if _PROBE_LIST_CACHE.get("raw"):
         return _PROBE_LIST_CACHE["raw"]
+    pf = _probe_list_file()
+    try:
+        if pf.exists():
+            cached = pf.read_text(encoding="utf-8", errors="replace")
+            if cached.strip():
+                _PROBE_LIST_CACHE["raw"] = cached
+                return cached
+    except Exception:
+        pass
     ok, _ = await ensure_image()
     if not ok:
-        _PROBE_LIST_CACHE["raw"] = ""
-        return ""
+        return ""                              # not cached — retry when the image is back
     raw = ""
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -141,11 +179,16 @@ async def list_probes() -> str:
             "sh", "-c", "garak --list_probes",
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
         )
-        out, _ = await asyncio.wait_for(proc.communicate(), timeout=120)
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=_LIST_PROBES_TIMEOUT)
         raw = out.decode(errors="replace")
     except Exception:
         raw = ""
-    _PROBE_LIST_CACHE["raw"] = raw
+    if raw.strip():                            # only cache a REAL list; persist it too
+        _PROBE_LIST_CACHE["raw"] = raw
+        try:
+            pf.write_text(raw, encoding="utf-8")
+        except Exception:
+            pass
     return raw
 
 
@@ -202,22 +245,23 @@ def _read_new_evals(path: str, state: dict) -> str:
 
 def _build_garak_cmd(probes: str, flags: str) -> str:
     """The in-container `sh -c` string: run the probes, then append the report block."""
-    cmd = (f"garak --target_type rest -G /work/garak_rest.json "
-           f"--probes {shlex.quote(probes)} --report_prefix /work/run")
+    garak = (f"garak --target_type rest -G /work/garak_rest.json "
+             f"--probes {shlex.quote(probes)} --report_prefix /work/run")
     if _PARALLEL > 1:                       # REST parallelism → thorough set fits the timeout
-        cmd += f" --parallel_attempts {_PARALLEL}"
+        garak += f" --parallel_attempts {_PARALLEL}"
     if flags:
-        cmd += f" {shlex.join(shlex.split(flags))}"
-    # Extract EVERY eval entry with grep (regardless of report size) then a short
-    # tail for human context. A plain `tail -n N` silently DROPS the eval lines on
-    # large runs — the many attempt lines push the (few) eval lines out of the tail
-    # window, which then reads as "0 eval entries / model resisted".
-    cmd += (
+        garak += f" {shlex.join(shlex.split(flags))}"
+    # Capture garak's OWN exit code right away — the trailing report commands always
+    # succeed, so the container's exit code (proc.returncode) would otherwise hide a
+    # garak crash. Then extract EVERY eval entry with grep (a plain `tail` drops them
+    # on large runs), a short tail for context, and finally echo the exit marker.
+    return (
+        f"{garak}; _rc=$?"
         "; echo '=== GARAK REPORT JSONL ==='"
         "; grep -E '\"entry_type\": ?\"eval\"' /work/run.report.jsonl 2>/dev/null"
         "; tail -n 20 /work/run.report.jsonl 2>/dev/null"
+        '; echo "=== GARAK EXIT $_rc ==="'
     )
-    return cmd
 
 
 async def _kill_container(name: str) -> None:
@@ -310,7 +354,16 @@ async def run_garak(rest_config: dict, probes: str, flags: str = "", timeout: in
                 pass
             note = f"[garak timed out after {timeout}s — partial results below]"
             return await asyncio.to_thread(_report_block, workdir, note)
-        return stdout.decode(errors="replace") or stderr.decode(errors="replace")
+        out = stdout.decode(errors="replace")
+        err = stderr.decode(errors="replace")
+        rc = _garak_exit_code(out)
+        if rc:      # garak crashed / exited early — surface WHY (its stderr) instead of hiding it
+            tail = (err.strip() or out.strip())[-1500:]
+            log.note(f"garak: exited abnormally (code {rc}) after {_report_eval_count(out)} eval(s) "
+                     f"— stderr tail: {tail[:200]}")
+            out += (f"\n[garak exited abnormally (code {rc}) — the run stopped early; "
+                    f"stderr tail below]\n{tail}")
+        return out or err
     finally:
         if progress_task:
             progress_task.cancel()
