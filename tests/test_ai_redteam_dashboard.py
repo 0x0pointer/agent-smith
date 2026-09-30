@@ -223,3 +223,12 @@ def test_registered_mcp_tools_unreadable_log_is_failsoft(store, tmp_path, monkey
     monkeypatch.setattr(store._paths, "LOGS_DIR", tmp_path)
     (tmp_path / "tools_registered.log").mkdir()   # exists() True but read_text() raises
     assert store._registered_mcp_tools() == set()
+
+
+def test_overview_surfaces_garak_and_subtab_badges():
+    """UX: the Overview surfaces top garak results (air-garak-lite) so output isn't
+    hidden behind a sub-tab, and the ai-redteam.js cache version is bumped."""
+    tab = open("dashboard/tabs/ai-redteam.html").read()
+    assert 'id="air-garak-lite"' in tab
+    shell = client.get("/").text
+    assert "ai-redteam.js?v=24" in shell
