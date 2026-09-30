@@ -137,3 +137,72 @@ def test_store_is_failsoft_on_io_errors(store, tmp_path):
     d = tmp_path / "adir"; d.mkdir()
     store._FILE = d
     assert store.get()["garak"] == []
+
+
+# ── MCP-tools readiness: survives a dashboard "Clear logs" (live registry) ────
+# NOTE: conftest shims @mcp.tool() to a no-op, so the live registry is empty under
+# pytest — tests mock _tool_manager.list_tools() to exercise the live-registry path
+# the real server hits.
+_REQUIRED_MCP = {"scan", "transform", "redteam", "http", "report", "session"}
+
+
+class _FakeTool:
+    def __init__(self, name):
+        self.name = name
+
+
+def _mock_live_tools(monkeypatch, names):
+    import mcp_server._app as _app
+    monkeypatch.setattr(_app.mcp._tool_manager, "list_tools",
+                        lambda: [_FakeTool(n) for n in names])
+
+
+def test_registered_mcp_tools_from_live_registry(store, monkeypatch):
+    """Reads the live FastMCP registry — the source that makes the check immune to
+    a cleared logs/ dir."""
+    _mock_live_tools(monkeypatch, _REQUIRED_MCP)
+    assert _REQUIRED_MCP <= store._registered_mcp_tools()
+
+
+def test_toolchain_mcp_ok_without_startup_log(store, tmp_path, monkeypatch):
+    """Simulate the dashboard "Clear logs": tools_registered.log absent. With the
+    live registry populated the check still reports MCP tools ready and does NOT
+    block the toolchain — the regression this fix closes."""
+    _mock_live_tools(monkeypatch, _REQUIRED_MCP)
+    monkeypatch.setattr(store._paths, "LOGS_DIR", tmp_path)
+    assert not (tmp_path / "tools_registered.log").exists()
+    store._HEALTH_CACHE.update(ts=0, data=None)
+    s = store.toolchain_status()
+    mcp = next(c for c in s["components"] if c["name"] == "MCP tools")
+    assert mcp["ok"] is True
+    assert "6/6" in mcp["detail"]
+
+
+def test_registered_mcp_tools_falls_back_to_startup_log(store, tmp_path, monkeypatch):
+    """When the live registry yields nothing, fall back to logs/tools_registered.log."""
+    _mock_live_tools(monkeypatch, [])
+    monkeypatch.setattr(store._paths, "LOGS_DIR", tmp_path)
+    (tmp_path / "tools_registered.log").write_text(
+        "REGISTERED: scan\nREGISTERED: report\nTOTAL: 2\n", encoding="utf-8")
+    assert store._registered_mcp_tools() == {"scan", "report"}
+
+
+def test_registered_mcp_tools_live_error_falls_back(store, tmp_path, monkeypatch):
+    """Live-registry read raises → caught → falls back to the startup log."""
+    import mcp_server._app as _app
+
+    def _boom():
+        raise RuntimeError("registry unavailable")
+
+    monkeypatch.setattr(_app.mcp._tool_manager, "list_tools", _boom)
+    monkeypatch.setattr(store._paths, "LOGS_DIR", tmp_path)
+    (tmp_path / "tools_registered.log").write_text("REGISTERED: session\n", encoding="utf-8")
+    assert store._registered_mcp_tools() == {"session"}
+
+
+def test_registered_mcp_tools_unreadable_log_is_failsoft(store, tmp_path, monkeypatch):
+    """Live registry empty AND the log path unreadable → returns empty, never raises."""
+    _mock_live_tools(monkeypatch, [])
+    monkeypatch.setattr(store._paths, "LOGS_DIR", tmp_path)
+    (tmp_path / "tools_registered.log").mkdir()   # exists() True but read_text() raises
+    assert store._registered_mcp_tools() == set()
