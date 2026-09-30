@@ -94,15 +94,31 @@ def _parse_garak_evals(raw: str) -> list[dict]:
 
 
 def record_garak_from_raw(raw: str, target: str = "") -> None:
+    """Record garak eval rows, UPSERTING on (target, probe, detector).
+
+    Upsert (not append) so live streaming — which calls this repeatedly with a
+    growing partial report during one run — refines each probe/detector row in
+    place instead of piling up duplicates, and so a re-run on the same target
+    overwrites its old numbers rather than doubling them."""
     evals = _parse_garak_evals(raw or "")
     if not evals:
         return
+    now = _now()
     with _LOCK:
         doc = get()
+        rows = doc["garak"]
+        index = {(r.get("target"), r.get("probe"), r.get("detector")): i
+                 for i, r in enumerate(rows)}
         for e in evals:
             e["target"] = target
-            e["ts"] = _now()
-        doc["garak"] = (doc["garak"] + evals)[-_MAX_GARAK:]
+            e["ts"] = now
+            key = (target, e.get("probe"), e.get("detector"))
+            if key in index:
+                rows[index[key]] = e            # refine in place
+            else:
+                index[key] = len(rows)
+                rows.append(e)
+        doc["garak"] = rows[-_MAX_GARAK:]
         _save(doc)
 
 

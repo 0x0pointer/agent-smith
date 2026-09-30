@@ -124,3 +124,120 @@ async def test_list_probes_failsoft_on_exec_error(monkeypatch):
     monkeypatch.setattr(asyncio, "create_subprocess_exec", _boom)
 
     assert await gr.list_probes() == ""
+
+
+# ── streaming + reaping + partial-on-timeout + parallelism ────────────────────
+
+_EVAL_LINE = ('{"entry_type": "eval", "probe": "dan.AntiDAN", "detector": "mitigation.MitigationBypass",'
+              ' "passed": 3, "total": 5}')
+
+
+def test_build_garak_cmd_parallel(monkeypatch):
+    monkeypatch.setattr(gr, "_PARALLEL", 8)
+    cmd = gr._build_garak_cmd("dan,encoding", "")
+    assert "--parallel_attempts 8" in cmd
+    assert "--probes dan,encoding" in cmd
+    assert "=== GARAK REPORT JSONL ===" in cmd
+    monkeypatch.setattr(gr, "_PARALLEL", 1)                 # 1 disables parallelism
+    assert "--parallel_attempts" not in gr._build_garak_cmd("dan", "")
+
+
+def test_report_block_reads_evals(tmp_path):
+    wd = tmp_path / "wd"
+    wd.mkdir()
+    (wd / "run.report.jsonl").write_text(
+        '{"entry_type": "attempt", "seq": 1}\n' + _EVAL_LINE + "\n", encoding="utf-8")
+    block = gr._report_block(str(wd), note="[partial]")
+    assert block.startswith("[partial]")
+    assert "=== GARAK REPORT JSONL ===" in block
+    assert '"entry_type": "eval"' in block            # the eval line survives
+    # missing file → still a well-formed (empty) block, never raises
+    assert "=== GARAK REPORT JSONL ===" in gr._report_block(str(tmp_path / "nope"))
+
+
+class _HangingProc:
+    """communicate() blocks until kill() is called (to drive the timeout path)."""
+    def __init__(self):
+        self._killed = False
+        self.returncode = None
+
+    def kill(self):
+        self._killed = True
+        self.returncode = -9
+
+    async def communicate(self):
+        while not self._killed:
+            await asyncio.sleep(0.02)
+        return (b"", b"")
+
+
+@pytest.mark.asyncio
+async def test_run_garak_timeout_reaps_and_returns_partial(monkeypatch, tmp_path):
+    async def _img_present():
+        return True
+    monkeypatch.setattr(gr, "image_exists", _img_present)
+    monkeypatch.setattr(gr, "_cache_dir", lambda: str(tmp_path / "cache"))
+
+    wd = tmp_path / "wd"
+    wd.mkdir()
+    (wd / "run.report.jsonl").write_text(_EVAL_LINE + "\n", encoding="utf-8")
+    monkeypatch.setattr(gr.tempfile, "mkdtemp", lambda **k: str(wd))
+
+    run_argv = {}
+    kills = []
+    hanging = _HangingProc()
+
+    async def _fake_exec(*argv, stdout=None, stderr=None):
+        if "kill" in argv:
+            kills.append(argv)
+            return _FakeProc(b"")
+        run_argv["argv"] = list(argv)
+        return hanging
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+
+    out = await gr.run_garak({"rest": {}}, "dan", timeout=0.2)
+
+    # named container so it can be reaped
+    assert "--name" in run_argv["argv"]
+    cname = run_argv["argv"][run_argv["argv"].index("--name") + 1]
+    assert cname.startswith("smith_garak_")
+    # the orphan was killed by name, and the PARTIAL report came back (not an exception)
+    assert kills and cname in kills[0]
+    assert "timed out after 0.2s" in out
+    assert '"entry_type": "eval"' in out
+
+
+class _SlowProc:
+    def __init__(self, out: bytes, delay: float):
+        self._out, self._delay, self.returncode = out, delay, 0
+
+    def kill(self):
+        pass
+
+    async def communicate(self):
+        await asyncio.sleep(self._delay)
+        return (self._out, b"")
+
+
+@pytest.mark.asyncio
+async def test_run_garak_streams_progress(monkeypatch, tmp_path):
+    async def _img_present():
+        return True
+    monkeypatch.setattr(gr, "image_exists", _img_present)
+    monkeypatch.setattr(gr, "_cache_dir", lambda: str(tmp_path / "cache"))
+    monkeypatch.setattr(gr, "_PROGRESS_SECS", 0.05)        # tick fast for the test
+
+    wd = tmp_path / "wd"
+    wd.mkdir()
+    (wd / "run.report.jsonl").write_text(_EVAL_LINE + "\n", encoding="utf-8")
+    monkeypatch.setattr(gr.tempfile, "mkdtemp", lambda **k: str(wd))
+
+    async def _fake_exec(*argv, stdout=None, stderr=None):
+        return _SlowProc(b"done\n=== GARAK REPORT JSONL ===\n" + _EVAL_LINE.encode() + b"\n", 0.25)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+
+    seen = []
+    await gr.run_garak({"rest": {}}, "dan", timeout=30, on_progress=lambda b: seen.append(b))
+
+    assert seen, "progress callback was never invoked during the run"
+    assert any("=== GARAK REPORT JSONL ===" in b and '"entry_type": "eval"' in b for b in seen)

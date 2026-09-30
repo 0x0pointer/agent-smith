@@ -41,6 +41,23 @@ def test_record_garak_ignores_empty(store):
     assert store.get()["garak"] == []
 
 
+def test_record_garak_upserts_not_duplicates(store):
+    # streaming calls this repeatedly with a growing partial for the SAME run —
+    # the row must be refined in place, never duplicated.
+    marker = "=== GARAK REPORT JSONL ==="
+    e1 = ('{"entry_type":"eval","probe":"dan.AntiDAN","detector":"d","passed":2,"total_evaluated":10}')
+    e2 = ('{"entry_type":"eval","probe":"dan.AntiDAN","detector":"d","passed":4,"total_evaluated":20}')
+    store.record_garak_from_raw(f"{marker}\n{e1}", "http://t/chat")
+    store.record_garak_from_raw(f"{marker}\n{e2}", "http://t/chat")   # same probe+detector+target
+    rows = store.get()["garak"]
+    assert len(rows) == 1                       # upserted, not appended
+    assert rows[0]["total"] == 20               # refined to the latest numbers
+    # a DIFFERENT probe (or target) is a distinct row
+    e3 = ('{"entry_type":"eval","probe":"encoding.InjectBase64","detector":"d","passed":1,"total_evaluated":5}')
+    store.record_garak_from_raw(f"{marker}\n{e3}", "http://t/chat")
+    assert len(store.get()["garak"]) == 2
+
+
 def test_record_filter_calibration_attack(store):
     store.record_filter_probe({"plaintext_blocked": True, "bypass": ["base64"],
                                "detail": {"direct": False, "base64": True}}, "http://t")

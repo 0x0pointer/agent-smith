@@ -22,9 +22,11 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shlex
 import shutil
 import tempfile
+import uuid
 from pathlib import Path
 
 from core import logger as log
@@ -35,6 +37,13 @@ GARAK_IMAGE = "pentest-agent/garak"
 _BUILD_CONTEXT = str(Path(__file__).resolve().parent / "garak")
 _BUILD_TIMEOUT = int(os.environ.get("SMITH_GARAK_BUILD_TIMEOUT", "1800"))  # torch build is slow
 _MEMORY = os.environ.get("SMITH_GARAK_MEMORY", "4g")   # ML detectors need > the generic 2g cap
+# garak's REST generator supports request parallelism; use it so a thorough probe
+# set finishes inside the tool timeout instead of overrunning it (1 disables).
+_PARALLEL = max(1, int(os.environ.get("SMITH_GARAK_PARALLEL", "8")))
+# How often (seconds) to push the growing report to the dashboard during a run.
+_PROGRESS_SECS = max(3, int(os.environ.get("SMITH_GARAK_PROGRESS_SECS", "15")))
+
+_EVAL_RE = re.compile(r'"entry_type":\s*"eval"')
 
 # AI keys garak's generators/scorers may use. "SRC:DST" forwards SRC's value
 # under the name DST (same convention as _app._run / kali_runner._forward_ai_keys):
@@ -140,13 +149,86 @@ async def list_probes() -> str:
     return raw
 
 
-async def run_garak(rest_config: dict, probes: str, flags: str = "", timeout: int = 900) -> str:
+def _report_block(workdir: str, note: str = "") -> str:
+    """Build the '=== GARAK REPORT JSONL ===' block from the HOST side of the /work
+    mount — every eval line plus a short tail — mirroring the in-container grep+tail.
+    So a PARTIAL (mid-run) or a TIMED-OUT report parses exactly like a completed run
+    through record_garak_from_raw / _autofile_garak_findings."""
+    try:
+        text = (Path(workdir) / "run.report.jsonl").read_text(errors="replace")
+    except Exception:
+        text = ""
+    lines = text.splitlines()
+    evals = [ln for ln in lines if _EVAL_RE.search(ln)]
+    parts = ([note] if note else []) + ["=== GARAK REPORT JSONL ==="] + evals + lines[-20:]
+    return "\n".join(parts)
+
+
+def _build_garak_cmd(probes: str, flags: str) -> str:
+    """The in-container `sh -c` string: run the probes, then append the report block."""
+    cmd = (f"garak --target_type rest -G /work/garak_rest.json "
+           f"--probes {shlex.quote(probes)} --report_prefix /work/run")
+    if _PARALLEL > 1:                       # REST parallelism → thorough set fits the timeout
+        cmd += f" --parallel_attempts {_PARALLEL}"
+    if flags:
+        cmd += f" {shlex.join(shlex.split(flags))}"
+    # Extract EVERY eval entry with grep (regardless of report size) then a short
+    # tail for human context. A plain `tail -n N` silently DROPS the eval lines on
+    # large runs — the many attempt lines push the (few) eval lines out of the tail
+    # window, which then reads as "0 eval entries / model resisted".
+    cmd += (
+        "; echo '=== GARAK REPORT JSONL ==='"
+        "; grep -E '\"entry_type\": ?\"eval\"' /work/run.report.jsonl 2>/dev/null"
+        "; tail -n 20 /work/run.report.jsonl 2>/dev/null"
+    )
+    return cmd
+
+
+async def _kill_container(name: str) -> None:
+    """Best-effort `docker kill` so a timed-out run doesn't orphan a container that
+    keeps probing the target and writing a report nobody reads (killing the local
+    `docker run` client alone does NOT stop the container the daemon started)."""
+    try:
+        p = await asyncio.create_subprocess_exec(
+            docker_executable(), "kill", name,
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+        await asyncio.wait_for(p.communicate(), timeout=15)
+    except Exception:
+        pass
+
+
+async def _stream_progress(workdir: str, on_progress, interval: int) -> None:
+    """Push the growing report block to `on_progress` every `interval`s so the AI
+    Red Team dashboard fills in probe-by-probe instead of only when the run ends.
+    Cancelled by run_garak once the process exits."""
+    last = ""
+    try:
+        while True:
+            await asyncio.sleep(interval)
+            block = _report_block(workdir)
+            if block != last:
+                last = block
+                try:
+                    on_progress(block)
+                except Exception:
+                    pass
+    except asyncio.CancelledError:
+        raise
+
+
+async def run_garak(rest_config: dict, probes: str, flags: str = "", timeout: int = 900,
+                    on_progress=None) -> str:
     """Run garak REST-generator probes ephemerally.
 
-    Writes `rest_config` into a per-call /work mount, runs the selected probes,
-    and tails the structured report.jsonl back after a marker (the AI summarizer
-    parses from that marker). Returns raw stdout; a build/availability failure is
-    returned as a bracketed message so the caller degrades gracefully.
+    Writes `rest_config` into a per-call /work mount, runs the selected probes, and
+    returns garak's stdout with the structured report appended after a marker (the
+    AI summarizer parses from that marker). A build/availability failure is returned
+    as a bracketed message so the caller degrades gracefully.
+
+    on_progress: optional callback(str) invoked every _PROGRESS_SECS with the current
+    report block, so the dashboard updates DURING the run, not only at the end. On
+    timeout the container is REAPED and the PARTIAL report is RETURNED (not raised),
+    so partial results still reach the model and the dashboard.
     """
     ok, msg = await ensure_image()
     if not ok:
@@ -154,49 +236,45 @@ async def run_garak(rest_config: dict, probes: str, flags: str = "", timeout: in
                 f"AI red-team can still proceed via the transform() payload tool + manual http().")
 
     workdir = tempfile.mkdtemp(prefix="smith_garak_")
+    cname = f"smith_garak_{uuid.uuid4().hex[:12]}"
+    progress_task = None
     try:
         (Path(workdir) / "garak_rest.json").write_text(json.dumps(rest_config), encoding="utf-8")
-        garak_cmd = (
-            f"garak --target_type rest -G /work/garak_rest.json "
-            f"--probes {shlex.quote(probes)} --report_prefix /work/run"
-        )
-        if flags:
-            garak_cmd += f" {shlex.join(shlex.split(flags))}"
-        # Read the report back. Extract EVERY eval entry with grep (regardless of
-        # report size) then a short tail for human context. A plain `tail -n N`
-        # silently DROPS the eval lines on large runs — the many attempt lines
-        # push the (few) eval lines out of the tail window, which then reads as
-        # "0 eval entries / model resisted" even when garak found hits.
-        garak_cmd += (
-            "; echo '=== GARAK REPORT JSONL ==='"
-            "; grep -E '\"entry_type\": ?\"eval\"' /work/run.report.jsonl 2>/dev/null"
-            "; tail -n 20 /work/run.report.jsonl 2>/dev/null"
-        )
-
         cmd = [
-            docker_executable(), "run", "--rm",
-            # Bridge network + host-gateway alias so a target on the host is
-            # reachable as host.docker.internal on BOTH macOS and Linux (the
-            # handler rewrites localhost/127.0.0.1 → host.docker.internal).
-            # --network=host does NOT reach host localhost on Docker Desktop
-            # (macOS), so we don't use it here.
+            docker_executable(), "run", "--rm", "--name", cname,
+            # host-gateway alias so a target on the host is reachable as
+            # host.docker.internal on macOS + Linux (handler rewrites localhost →
+            # host.docker.internal; --network=host can't reach host localhost on
+            # Docker Desktop, so we don't use it).
             "--add-host=host.docker.internal:host-gateway",
             "--cap-drop=ALL", "--security-opt=no-new-privileges", "--pids-limit=512",
             f"--memory={_MEMORY}", "--cpus=2",
             "-v", f"{os.path.abspath(workdir)}:/work",
             "-v", f"{_cache_dir()}:/root/.cache",
             *_ai_env_flags(),
-            GARAK_IMAGE, "sh", "-c", garak_cmd,
+            GARAK_IMAGE, "sh", "-c", _build_garak_cmd(probes, flags),
         ]
         proc = await asyncio.create_subprocess_exec(
             *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
+        if on_progress:
+            progress_task = asyncio.create_task(_stream_progress(workdir, on_progress, _PROGRESS_SECS))
         try:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except asyncio.TimeoutError:
+            await _kill_container(cname)          # reap the orphan before we give up on it
             proc.kill()
-            await proc.communicate()
-            raise
+            try:
+                await asyncio.wait_for(proc.communicate(), timeout=10)
+            except Exception:
+                pass
+            return _report_block(workdir, note=f"[garak timed out after {timeout}s — partial results below]")
         return stdout.decode(errors="replace") or stderr.decode(errors="replace")
     finally:
+        if progress_task:
+            progress_task.cancel()
+            try:
+                await progress_task
+            except BaseException:
+                pass
         shutil.rmtree(workdir, ignore_errors=True)

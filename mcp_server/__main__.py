@@ -322,6 +322,26 @@ except Exception:
 
 # ── SSE server fallback (for mcp versions that don't accept transport kwargs) ─
 
+def _warm_garak_probe_list() -> None:
+    """Populate garak's `--list_probes` cache in the background so the FIRST garak
+    run's probe-name validation isn't cold. A cold miss fails soft to passthrough,
+    which lets an unknown probe name abort the whole run (garak 0.15 aborts on any
+    unknown probe). No-op if the image isn't built yet, so it NEVER triggers a
+    multi-minute torch build at boot. Daemonized, best-effort."""
+    import threading
+
+    def _run():
+        try:
+            import asyncio as _aio
+            from tools import garak_runner
+            if _aio.run(garak_runner.image_exists()):
+                _aio.run(garak_runner.list_probes())
+        except Exception:
+            pass
+
+    threading.Thread(target=_run, name="garak-probe-warm", daemon=True).start()
+
+
 def _start_sse_server_direct(host: str, port: int) -> None:
     """SSE transport via SseServerTransport + starlette + uvicorn.
 
@@ -366,6 +386,7 @@ def _start_sse_server_direct(host: str, port: int) -> None:
         Route("/sse", endpoint=handle_sse),
         Mount("/messages/", app=sse_transport.handle_post_message),
     ])
+    _warm_garak_probe_list()   # background, image-guarded — warms probe validation for the first garak run
     uvicorn.run(starlette_app, host=host, port=port, log_level="error")
 
 
