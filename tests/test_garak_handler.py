@@ -67,10 +67,11 @@ def test_filter_probes_passthrough_when_list_unknown():
     assert h._filter_probes("dan,whatever", set(), set()) == ("dan,whatever", [])
 
 
-# ── _autodetect_response_field (aiohttp mocked) ───────────────────────────────
-class _FakeResp:
-    def __init__(self, payload):
-        self._payload = payload
+# ── REST-shape auto-detect: error-guided input key + reply field (aiohttp mocked) ─
+class _MockResp:
+    def __init__(self, status, text):
+        self.status = status
+        self._text = text
 
     async def __aenter__(self):
         return self
@@ -78,13 +79,14 @@ class _FakeResp:
     async def __aexit__(self, *a):
         return False
 
-    async def json(self, content_type=None):
-        return self._payload
+    async def text(self):
+        return self._text
 
 
-class _FakeSession:
-    def __init__(self, payload):
-        self._payload = payload
+class _MockSession:
+    """aiohttp session mock driven by `handler(json_body) -> (status, text)`."""
+    def __init__(self, handler):
+        self._handler = handler
 
     async def __aenter__(self):
         return self
@@ -92,31 +94,60 @@ class _FakeSession:
     async def __aexit__(self, *a):
         return False
 
-    def post(self, *a, **k):
-        return _FakeResp(self._payload)
+    def post(self, url, json=None, headers=None, timeout=None):
+        return _MockResp(*self._handler(json or {}))
+
+
+def _user_input_target(body):
+    # mimics the real endpoint: needs `user_input`, replies {"response": "..."}
+    if body.get("user_input"):
+        return 200, '{"response": "Hello!"}'
+    return 400, '{"error": "user_input is required"}'
+
+
+@pytest.mark.parametrize("text,expect", [
+    ('{"error":"user_input is required"}', ["user_input"]),
+    ("missing field: prompt", ["prompt"]),
+    ("required parameter 'q'", ["q"]),
+    ("all good", []),
+])
+def test_fields_from_error(text, expect):
+    assert h._fields_from_error(text) == expect
 
 
 @pytest.mark.asyncio
-async def test_autodetect_response_field_success(monkeypatch):
+async def test_autodetect_rest_shape_learns_from_error(monkeypatch):
+    import aiohttp
+    monkeypatch.setattr(aiohttp, "ClientSession", lambda *a, **k: _MockSession(_user_input_target))
+    body_key, field, diag = await h._autodetect_rest_shape("http://t/chat", {})
+    assert body_key == "user_input"
+    assert field == "$.response"
+    assert diag == ""
+
+
+@pytest.mark.asyncio
+async def test_autodetect_rest_shape_miss_carries_diagnostic(monkeypatch):
     import aiohttp
     monkeypatch.setattr(aiohttp, "ClientSession",
-                        lambda *a, **k: _FakeSession({"reply": "hello there"}))
-    got = await h._autodetect_response_field("http://target/chat", {"body_key": "message"})
-    assert got == "$.reply"
+                        lambda *a, **k: _MockSession(lambda b: (400, '{"error":"nope"}')))
+    body_key, field, diag = await h._autodetect_rest_shape("http://t/chat", {})
+    assert body_key == ""
+    assert field == ""
+    assert "nope" in diag
 
 
 @pytest.mark.asyncio
-async def test_autodetect_response_field_failsoft(monkeypatch):
+async def test_autodetect_rest_shape_failsoft(monkeypatch):
     import aiohttp
 
     def _boom(*a, **k):
         raise RuntimeError("network down")
 
     monkeypatch.setattr(aiohttp, "ClientSession", _boom)
-    assert await h._autodetect_response_field("http://target/chat", {}) == ""
+    assert await h._autodetect_rest_shape("http://t/chat", {}) == ("", "", "")
 
 
-# ── _validated_probes / _resolved_response_field (the handler wiring) ─────────
+# ── _validated_probes / _resolved_rest_options (the handler wiring) ─────────
 @pytest.mark.asyncio
 async def test_validated_probes_drops_unknowns(monkeypatch):
     import tools.garak_runner as gr
@@ -148,30 +179,56 @@ async def test_validated_probes_failsoft(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_resolved_response_field_explicit_wins():
-    opts = {"response_field": "$.answer"}
-    assert await h._resolved_response_field("http://t/chat", opts) == opts
+async def test_resolved_rest_options_pins_both(monkeypatch):
+    async def _shape(t, o):
+        return ("user_input", "$.response", "")
+    monkeypatch.setattr(h, "_autodetect_rest_shape", _shape)
+    out = await h._resolved_rest_options("http://t/chat", {})
+    assert out["body_key"] == "user_input"
+    assert out["response_field"] == "$.response"
 
 
 @pytest.mark.asyncio
-async def test_resolved_response_field_autodetects(monkeypatch):
-    async def _detect(target, options):
-        return "$.reply"
-    monkeypatch.setattr(h, "_autodetect_response_field", _detect)
-    out = await h._resolved_response_field("http://t/chat", {"body_key": "message"})
-    assert out["response_field"] == "$.reply"
+async def test_resolved_rest_options_explicit_wins(monkeypatch):
+    called = []
+
+    async def _shape(t, o):
+        called.append(1)
+        return ("x", "y", "")
+    monkeypatch.setattr(h, "_autodetect_rest_shape", _shape)
+    opts = {"body_key": "m", "response_field": "$.r"}
+    assert await h._resolved_rest_options("http://t/chat", opts) == opts
+    assert called == []                       # both already pinned → no probing
 
 
 @pytest.mark.asyncio
-async def test_resolved_response_field_miss_unchanged(monkeypatch):
-    async def _detect(target, options):
-        return ""
-    monkeypatch.setattr(h, "_autodetect_response_field", _detect)
-    opts = {"body_key": "message"}
-    assert await h._resolved_response_field("http://t/chat", opts) == opts
+async def test_resolved_rest_options_miss_leaves_unset(monkeypatch):
+    async def _shape(t, o):
+        return ("", "", "user_input is required")
+    monkeypatch.setattr(h, "_autodetect_rest_shape", _shape)
+    out = await h._resolved_rest_options("http://t/chat", {})
+    assert "body_key" not in out
+    assert "response_field" not in out
 
 
 def test_parse_known_probes_skips_probes_label():
     # a stray 'probes.<Class>' token is the label, not a module — skipped
     classes, modules = h._parse_known_probes("noise probes.Skip real.Class")
     assert "real" in modules and "probes" not in modules
+
+
+@pytest.mark.asyncio
+async def test_autodetect_rest_shape_reaches_target_but_no_reply_field(monkeypatch):
+    import aiohttp
+
+    def _handler(body):
+        # error names 'user_input'; it returns 2xx but an unrecognised reply shape
+        if body.get("user_input"):
+            return 200, '{"weird": "no known reply key"}'
+        return 400, '{"error": "user_input is required"}'
+
+    monkeypatch.setattr(aiohttp, "ClientSession", lambda *a, **k: _MockSession(_handler))
+    body_key, field, diag = await h._autodetect_rest_shape("http://t/chat", {})
+    assert body_key == "user_input"           # reached the target
+    assert field == ""                         # but couldn't locate the reply field
+    assert "reached the target" in diag
