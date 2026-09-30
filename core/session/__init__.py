@@ -204,6 +204,7 @@ from .gates import (  # noqa: E402
     satisfy_gate,
     set_skill,
     set_step,
+    skill_deep_requirement_hint,
     skill_worked,
     trigger_gate,
 )
