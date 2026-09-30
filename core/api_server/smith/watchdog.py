@@ -101,9 +101,9 @@ def _per_scan_cap_blocks(now: float) -> bool:
     _smith._watchdog_last_respawn_progress = _cur_progress
     if _smith._watchdog_scan_restarts < _api._WATCHDOG_MAX_PER_SCAN:
         return False
-    _log.warning("watchdog suppressed: per-scan respawn cap %d reached for scan %s — "
+    _log.warning("watchdog suppressed: per-scan respawn cap %d reached for scan %.8s — "
                  "auto-respawn stopped, awaiting operator",
-                 _api._WATCHDOG_MAX_PER_SCAN, sid[:8])
+                 _api._WATCHDOG_MAX_PER_SCAN, sid)
     _smith._watchdog_notify(
         "Smith auto-respawn cap reached for this scan",
         f"The watchdog has auto-restarted Smith {_smith._watchdog_scan_restarts} times for this "
