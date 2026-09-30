@@ -5,6 +5,14 @@ import pytest
 import mcp_server.scan_tools.handlers_ai as h
 
 
+@pytest.fixture(autouse=True)
+def _isolate_coverage(tmp_path, monkeypatch):
+    """Point the coverage matrix at an empty tmp path so autodetect tests don't
+    read the machine's live scan matrix (which could seed real /chat keys)."""
+    import core.coverage as cov
+    monkeypatch.setattr(cov, "COVERAGE_FILE", tmp_path / "coverage_matrix.json")
+
+
 # ── reply-field detection ─────────────────────────────────────────────────────
 @pytest.mark.parametrize("data,expect", [
     ({"response": "hi"}, "$.response"),
@@ -232,3 +240,64 @@ async def test_autodetect_rest_shape_reaches_target_but_no_reply_field(monkeypat
     assert body_key == "user_input"           # reached the target
     assert field == ""                         # but couldn't locate the reply field
     assert "reached the target" in diag
+
+
+# ── Layer 2: seed candidate keys from what the model registered in coverage ───
+
+def test_ordered_candidates_dedups_and_orders():
+    assert h._ordered_candidates(["a"], ["b", "a"], [], ["c", None, "b"]) == ["a", "b", "c"]
+    assert h._ordered_candidates(None, [""], ["x"]) == ["x"]
+
+
+@pytest.mark.parametrize("params,expect", [
+    # only the prompt-ish param, not temperature/stream/_endpoint
+    ([{"name": "temperature", "type": "body", "value_hint": "float"},
+      {"name": "prompt_text_v2", "type": "body", "value_hint": "string"},
+      {"name": "_endpoint", "type": "endpoint"}], ["prompt_text_v2"]),
+    ([{"name": "q7", "type": "body"}], ["q7"]),          # a sole opaque key IS the input
+    ([{"name": "a"}, {"name": "b"}], []),               # neither texty and >1 param
+    ([], []),
+    ([{"name": "note", "type": "body", "value_hint": "the user message"}], ["note"]),  # hint texty
+])
+def test_texty_param_names(params, expect):
+    assert h._texty_param_names(params) == expect
+
+
+def test_keys_from_coverage_matches_path(monkeypatch):
+    import core.coverage as cov
+    fake = {"endpoints": [
+        {"path": "http://t/chat", "method": "POST",
+         "params": [{"name": "prompt_text_v2", "type": "body", "value_hint": "string"}]},
+        {"path": "/other", "method": "POST",
+         "params": [{"name": "message", "type": "body"}]},
+    ]}
+    monkeypatch.setattr(cov, "_load", lambda: fake)
+    assert h._keys_from_coverage("http://t/chat") == ["prompt_text_v2"]
+    assert h._keys_from_coverage("http://t/other") == ["message"]
+
+
+def test_keys_from_coverage_failsoft(monkeypatch):
+    import core.coverage as cov
+
+    def _boom():
+        raise RuntimeError("no matrix")
+    monkeypatch.setattr(cov, "_load", _boom)
+    assert h._keys_from_coverage("http://t/chat") == []
+
+
+@pytest.mark.asyncio
+async def test_autodetect_uses_coverage_recorded_key(monkeypatch):
+    """A CUSTOM input key not in _INPUT_KEYS and not named by the error is still
+    found because the model recorded it in the coverage matrix during recon."""
+    import aiohttp
+
+    def _handler(body):
+        if body.get("prompt_text_v2"):
+            return 200, '{"response": "Hello!"}'
+        return 400, '{"error": "bad request"}'   # opaque — names no field
+
+    monkeypatch.setattr(aiohttp, "ClientSession", lambda *a, **k: _MockSession(_handler))
+    monkeypatch.setattr(h, "_keys_from_coverage", lambda t: ["prompt_text_v2"])
+    body_key, field, diag = await h._autodetect_rest_shape("http://t/chat", {})
+    assert body_key == "prompt_text_v2"
+    assert field == "$.response"

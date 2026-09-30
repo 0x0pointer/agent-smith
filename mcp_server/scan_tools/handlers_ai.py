@@ -239,6 +239,10 @@ def _pick_reply_field(data) -> str:
 _INPUT_KEYS = ("message", "user_input", "prompt", "input", "query", "text",
                "content", "question", "q", "msg", "user_message", "chat", "utterance")
 
+# A param name/hint that looks like a free-text chat/prompt input (Layer-2 ranking).
+_TEXTY_RE = re.compile(
+    r"prompt|message|msg|text|input|query|question|chat|content|utterance|user", re.I)
+
 # Field name an API blames in a 4xx, e.g. {"error":"user_input is required"} or
 # "missing field: prompt". Two capture groups (before/after the keyword).
 _REQUIRED_FIELD_RE = re.compile(
@@ -260,21 +264,107 @@ def _fields_from_error(text: str) -> list:
     return out
 
 
+def _texty_param_names(params: list) -> list:
+    """Recorded param names that look like a free-text prompt input, plus the sole
+    param of the endpoint (an opaque single key IS the input on a chat API)."""
+    params = [p for p in params if isinstance(p, dict)]
+    sole = params[0].get("name") if len(params) == 1 else None
+    out: list = []
+    for p in params:
+        name = (p.get("name") or "").strip()
+        if not name or name.startswith("_") or name in out:
+            continue
+        texty = _TEXTY_RE.search(name) or _TEXTY_RE.search(p.get("value_hint") or "")
+        if texty or name == sole:
+            out.append(name)
+    return out
+
+
+def _keys_from_coverage(target: str) -> list:
+    """Input-key candidates from the endpoints the model ALREADY registered in the
+    coverage matrix during recon — reuse what agent-smith knows instead of guessing.
+
+    When the model flagged this endpoint as AI it registered its request shape
+    (`params=[{name, type, value_hint}]`); the prompt/text param's name is the
+    garak `body_key`. Returns those recorded names, most-likely first. This is what
+    reaches an endpoint whose input key is CUSTOM (e.g. `prompt_text_v2`) — a name
+    neither the curated `_INPUT_KEYS` list nor an unparseable error would ever
+    surface, but which the model wrote down during recon. Fail-soft: [] on error."""
+    try:
+        from urllib.parse import urlparse
+        import core.coverage as _cov
+        tpath = _cov._normalize_path(urlparse(target).path or "/")
+        out: list = []
+        for ep in _cov._load().get("endpoints", []):
+            raw = ep.get("path") or ""
+            if _cov._normalize_path(urlparse(raw).path or raw) == tpath:
+                for name in _texty_param_names(ep.get("params") or []):
+                    if name not in out:
+                        out.append(name)
+        return out
+    except Exception:
+        return []
+
+
+def _ordered_candidates(*groups) -> list:
+    """Flatten candidate-key groups in priority order, dropping blanks and dupes."""
+    out: list = []
+    for group in groups:
+        for k in group or []:
+            if k and k not in out:
+                out.append(k)
+    return out
+
+
+async def _empty_body_hint(session, post) -> tuple:
+    """POST an empty body so the API names its own required field. Returns
+    (derived_field_names, last_error_text). Fail-soft."""
+    try:
+        status, txt, _ = await post(session, {})
+        if status >= 400:
+            return _fields_from_error(txt), txt[:200]
+    except Exception:
+        pass
+    return [], ""
+
+
+async def _probe_candidates(session, post, candidates: list, last_err: str) -> tuple:
+    """Try each candidate input key; the first that returns 2xx with a parseable
+    reply field wins. Returns (body_key, response_field, diagnostic)."""
+    best_key, reached_diag = "", ""
+    for key in candidates:
+        try:
+            status, txt, data = await post(session, {key: "Hello — reply with a short sentence."})
+        except Exception:
+            continue
+        if status >= 400:
+            if not best_key:
+                last_err = txt[:200] or last_err
+            continue
+        field = _pick_reply_field(data)
+        if field:
+            return key, field, ""
+        if not best_key:                        # reached the target but reply field unclear
+            best_key = key
+            reached_diag = f"body_key={key} reached the target but no reply field in: {txt[:120]}"
+    return best_key, "", (reached_diag or last_err)
+
+
 async def _autodetect_rest_shape(target: str, options: dict):
     """Discover the request input key AND the reply field by probing the endpoint,
     so a garak REST run reaches a non-standard chat API and can parse its output.
 
-    Dynamic-first: POST an empty body and read the API's OWN error (e.g.
-    {"error":"user_input is required"}) to learn the field name; confirm with a real
-    probe and detect the response field. Falls back to a curated key list. Returns
-    (body_key, response_field, diagnostic); `diagnostic` is a short hint (the target's
-    own error) when nothing worked. Fail-soft — never raises into the scan."""
+    Layered, most-authoritative first: (1) the operator's configured `body_key`,
+    (2) the field the API's OWN error names for an empty body, (3) the params the
+    model recorded for this endpoint during recon (`_keys_from_coverage` — reuse
+    what agent-smith already knows), (4) a curated common-key list. Each candidate
+    is confirmed with a real probe that also detects the response field. Returns
+    (body_key, response_field, diagnostic); `diagnostic` is a short hint (the
+    target's own error) when nothing worked. Fail-soft — never raises into the scan."""
     import aiohttp
     from tools.kali_runner import _host_rewrite
     url = _host_rewrite(target)
     headers = _ai_headers(options)
-    configured = options.get("body_key")
-    last_err = ""
 
     async def _post(session, body):
         async with session.post(url, json=body, headers=headers,
@@ -287,38 +377,13 @@ async def _autodetect_rest_shape(target: str, options: dict):
 
     try:
         async with aiohttp.ClientSession() as s:
-            derived: list = []
-            try:                                    # 1) empty body → let the API name its field
-                status0, txt0, _ = await _post(s, {})
-                if status0 >= 400:
-                    derived = _fields_from_error(txt0)
-                    last_err = txt0[:200]
-            except Exception:
-                pass
-            candidates: list = []                   # 2) configured → error-derived → common
-            for k in ([configured] if configured else []) + derived + list(_INPUT_KEYS):
-                if k and k not in candidates:
-                    candidates.append(k)
-            best_key, reached_diag = "", ""
-            for key in candidates:                  # 3) first 2xx with a parseable reply wins
-                try:
-                    status, txt, data = await _post(s, {key: "Hello — reply with a short sentence."})
-                except Exception:
-                    continue
-                if status >= 400:
-                    if not best_key:
-                        last_err = txt[:200] or last_err
-                    continue
-                field = _pick_reply_field(data)
-                if field:
-                    return key, field, ""
-                if not best_key:                    # reached the target but reply field unclear
-                    best_key = key
-                    reached_diag = f"body_key={key} reached the target but no reply field in: {txt[:120]}"
-            return best_key, "", (reached_diag or last_err)
+            derived, last_err = await _empty_body_hint(s, _post)
+            candidates = _ordered_candidates(
+                [options.get("body_key")], derived,
+                _keys_from_coverage(target), _INPUT_KEYS)
+            return await _probe_candidates(s, _post, candidates, last_err)
     except Exception:
-        pass
-    return "", "", last_err
+        return "", "", ""
 
 
 async def _validated_probes(qualified: str) -> str:
