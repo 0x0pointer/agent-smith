@@ -3,6 +3,7 @@ Claude Code content-safety refusal in the driving transcript, notifies the opera
 and queues a NON-BLOCKING skip directive — without ever spawning a process. Negative
 controls: ordinary prose is not a refusal, a recovered scan is not wedged, and a dev
 conversation that merely quotes the policy is not mistaken for the scan driver."""
+import asyncio
 import json
 
 import pytest
@@ -245,3 +246,122 @@ async def test_tick_idle_when_no_scan(tmp_path, monkeypatch):
     await rf._refusal_monitor_tick(now=1e12)
     assert not called                            # no transcript scan when idle
     assert smith._refusal_consecutive == 0       # streak cleared
+
+
+# ── edge / fail-soft paths ────────────────────────────────────────────────────
+
+def test_int_env_bad_value_falls_back(monkeypatch):
+    monkeypatch.setenv("SMITH_REFUSAL_TEST_INT", "not-a-number")
+    assert rf._int_env("SMITH_REFUSAL_TEST_INT", 45) == 45
+    monkeypatch.setenv("SMITH_REFUSAL_TEST_INT", "12")
+    assert rf._int_env("SMITH_REFUSAL_TEST_INT", 45) == 12
+
+
+def test_project_transcript_dir_shape():
+    d = rf._project_transcript_dir()
+    assert ".claude" in str(d) and "projects" in str(d)
+
+
+def test_read_tail_events_edge_cases(tmp_path):
+    assert rf._read_tail_events(tmp_path / "missing.jsonl") == []          # OSError -> []
+    p = tmp_path / "mixed.jsonl"
+    p.write_text("\n{bad json\n" + json.dumps(_assistant("ok")) + "\n")    # blank + bad + good
+    assert len(rf._read_tail_events(p)) == 1                               # only the good line
+    big = tmp_path / "big.jsonl"
+    _write(big, [_assistant(f"line {i}") for i in range(50)])              # many short lines
+    tail = rf._read_tail_events(big, max_bytes=200)                        # seek-to-tail path
+    assert tail and tail[-1]["message"]["content"][0]["text"] == "line 49"  # got the true tail
+
+
+def test_terminal_assistant_text_no_assistant_returns_empty():
+    assert rf._terminal_assistant_text([_user("hi")]) == ""
+    assert rf._terminal_assistant_text([]) == ""
+
+
+def test_tail_has_pentest_tooluse_ignores_nonlist_content():
+    assert not rf._tail_has_pentest_tooluse([_assistant_str("plain string content")])
+
+
+def test_evaluate_empty_transcript_returns_none(tmp_path):
+    p = tmp_path / "empty.jsonl"
+    p.write_text("")
+    assert rf._evaluate_transcript(p, require_scan_relevance=False) is None
+
+
+def test_recorded_smith_sid_returns_and_failsoft(monkeypatch):
+    v = rf._recorded_smith_sid()
+    assert v is None or isinstance(v, str)
+    import core.session as cs
+    monkeypatch.setattr(cs, "get_smith_session_id", lambda: (_ for _ in ()).throw(RuntimeError()))
+    assert rf._recorded_smith_sid() is None
+
+
+def test_find_wedged_empty_dir_returns_none(tmp_path, monkeypatch):
+    monkeypatch.setattr(rf, "_project_transcript_dir", lambda: tmp_path)
+    monkeypatch.setattr(rf, "_recorded_smith_sid", lambda: None)
+    (tmp_path / "notes.txt").write_text("x")   # dir exists but no scan transcripts
+    assert rf._find_wedged_transcript(now=1e12) is None
+
+
+def test_newest_scan_transcript_skips_out_of_window(tmp_path):
+    import os
+    import time
+    p = tmp_path / "old.jsonl"
+    _write(p, [_pentest_call(), _assistant("x")])
+    os.utime(p, (time.time() - 99999, time.time() - 99999))
+    assert rf._newest_scan_transcript(tmp_path, now=time.time()) is None
+
+
+def test_active_skill_variants():
+    assert rf._active_skill({"skill": "web-exploit"}) == "web-exploit"
+    assert rf._active_skill({"skill": "unknown", "skill_history": [{"skill": "osint"}]}) == "osint"
+    assert rf._active_skill({}) == ""
+    assert rf._active_skill({"skill": "unknown"}) == ""
+
+
+def test_enqueue_skip_directive_swallows_errors(monkeypatch):
+    import core.steering as cs
+    monkeypatch.setattr(cs.steering_queue, "add_directive",
+                        lambda **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    rf._enqueue_skip_directive("s")   # must not raise
+
+
+def test_notify_refusal_headless_branch(monkeypatch):
+    captured = []
+    monkeypatch.setattr(smith, "_watchdog_notify",
+                        lambda title, body, code: captured.append((body, code)))
+    rf._notify_refusal("", interactive=False)      # no-skill + headless branch
+    assert captured and captured[0][1] == "POLICY_REFUSAL" and "watchdog will respawn" in captured[0][0]
+
+
+def test_escalate_hir_skips_when_already_paused(monkeypatch):
+    import core.session.intervention as iv
+    called = []
+    monkeypatch.setattr(iv, "get_intervention", lambda: {"code": "X"})
+    monkeypatch.setattr(iv, "trigger_intervention", lambda **k: called.append(k))
+    rf._escalate_refusal_hir("s")
+    assert not called                              # already paused -> did not stack
+
+
+def test_escalate_hir_swallows_errors(monkeypatch):
+    import core.session.intervention as iv
+    monkeypatch.setattr(iv, "get_intervention", lambda: None)
+    monkeypatch.setattr(iv, "trigger_intervention",
+                        lambda **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    rf._escalate_refusal_hir("s")                  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_loop_ticks_swallows_errors_and_reraises_cancel(monkeypatch):
+    monkeypatch.setattr(rf, "_REFUSAL_POLL_SECONDS", 0)
+    seq = [RuntimeError("boom"), asyncio.CancelledError()]
+    calls = []
+
+    async def fake_tick(now):
+        calls.append(now)
+        raise seq.pop(0)
+
+    monkeypatch.setattr(rf, "_refusal_monitor_tick", fake_tick)
+    with pytest.raises(asyncio.CancelledError):
+        await rf._refusal_monitor_loop()
+    assert len(calls) == 2   # 1st (RuntimeError) swallowed, 2nd (CancelledError) re-raised
