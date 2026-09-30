@@ -164,8 +164,32 @@ def _docker_image_exists(image: str) -> bool:
 
 
 def _registered_mcp_tools() -> set:
-    """Tools the running MCP daemon registered (logs/tools_registered.log, written
-    at daemon startup)."""
+    """Tools the running MCP server exposes.
+
+    Reads the LIVE in-memory FastMCP registry first — the readiness check runs
+    inside the server process, so `@mcp.tool()` registrations are already present,
+    and this is IMMUNE to a dashboard "Clear logs" that deletes
+    logs/tools_registered.log (that file is written once at startup and never
+    rewritten, so a mid-run clear would otherwise fail this check and block the
+    whole AI red-team assessment). Falls back to the startup audit log only if the
+    live read fails."""
+    # 1) live registry (authoritative, survives a cleared logs/ dir)
+    try:
+        from mcp_server._app import mcp
+        # Ensure the dispatch modules are imported so their @mcp.tool() decorators
+        # have run in this process (idempotent if already loaded).
+        for _m in ("scan_tools", "http_tools", "report_tools", "session_tools",
+                   "transform_tools", "redteam_tools"):
+            try:
+                __import__(f"mcp_server.{_m}")
+            except Exception:
+                pass
+        names = {t.name for t in mcp._tool_manager.list_tools()}
+        if names:
+            return names
+    except Exception:
+        pass
+    # 2) fallback: the startup audit log (absent after a logs clear)
     try:
         p = _paths.LOGS_DIR / "tools_registered.log"
         txt = p.read_text() if p.exists() else ""
@@ -210,7 +234,7 @@ def toolchain_status() -> dict:
     mcp_ok = len(have) == len(_MCP_REQUIRED)
     comps.append({"name": "MCP tools", "ok": mcp_ok,
                   "detail": (f"{len(have)}/{len(_MCP_REQUIRED)} registered: {', '.join(have)}" if tools
-                             else "no MCP daemon startup log found — is the server running?")})
+                             else "no MCP tools registered — the pentest-agent server isn't loaded")})
 
     # garak "not built" is non-blocking (auto-builds), so it doesn't fail readiness.
     blocking = [c for c in comps if c["name"] != "garak image"]
