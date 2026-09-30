@@ -6,13 +6,29 @@ import pytest
 import tools.garak_runner as gr
 
 
+@pytest.fixture(autouse=True)
+def _isolate_garak_cache(tmp_path, monkeypatch):
+    """Point the probe-list disk cache at an empty tmp dir and clear the in-process
+    cache, so tests never read/write the real ~/.cache/garak/probe_list.txt."""
+    d = tmp_path / "gcache"
+    d.mkdir()
+    monkeypatch.setattr(gr, "_cache_dir", lambda: str(d))
+    gr._PROBE_LIST_CACHE.clear()
+    yield
+    gr._PROBE_LIST_CACHE.clear()
+
+
 class _FakeProc:
-    def __init__(self, out: bytes):
+    def __init__(self, out: bytes, err: bytes = b"", returncode: int = 0):
         self._out = out
-        self.returncode = 0
+        self._err = err
+        self.returncode = returncode
+
+    def kill(self):
+        pass
 
     async def communicate(self):
-        return (self._out, b"")
+        return (self._out, self._err)
 
 
 @pytest.mark.asyncio
@@ -271,3 +287,101 @@ def test_read_new_evals_handles_partial_line(tmp_path):
 def test_read_new_evals_missing_file(tmp_path):
     state = {"pos": 0, "carry": b"", "evals": []}
     assert gr._read_new_evals(str(tmp_path / "nope.jsonl"), state) == ""
+
+
+# ── #1: probe-list disk cache + never-cache-empty (fixes the cold-start abort) ─
+
+@pytest.mark.asyncio
+async def test_list_probes_reads_disk_cache(monkeypatch):
+    # a persisted probe list is used WITHOUT running docker (survives restart)
+    gr._probe_list_file().write_text("probes: dan.AntiDAN\n", encoding="utf-8")
+    called = []
+
+    async def _img():
+        return True
+    monkeypatch.setattr(gr, "image_exists", _img)
+
+    async def _exec(*a, **k):
+        called.append(1)
+        return _FakeProc(b"SHOULD-NOT-RUN")
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _exec)
+
+    out = await gr.list_probes()
+    assert "dan.AntiDAN" in out
+    assert called == []                       # disk-cache hit — no docker run
+
+
+@pytest.mark.asyncio
+async def test_list_probes_does_not_cache_empty(monkeypatch):
+    # a cold miss (empty output) must NOT be cached — the old bug cached '' forever,
+    # so every run then passed unknown probes straight through and garak aborted.
+    async def _img():
+        return True
+    monkeypatch.setattr(gr, "image_exists", _img)
+
+    calls = []
+
+    async def _exec(*a, **k):
+        calls.append(1)
+        return _FakeProc(b"")                 # empty
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _exec)
+
+    assert await gr.list_probes() == ""
+    assert await gr.list_probes() == ""       # retried, not poisoned
+    assert len(calls) == 2
+    assert not gr._probe_list_file().exists()  # empty result never persisted
+
+
+# ── #3: capture garak's own exit so an early crash is visible ─────────────────
+
+def test_garak_exit_code():
+    assert gr._garak_exit_code("foo\n=== GARAK EXIT 0 ===\n") == 0
+    assert gr._garak_exit_code("=== GARAK EXIT 137 ===") == 137
+    assert gr._garak_exit_code("no marker here") is None
+    assert gr._garak_exit_code("=== GARAK EXIT 1 ===\n=== GARAK EXIT 2 ===") == 2   # last wins
+
+
+def test_build_garak_cmd_captures_exit():
+    cmd = gr._build_garak_cmd("dan", "")
+    assert "_rc=$?" in cmd
+    assert "GARAK EXIT" in cmd
+
+
+def test_report_eval_count():
+    txt = ('=== GARAK REPORT JSONL ===\n'
+           '{"entry_type": "eval", "probe": "p"}\n'
+           '{"entry_type": "attempt"}\n'
+           '{"entry_type": "eval", "probe": "q"}\n')
+    assert gr._report_eval_count(txt) == 2
+
+
+@pytest.mark.asyncio
+async def test_run_garak_surfaces_stderr_on_abnormal_exit(monkeypatch):
+    async def _img():
+        return True
+    monkeypatch.setattr(gr, "image_exists", _img)
+
+    async def _exec(*a, **k):
+        return _FakeProc(
+            b"=== GARAK REPORT JSONL ===\n=== GARAK EXIT 1 ===\n",
+            b"Traceback (most recent call last): BOOM in probe encoding",
+            returncode=1)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _exec)
+
+    out = await gr.run_garak({"rest": {}}, "dan", timeout=30)
+    assert "exited abnormally (code 1)" in out
+    assert "BOOM in probe encoding" in out
+
+
+@pytest.mark.asyncio
+async def test_run_garak_clean_exit_no_stderr_note(monkeypatch):
+    async def _img():
+        return True
+    monkeypatch.setattr(gr, "image_exists", _img)
+
+    async def _exec(*a, **k):
+        return _FakeProc(b"=== GARAK REPORT JSONL ===\n{}\n=== GARAK EXIT 0 ===\n", b"noise")
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _exec)
+
+    out = await gr.run_garak({"rest": {}}, "dan", timeout=30)
+    assert "exited abnormally" not in out     # rc=0 → clean, no crash note
