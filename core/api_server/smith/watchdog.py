@@ -72,12 +72,87 @@ def _respawn_hourly_cap_blocks(now: float) -> bool:
     return True
 
 
+def _per_scan_cap_blocks(now: float) -> bool:
+    """Cumulative per-scan respawn guard. True (and notify the operator) once a single scan
+    hits _WATCHDOG_MAX_PER_SCAN total auto-respawns; else advances the per-scan accounting and
+    returns False. Extracted from _watchdog_respawn_flow to keep it within the cognitive-complexity
+    budget — behaviour is unchanged.
+
+    The per-hour window resets each hour, so on an operator-terminated thorough scan (status stays
+    'running' forever) the watchdog would respawn ~MAX_PER_HOUR/hour indefinitely (the "40 agents
+    overnight" runaway). The cumulative counter is keyed on the session id: a new scan resets it.
+
+    Progress-aware: a respawn that LED TO substantive progress (a new finding / newly-closed cell)
+    is not a runaway. The per-scan counter resets whenever the scan ADVANCED since the last
+    observation, so the cap counts only CONSECUTIVE futile respawns (recovery→list→exit with zero
+    progress). Without this, a healthy long scan that legitimately respawns 8+ times and keeps
+    finding things is wrongly suppressed and stalls (the "my deep scan died at 8 respawns" bug).
+    """
+    sid = str((_api._read_json(_api._SESSION_FILE) or {}).get("id") or "")
+    if sid and sid != _smith._watchdog_scan_key:
+        _smith._watchdog_scan_key = sid      # new scan → reset the cumulative count
+        _smith._watchdog_scan_restarts = 0
+        _smith._watchdog_last_respawn_progress = ()
+    _cur_progress = _smith._scan_progress_snapshot()
+    if _smith._watchdog_scan_restarts and _cur_progress != _smith._watchdog_last_respawn_progress:
+        _log.info("watchdog: scan progressed since last respawn (%s → %s) — resetting per-scan cap",
+                  _smith._watchdog_last_respawn_progress, _cur_progress)
+        _smith._watchdog_scan_restarts = 0
+    _smith._watchdog_last_respawn_progress = _cur_progress
+    if _smith._watchdog_scan_restarts < _api._WATCHDOG_MAX_PER_SCAN:
+        return False
+    _log.warning("watchdog suppressed: per-scan respawn cap %d reached for scan %s — "
+                 "auto-respawn stopped, awaiting operator",
+                 _api._WATCHDOG_MAX_PER_SCAN, sid[:8])
+    _smith._watchdog_notify(
+        "Smith auto-respawn cap reached for this scan",
+        f"The watchdog has auto-restarted Smith {_smith._watchdog_scan_restarts} times for this "
+        f"scan without it completing (cap {_api._WATCHDOG_MAX_PER_SCAN}). Auto-respawn is now "
+        "STOPPED to prevent a runaway. Resume from the dashboard, or complete the scan.",
+        "WATCHDOG_PER_SCAN_CAP",
+    )
+    return True
+
+
+def _finalize_respawn(now: float, client, ok: bool, result) -> None:
+    """Record the outcome of the watchdog's spawn attempt: on success bump the restart
+    counters (per-hour window + cumulative per-scan cap) and clear any prior failure; on a
+    launch failure capture the child's own exit reason and surface it to the operator.
+    Extracted from _watchdog_respawn_flow to keep it readable — behaviour is unchanged."""
+    if ok:
+        _api._watchdog_last_restart_ts = now
+        _api._watchdog_restart_count_window.append(now)
+        _smith._watchdog_scan_restarts += 1   # count toward the cumulative per-scan cap
+        _smith._last_spawn_failure = ""   # live respawn — clear any prior failure reason
+        _log.info("watchdog: spawned pid=%d", int(result) if isinstance(result, int) else 0)
+        return
+    # Record the child's own exit reason so the no-progress HIR can report the
+    # REAL cause (out-of-usage / credit / auth) instead of the generic
+    # "agent keeps exiting without testing".
+    _smith._last_spawn_failure = str(result)
+    # The child died on launch (bad/empty auth, "Credit balance is too low",
+    # missing binary). Count it against the min-gap so we don't hot-loop, and
+    # surface the child's REAL exit reason to the operator — otherwise the
+    # no-progress fingerprint would relabel a billing/auth failure as a coverage
+    # dead-end (HIR_NO_PROGRESS) and hide the actual fix.
+    _api._watchdog_last_restart_ts = now
+    _log.warning("watchdog: respawn failed to stay alive — %s", result)
+    _smith._watchdog_notify(
+        "Smith respawn failed to start",
+        f"Watchdog relaunched {client} but it exited immediately: {result}. "
+        "If this says 'Credit balance is too low', the headless respawn is billing an "
+        "API key (from .env) instead of your Claude subscription — unset ANTHROPIC_API_KEY "
+        "for the server, add API credit, or set SMITH_SPAWN_USE_API_KEY=1 intentionally.",
+        "WATCHDOG_RESPAWN_FAILED",
+    )
+
+
 async def _watchdog_respawn_flow(now: float) -> None:
     """Respawn Smith (or escalate) after it stopped while the scan is running.
 
     Runs the guard gauntlet — synthesis backoff, MCP alive, min-gap, per-hour cap,
-    no-progress backoff — then spawns a fresh client. Each guard that blocks notifies
-    the operator and returns. Extracted from _watchdog_tick to keep both readable.
+    per-scan cap, no-progress backoff — then spawns a fresh client. Each guard that blocks
+    notifies the operator and returns. Extracted from _watchdog_tick to keep both readable.
     """
     # Synthesis backoff (Phase C) — checked FIRST so a deliberate throttle never notifies the
     # operator, probes MCP, or touches the min-gap / per-hour / per-scan / no-progress counters.
@@ -104,38 +179,7 @@ async def _watchdog_respawn_flow(now: float) -> None:
         return
     if _respawn_hourly_cap_blocks(now):
         return
-    # Cumulative per-scan cap — the per-hour window above resets each hour, so on an
-    # operator-terminated thorough scan (status stays 'running' forever) the watchdog
-    # would respawn ~MAX_PER_HOUR/hour indefinitely (the "40 agents overnight" runaway).
-    # Key a cumulative counter on the session id; once a single scan hits
-    # _WATCHDOG_MAX_PER_SCAN total auto-respawns, STOP and hand off to the operator.
-    sid = str((_api._read_json(_api._SESSION_FILE) or {}).get("id") or "")
-    if sid and sid != _smith._watchdog_scan_key:
-        _smith._watchdog_scan_key = sid      # new scan → reset the cumulative count
-        _smith._watchdog_scan_restarts = 0
-        _smith._watchdog_last_respawn_progress = ()
-    # Progress-aware cap: a respawn that LED TO substantive progress (a new finding / newly-closed
-    # cell) is not a runaway. Reset the per-scan counter whenever the scan ADVANCED since the last
-    # observation, so the cap counts only CONSECUTIVE futile respawns (recovery→list→exit with zero
-    # progress). Without this, a healthy long scan that legitimately respawns 8+ times and keeps
-    # finding things is wrongly suppressed and stalls (the "my deep scan died at 8 respawns" bug).
-    _cur_progress = _smith._scan_progress_snapshot()
-    if _smith._watchdog_scan_restarts and _cur_progress != _smith._watchdog_last_respawn_progress:
-        _log.info("watchdog: scan progressed since last respawn (%s → %s) — resetting per-scan cap",
-                  _smith._watchdog_last_respawn_progress, _cur_progress)
-        _smith._watchdog_scan_restarts = 0
-    _smith._watchdog_last_respawn_progress = _cur_progress
-    if _smith._watchdog_scan_restarts >= _api._WATCHDOG_MAX_PER_SCAN:
-        _log.warning("watchdog suppressed: per-scan respawn cap %d reached for scan %s — "
-                     "auto-respawn stopped, awaiting operator",
-                     _api._WATCHDOG_MAX_PER_SCAN, sid[:8])
-        _smith._watchdog_notify(
-            "Smith auto-respawn cap reached for this scan",
-            f"The watchdog has auto-restarted Smith {_smith._watchdog_scan_restarts} times for this "
-            f"scan without it completing (cap {_api._WATCHDOG_MAX_PER_SCAN}). Auto-respawn is now "
-            "STOPPED to prevent a runaway. Resume from the dashboard, or complete the scan.",
-            "WATCHDOG_PER_SCAN_CAP",
-        )
+    if _per_scan_cap_blocks(now):
         return
     # No-progress backoff — escalate to a human instead of respawning into the
     # same dead end (the recovery→list→exit loop that burned the model every 2 min).
@@ -147,32 +191,7 @@ async def _watchdog_respawn_flow(now: float) -> None:
     client = _api._detect_active_client()
     _log.info("watchdog: smith stopped while scan running — auto-restart")
     ok, result = await _api._spawn_smith(client, source="watchdog")
-    if ok:
-        _api._watchdog_last_restart_ts = now
-        _api._watchdog_restart_count_window.append(now)
-        _smith._watchdog_scan_restarts += 1   # count toward the cumulative per-scan cap
-        _smith._last_spawn_failure = ""   # live respawn — clear any prior failure reason
-        _log.info("watchdog: spawned pid=%d", int(result) if isinstance(result, int) else 0)
-    else:
-        # Record the child's own exit reason so the no-progress HIR can report the
-        # REAL cause (out-of-usage / credit / auth) instead of the generic
-        # "agent keeps exiting without testing".
-        _smith._last_spawn_failure = str(result)
-        # The child died on launch (bad/empty auth, "Credit balance is too low",
-        # missing binary). Count it against the min-gap so we don't hot-loop, and
-        # surface the child's REAL exit reason to the operator — otherwise the
-        # no-progress fingerprint would relabel a billing/auth failure as a coverage
-        # dead-end (HIR_NO_PROGRESS) and hide the actual fix.
-        _api._watchdog_last_restart_ts = now
-        _log.warning("watchdog: respawn failed to stay alive — %s", result)
-        _smith._watchdog_notify(
-            "Smith respawn failed to start",
-            f"Watchdog relaunched {client} but it exited immediately: {result}. "
-            "If this says 'Credit balance is too low', the headless respawn is billing an "
-            "API key (from .env) instead of your Claude subscription — unset ANTHROPIC_API_KEY "
-            "for the server, add API credit, or set SMITH_SPAWN_USE_API_KEY=1 intentionally.",
-            "WATCHDOG_RESPAWN_FAILED",
-        )
+    _finalize_respawn(now, client, ok, result)
 
 
 def _kill_stalled_or_hung(hung_pid, stalled_pid) -> None:

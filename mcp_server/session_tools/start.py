@@ -154,6 +154,82 @@ def _archive_qa_state() -> None:
         pass
 
 
+def _prior_progress(existing: dict) -> tuple[int, int, object]:
+    """Capture persisted completion progress BEFORE the reset so a same-target RESUME
+    (e.g. after an MCP daemon restart zeroed these process-global counters) keeps its
+    attempt/pass progress instead of silently starting the thorough passes over.
+
+    Returns ``(complete_attempts, analysis_passes, scan_phase)``."""
+    return (
+        existing.get("complete_attempts", 0) or 0,
+        existing.get("analysis_passes", 0) or 0,
+        existing.get("scan_phase"),   # preserve three-phase progress on resume
+    )
+
+
+def _resolve_scan_mode(opts: dict) -> str:
+    """Normalize the requested scan_mode, defaulting anything unknown to 'pentest'."""
+    scan_mode = str(opts.get("scan_mode", "pentest")).lower()
+    return scan_mode if scan_mode in ("pentest", "benchmark") else "pentest"
+
+
+def _announce_dashboard_token() -> None:
+    """Mint a fresh per-session dashboard token (new session == new dashboard key)
+    and print its link to the MCP server's stderr.
+
+    The dashboard URL carries the token in the URL *fragment*; the FastAPI
+    middleware requires it as a bearer token on every /api/* call. stderr is the
+    operator's own console / `docker logs` — the one channel that does NOT depend
+    on the agent choosing to relay the report(action='dashboard') result, which the
+    EXECUTE-NOW block otherwise tells it to run silently. A fragment never reaches
+    an HTTP access log (see dashboard_auth docstring); stderr is operator-facing."""
+    try:
+        from core import dashboard_auth
+        _tok = dashboard_auth.mint_token()
+        import sys as _sys
+        print(
+            f"\n[agent-smith] Dashboard → http://localhost:7777/#k={_tok}\n"
+            "[agent-smith]   open in a browser; the #k=… token is required to load "
+            "scan data (a new scan mints a new token).\n"
+            "[agent-smith]   ⚠ AI-generated content may be incorrect. It should always be validated by a person.\n",
+            file=_sys.stderr, flush=True,
+        )
+    except Exception:
+        pass
+
+
+def _apply_classification_and_resume(classification: dict, is_resume: bool,
+                                     prev_complete_attempts: int,
+                                     prev_analysis_passes: int,
+                                     prev_scan_phase) -> None:
+    """Store the target classification on the live session and, on a same-target
+    resume, restore the completion/phase progress ``scan_session.start()`` just
+    zeroed (so an MCP restart mid-thorough-scan doesn't lose pass progress)."""
+    _cur = scan_session.get()
+    if _cur is None:
+        return
+    _cur["classifier"] = classification
+    if is_resume and (prev_complete_attempts or prev_analysis_passes):
+        _st._complete_attempts = prev_complete_attempts
+        _st._analysis_passes = prev_analysis_passes
+        _cur["complete_attempts"] = prev_complete_attempts
+        _cur["analysis_passes"] = prev_analysis_passes
+    # Resume keeps its three-phase progress — a scan resumed mid-coverage/synthesis must
+    # not snap back to Phase A (which would restart the deep hunt and re-block completion).
+    if is_resume and prev_scan_phase:
+        _cur["scan_phase"] = prev_scan_phase
+    scan_session._flush()
+
+
+def _clear_adjunction_log() -> None:
+    """Clear the adjunction log for the new scan (best-effort)."""
+    try:
+        from core.adjunction.log import clear as _adj_log_clear
+        _adj_log_clear()
+    except Exception:
+        pass
+
+
 def _do_start(opts):
     existing = scan_session.get() or {}
     if existing.get("status") == "intervention_required":
@@ -162,12 +238,7 @@ def _do_start(opts):
             "Respond via session(action='resume', options={choice: '...', message: '...'}) "
             "before starting a new scan."
         )
-    # Capture persisted completion progress BEFORE the reset so a same-target RESUME
-    # (e.g. after an MCP daemon restart zeroed these process-global counters) keeps its
-    # attempt/pass progress instead of silently starting the thorough passes over.
-    _prev_complete_attempts = existing.get("complete_attempts", 0) or 0
-    _prev_analysis_passes = existing.get("analysis_passes", 0) or 0
-    _prev_scan_phase = existing.get("scan_phase")   # preserve three-phase progress on resume
+    _prev_complete_attempts, _prev_analysis_passes, _prev_scan_phase = _prior_progress(existing)
     _st._complete_attempts = 0
     _st._analysis_passes = 0
     _st._last_blocker_count = None
@@ -185,9 +256,7 @@ def _do_start(opts):
     has_data = len(cov.get("matrix", [])) > 0
     is_resume = _reset_coverage_matrix(target, prev_target, has_data)
     depth = opts.get("depth", "standard")
-    scan_mode = str(opts.get("scan_mode", "pentest")).lower()
-    if scan_mode not in ("pentest", "benchmark"):
-        scan_mode = "pentest"
+    scan_mode = _resolve_scan_mode(opts)
     cfg = scan_session.start(
         target=target, depth=depth,
         scope=opts.get("scope"),
@@ -199,54 +268,18 @@ def _do_start(opts):
         model_profile=opts.get("model_profile"),  # None → auto-detect from env
         scan_mode=scan_mode,
     )
-    # Mint a fresh per-session dashboard token (new session == new dashboard key).
-    # The dashboard URL is later surfaced with it in the URL fragment; the
-    # FastAPI middleware requires it as a bearer token on every /api/* call.
-    try:
-        from core import dashboard_auth
-        _tok = dashboard_auth.mint_token()
-        # Print the dashboard link (token in the URL *fragment*) to the MCP
-        # server's stderr — the operator's own console / `docker logs`. This is
-        # the one channel that does NOT depend on the agent choosing to relay the
-        # report(action='dashboard') result, which the EXECUTE-NOW block otherwise
-        # tells it to run silently. A fragment never reaches an HTTP access log
-        # (see dashboard_auth docstring); stderr is operator-facing by design.
-        import sys as _sys
-        print(
-            f"\n[agent-smith] Dashboard → http://localhost:7777/#k={_tok}\n"
-            "[agent-smith]   open in a browser; the #k=… token is required to load "
-            "scan data (a new scan mints a new token).\n"
-            "[agent-smith]   ⚠ AI-generated content may be incorrect. It should always be validated by a person.\n",
-            file=_sys.stderr, flush=True,
-        )
-    except Exception:
-        pass
+    _announce_dashboard_token()
     # Deterministic target classification — an advisory PRIOR, never a gate. It
     # never overrides the LLM's own skill routing; it just makes the recommended
     # first move fit the target kind so AUTONOMOUS/CI runs don't greet a codebase
     # path or an IP range with a web scan. Stored for the dashboard too.
     from core.target_class import classify_target
     classification = classify_target(target)
-    _cur = scan_session.get()
-    if _cur is not None:
-        _cur["classifier"] = classification
-        # Same-target resume: restore the completion counters scan_session.start()
-        # just zeroed, so an MCP restart mid-thorough-scan doesn't lose pass progress.
-        if is_resume and (_prev_complete_attempts or _prev_analysis_passes):
-            _st._complete_attempts = _prev_complete_attempts
-            _st._analysis_passes = _prev_analysis_passes
-            _cur["complete_attempts"] = _prev_complete_attempts
-            _cur["analysis_passes"] = _prev_analysis_passes
-        # Resume keeps its three-phase progress — a scan resumed mid-coverage/synthesis must
-        # not snap back to Phase A (which would restart the deep hunt and re-block completion).
-        if is_resume and _prev_scan_phase:
-            _cur["scan_phase"] = _prev_scan_phase
-        scan_session._flush()
-    try:
-        from core.adjunction.log import clear as _adj_log_clear
-        _adj_log_clear()
-    except Exception:
-        pass
+    _apply_classification_and_resume(
+        classification, is_resume,
+        _prev_complete_attempts, _prev_analysis_passes, _prev_scan_phase,
+    )
+    _clear_adjunction_log()
     _purge_stale_steering()
     # On a NON-resume start, reset the QA daemon's input log + alert state so a
     # prior scan's SPIDER/SKILL/TOOL entries don't re-derive stale skill-chain

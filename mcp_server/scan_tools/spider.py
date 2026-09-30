@@ -93,25 +93,41 @@ async def _run_spider_fast(target: str, flags: str, cookies: dict, depth: str, m
         return await kali_runner.exec_command(cmd)
 
 
+def _crawl_cookie_map(crawl_cookies: dict | None) -> dict:
+    """Stringified name→value map from the crawl's cookies, or {} when absent."""
+    if not isinstance(crawl_cookies, dict):
+        return {}
+    return {str(k): str(v) for k, v in crawl_cookies.items()}
+
+
+def _bearer_headers(known_assets: dict) -> dict:
+    """``{"Authorization": "Bearer <latest token>"}`` from known_assets, or {} when none."""
+    toks = known_assets.get("auth_tokens") or []
+    if not toks:
+        return {}
+    last = toks[-1]
+    val = last.get("value") if isinstance(last, dict) else last
+    return {"Authorization": f"Bearer {val}"} if val else {}
+
+
+def _session_cookie_map(known_assets: dict) -> dict:
+    """Captured session cookies from known_assets as a name→value map (CH-2 populates this)."""
+    out: dict = {}
+    for c in (known_assets.get("session_cookies") or []):
+        if isinstance(c, dict) and c.get("name"):
+            out[str(c["name"])] = str(c.get("value", ""))
+    return out
+
+
 def _spider_discovery_auth(crawl_cookies: dict | None) -> dict | None:
     """SP-1: assemble auth for the discovery re-fetch from the crawl's cookies +
     known_assets (latest JWT, captured session cookies). Returns
     ``{"headers", "cookies"}`` or None when nothing is known — so an anonymous
     scan behaves exactly as before, but a credentialed scan enriches under auth."""
-    headers: dict[str, str] = {}
-    cookies: dict[str, str] = {}
-    if isinstance(crawl_cookies, dict):
-        cookies.update({str(k): str(v) for k, v in crawl_cookies.items()})
     ka = (scan_session.get() or {}).get("known_assets") or {}
-    toks = ka.get("auth_tokens") or []
-    if toks:
-        last = toks[-1]
-        val = last.get("value") if isinstance(last, dict) else last
-        if val:
-            headers["Authorization"] = f"Bearer {val}"
-    for c in (ka.get("session_cookies") or []):  # CH-2 populates this
-        if isinstance(c, dict) and c.get("name"):
-            cookies[str(c["name"])] = str(c.get("value", ""))
+    cookies = _crawl_cookie_map(crawl_cookies)
+    cookies.update(_session_cookie_map(ka))
+    headers = _bearer_headers(ka)
     return {"headers": headers, "cookies": cookies} if (headers or cookies) else None
 
 

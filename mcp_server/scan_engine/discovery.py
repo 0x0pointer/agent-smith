@@ -409,6 +409,31 @@ async def _verify_live(base: str, inventory: list[dict]) -> tuple[list[dict], in
 _SOURCE_RANK = {"openapi": 0, "swagger": 0, "graphql": 0, "form": 1, "js": 2, "spider": 3}
 
 
+def _merge_key(ep: dict) -> tuple:
+    """(normalized_path, METHOD) merge key for an endpoint; falls back to the raw
+    path/method if normalization raises."""
+    from core.coverage.classify import _normalize_path
+    try:
+        return (_normalize_path(ep.get("path", "")), (ep.get("method") or "GET").upper())
+    except Exception:
+        return (ep.get("path"), ep.get("method"))
+
+
+def _union_params_into(cur: dict, ep: dict) -> None:
+    """Append params from ``ep`` not already present (by name) into ``cur``'s list."""
+    have = {p.get("name") for p in cur["params"] if p.get("name")}
+    for p in (ep.get("params") or []):
+        name = p.get("name")
+        if name and name not in have:
+            cur["params"].append(p)
+            have.add(name)
+
+
+def _is_more_specific_source(ep: dict, cur: dict) -> bool:
+    """True when ``ep``'s discovered_by label is more specific (lower rank) than ``cur``'s."""
+    return _SOURCE_RANK.get(ep.get("discovered_by", ""), 9) < _SOURCE_RANK.get(cur.get("discovered_by", ""), 9)
+
+
 def _merge_inventory(inventory: list[dict]) -> list[dict]:
     """Collapse endpoints sharing (normalized_path, method) into ONE registration with the
     UNION of their params BEFORE registration.
@@ -419,25 +444,17 @@ def _merge_inventory(inventory: list[dict]) -> list[dict]:
     cells) are silently lost. This is a primary cause of param-less endpoints in the matrix.
     Merging first unions the params so the richest view of each route is what gets registered;
     the most specific ``discovered_by`` label wins."""
-    from core.coverage.classify import _normalize_path
     merged: dict[tuple, dict] = {}
     order: list[tuple] = []
     for ep in inventory:
-        try:
-            key = (_normalize_path(ep.get("path", "")), (ep.get("method") or "GET").upper())
-        except Exception:
-            key = (ep.get("path"), ep.get("method"))
+        key = _merge_key(ep)
         cur = merged.get(key)
         if cur is None:
             merged[key] = {**ep, "params": list(ep.get("params") or [])}
             order.append(key)
             continue
-        have = {p.get("name") for p in cur["params"] if p.get("name")}
-        for p in (ep.get("params") or []):
-            if p.get("name") and p["name"] not in have:
-                cur["params"].append(p)
-                have.add(p["name"])
-        if _SOURCE_RANK.get(ep.get("discovered_by", ""), 9) < _SOURCE_RANK.get(cur.get("discovered_by", ""), 9):
+        _union_params_into(cur, ep)
+        if _is_more_specific_source(ep, cur):
             cur["discovered_by"] = ep.get("discovered_by")
     return [merged[k] for k in order]
 

@@ -65,39 +65,53 @@ def _load_notifiers() -> List[Any]:
     a typo we want the operator to see, not silently disable. A successful
     load may return any subset of [Telegram, Slack, Discord]."""
     out: List[Any] = []
+    _load_telegram(out)
+    _load_slack(out)
+    _load_discord(out)
+    return out
 
+
+def _load_telegram(out: List[Any]) -> None:
+    """Append a TelegramNotifier to ``out`` when its env vars are set."""
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
     chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
-    if token and chat_id:
-        try:
-            from core.notifiers.telegram import TelegramNotifier
-            out.append(TelegramNotifier(token=token, chat_id=chat_id))
-        except ValueError as e:
-            _log.error("Telegram notifier disabled — bad config: %s", e)
-        except Exception as e:
-            _log.warning("Telegram notifier failed to initialize: %s", e)
+    if not (token and chat_id):
+        return
+    try:
+        from core.notifiers.telegram import TelegramNotifier
+        out.append(TelegramNotifier(token=token, chat_id=chat_id))
+    except ValueError as e:
+        _log.error("Telegram notifier disabled — bad config: %s", e)
+    except Exception as e:
+        _log.warning("Telegram notifier failed to initialize: %s", e)
 
+
+def _load_slack(out: List[Any]) -> None:
+    """Append a SlackNotifier to ``out`` when SLACK_WEBHOOK_URL is set."""
     slack_url = os.environ.get("SLACK_WEBHOOK_URL", "").strip()
-    if slack_url:
-        try:
-            from core.notifiers.slack import SlackNotifier
-            out.append(SlackNotifier(webhook_url=slack_url))
-        except ValueError as e:
-            _log.error("Slack notifier disabled — bad config: %s", e)
-        except Exception as e:
-            _log.warning("Slack notifier failed to initialize: %s", e)
+    if not slack_url:
+        return
+    try:
+        from core.notifiers.slack import SlackNotifier
+        out.append(SlackNotifier(webhook_url=slack_url))
+    except ValueError as e:
+        _log.error("Slack notifier disabled — bad config: %s", e)
+    except Exception as e:
+        _log.warning("Slack notifier failed to initialize: %s", e)
 
+
+def _load_discord(out: List[Any]) -> None:
+    """Append a DiscordNotifier to ``out`` when DISCORD_WEBHOOK_URL is set."""
     discord_url = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
-    if discord_url:
-        try:
-            from core.notifiers.discord import DiscordNotifier
-            out.append(DiscordNotifier(webhook_url=discord_url))
-        except ValueError as e:
-            _log.error("Discord notifier disabled — bad config: %s", e)
-        except Exception as e:
-            _log.warning("Discord notifier failed to initialize: %s", e)
-
-    return out
+    if not discord_url:
+        return
+    try:
+        from core.notifiers.discord import DiscordNotifier
+        out.append(DiscordNotifier(webhook_url=discord_url))
+    except ValueError as e:
+        _log.error("Discord notifier disabled — bad config: %s", e)
+    except Exception as e:
+        _log.warning("Discord notifier failed to initialize: %s", e)
 
 
 def notify(title: str, body: str, **kwargs) -> None:

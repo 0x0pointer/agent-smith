@@ -201,6 +201,36 @@ _PROVEN_CHAIN_TITLE = ("proven chain", "exploit chain proven", "full exploit cha
                        "chain proven")
 
 
+def _step_fids(step: dict) -> set:
+    """The non-sentinel from/to finding-ids of a single chain step."""
+    out: set = set()
+    for k in ("from_finding_id", "to_finding_id"):
+        v = step.get(k)
+        if v and v != "auto":
+            out.add(v)
+    return out
+
+
+def _fids_from_chain_steps(chains: list) -> set:
+    """Finding-ids referenced by any chain step's from/to (the formal findings.json
+    'chains'), excluding the 'auto' sentinel."""
+    out: set = set()
+    for ch in chains or []:
+        for s in ch.get("steps", []) or []:
+            out |= _step_fids(s)
+    return out
+
+
+def _fids_from_proven_titles(findings: list) -> set:
+    """Finding-ids whose own title reads as a proven-chain narrative."""
+    out: set = set()
+    for f in findings or []:
+        title = (f.get("title") or "").lower()
+        if f.get("id") and any(mk in title for mk in _PROVEN_CHAIN_TITLE):
+            out.add(f["id"])
+    return out
+
+
 def _proven_fids() -> set:
     """The flat set of finding-ids already worked into a proven chain — from the formal
     findings.json 'chains' (steps → from/to_finding_id) AND from findings whose own title
@@ -209,16 +239,8 @@ def _proven_fids() -> set:
     out: set = set()
     try:
         data = _api._read_json(_api._FINDINGS_FILE)
-        for ch in data.get("chains", []) or []:
-            for s in ch.get("steps", []) or []:
-                for k in ("from_finding_id", "to_finding_id"):
-                    v = s.get(k)
-                    if v and v != "auto":
-                        out.add(v)
-        for f in data.get("findings", []) or []:
-            title = (f.get("title") or "").lower()
-            if f.get("id") and any(mk in title for mk in _PROVEN_CHAIN_TITLE):
-                out.add(f["id"])
+        out |= _fids_from_chain_steps(data.get("chains", []))
+        out |= _fids_from_proven_titles(data.get("findings", []))
     except Exception:
         pass
     return out

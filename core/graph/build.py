@@ -141,23 +141,33 @@ def _add_auth_flow(g, ep_by_id, root_host) -> None:
             g.add_edge(hub, pep.id, m.GRANTS)
 
 
+def _add_credential_node(g, c, root_host) -> None:
+    """One credential → a CREDENTIAL principal that AUTHENTICATES the host."""
+    u = c.get("username")
+    if not u:
+        return
+    cid = g.add_node(f"cred:{u}", m.CREDENTIAL, u, source=c.get("source", ""))
+    if root_host:
+        g.add_edge(cid, f"host:{root_host}", m.AUTHENTICATES)
+
+
+def _add_token_node(g, t, root_host) -> None:
+    """One auth token → a TOKEN principal that AUTHENTICATES the host."""
+    val = t.get("value") if isinstance(t, dict) else t
+    if not val:
+        return
+    tid = g.add_node(f"token:{str(val)[:16]}", m.TOKEN, "jwt/token",
+                     role=(t.get("role") if isinstance(t, dict) else ""))
+    if root_host:
+        g.add_edge(tid, f"host:{root_host}", m.AUTHENTICATES)
+
+
 def _add_credential_nodes(g, ka, root_host) -> None:
     """Credentials + tokens — principals that AUTHENTICATE the host."""
     for c in ka.get("credentials", []) or []:
-        u = c.get("username")
-        if not u:
-            continue
-        cid = g.add_node(f"cred:{u}", m.CREDENTIAL, u, source=c.get("source", ""))
-        if root_host:
-            g.add_edge(cid, f"host:{root_host}", m.AUTHENTICATES)
+        _add_credential_node(g, c, root_host)
     for t in ka.get("auth_tokens", []) or []:
-        val = t.get("value") if isinstance(t, dict) else t
-        if not val:
-            continue
-        tid = g.add_node(f"token:{str(val)[:16]}", m.TOKEN, "jwt/token",
-                         role=(t.get("role") if isinstance(t, dict) else ""))
-        if root_host:
-            g.add_edge(tid, f"host:{root_host}", m.AUTHENTICATES)
+        _add_token_node(g, t, root_host)
 
 
 # Markers in a finding's text that imply it leaks credential material.
@@ -190,6 +200,44 @@ def _leaked_cred_nodes(g, text: str) -> list[str]:
     return out
 
 
+def _finding_anchor(g, f, text, ep_by_path, fid_to_ep, fid_to_param) -> str | None:
+    """The deepest node a finding attaches to: the exact PARAM its cell closed → else its
+    endpoint → else a path match in the finding text → else None (caller falls back to host)."""
+    param_anchor = fid_to_param.get(f.get("id", ""))
+    return (param_anchor if param_anchor in g.nodes else None) \
+        or fid_to_ep.get(f.get("id", "")) or _match_endpoint(text, ep_by_path)
+
+
+def _add_found_on_edge(g, fid, anchor, fhost) -> None:
+    """FOUND_ON the deepest anchor, else the host (materialized so the edge isn't dangling)."""
+    if anchor:
+        g.add_edge(fid, anchor, m.FOUND_ON)
+    elif fhost:
+        g.add_node(f"host:{fhost}", m.HOST, fhost)  # materialize so the edge isn't dangling
+        g.add_edge(fid, f"host:{fhost}", m.FOUND_ON)
+
+
+def _add_leak_edges(g, fid, text, fhost) -> None:
+    """LEAKS → the specific credential/token exposed (where it lives), else the host — but
+    only for findings whose text implies credential-material leakage."""
+    if not any(k in text.lower() for k in _CRED_LEAK_MARKERS):
+        return
+    leaked = _leaked_cred_nodes(g, text)
+    if leaked:
+        for cn in leaked:
+            g.add_edge(fid, cn, m.LEAKS, what="credential-material")
+    elif fhost:
+        g.add_node(f"host:{fhost}", m.HOST, fhost)
+        g.add_edge(fid, f"host:{fhost}", m.LEAKS, what="credential-material")
+
+
+def _add_escalation_edges(g, fid, f) -> None:
+    """Each pending escalation lead → a self-loop ESCALATES_TO edge on the finding."""
+    for lead in f.get("escalation_leads", []) or []:
+        if isinstance(lead, dict) and lead.get("status") == "pending":
+            g.add_edge(fid, fid, m.ESCALATES_TO, lead=lead.get("lead", ""))
+
+
 def _add_finding_nodes(g, root_host, ep_by_path, fid_to_ep, fid_to_param) -> None:
     """Findings → FOUND_ON the exact PARAM they closed (deepest; else endpoint, else
     host), LEAKS the specific credential/token they exposed (else host), ESCALATES_TO,
@@ -202,30 +250,11 @@ def _add_finding_nodes(g, root_host, ep_by_path, fid_to_ep, fid_to_param) -> Non
                    severity=(f.get("severity") or "").lower(), target=f.get("target", ""),
                    status=(f.get("status") or "").lower())
         fhost = _clean_host(f.get("target", ""), root_host)
-        title, desc = f.get("title", ""), f.get("description", "")
-        text = f"{title} {desc} {f.get('target','')}"
-        # Deepest anchor: the exact PARAM its cell closed → else its endpoint → else a
-        # path match in the text → else the host.
-        param_anchor = fid_to_param.get(f.get("id", ""))
-        anchor = (param_anchor if param_anchor in g.nodes else None) \
-            or fid_to_ep.get(f.get("id", "")) or _match_endpoint(text, ep_by_path)
-        if anchor:
-            g.add_edge(fid, anchor, m.FOUND_ON)
-        elif fhost:
-            g.add_node(f"host:{fhost}", m.HOST, fhost)  # materialize so the edge isn't dangling
-            g.add_edge(fid, f"host:{fhost}", m.FOUND_ON)
-        # LEAKS → the specific credential/token exposed (where it lives), else the host.
-        if any(k in text.lower() for k in _CRED_LEAK_MARKERS):
-            leaked = _leaked_cred_nodes(g, text)
-            if leaked:
-                for cn in leaked:
-                    g.add_edge(fid, cn, m.LEAKS, what="credential-material")
-            elif fhost:
-                g.add_node(f"host:{fhost}", m.HOST, fhost)
-                g.add_edge(fid, f"host:{fhost}", m.LEAKS, what="credential-material")
-        for lead in f.get("escalation_leads", []) or []:
-            if isinstance(lead, dict) and lead.get("status") == "pending":
-                g.add_edge(fid, fid, m.ESCALATES_TO, lead=lead.get("lead", ""))
+        text = f"{f.get('title', '')} {f.get('description', '')} {f.get('target','')}"
+        anchor = _finding_anchor(g, f, text, ep_by_path, fid_to_ep, fid_to_param)
+        _add_found_on_edge(g, fid, anchor, fhost)
+        _add_leak_edges(g, fid, text, fhost)
+        _add_escalation_edges(g, fid, f)
         _add_primitive_edges(g, fid, f)
 
 
@@ -351,13 +380,9 @@ def _hosts_in_text(text: str, asset_hosts: set) -> set:
     return _collapse_ports(out)
 
 
-def _add_discovered_hosts(g, root_host, ka) -> None:
-    """Link hosts discovered THROUGH a finding to that finding (generic pivot model —
-    see the comment above). Only NEW hosts (not already real target nodes) are
-    materialized, so separate in-scope machines remain separate circles; each
-    discovering finding contributes its own REACHES edge so multiple paths to the same
-    pivot are all visible."""
-    from core import findings as findings_store
+def _existing_host_labels(g, root_host) -> set:
+    """Hosts already modelled as real target nodes (root / scope / endpoint hosts), each
+    in bare and host:port form — these are never re-materialized as 'discovered' pivots."""
     existing: set = set()
     for n in g.of_kind(m.HOST):
         lab = (n.label or "").strip().lower()
@@ -367,24 +392,42 @@ def _add_discovered_hosts(g, root_host, ka) -> None:
     if root_host:
         existing.add(root_host.lower())
         existing.add(root_host.lower().split(":")[0])
+    return existing
+
+
+def _link_finding_discovered_hosts(g, f, asset_hosts, existing, discovered) -> None:
+    """Materialize each NEW host named in one finding's evidence and draw its REACHES edge.
+    ``discovered`` (bare host -> node id) is shared across findings so bare+port forms reuse
+    ONE node, while each discovering finding still contributes its own edge."""
+    fid = f"finding:{f.get('id','')}"
+    if fid not in g.nodes:
+        return
+    text = " ".join(str(f.get(k, "")) for k in ("title", "description", "evidence", "target"))
+    via = _mechanism_of(text)
+    for h in _hosts_in_text(text, asset_hosts):
+        h = h.strip().rstrip(".")
+        bare = h.split(":")[0]
+        if not h or h in existing or bare in existing:
+            continue
+        hn = discovered.get(bare)
+        if hn is None:
+            hn = g.add_node(f"host:{h}", m.HOST, h, discovered=True, via=via)
+            discovered[bare] = hn
+        g.add_edge(fid, hn, m.REACHES, via=via)   # one edge per discovering finding
+
+
+def _add_discovered_hosts(g, root_host, ka) -> None:
+    """Link hosts discovered THROUGH a finding to that finding (generic pivot model —
+    see the comment above). Only NEW hosts (not already real target nodes) are
+    materialized, so separate in-scope machines remain separate circles; each
+    discovering finding contributes its own REACHES edge so multiple paths to the same
+    pivot are all visible."""
+    from core import findings as findings_store
+    existing = _existing_host_labels(g, root_host)
     asset_hosts = _asset_host_values(ka)
     discovered: dict = {}   # bare host -> node id, so bare+port forms across findings reuse ONE node
     for f in findings_store._load().get("findings", []):
-        fid = f"finding:{f.get('id','')}"
-        if fid not in g.nodes:
-            continue
-        text = " ".join(str(f.get(k, "")) for k in ("title", "description", "evidence", "target"))
-        via = _mechanism_of(text)
-        for h in _hosts_in_text(text, asset_hosts):
-            h = h.strip().rstrip(".")
-            bare = h.split(":")[0]
-            if not h or h in existing or bare in existing:
-                continue
-            hn = discovered.get(bare)
-            if hn is None:
-                hn = g.add_node(f"host:{h}", m.HOST, h, discovered=True, via=via)
-                discovered[bare] = hn
-            g.add_edge(fid, hn, m.REACHES, via=via)   # one edge per discovering finding
+        _link_finding_discovered_hosts(g, f, asset_hosts, existing, discovered)
 
 
 # Memoized (mtime, size) signature → built Graph. build_graph() was re-run on

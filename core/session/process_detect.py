@@ -93,28 +93,45 @@ def _connected_pids(port: int) -> list[int]:
     pids: list[int] = []
     try:
         for proc in psutil.process_iter(["pid"]):
-            try:
-                # net_connections() replaces deprecated connections() in
-                # psutil >= 6.0; both accept kind="tcp" and use the same
-                # sconn shape under the hood.
-                conn_iter = (
-                    proc.net_connections(kind="tcp")
-                    if hasattr(proc, "net_connections")
-                    else proc.connections(kind="tcp")
-                )
-            except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
-                continue
-            for conn in conn_iter:
-                if conn.status != psutil.CONN_ESTABLISHED:
-                    continue
-                local_match = conn.laddr and conn.laddr.port == port
-                remote_match = conn.raddr and conn.raddr.port == port
-                if local_match or remote_match:
-                    pids.append(proc.pid)
-                    break  # don't list a process twice for the same port
+            if _proc_connected_to_port(proc, port):
+                pids.append(proc.pid)  # at most once per process — never listed twice
     except (psutil.AccessDenied, OSError, RuntimeError):
         return []
     return pids
+
+
+def _proc_connected_to_port(proc, port: int) -> bool:
+    """True when ``proc`` holds an ESTABLISHED TCP connection touching ``port``.
+
+    A process we can't inspect (gone / not permitted) is treated as no match,
+    mirroring the old per-process ``continue``. Returns on the first match so a
+    process is never counted twice for the same port.
+    """
+    import psutil
+    try:
+        # net_connections() replaces deprecated connections() in
+        # psutil >= 6.0; both accept kind="tcp" and use the same
+        # sconn shape under the hood.
+        conn_iter = (
+            proc.net_connections(kind="tcp")
+            if hasattr(proc, "net_connections")
+            else proc.connections(kind="tcp")
+        )
+    except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+        return False
+    return any(_conn_matches_port(conn, port) for conn in conn_iter)
+
+
+def _conn_matches_port(conn, port: int) -> bool:
+    """True for an ESTABLISHED connection whose local or remote endpoint uses
+    ``port``. Local match = the MCP server side; remote match = the client side.
+    """
+    import psutil
+    if conn.status != psutil.CONN_ESTABLISHED:
+        return False
+    local_match = conn.laddr and conn.laddr.port == port
+    remote_match = conn.raddr and conn.raddr.port == port
+    return bool(local_match or remote_match)
 
 
 def _resolve_client_for_pid(pid: int) -> str | None:

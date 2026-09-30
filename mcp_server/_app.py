@@ -152,6 +152,56 @@ async def _append_quick_log(name: str, kwargs: dict, result: str, elapsed: float
     pass
 
 
+def _forward_env(tool) -> dict | None:
+    """Build the tool subprocess's env from the tool's forward_env specs.
+
+    Each entry is "VAR" or "SRC:DST" — the SRC:DST form forwards SRC's value into
+    the tool subprocess under the name DST. This lets us keep the anthropic
+    AI-testing key in .env as AITEST_ANTHROPIC_API_KEY (so Claude Code never picks
+    it up for model billing) while the red-team tools still receive it as the
+    ANTHROPIC_API_KEY they expect. Server-side only. Returns None when nothing is
+    forwarded so callers pass an explicit "no extra env".
+    """
+    env_vars = {}
+    for _spec in tool.forward_env:
+        _src, _, _dst = _spec.partition(":")
+        if _src in os.environ:
+            env_vars[_dst or _src] = os.environ[_src]
+    return env_vars or None
+
+
+def _format_run_result(tool, stdout: str, stderr: str) -> str:
+    """Render a container's stdout/stderr into the tool's result string:
+    clipped raw text when the tool has no parser, else a JSON findings envelope."""
+    if tool.parser is None:
+        return _clip(stdout or stderr, tool.max_output)
+    parsed = tool.parser(stdout, stderr)
+    return json.dumps({"findings": parsed, "raw": _clip(stdout, tool.max_output)}, indent=2)
+
+
+def _report_run_error(name: str, kwargs: dict, exc: BaseException) -> str:
+    """Log a tool-run failure and report it to Sentry, returning the error string.
+
+    Never raises — a failure logging or reporting the error must not propagate to
+    FastMCP (that crashes the stdio transport), so both steps are best-effort.
+    """
+    err = f"[{name} error: {type(exc).__name__}: {exc}]"
+    try:
+        from core import logger as log
+        log.tool_result(name, err)
+    except Exception:
+        pass
+    try:
+        import sentry_sdk
+        with sentry_sdk.new_scope() as scope:
+            scope.set_tag("tool", name)
+            scope.set_context("tool_call", {"tool": name, "kwargs": str(kwargs)})
+            sentry_sdk.capture_exception(exc)
+    except Exception:
+        pass
+    return err
+
+
 async def _run(name: str, **kwargs) -> str:
     """Run a lightweight Docker tool from the registry with logging + cost tracking."""
     import time
@@ -169,16 +219,7 @@ async def _run(name: str, **kwargs) -> str:
         tool    = REGISTRY[name]
         args    = tool.build_args(**kwargs)
         mount   = os.environ.get("PENTEST_TARGET_PATH", os.getcwd()) if tool.needs_mount else None
-        # forward_env entries are "VAR" or "SRC:DST" — the SRC:DST form forwards SRC's value into the
-        # tool subprocess under the name DST. This lets us keep the anthropic AI-testing key in .env
-        # as AITEST_ANTHROPIC_API_KEY (so Claude Code never picks it up for model billing) while the
-        # red-team tools still receive it as the ANTHROPIC_API_KEY they expect. Server-side only.
-        env_vars = {}
-        for _spec in tool.forward_env:
-            _src, _, _dst = _spec.partition(":")
-            if _src in os.environ:
-                env_vars[_dst or _src] = os.environ[_src]
-        env_vars = env_vars or None
+        env_vars = _forward_env(tool)
 
         try:
             stdout, stderr, _ = await run_container(
@@ -196,11 +237,7 @@ async def _run(name: str, **kwargs) -> str:
         # Log full verbose output before any clipping
         log.tool_result_verbose(name, stdout, stderr)
 
-        if tool.parser is None:
-            result = _clip(stdout or stderr, tool.max_output)
-        else:
-            parsed = tool.parser(stdout, stderr)
-            result = json.dumps({"findings": parsed, "raw": _clip(stdout, tool.max_output)}, indent=2)
+        result = _format_run_result(tool, stdout, stderr)
 
         cost_tracker.finish(call_id, result)
         log.tool_result(name, result)
@@ -215,20 +252,7 @@ async def _run(name: str, **kwargs) -> str:
     except BaseException as exc:
         # Catch everything including asyncio.CancelledError (BaseException in Python 3.8+).
         # Never let any exception propagate to FastMCP — that crashes the stdio transport.
-        err = f"[{name} error: {type(exc).__name__}: {exc}]"
-        try:
-            log.tool_result(name, err)
-        except Exception:
-            pass
-        try:
-            import sentry_sdk
-            with sentry_sdk.new_scope() as scope:
-                scope.set_tag("tool", name)
-                scope.set_context("tool_call", {"tool": name, "kwargs": str(kwargs)})
-                sentry_sdk.capture_exception(exc)
-        except Exception:
-            pass
-        return err
+        return _report_run_error(name, kwargs, exc)
 
 
 # ── .env loader ───────────────────────────────────────────────────────────────
