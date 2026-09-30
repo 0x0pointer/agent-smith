@@ -153,7 +153,8 @@ def _report_block(workdir: str, note: str = "") -> str:
     """Build the '=== GARAK REPORT JSONL ===' block from the HOST side of the /work
     mount — every eval line plus a short tail — mirroring the in-container grep+tail.
     So a PARTIAL (mid-run) or a TIMED-OUT report parses exactly like a completed run
-    through record_garak_from_raw / _autofile_garak_findings."""
+    through record_garak_from_raw / _autofile_garak_findings. Reads the whole file, so
+    callers on the event loop MUST offload it to a thread (asyncio.to_thread)."""
     try:
         text = (Path(workdir) / "run.report.jsonl").read_text(errors="replace")
     except Exception:
@@ -162,6 +163,41 @@ def _report_block(workdir: str, note: str = "") -> str:
     evals = [ln for ln in lines if _EVAL_RE.search(ln)]
     parts = ([note] if note else []) + ["=== GARAK REPORT JSONL ==="] + evals + lines[-20:]
     return "\n".join(parts)
+
+
+def _read_new_evals(path: str, state: dict) -> str:
+    """INCREMENTAL, thread-safe report tail for live streaming: read only the bytes
+    appended since the last call (state['pos']), accumulate any eval lines into
+    state['evals'], and return the current report block — or '' if nothing new.
+
+    Reading only the delta (not re-reading the whole growing report every tick) and
+    running this in a worker thread is what keeps a large, actively-written report
+    from starving the event loop — which previously delayed run_garak's own timeout
+    so a run could never be reaped. state = {'pos': int, 'carry': bytes, 'evals': list}."""
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return ""
+    if size <= state["pos"]:
+        return ""                              # nothing appended (or truncated/rotated)
+    try:
+        with open(path, "rb") as f:
+            f.seek(state["pos"])
+            chunk = f.read()
+            state["pos"] = f.tell()
+    except OSError:
+        return ""
+    data = state["carry"] + chunk
+    nl = data.rfind(b"\n")
+    if nl == -1:                               # no complete line yet — keep buffering
+        state["carry"] = data
+        return ""
+    complete, state["carry"] = data[:nl], data[nl + 1:]
+    new = [ln for ln in complete.decode("utf-8", "replace").split("\n") if _EVAL_RE.search(ln)]
+    if not new:
+        return ""
+    state["evals"].extend(new)
+    return "=== GARAK REPORT JSONL ===\n" + "\n".join(state["evals"])
 
 
 def _build_garak_cmd(probes: str, flags: str) -> str:
@@ -198,16 +234,20 @@ async def _kill_container(name: str) -> None:
 
 
 async def _stream_progress(workdir: str, on_progress, interval: int) -> None:
-    """Push the growing report block to `on_progress` every `interval`s so the AI
+    """Push newly-appended eval rows to `on_progress` every `interval`s so the AI
     Red Team dashboard fills in probe-by-probe instead of only when the run ends.
-    Cancelled by run_garak once the process exits."""
-    last = ""
+
+    The file read/parse runs in a worker THREAD (asyncio.to_thread) and is
+    INCREMENTAL (only the delta since last tick), so a large, actively-written
+    report can never block the event loop — which is what previously delayed
+    run_garak's own timeout and left runs un-reaped. Cancelled when the run exits."""
+    path = str(Path(workdir) / "run.report.jsonl")
+    state = {"pos": 0, "carry": b"", "evals": []}
     try:
         while True:
             await asyncio.sleep(interval)
-            block = _report_block(workdir)
-            if block != last:
-                last = block
+            block = await asyncio.to_thread(_read_new_evals, path, state)
+            if block:
                 try:
                     on_progress(block)
                 except Exception:
@@ -268,7 +308,8 @@ async def run_garak(rest_config: dict, probes: str, flags: str = "", timeout: in
                 await asyncio.wait_for(proc.communicate(), timeout=10)
             except Exception:
                 pass
-            return _report_block(workdir, note=f"[garak timed out after {timeout}s — partial results below]")
+            note = f"[garak timed out after {timeout}s — partial results below]"
+            return await asyncio.to_thread(_report_block, workdir, note)
         return stdout.decode(errors="replace") or stderr.decode(errors="replace")
     finally:
         if progress_task:

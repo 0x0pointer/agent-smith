@@ -241,3 +241,33 @@ async def test_run_garak_streams_progress(monkeypatch, tmp_path):
 
     assert seen, "progress callback was never invoked during the run"
     assert any("=== GARAK REPORT JSONL ===" in b and '"entry_type": "eval"' in b for b in seen)
+
+
+def test_read_new_evals_incremental(tmp_path):
+    p = tmp_path / "run.report.jsonl"
+    p.write_text('{"entry_type": "attempt"}\n' + _EVAL_LINE + "\n", encoding="utf-8")
+    state = {"pos": 0, "carry": b"", "evals": []}
+    block = gr._read_new_evals(str(p), state)
+    assert "=== GARAK REPORT JSONL ===" in block
+    assert block.count('"entry_type": "eval"') == 1
+    assert state["pos"] > 0                                 # advanced past what it read
+    assert gr._read_new_evals(str(p), state) == ""          # nothing new → no redundant emit
+    with open(p, "a", encoding="utf-8") as f:               # append a 2nd, different eval
+        f.write(_EVAL_LINE.replace("dan.AntiDAN", "encoding.InjectBase64") + "\n")
+    block2 = gr._read_new_evals(str(p), state)
+    assert block2.count('"entry_type": "eval"') == 2        # cumulative, only the delta was read
+
+
+def test_read_new_evals_handles_partial_line(tmp_path):
+    p = tmp_path / "run.report.jsonl"
+    p.write_text(_EVAL_LINE, encoding="utf-8")               # no trailing newline = partial line
+    state = {"pos": 0, "carry": b"", "evals": []}
+    assert gr._read_new_evals(str(p), state) == ""          # incomplete line not emitted
+    with open(p, "a", encoding="utf-8") as f:
+        f.write("\n")                                       # complete it
+    assert gr._read_new_evals(str(p), state).count('"entry_type": "eval"') == 1
+
+
+def test_read_new_evals_missing_file(tmp_path):
+    state = {"pos": 0, "carry": b"", "evals": []}
+    assert gr._read_new_evals(str(tmp_path / "nope.jsonl"), state) == ""
