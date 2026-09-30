@@ -431,8 +431,14 @@ async def _handle_garak(target, flags, options):
 
     _record("garak")  # track for coverage/skill-worked gates
     timeout = options.get("timeout", 900)
+    # Default to the FAST, valid probes whose results DIRECTLY feed the agent-driven
+    # manual layer: `encoding` (which obfuscations bypass the input filter — the input
+    # to transform()/filter_probe), `promptinject`, `leakreplay` (data/system-prompt
+    # leakage), `misleading`. Deliberately NOT `dan` (256-prompt jailbreak variants are
+    # slow, and the redteam() engine hunts jailbreaks far more targetedly) nor the
+    # invalid-in-0.15 `xss`/`gcg`/`glitch`. Callers can still pass any probes= they want.
     qualified = await _validated_probes(
-        _normalize_probes(options.get("probes", "dan,encoding,promptinject,leakreplay,xss")))
+        _normalize_probes(options.get("probes", "encoding,promptinject,leakreplay,misleading")))
     options = await _resolved_rest_options(target, options)
     rest_cfg = _build_garak_rest_cfg(target, options)
 
