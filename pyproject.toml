@@ -11,7 +11,7 @@ aiohttp = ">=3.14.3"
 mcp = "==1.29.0"
 fastapi = {extras = ["standard"], version = "==0.135.1"}
 starlette = ">=1.3.1"
-pyjwt = {version = ">=2.13.0", extras = ["crypto"]}
+pyjwt = {version = ">=2.15.1", extras = ["crypto"]}
 idna = ">=3.18"
 # Security floors for transitive deps (Dependabot remediation):
 # cryptography >=50 closes the PKCS#7 Bleichenbacher oracle (GHSA-g6cj-pr64-35w5);
