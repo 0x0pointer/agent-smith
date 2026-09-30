@@ -438,10 +438,19 @@ async def _handle_garak(target, flags, options):
 
     log.tool_call("garak", {"target": target, "probes": qualified})
     call_id = cost_tracker.start("garak")
-    raw = _clip(await garak_runner.run_garak(rest_cfg, qualified, flags=flags, timeout=timeout), 14_000)
+
+    def _stream_to_dashboard(partial):  # live AI Red Team tab updates DURING the run (fail-soft)
+        try:
+            from core import ai_redteam
+            ai_redteam.record_garak_from_raw(partial, target)
+        except Exception:
+            pass
+
+    raw = _clip(await garak_runner.run_garak(rest_cfg, qualified, flags=flags, timeout=timeout,
+                                             on_progress=_stream_to_dashboard), 14_000)
     cost_tracker.finish(call_id, raw)
     log.tool_result("garak", raw)
-    try:                                    # feed the dashboard AI Red Team tab (fail-soft)
+    try:                                    # final refine of the dashboard AI Red Team tab (fail-soft)
         from core import ai_redteam
         ai_redteam.record_garak_from_raw(raw, target)
     except Exception:
