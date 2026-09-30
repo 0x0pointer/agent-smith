@@ -226,9 +226,15 @@ def coverage_saturated(matrix: dict) -> bool:
     cells = matrix.get("matrix", []) if isinstance(matrix, dict) else []
     if not cells:
         return False
+    # Candidate (unconfirmed wordlist) cells can never be legitimately closed —
+    # excluding them here keeps B→C from wedging on phantom endpoints (issue #180).
+    # A missing flag means confirmed, so legacy matrices behave as before. This MUST
+    # stay in sync with coverage_gates._floor_view's candidate exclusion, else the
+    # floor gate and the phase gate disagree and completion still stalls.
     return not any(
         c.get("status") in ("pending", "in_progress")
         and c.get("injection_type") not in _NO_AUTOCLOSER_TYPES
+        and not c.get("candidate")
         for c in cells
     )
 

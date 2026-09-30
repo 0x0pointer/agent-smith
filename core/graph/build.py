@@ -67,13 +67,32 @@ def _add_endpoint_nodes(g, matrix, root_host) -> tuple[dict, dict]:
     component they were found on."""
     ep_by_id: dict = {}
     ep_by_path: dict = {}
+    # Per-endpoint interest signals the flat node can't otherwise carry (#182): how
+    # many cells have been worked and whether any anchored a finding. Tallied once
+    # from the matrix so the render layer can rank/de-noise endpoints without a
+    # second pass over every cell.
+    tested_by_ep: dict = {}
+    found_by_ep: dict = {}
+    for cell in matrix.get("matrix", []):
+        eid_raw = cell.get("endpoint_id")
+        if not eid_raw:
+            continue
+        if cell.get("status") not in (None, "pending"):
+            tested_by_ep[eid_raw] = tested_by_ep.get(eid_raw, 0) + 1
+        if cell.get("finding_id"):
+            found_by_ep[eid_raw] = True
     for ep in matrix.get("endpoints", []):
         eid = f"ep:{ep['id']}"
         ep_by_id[ep["id"]] = eid
         path = ep.get("path", "")
         g.add_node(eid, m.ENDPOINT, f"{ep.get('method','GET')} {path}",
                    path=path, method=ep.get("method", "GET"),
-                   auth_context=ep.get("auth_context", "none"))
+                   auth_context=ep.get("auth_context", "none"),
+                   discovered_by=ep.get("discovered_by", ""),
+                   candidate=bool(ep.get("candidate", False)),
+                   param_count=len(ep.get("params", []) or []),
+                   tested_count=tested_by_ep.get(ep["id"], 0),
+                   has_findings=bool(found_by_ep.get(ep["id"], False)))
         if path:
             ep_by_path.setdefault(path, eid)
         host = _endpoint_host(path, root_host)

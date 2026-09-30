@@ -13,10 +13,12 @@
       // Update tab badge
       const meta = _covData.meta || {};
       const btn = document.getElementById('tab-btn-coverage');
-      const total = meta.total_cells || 0;
+      // #180: badge over CONFIRMED cells — candidate (unconfirmed wordlist) cells
+      // would overstate the total ~3x. Legacy matrices default confirmed = total.
+      const confirmed = (meta.confirmed_cells != null) ? meta.confirmed_cells : (meta.total_cells || 0);
       const tested = meta.tested || 0;
-      if (btn && total > 0) {
-        btn.textContent = `Coverage (${tested}/${total})`;
+      if (btn && confirmed > 0) {
+        btn.textContent = `Coverage (${tested}/${confirmed})`;
       }
     } catch { /* ignore */ }
   }
@@ -32,12 +34,18 @@
 
     const meta = _covData.meta || {};
     const total = meta.total_cells || 0;
+    // #180: candidate cells are unconfirmed wordlist paths — they're always pending
+    // and can't be closed, so measure the summary over CONFIRMED cells and surface
+    // the candidate backlog separately instead of inflating PENDING. Legacy matrices
+    // default confirmed = total, candidate = 0.
+    const confirmed = (meta.confirmed_cells != null) ? meta.confirmed_cells : total;
+    const candidate = meta.candidate_cells || 0;
     const tested = meta.tested || 0;
     const vuln = meta.vulnerable || 0;
     const na = meta.not_applicable || 0;
     const skipped = meta.skipped || 0;
     const inProg = meta.in_progress || 0;
-    const pending = total - tested - na - skipped - inProg;
+    const pending = Math.max(0, confirmed - tested - na - skipped - inProg);
 
     sumWrap.innerHTML = [
       `<span class="cov-stat cov-tested">TESTED ${tested}</span>`,
@@ -46,7 +54,8 @@
       `<span class="cov-stat cov-na">N/A ${na}</span>`,
       `<span class="cov-stat cov-skipped">SKIPPED ${skipped}</span>`,
       `<span class="cov-stat cov-pending">PENDING ${pending}</span>`,
-      `<span style="font-size:.8rem;color:#6e7681;align-self:center">${_covData.endpoints.length} endpoints · ${total} cells</span>`,
+      candidate ? `<span class="cov-stat" style="background:rgba(110,118,129,.15);border-color:#6e7681;color:#8b949e" title="Unconfirmed wordlist paths — excluded from the completion gate until a response proves they exist">CANDIDATE ${candidate}</span>` : '',
+      `<span style="font-size:.8rem;color:#6e7681;align-self:center">${_covData.endpoints.length} endpoints · ${confirmed} confirmed cells${candidate ? ` · ${candidate} candidate` : ''}</span>`,
     ].join('');
 
     // Collect all injection types that have at least one cell

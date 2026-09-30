@@ -102,10 +102,17 @@ async def _handle_ffuf(target, flags, options):
         # and this auto-register was a silent no-op on every scan.
         paths = [p["url"] for p in parse_ffuf_paths(raw, target) if p["url"].startswith("http")]
         if paths:
-            enrich = await discover_and_register(target, paths, auth=_spider_discovery_auth(None))
+            enrich = await discover_and_register(target, paths, auth=_spider_discovery_auth(None),
+                                                 crawl_source="ffuf")
             if enrich.get("registered"):
-                result += (f"\n\n🧭 AUTO-DISCOVERY: registered {enrich['registered']} ffuf-found "
-                           f"endpoint(s) / {enrich['cells']} cell(s) — test them via the matrix.")
+                confirmed = enrich.get("registered_confirmed", enrich["registered"])
+                candidate = enrich.get("registered_candidate", 0)
+                note = (f"\n\n🧭 AUTO-DISCOVERY: registered {enrich['registered']} ffuf-found "
+                        f"endpoint(s) / {enrich['cells']} cell(s)")
+                if candidate:
+                    note += (f" — {confirmed} liveness-confirmed, {candidate} unconfirmed "
+                             f"(candidate: kept but excluded from the coverage gate until proven live)")
+                result += note + " — test them via the matrix."
     except Exception as exc:  # pragma: no cover - defensive
         log.note(f"ffuf auto-discovery skipped: {exc}")
     return result

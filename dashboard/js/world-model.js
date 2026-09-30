@@ -10,6 +10,8 @@ let _wmSig = null;              // element-set signature — rebuild only on cha
 let _wmHiddenKinds = new Set(); // legend toggles
 let _wmBridges = false;         // "◆ Bridges" highlight mode
 let _wmLayout = 'force';        // 'tree' | 'radial' | 'force' — Force is the default
+let _wmProvFilter = '';         // #182: discovered_by provenance filter ('' = all)
+let _wmShowUntested = false;    // #182: reveal 0-param / 0-tested endpoints (dead weight)
 
 function wmEsc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, c =>
@@ -18,14 +20,47 @@ function wmEsc(s) {
 
 async function pollWorldModel() {
   try {
-    const r = await fetch(`/api/graph?_=${Date.now()}`);
+    // #182: server-side de-noising is parameterised — carry the provenance filter
+    // and the show-untested toggle so re-fetches reuse the interest-ranked view.
+    const q = [`_=${Date.now()}`];
+    if (_wmProvFilter) q.push(`discovered_by=${encodeURIComponent(_wmProvFilter)}`);
+    if (_wmShowUntested) q.push('show_untested=1');
+    const r = await fetch(`/api/graph?${q.join('&')}`);
     if (!r.ok) return;
     _wmData = await r.json();
   } catch (e) { return; }
   wmRenderStats();
   wmRenderChains();
   wmRenderRankings();
+  wmRenderProvControls();
   wmRenderGraph();
+}
+
+// #182: provenance <select> + show-untested toggle. Options come from the stats'
+// `provenance` list (computed server-side over ALL endpoints) so the dropdown
+// stays stable even while a filter is applied.
+function wmRenderProvControls() {
+  const sel = document.getElementById('wm-prov-filter');
+  if (sel) {
+    const provs = (_wmData && _wmData.stats && _wmData.stats.provenance) || [];
+    const opts = ['<option value="">all sources</option>']
+      .concat(provs.map(p => `<option value="${wmEsc(p)}"${p === _wmProvFilter ? ' selected' : ''}>${wmEsc(p)}</option>`));
+    sel.innerHTML = opts.join('');
+  }
+  const btn = document.getElementById('wm-untested-btn');
+  if (btn) btn.classList.toggle('wm-btn-on', _wmShowUntested);
+}
+
+function wmSetProvFilter(v) {
+  _wmProvFilter = v || '';
+  _wmSig = null;              // element set changes → force rebuild
+  pollWorldModel();          // re-fetch: filtering is applied server-side
+}
+
+function wmToggleUntested() {
+  _wmShowUntested = !_wmShowUntested;
+  _wmSig = null;
+  pollWorldModel();
 }
 
 function wmRenderStats() {
@@ -124,6 +159,7 @@ function wmElements(data) {
       id: n.id, label: (n.label || n.id), kind: n.kind, color: wmNodeColor(n),
       props: n.properties || (n.severity ? { severity: n.severity } : {}),
       disc: n.properties?.discovered ? 1 : 0,   // pivot-discovered host
+      cluster: n.properties?.cluster ? 1 : 0,   // #182: '+N more' endpoint summary node
     },
   }));
   const ids = new Set(nodes.map(n => n.data.id));
@@ -158,6 +194,10 @@ function wmStyle() {
     { selector: 'node[kind="host"][disc = 1]', style: { 'border-color': '#ff5ccd', 'border-width': 2.5, 'border-style': 'dashed' } },
     { selector: 'node[kind="credential"], node[kind="token"]', style: { 'shape': 'hexagon' } },
     { selector: 'node[kind="param"]',     style: { 'width': 14, 'height': 14 } },
+    { selector: 'node[cluster = 1]', style: {   // #182: '+N more' summary of de-noised endpoints
+      'shape': 'octagon', 'background-color': '#6e7681', 'background-opacity': 0.5,
+      'border-style': 'dashed', 'border-color': '#8b949e', 'width': 26, 'height': 26,
+      'font-size': '8px', 'color': '#8b949e' } },
     { selector: 'edge', style: {
       'width': 'data(ewidth)', 'line-color': 'data(ecolor)', 'line-style': 'data(estyle)',
       'target-arrow-color': 'data(ecolor)', 'target-arrow-shape': 'triangle',
@@ -357,7 +397,11 @@ function wmRenderGraph() {
 }
 
 function wmBindGraphEvents() {
-  _wmCy.on('tap', 'node', ev => wmInspect(ev.target));
+  _wmCy.on('tap', 'node', ev => {
+    // #182: tapping a '+N more' cluster reveals the endpoints it summarizes.
+    if (ev.target.data('cluster') && !_wmShowUntested) { wmToggleUntested(); return; }
+    wmInspect(ev.target);
+  });
   _wmCy.on('tap', 'edge', ev => wmInspect(ev.target));
   _wmCy.on('tap', ev => {
     if (ev.target !== _wmCy) return;                 // background tap only

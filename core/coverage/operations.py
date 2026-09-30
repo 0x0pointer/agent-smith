@@ -64,10 +64,19 @@ async def add_endpoint(
     params: list[dict],
     discovered_by: str = "spider",
     auth_context: str = "none",
+    candidate: bool = False,
 ) -> dict:
     """Register an endpoint and auto-generate matrix cells.
 
     params: [{"name": "id", "type": "path", "value_hint": "integer"}, ...]
+
+    ``candidate`` (issue #180): the endpoint's existence is NOT confirmed — a
+    wordlist/fuzz hit that liveness-classification could not prove is real
+    (403, catch-all/soft-404 baseline match, probe error, or beyond the probe
+    budget). It is still recorded so the signal isn't lost, but the flag is
+    stamped on the endpoint AND every cell it fans out, so the completion gate
+    can exclude it (candidate cells never wedge coverage) and the graph view can
+    de-noise. A missing flag means confirmed — legacy matrices read as confirmed.
 
     Returns {"endpoint_id": ..., "new_cells": N, "dedup": bool}.
     """
@@ -81,7 +90,20 @@ async def add_endpoint(
         # Dedup on (normalized_path, method)
         for ep in data["endpoints"]:
             if ep["_normalized"] == norm_path and ep["method"] == method_upper:
-                return {"endpoint_id": ep["id"], "new_cells": 0, "dedup": True}
+                # Upgrade a previously-unconfirmed (candidate) endpoint if a
+                # confirmed source now re-registers the same route — a real
+                # discovery should not stay gate-excluded behind a stale fuzz hit.
+                upgraded = False
+                if ep.get("candidate") and not candidate:
+                    ep["candidate"] = False
+                    for cell in data["matrix"]:
+                        if cell.get("endpoint_id") == ep["id"]:
+                            cell["candidate"] = False
+                    upgraded = True
+                    _cov._recount(data)
+                    _cov._save(data)
+                return {"endpoint_id": ep["id"], "new_cells": 0,
+                        "dedup": True, "upgraded_confirmed": upgraded}
 
         ep_id = f"ep-{uuid.uuid4().hex[:12]}"
         endpoint = {
@@ -93,6 +115,7 @@ async def add_endpoint(
             "discovered_by": discovered_by,
             "discovered_at": datetime.now(timezone.utc).isoformat(),
             "auth_context": auth_context,
+            "candidate": bool(candidate),
         }
         data["endpoints"].append(endpoint)
 
@@ -119,6 +142,7 @@ async def add_endpoint(
                     "finding_id": None,
                     "tested_at": None,
                     "tested_by": "",
+                    "candidate": bool(candidate),
                 }
                 data["matrix"].append(cell)
                 new_cells += 1
@@ -141,6 +165,7 @@ async def add_endpoint(
                 "finding_id": None,
                 "tested_at": None,
                 "tested_by": "",
+                "candidate": bool(candidate),
             }
             data["matrix"].append(cell)
             new_cells += 1

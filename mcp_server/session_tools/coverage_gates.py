@@ -28,16 +28,27 @@ _NO_AUTOCLOSER_TYPES = {"rate_limit", "method_tampering", "jwt", "race", "bfla"}
 
 def _floor_view(cov: dict, total: int, addressed: int) -> tuple[int, int, float]:
     """Recompute (total, addressed, pct) for the coverage FLOOR over only the cells
-    the pipeline can help close — i.e. excluding _NO_AUTOCLOSER_TYPES. Falls back to
-    the raw numbers when the matrix list isn't materialised (stub/partial matrices),
-    so it never inflates coverage on a matrix it can't see."""
+    the pipeline can help close — i.e. excluding _NO_AUTOCLOSER_TYPES AND candidate
+    (unconfirmed wordlist) cells. Falls back to the raw numbers when the matrix list
+    isn't materialised (stub/partial matrices), so it never inflates coverage on a
+    matrix it can't see.
+
+    Candidate exclusion (issue #180): cells from endpoints whose existence was never
+    liveness-confirmed (a wordlist hit that 403'd / matched the not-found baseline /
+    went unprobed) can never be legitimately closed, so counting them made the floor
+    unreachable and wedged completion. They stay in the matrix as advisory gaps but
+    don't count toward the floor. A missing flag means confirmed, so legacy matrices
+    are unaffected."""
     matrix = cov.get("matrix", [])
     _addressed_states = ("tested_clean", "vulnerable", "not_applicable")
-    excl_total = sum(1 for c in matrix if c.get("injection_type") in _NO_AUTOCLOSER_TYPES)
+
+    def _excluded(c: dict) -> bool:
+        return c.get("injection_type") in _NO_AUTOCLOSER_TYPES or bool(c.get("candidate"))
+
+    excl_total = sum(1 for c in matrix if _excluded(c))
     excl_addr = sum(
         1 for c in matrix
-        if c.get("injection_type") in _NO_AUTOCLOSER_TYPES
-        and c.get("status") in _addressed_states
+        if _excluded(c) and c.get("status") in _addressed_states
     )
     c_total = max(0, total - excl_total)
     c_addr = max(0, addressed - excl_addr)
@@ -69,7 +80,8 @@ def _low_coverage_blocker(cov: dict, total: int, addressed: int, pct: float) -> 
     f_total, f_addr, f_pct = _floor_view(cov, total, addressed)
     if f_pct >= _COVERAGE_FLOOR_PCT:
         return None
-    pending = sum(1 for c in cov.get("matrix", []) if c.get("status", "pending") == "pending")
+    pending = sum(1 for c in cov.get("matrix", [])
+                  if c.get("status", "pending") == "pending" and not c.get("candidate"))
     return (
         f"SCAN NOT COMPLETE — the coverage matrix is the deliverable and it is only {f_pct:.0f}% worked "
         f"({f_addr}/{f_total} closeable cells; {pending} still untested). Working the matrix IS the "

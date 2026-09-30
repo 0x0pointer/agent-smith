@@ -68,6 +68,104 @@ def rank_findings(g: m.Graph) -> list[dict]:
     return ranked
 
 
+def _endpoint_interest(n: m.Node) -> int:
+    """Interest score for de-noising the World Model graph (#182). Findings dominate,
+    then worked cells, then parameter richness; a confirmed endpoint edges out an
+    unconfirmed (candidate) one at the same signal level."""
+    a = n.attrs
+    score = 0
+    if a.get("has_findings"):
+        score += 1000
+    score += int(a.get("tested_count", 0)) * 50
+    score += int(a.get("param_count", 0)) * 5
+    if not a.get("candidate"):
+        score += 2
+    return score
+
+
+def _path_prefix(path: str) -> str:
+    """The directory portion of an endpoint path, used as the cluster key. Groups
+    root-level wordlist noise (/.bash_history, /.bashrc, …) under '/' and deep API
+    routes under their shared parent (/api/v1/users → /api/v1)."""
+    if not path:
+        return "/"
+    p = path.split("?", 1)[0].rstrip("/")
+    parent = p.rsplit("/", 1)[0]
+    return parent or "/"
+
+
+def render_view(g: m.Graph, node_cap: int = 140, show_untested: bool = False,
+                discovered_by: str | None = None, edge_cap: int = 2000) -> tuple[list, list, int]:
+    """Presentation projection of the graph for the World Model tab (#182).
+
+    build_graph()'s graph is shared with the reasoning layer (chains/paths/rankings)
+    and MUST stay whole, so de-noising happens HERE, not in the graph itself:
+      - every NON-endpoint node (host/tech/token/credential/finding/primitive) is
+        ALWAYS kept — these are exactly the nodes the old insertion-order [:500]
+        slice silently truncated when hundreds of endpoints preceded them;
+      - endpoints are interest-ranked (findings > tested cells > params > confirmed)
+        and capped at ``node_cap``;
+      - endpoints with 0 params AND 0 tested cells AND no findings are hidden by
+        default (``show_untested=True`` keeps them) — dead weight per the issue;
+      - an optional ``discovered_by`` filter narrows endpoints by provenance;
+      - every endpoint removed by a cap/hide/filter is folded into a synthetic
+        ``+N more`` cluster node grouped by path prefix and anchored to the host,
+        so coverage is summarized, never silently dropped.
+    Returns ``(nodes, edges, dropped_endpoint_count)`` as model objects for the
+    route to serialize."""
+    endpoints = [n for n in g.nodes.values() if n.kind == m.ENDPOINT]
+    others = [n for n in g.nodes.values() if n.kind != m.ENDPOINT]
+
+    if discovered_by:
+        endpoints = [n for n in endpoints if n.attrs.get("discovered_by") == discovered_by]
+
+    def _dead(n: m.Node) -> bool:
+        a = n.attrs
+        return (not show_untested
+                and int(a.get("param_count", 0)) == 0
+                and int(a.get("tested_count", 0)) == 0
+                and not a.get("has_findings"))
+
+    live = sorted((n for n in endpoints if not _dead(n)), key=_endpoint_interest, reverse=True)
+    kept_eps = live[:node_cap]
+    kept_ids = {n.id for n in kept_eps}
+    dropped_eps = [n for n in endpoints if n.id not in kept_ids]
+
+    kept_nodes = others + kept_eps
+
+    # Which host owns each endpoint (host --hosts--> endpoint), so a dropped endpoint
+    # is clustered under ITS host — not a single first-host bucket that would
+    # mis-attribute routes on a multi-host (pivot) map.
+    ep_host = {e.dst: e.src for e in g.edges if e.kind == m.HOSTS}
+    any_host = next((n.id for n in others if n.kind == m.HOST), None)
+
+    # Cluster every dropped endpoint into a '+N more' summary keyed by (host, prefix).
+    clusters: dict[tuple, int] = {}
+    for n in dropped_eps:
+        host = ep_host.get(n.id) or any_host
+        key = (host, _path_prefix(n.attrs.get("path", "")))
+        clusters[key] = clusters.get(key, 0) + 1
+    synth_nodes: list = []
+    synth_edges: list = []
+    for (host, prefix), count in sorted(clusters.items(), key=lambda kv: -kv[1]):
+        cid = f"epcluster:{host or ''}:{prefix}"
+        synth_nodes.append(m.Node(cid, m.ENDPOINT, f"+{count} more under {prefix}",
+                                  {"cluster": True, "count": count, "prefix": prefix,
+                                   "path": prefix}))
+        if host:
+            synth_edges.append(m.Edge(host, cid, m.HOSTS, {"cluster": True}))
+
+    all_nodes = kept_nodes + synth_nodes
+    node_ids = {n.id for n in all_nodes}
+    real_edges = [e for e in g.edges
+                  if e.src in node_ids and e.dst in node_ids and e.src != e.dst]
+    # Reserve room for the cluster anchor edges so they're never truncated — a
+    # floating '+N more' node is exactly the disconnected-node symptom #182 fixes.
+    real_edges = real_edges[:max(0, edge_cap - len(synth_edges))]
+    edges = real_edges + synth_edges
+    return all_nodes, edges, len(dropped_eps)
+
+
 def next_targets(g: m.Graph, limit: int = 5) -> list[dict]:
     """Value-ranked endpoints with the most untested surface (WF-A1 over the
     graph): highest-value endpoints that still have pending tested_for cells."""
@@ -85,6 +183,12 @@ def next_targets(g: m.Graph, limit: int = 5) -> list[dict]:
 
     out = []
     for ep in g.of_kind(m.ENDPOINT):
+        # Skip candidate (unconfirmed wordlist) endpoints — steering the model to
+        # probe phantom paths is the exact wedge #180 removes; don't reintroduce it
+        # via the worklist. The operator can still reach them via the graph's
+        # provenance / show-untested controls.
+        if ep.attrs.get("candidate"):
+            continue
         pending = [e for e in g.out_edges(ep.id, m.TESTED_FOR)
                    if e.attrs.get("status") not in _ADDRESSED]
         if pending:

@@ -47,7 +47,9 @@ _MAX_JS_FILES = 6       # JS bundles to mine
 _MAX_HTML_PAGES = 15    # HTML pages to read forms from
 _MAX_FETCH_BYTES = 5 * 1024 * 1024
 _FETCH_TIMEOUT = 8      # per-fetch seconds
-_MAX_VERIFY = 80        # cap liveness probes before registration
+_MAX_VERIFY = 80        # cap liveness probes before registration (spec/spider paths)
+_MAX_FUZZ_VERIFY = 600  # probe budget for wordlist paths; the tail beyond registers as candidate
+_FUZZ_PROBE_CONCURRENCY = 20  # bound concurrent liveness probes for a large wordlist run
 
 _STATIC_EXTS = {
     ".js", ".css", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico",
@@ -245,8 +247,15 @@ def _is_static(url: str) -> bool:
     return _path_ext(urlparse(url).path) in _STATIC_EXTS
 
 
-def _spider_endpoints(urls: list[str]) -> list[dict]:
-    """Dynamic (non-asset) endpoints from raw spider URLs, with query/path params."""
+def _spider_endpoints(urls: list[str], source: str = "spider") -> list[dict]:
+    """Dynamic (non-asset) endpoints from raw URLs, with query/path params.
+
+    ``source`` is the provenance label stamped on every produced endpoint. It
+    defaults to ``"spider"`` (the DOM crawler) but the same URL→endpoint shaping
+    is reused for wordlist fuzzing, which must be labelled ``"ffuf"`` — issue
+    #180: fuzz hits were funnelled through here and hardcoded as ``"spider"``, so
+    hundreds of non-existent paths claimed the most trustworthy discovery channel
+    and could not be filtered by source."""
     from urllib.parse import parse_qs
     seen: set[str] = set()
     out: list[dict] = []
@@ -263,7 +272,7 @@ def _spider_endpoints(urls: list[str]) -> list[dict]:
                   for n in parse_qs(parsed.query) if not n.startswith("__")]
         params += [{"name": f"id_{i}", "type": "path", "value_hint": "integer"}
                    for i, seg in enumerate(path.split("/")) if seg.isdigit()]
-        out.append({"path": path, "method": "GET", "params": params, "discovered_by": "spider"})
+        out.append({"path": path, "method": "GET", "params": params, "discovered_by": source})
     return out
 
 
@@ -404,9 +413,104 @@ async def _verify_live(base: str, inventory: list[dict]) -> tuple[list[dict], in
     return kept, len(inventory) - len(kept)
 
 
+async def _fuzz_baseline(base: str) -> tuple[int, int] | None:
+    """Learn the target's 'not found' response by probing TWO random, almost-certainly
+    non-existent paths. Returns ``(status, body_len)`` or ``None``.
+
+    A catch-all router / SPA / soft-404 target answers the SAME way for every unknown
+    path (commonly 200 with an app-shell body, or a 302 that _fetch follows to a 200
+    login page). We require BOTH random probes to agree (same status, near-equal
+    length) before trusting a baseline — otherwise the target is NOT a stable
+    catch-all and length alone isn't a not-found signal, so we return None and fall
+    back to status-only classification. This stops a real ffuf-only endpoint whose
+    size happens to land near a one-off response from being misread as a soft-404
+    (and wrongly demoted to candidate)."""
+    import secrets
+
+    async def _probe():
+        url = urljoin(base, f"/{secrets.token_hex(16)}/{secrets.token_hex(8)}.nonexistent")
+        try:
+            res = await _fetch(url)
+        except Exception:
+            return None  # fail-soft: no baseline → nothing is treated as a baseline match
+        return (res[0], len(res[1])) if (isinstance(res, tuple) and res[0]) else None
+
+    a, b = await asyncio.gather(_probe(), _probe())
+    if not a or not b or a[0] != b[0]:
+        return None  # not a stable catch-all → don't baseline-match on length
+    if abs(a[1] - b[1]) > max(64, min(a[1], b[1]) // 20):
+        return None  # two unknowns differ too much in size → not a fixed soft-404
+    return a
+
+
+def _matches_baseline(status: int, blen: int, baseline: tuple[int, int] | None) -> bool:
+    """True when a probe response looks like the target's not-found baseline
+    (same status, body length within 5% or 64 bytes — soft-404 pages are near-identical)."""
+    if not baseline:
+        return False
+    b_status, b_len = baseline
+    return status == b_status and abs(blen - b_len) <= max(64, b_len // 20)
+
+
+async def _classify_fuzz_paths(base: str, fuzz_inventory: list[dict]) -> tuple[list[dict], int]:
+    """Liveness-classify wordlist-derived endpoints into confirmed vs candidate.
+
+    Issue #180: ffuf crosses one stem with ~12 extensions, so a single wordlist run
+    fabricates hundreds of paths that don't exist. The old gate dropped only exact
+    404s and was capped at 80 probes, so 403s / redirects / soft-404s / the whole
+    unprobed tail registered as real endpoints — inflating the matrix ~3x with cells
+    that can never close and wedging the completion gate.
+
+    Rule (per the issue): a path is CONFIRMED only when its response neither 404s nor
+    403s AND differs from the not-found baseline. Everything else — 403, baseline
+    match (catch-all/soft-404), probe error, templated, or beyond the probe budget —
+    is KEPT as a CANDIDATE (recorded so the signal isn't lost, but flagged so the
+    completion gate and graph view exclude it). Only an exact 404 is dropped outright.
+    Returns ``(kept_with_candidate_flag, dropped_count)``."""
+    concrete = [ep for ep in fuzz_inventory
+                if "{" not in ep.get("path", "") and "}" not in ep.get("path", "")]
+    templated = [ep for ep in fuzz_inventory
+                 if "{" in ep.get("path", "") or "}" in ep.get("path", "")]
+
+    baseline = await _fuzz_baseline(base) if concrete else None
+    to_probe = concrete[:_MAX_FUZZ_VERIFY]
+    tail = concrete[_MAX_FUZZ_VERIFY:]
+
+    sem = asyncio.Semaphore(_FUZZ_PROBE_CONCURRENCY)
+
+    async def _probe(ep):
+        async with sem:
+            return await _fetch(urljoin(base, ep["path"]))
+
+    results = await asyncio.gather(*(_probe(ep) for ep in to_probe), return_exceptions=True)
+
+    kept: list[dict] = []
+    dropped = 0
+    for ep, res in zip(to_probe, results):
+        status = res[0] if isinstance(res, tuple) else 0
+        blen = len(res[1]) if (isinstance(res, tuple) and len(res) > 1) else 0
+        if status == 404:
+            dropped += 1
+            continue
+        confirmed = (status not in (0, 403, 404)
+                     and not _matches_baseline(status, blen, baseline))
+        kept.append({**ep, "candidate": not confirmed})
+
+    # The unprobed tail and templated fuzz paths can't be proven live → candidate.
+    for ep in tail + templated:
+        kept.append({**ep, "candidate": True})
+    return kept, dropped
+
+
 # Source specificity for merge: a param-rich source wins the discovered_by label over a
 # bare crawl URL. Lower rank = more specific.
-_SOURCE_RANK = {"openapi": 0, "swagger": 0, "graphql": 0, "form": 1, "js": 2, "spider": 3}
+# ``ffuf`` is least specific — a wordlist hit is the weakest existence signal, so
+# any real discovery channel (spec/form/js/spider) wins the label on a collision.
+_SOURCE_RANK = {"openapi": 0, "swagger": 0, "graphql": 0, "form": 1, "js": 2, "spider": 3, "ffuf": 4}
+
+# Provenance labels produced by wordlist/extension-permutation fuzzing — these get
+# strict liveness classification (confirmed vs candidate) before registration.
+_FUZZ_SOURCES = frozenset({"ffuf", "wordlist"})
 
 
 def _merge_key(ep: dict) -> tuple:
@@ -456,18 +560,28 @@ def _merge_inventory(inventory: list[dict]) -> list[dict]:
         _union_params_into(cur, ep)
         if _is_more_specific_source(ep, cur):
             cur["discovered_by"] = ep.get("discovered_by")
+        # An endpoint is a candidate only if EVERY contributing source left it
+        # unconfirmed; a single confirmed sighting (spec/form/js/spider, or a
+        # liveness-proven fuzz hit) promotes the merged entry to confirmed.
+        cur["candidate"] = bool(cur.get("candidate", False)) and bool(ep.get("candidate", False))
     return [merged[k] for k in order]
 
 
 async def _register_inventory(inventory: list[dict], auth_context: str) -> dict:
-    """Register every endpoint (add_endpoint dedups); tally new registrations/cells."""
+    """Register every endpoint (add_endpoint dedups); tally new registrations/cells.
+
+    Splits the tally into confirmed vs candidate (issue #180) so callers/operators
+    can see how much of the registered surface is proven-live rather than an
+    unconfirmed wordlist hit."""
     from core.coverage import add_endpoint
     registered = cells = 0
+    reg_confirmed = reg_candidate = 0
     by_source: dict[str, int] = {}
     for ep in inventory:
         try:
             r = await add_endpoint(ep["path"], ep["method"], ep.get("params", []),
-                                   ep.get("discovered_by", "spider"), auth_context)
+                                   ep.get("discovered_by", "spider"), auth_context,
+                                   candidate=bool(ep.get("candidate", False)))
         except Exception:
             continue
         if not r.get("dedup"):
@@ -475,7 +589,12 @@ async def _register_inventory(inventory: list[dict], auth_context: str) -> dict:
             cells += r.get("new_cells", 0)
             src = ep.get("discovered_by", "spider")
             by_source[src] = by_source.get(src, 0) + 1
-    return {"registered": registered, "cells": cells, "by_source": by_source}
+            if ep.get("candidate"):
+                reg_candidate += 1
+            else:
+                reg_confirmed += 1
+    return {"registered": registered, "cells": cells, "by_source": by_source,
+            "registered_confirmed": reg_confirmed, "registered_candidate": reg_candidate}
 
 
 async def import_openapi(spec_url: str, auth: dict | None = None) -> dict:
@@ -537,15 +656,21 @@ async def import_graphql(url: str, auth: dict | None = None) -> dict:
 
 
 async def discover_and_register(target: str, spider_urls: list[str], auth_context: str = "none",
-                                auth: dict | None = None) -> dict:
-    """Enrich spider output with spec/JS/form discovery and auto-register everything.
+                                auth: dict | None = None, crawl_source: str = "spider") -> dict:
+    """Enrich crawl output with spec/JS/form discovery and auto-register everything.
 
     ``auth`` (SP-1): ``{"headers": {...}, "cookies": {...}}`` — the crawl's session,
     attached to every discovery re-fetch so auth-gated specs/routes/forms are seen.
     When present, ``auth_context`` is upgraded from ``none`` to the real form so the
     matrix cells aren't mislabeled unauthenticated.
 
-    Returns ``{"registered", "cells", "by_source", "spec_found", "inventory"}``.
+    ``crawl_source`` (issue #180): provenance of ``spider_urls``. The DOM crawler
+    passes ``"spider"`` (the default); the ffuf handler passes ``"ffuf"`` so wordlist
+    hits are labelled honestly AND routed through strict liveness classification
+    (confirmed vs candidate) instead of registering as real endpoints wholesale.
+
+    Returns ``{"registered", "cells", "by_source", "registered_confirmed",
+    "registered_candidate", "spec_found", "inventory", "unverified_dropped"}``.
     Fail-soft: any fetch/parse error is swallowed; partial results still register.
     """
     parsed_t = urlparse(target)
@@ -559,17 +684,27 @@ async def discover_and_register(target: str, spider_urls: list[str], auth_contex
 
     token = _DISCOVERY_AUTH.set(auth)
     try:
-        inventory: list[dict] = list(_spider_endpoints(spider_urls))
+        # The raw crawl URLs carry the caller's provenance; spec/JS/form discovery
+        # always run (a spec linked from a fuzz hit is still a real spec) and keep
+        # their own trustworthy labels.
+        inventory: list[dict] = list(_spider_endpoints(spider_urls, source=crawl_source))
         spec_ops = await _discover_spec(base, spider_urls)
         if spec_ops:
             inventory += spec_ops
         inventory += await _discover_js(spider_urls)
         inventory += await _discover_forms(spider_urls)
 
-        inventory, dropped = await _verify_live(base, inventory)
+        # Wordlist-derived paths get strict liveness classification (confirmed vs
+        # candidate); everything else keeps the lenient spec-oriented 404-drop.
+        fuzz = [ep for ep in inventory if ep.get("discovered_by") in _FUZZ_SOURCES]
+        rest = [ep for ep in inventory if ep.get("discovered_by") not in _FUZZ_SOURCES]
+        rest, dropped = await _verify_live(base, rest)
+        if fuzz:
+            fuzz, fuzz_dropped = await _classify_fuzz_paths(base, fuzz)
+            dropped += fuzz_dropped
         # Merge same-route entries so a param-rich form/spec isn't shadowed by a
         # param-less crawl URL at add_endpoint's (path, method) dedup.
-        inventory = _merge_inventory(inventory)
+        inventory = _merge_inventory(rest + fuzz)
         result = await _register_inventory(inventory, auth_context)
     finally:
         _DISCOVERY_AUTH.reset(token)

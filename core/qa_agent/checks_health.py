@@ -150,8 +150,11 @@ def _check_budget_limit(session_data: dict, coverage_data: dict) -> dict | None:
     if not max_calls or calls_used / max_calls < 0.9:
         return None
     meta = coverage_data.get("meta", {})
-    total = meta.get("total_cells", 0)
-    tested = meta.get("tested", 0) + meta.get("not_applicable", 0)
+    # Measure over CONFIRMED cells (issue #180) so a matrix full of unconfirmed
+    # wordlist (candidate) cells doesn't fire a false "coverage will be missed" HIR.
+    # Legacy matrices with no split default confirmed = total.
+    total = meta.get("confirmed_cells", meta.get("total_cells", 0))
+    tested = meta.get("addressed_confirmed", meta.get("tested", 0) + meta.get("not_applicable", 0))
     coverage_pct = (tested / total) if total else 1.0
     if coverage_pct >= 0.8:
         return None  # Nearly done — let Smith finish

@@ -139,10 +139,41 @@ class TestGraphApi:
         monkeypatch.setattr("core.findings._load", lambda: {"findings": [
             {"id": "f1", "title": "SQLi", "severity": "high", "target": "http://t.test/login"}]})
         monkeypatch.setattr("core.coverage.get_matrix", lambda: {"endpoints": [], "matrix": []})
-        body = json.loads((await api_graph()).body)
+        req = type("R", (), {"query_params": {}})()  # #182: route now reads query params
+        body = json.loads((await api_graph(req)).body)
         assert set(body) >= {"stats", "nodes", "edges", "candidate_chains",
                              "ranked_findings", "next_targets"}
         assert body["stats"]["nodes"] >= 1
+        scan_session._current = None
+
+    @pytest.mark.asyncio
+    async def test_api_graph_denoises_polluted_matrix(self, monkeypatch):
+        """#182: a matrix full of param-less wordlist endpoints must not bury the
+        host/finding nodes — the finding survives, noise is clustered, and the
+        provenance list is exposed for the dashboard filter."""
+        import core.session as scan_session
+        from core.api_server.routes.findings_routes import api_graph
+        scan_session._current = {"status": "running", "target": "http://t.test", "known_assets": {}}
+        monkeypatch.setattr("core.findings._load", lambda: {"findings": [
+            {"id": "f1", "title": "SQLi", "severity": "high", "target": "http://t.test/login"}]})
+        noise = [{"id": f"n{i}", "path": f"/.noise{i}", "method": "GET", "params": [],
+                  "discovered_by": "ffuf", "candidate": True} for i in range(300)]
+        real = {"id": "e1", "path": "/login", "method": "POST",
+                "params": [{"name": "u", "type": "body_form"}], "discovered_by": "spider"}
+        monkeypatch.setattr("core.coverage.get_matrix", lambda: {
+            "endpoints": noise + [real],
+            "matrix": [{"endpoint_id": "e1", "injection_type": "sqli",
+                        "status": "vulnerable", "param": "u", "finding_id": "f1"}]})
+        req = type("R", (), {"query_params": {}})()
+        body = json.loads((await api_graph(req)).body)
+        kinds = {n["kind"] for n in body["nodes"]}
+        assert "finding" in kinds and "host" in kinds          # not truncated by the noise
+        assert body["stats"]["dropped_endpoints"] >= 300       # the 300 param-less noise eps
+        assert any(n.get("properties", {}).get("cluster") for n in body["nodes"])
+        assert "ffuf" in body["stats"]["provenance"] and "spider" in body["stats"]["provenance"]
+        # far fewer nodes than the raw 300+ endpoints — legible
+        assert len([n for n in body["nodes"] if n["kind"] == "endpoint"
+                    and not n.get("properties", {}).get("cluster")]) < 50
         scan_session._current = None
 
 
