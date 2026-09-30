@@ -138,6 +138,17 @@ cd agent-smith
 
 > ⚠️ **After install, fully restart your client** — the MCP server connects at startup.
 
+### …or one-click in the cloud — GitHub Codespaces
+
+No local Docker required. **Code → Codespaces → Create**, and the devcontainer provisions everything on create: the native harness (Poetry + MCP server, registered with Claude Code *and* OpenCode), all skills, the all-modules Kali tools image, Metasploit, and the recon scanner images. The MCP server is re-ensured on every container start, so a resumed Codespace comes up connected.
+
+| Codespaces secret | Purpose |
+|---|---|
+| `ANTHROPIC_API_KEY` **or** `CLAUDE_CODE_OAUTH_TOKEN` | Claude auth — API billing vs. subscription |
+| `TS_AUTH_KEY` | Tailscale — joins the Codespace to your lab so tools reach targets **and receive reverse-shell / OAST callbacks** |
+
+The harness runs natively; only the hacking tools are containerized. A Codespace has no public inbound IP, so callbacks ride the **tailnet** — `SMITH_LHOST` is auto-wired to the Codespace's Tailscale IP. Every port stays **private** by default (the dashboard is a control plane; the MCP and Kali ports are command-execution surfaces — never expose them publicly).
+
 **Full setup** — other clients (Codex, OpenCode, custom MCP), self-hosted local models (vLLM / DGX Spark), Windows / PowerShell, and the optional Kali & Metasploit images → **[docs/installation.md](docs/installation.md)**.
 
 > 🛡️ **Running a real engagement?** Smith ingests attacker-controlled data and can run commands, so prompt injection is a design reality — run it in an isolated, disposable VM. See **[docs/production-isolation.md](docs/production-isolation.md)**.
@@ -167,6 +178,22 @@ Every pentest Smith runs is also a **structured, redacted dataset of the engagem
 The value compounds: **the more pentests you run, the more data you accumulate — and the better the model you can distill from it.** Pool the streams into a behaviour-cloning dataset and fine-tune a small open-weight base with QLoRA into a **LoRA adapter that runs *as Smith* locally**. Diversity of targets beats raw volume.
 
 → **[docs/training-data.md](docs/training-data.md)** — what's captured, the safety model, and the exporter + DGX Spark QLoRA harness.
+
+---
+
+## Resume & recall a prior engagement
+
+A stopped or finished scan is reusable work. Snapshot it into a durable **engagement store**, then pick up where you left off instead of re-testing from scratch:
+
+```bash
+python3 scripts/build_engagement_digest.py     # → engagements/<name>/ : digest.md + resume.json + assets/coverage/findings
+```
+
+- **Resume** — start a new scan and ingest the store: it merges the prior creds / tokens / endpoints, re-registers the endpoints, and **trust-skips the already-tested cells** so effort goes to what's left.
+  `/pentester scan target.com resume=engagements/<name>`  (or `resume=auto` to match the store by target)
+- **Recall** — `report(action="recall", data={query:"…"})` keyword-searches the prior corpus mid-scan: findings, saved PoCs, raw tool outputs, **and the agent's own prior notes and decisions** — *"have I reasoned about this endpoint / tech / error before?"* — each hit tagged with its source.
+
+Trust-and-skip assumes an unchanged target; use `mode=context` to load prior results as advisory context without skipping. Both build on the per-engagement event stream above, so the more you scan, the more prior context each new engagement can draw on.
 
 ---
 

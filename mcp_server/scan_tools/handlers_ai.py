@@ -8,6 +8,7 @@ Automated coverage is garak; everything it does not cover is handled by
 agent-driven manual testing with the transform() payload tool.
 """
 import json
+import re
 
 import mcp_server.scan_tools as _st  # facade — resolved at call time so unittest
                                      # patches on mcp_server.scan_tools.<name> are seen
@@ -137,6 +138,41 @@ def _normalize_probes(probes: str) -> str:
     )
 
 
+_PROBE_TOKEN = re.compile(r'\b([a-z]\w*)\.([A-Za-z]\w*)\b')
+
+
+def _parse_known_probes(raw: str) -> tuple[set, set]:
+    """From `garak --list_probes` output → (full class names e.g. 'dan.Dan_11_0',
+    module names e.g. 'dan'). Lenient: pulls every module.Class token from lines
+    that mention a probe, tolerating garak's colour codes / version formatting."""
+    classes: set = set()
+    modules: set = set()
+    for line in raw.splitlines():
+        if "probe" not in line.lower():
+            continue
+        for mod, cls in _PROBE_TOKEN.findall(line):
+            if mod == "probes":            # the literal 'probes:' label, not a module
+                continue
+            classes.add(f"{mod}.{cls}")
+            modules.add(mod)
+    return classes, modules
+
+
+def _filter_probes(requested: str, classes: set, modules: set) -> tuple[str, list]:
+    """Keep only probe names garak recognises — a module ('dan') or a full class
+    ('dan.Dan_11_0'). Returns (kept_csv, dropped_list). If the probe list couldn't
+    be learned (both sets empty), keep the request unchanged."""
+    if not classes and not modules:
+        return requested, []
+    kept: list = []
+    dropped: list = []
+    for p in (x.strip() for x in requested.split(",")):
+        if not p:
+            continue
+        (kept if (p in modules or p in classes) else dropped).append(p)
+    return ",".join(kept), dropped
+
+
 def _build_garak_rest_cfg(target, options) -> dict:
     """REST-generator config (-G): the request body ($INPUT slot) and, if given, the
     response parser — without both, every probe scores empty output. localhost is
@@ -157,12 +193,104 @@ def _build_garak_rest_cfg(target, options) -> dict:
     return {"rest": {"RestGenerator": gen}}
 
 
+# Common JSON keys a chat/LLM endpoint returns its reply under, most-specific first.
+_REPLY_KEYS = ("response", "reply", "message", "content", "answer", "text",
+               "output", "completion", "result", "generated_text")
+
+
+def _is_reply_str(v) -> bool:
+    return isinstance(v, str) and bool(v.strip())
+
+
+def _openai_reply_field(data: dict) -> str:
+    """JSONPath for the OpenAI-style `choices[0].message.content` / `.text`, else ''."""
+    ch = data.get("choices")
+    if not (isinstance(ch, list) and ch and isinstance(ch[0], dict)):
+        return ""
+    msg = ch[0].get("message")
+    if isinstance(msg, dict) and _is_reply_str(msg.get("content")):
+        return "$.choices[0].message.content"
+    if _is_reply_str(ch[0].get("text")):
+        return "$.choices[0].text"
+    return ""
+
+
+def _pick_reply_field(data) -> str:
+    """Return a JSONPath to the model's reply string in a parsed JSON response, or
+    '' if none is obvious. Handles the flat `{reply: "..."}` shape, one level of
+    nesting (`{data: {reply: "..."}}`), and the OpenAI `choices[...]` shape."""
+    if not isinstance(data, dict):
+        return ""
+    oai = _openai_reply_field(data)
+    if oai:
+        return oai
+    for k in _REPLY_KEYS:                      # flat: {reply: "..."}
+        if _is_reply_str(data.get(k)):
+            return f"$.{k}"
+    for k, v in data.items():                  # one level of nesting under ANY wrapper key
+        if isinstance(v, dict):
+            for k2 in _REPLY_KEYS:
+                if _is_reply_str(v.get(k2)):
+                    return f"$.{k}.{k2}"
+    return ""
+
+
+async def _autodetect_response_field(target: str, options: dict) -> str:
+    """Best-effort: POST one benign message and locate the reply field in the JSON
+    response, so garak's REST parser can extract the model output. Without it every
+    probe scores empty ('no eval entries parsed — check response_field'). Returns a
+    JSONPath or '' when undetectable. Fail-soft — never raises into the scan."""
+    try:
+        import aiohttp
+        from tools.kali_runner import _host_rewrite
+        body = {options.get("body_key", "message"): "Hello — reply with a short sentence."}
+        async with aiohttp.ClientSession() as s:
+            async with s.post(_host_rewrite(target), json=body, headers=_ai_headers(options),
+                              timeout=aiohttp.ClientTimeout(total=20)) as r:
+                data = await r.json(content_type=None)
+        return _pick_reply_field(data)
+    except Exception:
+        return ""
+
+
+async def _validated_probes(qualified: str) -> str:
+    """Drop probe names garak doesn't recognise — garak 0.15 ABORTS the whole run
+    on any unknown name, so one stale/renamed probe would kill the batch. Validate
+    against garak's own --list_probes (cached). If the list can't be learned, return
+    the request unchanged (no worse than before). Fail-soft."""
+    from tools import garak_runner
+    try:
+        classes, modules = _parse_known_probes(await garak_runner.list_probes())
+        kept, dropped = _filter_probes(qualified, classes, modules)
+        if dropped:
+            log.note(f"garak: dropped unknown probe(s) {dropped} (not in garak's probe list — "
+                     f"would abort the run); running {kept or '(none valid)'}")
+        return kept or qualified
+    except Exception:
+        return qualified
+
+
+async def _resolved_response_field(target, options: dict) -> dict:
+    """Return `options` with an auto-detected `response_field` when the operator
+    didn't set one — a garak REST run with no response parser scores every probe
+    empty (the "no eval entries parsed" failure). Best-effort; unchanged on miss."""
+    if options.get("response_field"):
+        return options
+    rf = await _autodetect_response_field(target, options)
+    if rf:
+        log.note(f"garak: auto-detected response_field={rf} (was unset — needed for eval parsing)")
+        return {**options, "response_field": rf}
+    return options
+
+
 async def _handle_garak(target, flags, options):
     from tools import garak_runner
 
     _record("garak")  # track for coverage/skill-worked gates
     timeout = options.get("timeout", 900)
-    qualified = _normalize_probes(options.get("probes", "dan,encoding,promptinject,leakreplay,xss"))
+    qualified = await _validated_probes(
+        _normalize_probes(options.get("probes", "dan,encoding,promptinject,leakreplay,xss")))
+    options = await _resolved_response_field(target, options)
     rest_cfg = _build_garak_rest_cfg(target, options)
 
     log.tool_call("garak", {"target": target, "probes": qualified})
