@@ -110,6 +110,36 @@ async def ensure_image() -> tuple[bool, str]:
     return True, "built"
 
 
+_PROBE_LIST_CACHE: dict = {}   # per-process cache of `garak --list_probes` raw output
+
+
+async def list_probes() -> str:
+    """Raw `garak --list_probes` output from the image, for probe-name validation
+    (garak 0.15 ABORTS the whole run on any unknown probe). Cached per process;
+    returns '' if the image is unavailable or the call fails (caller then skips
+    validation and runs as-is)."""
+    if "raw" in _PROBE_LIST_CACHE:
+        return _PROBE_LIST_CACHE["raw"]
+    ok, _ = await ensure_image()
+    if not ok:
+        _PROBE_LIST_CACHE["raw"] = ""
+        return ""
+    raw = ""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            docker_executable(), "run", "--rm", "--cap-drop=ALL",
+            "--security-opt=no-new-privileges", GARAK_IMAGE,
+            "sh", "-c", "garak --list_probes",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+        )
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=120)
+        raw = out.decode(errors="replace")
+    except Exception:
+        raw = ""
+    _PROBE_LIST_CACHE["raw"] = raw
+    return raw
+
+
 async def run_garak(rest_config: dict, probes: str, flags: str = "", timeout: int = 900) -> str:
     """Run garak REST-generator probes ephemerally.
 

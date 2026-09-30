@@ -8,6 +8,7 @@ Automated coverage is garak; everything it does not cover is handled by
 agent-driven manual testing with the transform() payload tool.
 """
 import json
+import re
 
 import mcp_server.scan_tools as _st  # facade — resolved at call time so unittest
                                      # patches on mcp_server.scan_tools.<name> are seen
@@ -137,6 +138,41 @@ def _normalize_probes(probes: str) -> str:
     )
 
 
+_PROBE_TOKEN = re.compile(r'\b([a-z]\w*)\.([A-Za-z]\w*)\b')
+
+
+def _parse_known_probes(raw: str) -> tuple[set, set]:
+    """From `garak --list_probes` output → (full class names e.g. 'dan.Dan_11_0',
+    module names e.g. 'dan'). Lenient: pulls every module.Class token from lines
+    that mention a probe, tolerating garak's colour codes / version formatting."""
+    classes: set = set()
+    modules: set = set()
+    for line in raw.splitlines():
+        if "probe" not in line.lower():
+            continue
+        for mod, cls in _PROBE_TOKEN.findall(line):
+            if mod == "probes":            # the literal 'probes:' label, not a module
+                continue
+            classes.add(f"{mod}.{cls}")
+            modules.add(mod)
+    return classes, modules
+
+
+def _filter_probes(requested: str, classes: set, modules: set) -> tuple[str, list]:
+    """Keep only probe names garak recognises — a module ('dan') or a full class
+    ('dan.Dan_11_0'). Returns (kept_csv, dropped_list). If the probe list couldn't
+    be learned (both sets empty), keep the request unchanged."""
+    if not classes and not modules:
+        return requested, []
+    kept: list = []
+    dropped: list = []
+    for p in (x.strip() for x in requested.split(",")):
+        if not p:
+            continue
+        (kept if (p in modules or p in classes) else dropped).append(p)
+    return ",".join(kept), dropped
+
+
 def _build_garak_rest_cfg(target, options) -> dict:
     """REST-generator config (-G): the request body ($INPUT slot) and, if given, the
     response parser — without both, every probe scores empty output. localhost is
@@ -223,6 +259,20 @@ async def _handle_garak(target, flags, options):
     _record("garak")  # track for coverage/skill-worked gates
     timeout = options.get("timeout", 900)
     qualified = _normalize_probes(options.get("probes", "dan,encoding,promptinject,leakreplay,xss"))
+    # Drop probe names garak doesn't recognise — garak 0.15 ABORTS the whole run on
+    # any unknown name, so one stale/renamed probe would kill the batch. Validate
+    # against garak's own --list_probes (cached); if the list can't be learned, run
+    # as-is (no worse than before).
+    try:
+        _classes, _modules = _parse_known_probes(await garak_runner.list_probes())
+        _kept, _dropped = _filter_probes(qualified, _classes, _modules)
+        if _dropped:
+            log.note(f"garak: dropped unknown probe(s) {_dropped} (not in garak's probe list — "
+                     f"would abort the run); running {_kept or '(none valid)'}")
+        if _kept:
+            qualified = _kept
+    except Exception:
+        pass
     # Auto-detect the reply field when the operator didn't set one — a garak REST run
     # with no response parser scores every probe empty (the "no eval entries parsed"
     # failure). Best-effort; if detection fails the behaviour is unchanged.
