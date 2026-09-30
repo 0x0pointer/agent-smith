@@ -157,12 +157,80 @@ def _build_garak_rest_cfg(target, options) -> dict:
     return {"rest": {"RestGenerator": gen}}
 
 
+# Common JSON keys a chat/LLM endpoint returns its reply under, most-specific first.
+_REPLY_KEYS = ("response", "reply", "message", "content", "answer", "text",
+               "output", "completion", "result", "generated_text")
+
+
+def _is_reply_str(v) -> bool:
+    return isinstance(v, str) and bool(v.strip())
+
+
+def _openai_reply_field(data: dict) -> str:
+    """JSONPath for the OpenAI-style `choices[0].message.content` / `.text`, else ''."""
+    ch = data.get("choices")
+    if not (isinstance(ch, list) and ch and isinstance(ch[0], dict)):
+        return ""
+    msg = ch[0].get("message")
+    if isinstance(msg, dict) and _is_reply_str(msg.get("content")):
+        return "$.choices[0].message.content"
+    if _is_reply_str(ch[0].get("text")):
+        return "$.choices[0].text"
+    return ""
+
+
+def _pick_reply_field(data) -> str:
+    """Return a JSONPath to the model's reply string in a parsed JSON response, or
+    '' if none is obvious. Handles the flat `{reply: "..."}` shape, one level of
+    nesting (`{data: {reply: "..."}}`), and the OpenAI `choices[...]` shape."""
+    if not isinstance(data, dict):
+        return ""
+    oai = _openai_reply_field(data)
+    if oai:
+        return oai
+    for k in _REPLY_KEYS:                      # flat: {reply: "..."}
+        if _is_reply_str(data.get(k)):
+            return f"$.{k}"
+    for k, v in data.items():                  # one level of nesting under ANY wrapper key
+        if isinstance(v, dict):
+            for k2 in _REPLY_KEYS:
+                if _is_reply_str(v.get(k2)):
+                    return f"$.{k}.{k2}"
+    return ""
+
+
+async def _autodetect_response_field(target: str, options: dict) -> str:
+    """Best-effort: POST one benign message and locate the reply field in the JSON
+    response, so garak's REST parser can extract the model output. Without it every
+    probe scores empty ('no eval entries parsed — check response_field'). Returns a
+    JSONPath or '' when undetectable. Fail-soft — never raises into the scan."""
+    try:
+        import aiohttp
+        from tools.kali_runner import _host_rewrite
+        body = {options.get("body_key", "message"): "Hello — reply with a short sentence."}
+        async with aiohttp.ClientSession() as s:
+            async with s.post(_host_rewrite(target), json=body, headers=_ai_headers(options),
+                              timeout=aiohttp.ClientTimeout(total=20)) as r:
+                data = await r.json(content_type=None)
+        return _pick_reply_field(data)
+    except Exception:
+        return ""
+
+
 async def _handle_garak(target, flags, options):
     from tools import garak_runner
 
     _record("garak")  # track for coverage/skill-worked gates
     timeout = options.get("timeout", 900)
     qualified = _normalize_probes(options.get("probes", "dan,encoding,promptinject,leakreplay,xss"))
+    # Auto-detect the reply field when the operator didn't set one — a garak REST run
+    # with no response parser scores every probe empty (the "no eval entries parsed"
+    # failure). Best-effort; if detection fails the behaviour is unchanged.
+    if not options.get("response_field"):
+        _rf = await _autodetect_response_field(target, options)
+        if _rf:
+            options = {**options, "response_field": _rf}
+            log.note(f"garak: auto-detected response_field={_rf} (was unset — needed for eval parsing)")
     rest_cfg = _build_garak_rest_cfg(target, options)
 
     log.tool_call("garak", {"target": target, "probes": qualified})
