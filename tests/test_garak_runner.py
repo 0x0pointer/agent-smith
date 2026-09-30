@@ -399,3 +399,66 @@ def test_read_new_evals_tracks_probe_and_attempts(tmp_path):
     assert gr._read_new_evals(str(p), state) == ""     # no eval yet
     assert state["probe"] == "dan.DanInTheWild"        # ...but probe + attempts tracked
     assert state["attempts"] == 2
+
+
+# ── reap the container no matter how run_garak exits (the 39-min-orphan bug) ───
+
+def test_reap_container_sync_failsoft(monkeypatch):
+    import subprocess
+    calls = []
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: calls.append(a[0]))
+    gr._reap_container_sync("smith_garak_abc")
+    assert calls and "kill" in calls[0] and "smith_garak_abc" in calls[0]
+
+    def _boom(*a, **k):
+        raise OSError("no docker")
+    monkeypatch.setattr(subprocess, "Popen", _boom)
+    gr._reap_container_sync("smith_garak_abc")     # must not raise
+
+
+@pytest.mark.asyncio
+async def test_run_garak_reaps_on_normal_exit(monkeypatch):
+    async def _img():
+        return True
+    monkeypatch.setattr(gr, "image_exists", _img)
+    reaped = []
+    monkeypatch.setattr(gr, "_reap_container_sync", lambda name: reaped.append(name))
+
+    async def _exec(*a, **k):
+        return _FakeProc(b"=== GARAK REPORT JSONL ===\n=== GARAK EXIT 0 ===\n")
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _exec)
+
+    await gr.run_garak({"rest": {}}, "dan", timeout=30)
+    assert reaped and reaped[0].startswith("smith_garak_")   # finally always reaps
+
+
+@pytest.mark.asyncio
+async def test_run_garak_reaps_on_cancellation(monkeypatch):
+    # the actual bug: the client cancels the tool call mid-run; only the timeout path
+    # reaped before, so the container orphaned. The finally must reap on cancel too.
+    async def _img():
+        return True
+    monkeypatch.setattr(gr, "image_exists", _img)
+    reaped = []
+    monkeypatch.setattr(gr, "_reap_container_sync", lambda name: reaped.append(name))
+
+    class _HangProc:
+        returncode = None
+
+        def kill(self):
+            pass
+
+        async def communicate(self):
+            await asyncio.sleep(3600)
+            return (b"", b"")
+
+    async def _exec(*a, **k):
+        return _HangProc()
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _exec)
+
+    task = asyncio.create_task(gr.run_garak({"rest": {}}, "dan", timeout=3600))
+    await asyncio.sleep(0.1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert reaped, "container was NOT reaped on cancellation"
