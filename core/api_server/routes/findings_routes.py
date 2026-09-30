@@ -136,20 +136,26 @@ async def api_coverage() -> JSONResponse:
 
 
 @router.get("/api/graph")
-async def api_graph() -> JSONResponse:
+async def api_graph(request: Request) -> JSONResponse:
     """Phase 2: the knowledge-graph world-model for the dashboard's World Model
     tab — nodes/edges + graph-derived candidate chains, finding rankings, and
     value-ranked next targets. The dashboard is a separate process, so load the
-    session from disk first (findings/matrix are already disk-backed)."""
+    session from disk first (findings/matrix are already disk-backed).
+
+    Query params (#182): ``show_untested=1`` keeps 0-param/0-tested endpoints;
+    ``discovered_by=<src>`` filters endpoints by provenance."""
     empty = {"stats": {"nodes": 0, "edges": 0, "by_kind": {}}, "nodes": [], "edges": [],
              "candidate_chains": [], "ranked_findings": [], "next_targets": []}
     try:
         from core import session as scan_session
-        from core.graph import build_graph, candidate_chains, next_targets, rank_findings
+        from core.graph import build_graph, candidate_chains, next_targets, rank_findings, render_view
         from core.graph import model as gm
         if scan_session.get() is None:
             scan_session.load_from_disk()
         g = build_graph()
+        qp = request.query_params
+        show_untested = qp.get("show_untested") in ("1", "true", "yes")
+        prov_filter = qp.get("discovered_by") or None
 
         # Worklist semantics: "Proposed kill-chains" and "Deepen next" should DRAIN to
         # empty as work is proven — mirroring "next_targets", which empties when 0 cells
@@ -163,20 +169,27 @@ async def api_graph() -> JSONResponse:
                       if g.out_edges(f.id, gm.ESCALATES_TO)}
         ranked = [r for r in rank_findings(g) if r["finding_id"] in open_fids]
 
-        # Serialize the graph for the World Model tab. CRITICAL: keep only edges whose BOTH
-        # endpoints are real nodes BEFORE any cap. The matrix contributes 846 tested_for
-        # edges that point at injection-type PSEUDO-nodes the graph never materializes — the
-        # client drops them as dangling anyway, but if they're serialized first they eat the
-        # edge budget and the meaningful found_on / reaches / provides / requires / leaks edges
-        # (which come after) get truncated away — leaving findings, discovered hosts and
-        # primitives floating disconnected. Filter, THEN cap.
-        node_list = list(g.nodes.values())[:500]
-        node_ids = {n.id for n in node_list}
-        real_edges = [e for e in g.edges
-                      if e.src in node_ids and e.dst in node_ids and e.src != e.dst][:2000]
+        # Serialize the graph for the World Model tab via the interest-ranked render
+        # projection (#182). The old code took an insertion-order list(g.nodes)[:500]
+        # slice — but _assemble inserts findings/hosts/primitives LAST, so a matrix with
+        # hundreds of (often non-existent) endpoints pushed exactly the interesting
+        # terminal nodes past the cut, leaving the map an unreadable field of identical
+        # endpoint nodes. render_view keeps ALL non-endpoint kinds, interest-ranks and
+        # caps endpoints, default-hides 0-param/0-tested dead weight, honours the
+        # provenance filter, and folds the remainder into '+N more' cluster nodes. Edges
+        # among the kept nodes are filtered (dropping dangling injection-pseudo edges) by
+        # render_view itself.
+        node_list, real_edges, dropped_eps = render_view(
+            g, show_untested=show_untested, discovered_by=prov_filter)
+        # Distinct provenance labels over ALL endpoints (not the filtered view) so the
+        # dashboard's provenance dropdown stays stable while a filter is applied.
+        provenance = sorted({n.attrs.get("discovered_by") for n in g.of_kind(gm.ENDPOINT)
+                             if n.attrs.get("discovered_by")})
+        stats = {**g.stats(), "rendered_nodes": len(node_list),
+                 "dropped_endpoints": dropped_eps, "provenance": provenance}
 
         return JSONResponse({
-            "stats": g.stats(),
+            "stats": stats,
             # Labeled-property-graph shape: each node/edge carries its full property bag
             # (attrs) so the dashboard can inspect it Neo4j-style. Flat src/dst/severity
             # kept for backward-compat with an older cached frontend.

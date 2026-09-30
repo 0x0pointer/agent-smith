@@ -16,6 +16,12 @@
           <button class="wm-btn wm-btn-on" id="wm-layout-force" onclick="wmSetLayout('force')"
                   title="Force — physics-based layout (default)">✦ Force</button>
         </span>
+        <select class="wm-btn" id="wm-prov-filter" onchange="wmSetProvFilter(this.value)"
+                title="Filter endpoints by discovery source (spider / ffuf / openapi / …)">
+          <option value="">all sources</option>
+        </select>
+        <button class="wm-btn" id="wm-untested-btn" onclick="wmToggleUntested()"
+                title="Show endpoints with no params and no tested cells (hidden by default as noise)">◌ Untested</button>
         <button class="wm-btn" id="wm-bridges-btn" onclick="wmToggleBridges()"
                 title="Highlight compositional PROVIDES / REQUIRES capability bridges">◆ Bridges</button>
         <button class="wm-btn" onclick="wmRelayout()" title="Re-run the current layout">⟳</button>

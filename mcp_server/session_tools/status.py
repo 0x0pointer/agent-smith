@@ -61,11 +61,18 @@ def _build_status_base(
         "tool_calls": summary.get("tool_calls_total", 0),
         "coverage": {
             "total_cells": meta.get("total_cells", 0),
+            # Confirmed vs candidate (issue #180): candidate cells come from
+            # unconfirmed wordlist paths and are excluded from the completion gate,
+            # so surface both so the operator sees the real denominator.
+            "confirmed_cells": meta.get("confirmed_cells", meta.get("total_cells", 0)),
+            "candidate_cells": meta.get("candidate_cells", 0),
             "tested": meta.get("tested", 0),
             "vulnerable": meta.get("vulnerable", 0),
             "not_applicable": meta.get("not_applicable", 0),
             "skipped": meta.get("skipped", 0),
             "endpoints": len(cov.get("endpoints", [])),
+            "confirmed_endpoints": meta.get("confirmed_endpoints", len(cov.get("endpoints", []))),
+            "candidate_endpoints": meta.get("candidate_endpoints", 0),
         },
     }
     web_work_done = any(t in _st._effective_tools() for t in ("httpx", "spider", "ffuf", "nuclei"))

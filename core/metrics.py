@@ -131,9 +131,15 @@ def _compute(
     calls_per_finding = round(tool_calls / findings_count, 2) if findings_count else None
 
     # ── Coverage ─────────────────────────────────────────────────────────────
+    # coverage_rate is measured over CONFIRMED cells (issue #180): candidate cells
+    # come from unconfirmed wordlist paths and would overstate completeness ~3x.
+    # Legacy matrices with no split default confirmed = total, so the figure is
+    # unchanged for them.
     total_cells = meta.get("total_cells", 0)
+    confirmed_total = meta.get("confirmed_cells", total_cells)
     addressed = meta.get("addressed", meta.get("tested", 0) + meta.get("not_applicable", 0))
-    coverage_rate = round(addressed / total_cells * 100, 1) if total_cells else 0.0
+    addressed_confirmed = meta.get("addressed_confirmed", addressed)
+    coverage_rate = round(addressed_confirmed / confirmed_total * 100, 1) if confirmed_total else 0.0
 
     tested_statuses = {"tested_clean", "vulnerable"}
     tested_injection_types = sorted({
@@ -219,6 +225,8 @@ def _compute(
         # Coverage
         "endpoint_count":          len(endpoints),
         "total_cells":             total_cells,
+        "confirmed_cells":         confirmed_total,
+        "candidate_cells":         meta.get("candidate_cells", 0),
         "coverage_rate_pct":       coverage_rate,
         "injection_types_tested":  tested_injection_types,
         "injection_breadth":       len(tested_injection_types),

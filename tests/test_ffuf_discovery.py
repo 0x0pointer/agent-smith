@@ -111,9 +111,11 @@ async def test_handle_ffuf_auto_registers_bare_word_paths(monkeypatch):
 
     captured = {}
 
-    async def fake_register(target, spider_urls, auth_context="none", auth=None):
+    async def fake_register(target, spider_urls, auth_context="none", auth=None,
+                            crawl_source="spider"):
         captured["target"] = target
         captured["urls"] = list(spider_urls)
+        captured["crawl_source"] = crawl_source
         return {"registered": len(spider_urls), "cells": len(spider_urls) * 12}
 
     monkeypatch.setattr(kali_runner, "exec_command", fake_exec)
@@ -127,5 +129,8 @@ async def test_handle_ffuf_auto_registers_bare_word_paths(monkeypatch):
         "http://t.test/admin", "http://t.test/login",
         "http://t.test/.git", "http://t.test/config.php",
     ]
+    # issue #180: ffuf paths must reach discovery labelled 'ffuf', not 'spider',
+    # so they can be liveness-classified and filtered by source.
+    assert captured["crawl_source"] == "ffuf"
     # the operator-facing note reports the auto-registered endpoints/cells
     assert "AUTO-DISCOVERY" in result and "registered 4" in result

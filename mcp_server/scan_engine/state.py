@@ -34,10 +34,15 @@ def get_state() -> dict:
     tools_run = set(current.get("tools_called", []))
     cov = get_matrix()
     meta = cov.get("meta", {})
-    total_cells = meta.get("total_cells", 0)
+    # Measure over CONFIRMED cells (issue #180) so the phase logic and the coverage
+    # string agree with the completion gate — candidate (unconfirmed wordlist) cells
+    # can't be closed and would otherwise wedge the phase and overstate the total.
+    # Legacy matrices with no split default confirmed = total.
+    total_cells = meta.get("confirmed_cells", meta.get("total_cells", 0))
     # Use the pre-computed "addressed" counter so phase logic agrees with coverage blockers.
     # skipped is not addressed — it is a deferral. See core/coverage.ADDRESSED_STATUSES.
-    tested = meta.get("addressed", meta.get("tested", 0) + meta.get("not_applicable", 0))
+    tested = meta.get("addressed_confirmed",
+                      meta.get("addressed", meta.get("tested", 0) + meta.get("not_applicable", 0)))
     vulnerable = meta.get("vulnerable", 0)
     endpoints = len(cov.get("endpoints", []))
 

@@ -166,6 +166,20 @@ class TestCoverageSaturation:
     def test_empty_matrix_not_saturated(self):
         assert ph.coverage_saturated({"matrix": []}) is False   # nothing built yet
 
+    def test_candidate_pending_does_not_pin_phase_b(self):
+        # issue #180: candidate (unconfirmed wordlist) cells can never be closed —
+        # they must not block B→C, else phantom endpoints wedge completion forever.
+        assert ph.coverage_saturated({"matrix": [
+            {"status": "pending", "injection_type": "sqli", "candidate": True},
+            {"status": "pending", "injection_type": "cors", "candidate": True},
+            {"status": "tested_clean", "injection_type": "sqli"}]}) is True
+
+    def test_confirmed_pending_still_blocks_despite_candidates(self):
+        # a real, confirmed pending cell still pins the phase even when candidates exist
+        assert ph.coverage_saturated({"matrix": [
+            {"status": "pending", "injection_type": "sqli", "candidate": True},
+            {"status": "pending", "injection_type": "xss"}]}) is False
+
 
 class TestTransitions:
     def test_forward_only(self, monkeypatch):

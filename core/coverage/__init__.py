@@ -12,9 +12,10 @@ Schema
 {
   "meta":      { "created": "<ISO>", "target": "", "total_cells": 0,
                  "tested": 0, "vulnerable": 0, "not_applicable": 0, "skipped": 0 },
-  "endpoints": [ { id, path, method, params, discovered_by, discovered_at, auth_context } ],
+  "endpoints": [ { id, path, method, params, discovered_by, discovered_at,
+                   auth_context, candidate } ],
   "matrix":    [ { id, endpoint_id, param, param_type, injection_type,
-                   status, notes, finding_id, tested_at, tested_by } ]
+                   status, notes, finding_id, tested_at, tested_by, candidate } ]
 }
 
 Integrity rules
@@ -109,6 +110,24 @@ def _recount(data: dict) -> None:
     data["meta"]["not_applicable"] = sum(1 for c in cells if c["status"] == "not_applicable")
     data["meta"]["skipped"]        = sum(1 for c in cells if c["status"] == "skipped")
     data["meta"]["addressed"]      = sum(1 for c in cells if c["status"] in ADDRESSED_STATUSES)
+
+    # Confirmed vs candidate split (issue #180). A candidate cell belongs to an
+    # endpoint whose existence liveness-classification could not prove (a wordlist
+    # hit that 403'd / matched the not-found baseline / went unprobed). A missing
+    # flag means confirmed, so legacy matrices and every non-fuzz cell count as
+    # confirmed. The completion gate and coverage % should measure CONFIRMED cells
+    # so ~3k phantom cells from non-existent paths can't wedge coverage or deflate
+    # the headline figure.
+    candidate_cells = sum(1 for c in cells if c.get("candidate"))
+    data["meta"]["candidate_cells"] = candidate_cells
+    data["meta"]["confirmed_cells"] = len(cells) - candidate_cells
+    data["meta"]["addressed_confirmed"] = sum(
+        1 for c in cells if not c.get("candidate") and c["status"] in ADDRESSED_STATUSES
+    )
+    eps = data.get("endpoints", [])
+    cand_eps = sum(1 for e in eps if e.get("candidate"))
+    data["meta"]["candidate_endpoints"] = cand_eps
+    data["meta"]["confirmed_endpoints"] = len(eps) - cand_eps
 
 
 # ---------------------------------------------------------------------------
