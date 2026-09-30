@@ -97,6 +97,23 @@
       + `<span class="air-bar-val" style="color:${col}">${pct}% <span class="air-sub-note">${g.fails}/${g.total}</span></span></div>`;
   }
 
+  // Live "⟳ garak running — probe X · N generations" line so a long probe doesn't
+  // look frozen between results. Returns '' when garak isn't running.
+  function _garakStatusLine(gs) {
+    if (!gs || !gs.running) return '';
+    const probe = gs.probe ? esc(gs.probe) : 'starting…';
+    const gen = gs.attempts ? ` · ${gs.attempts} generations` : '';
+    let ago = '';
+    if (gs.ts) {
+      const s = Math.max(0, Math.round((Date.now() - new Date(gs.ts).getTime()) / 1000));
+      ago = ` · updated ${s}s ago`;
+    }
+    return `<div class="air-banner" style="border-left-color:#58a6ff;margin-bottom:8px">`
+      + `<span class="air-cal-dot" style="background:#58a6ff"></span>`
+      + `<div><b style="color:#58a6ff">⟳ garak running</b> — ${probe}`
+      + `<span class="air-sub-note">${gen}${ago}</span></div></div>`;
+  }
+
   function renderAiRedteam(ai, cov, fin) {
     const cells = (cov.matrix || []).filter(c =>
       (c.injection_type in _AI_LLM_LABELS) || (c.injection_type in _MCP_LABELS) || String(c.injection_type).startsWith('mcp_'));
@@ -290,10 +307,11 @@
     }
 
     // ── garak ─────────────────────────────────────────────────────────────
+    const statusLine = _garakStatusLine(ai.garak_status);
     const garakWrap = document.getElementById('air-garak');
-    garakWrap.innerHTML = garak.length
+    garakWrap.innerHTML = statusLine + (garak.length
       ? garak.slice(-40).reverse().map(_garakBarRow).join('')
-      : '<div class="empty-placeholder">No garak runs yet — scan(tool="garak", ...).</div>';
+      : (statusLine ? '' : '<div class="empty-placeholder">No garak runs yet — scan(tool="garak", ...).</div>'));
 
     // ── Defenses: input-filter bypass map ─────────────────────────────────
     const filterWrap = document.getElementById('air-filter');
@@ -328,10 +346,10 @@
     const liteWrap = document.getElementById('air-garak-lite');
     if (liteWrap) {
       const top = garak.slice().sort((a, b) => (b.attack_success_rate || 0) - (a.attack_success_rate || 0)).slice(0, 8);
-      liteWrap.innerHTML = top.length
+      liteWrap.innerHTML = statusLine + (top.length
         ? top.map(_garakBarRow).join('')
           + (garak.length > 8 ? `<div class="air-sub-note" style="margin-top:6px">+${garak.length - 8} more under “Automated (garak)” →</div>` : '')
-        : '<div class="empty-placeholder">No garak runs yet — scan(tool="garak", ...).</div>';
+        : (statusLine ? '' : '<div class="empty-placeholder">No garak runs yet — scan(tool="garak", ...).</div>'));
     }
 
     // ── Sub-tab badges: show where the data is, so it isn't hidden ───────────

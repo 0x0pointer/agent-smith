@@ -452,8 +452,28 @@ async def _handle_garak(target, flags, options):
         except Exception:
             pass
 
-    raw = _clip(await garak_runner.run_garak(rest_cfg, qualified, flags=flags, timeout=timeout,
-                                             on_progress=_stream_to_dashboard), 14_000)
+    def _stream_status(st):             # live "⟳ running probe X" heartbeat (fail-soft)
+        try:
+            from core import ai_redteam
+            ai_redteam.record_garak_status({**st, "running": True, "target": target})
+        except Exception:
+            pass
+
+    try:
+        from core import ai_redteam
+        ai_redteam.record_garak_status({"running": True, "target": target, "probe": "", "attempts": 0})
+    except Exception:
+        pass
+    try:
+        raw = _clip(await garak_runner.run_garak(rest_cfg, qualified, flags=flags, timeout=timeout,
+                                                 on_progress=_stream_to_dashboard,
+                                                 on_status=_stream_status), 14_000)
+    finally:
+        try:
+            from core import ai_redteam
+            ai_redteam.record_garak_status({"running": False})
+        except Exception:
+            pass
     cost_tracker.finish(call_id, raw)
     log.tool_result("garak", raw)
     try:                                    # final refine of the dashboard AI Red Team tab (fail-soft)
