@@ -546,6 +546,57 @@ def test_skill_worked_false_for_freshly_declared_skill_even_after_prior_scan_wor
     assert core.session.skill_worked("business-logic") is True
 
 
+# ── ai-redteam deep-work gate: garak alone must NOT clear it (A + B) ──────────
+
+def test_ai_redteam_gate_needs_manual_layer_not_just_garak():
+    core.session.start("chat.example.com")
+    core.session.set_skill("ai-redteam")
+    core.session.add_tool_called("garak")            # automated half only
+    assert core.session.skill_worked("ai-redteam") is False
+    core.session.add_tool_called("redteam")          # (A) the manual attack engine fired
+    assert core.session.skill_worked("ai-redteam") is True
+
+
+def test_ai_redteam_gate_satisfied_by_tested_llm_cells():
+    import json
+    import core.coverage as cov
+    core.session.start("chat.example.com")
+    core.session.set_skill("ai-redteam")
+    core.session.add_tool_called("garak")
+    assert core.session.skill_worked("ai-redteam") is False
+    # (B) an LLM attack cell was actually tested -> the manual layer engaged
+    cov.COVERAGE_FILE.write_text(
+        json.dumps({"matrix": [{"injection_type": "jailbreak", "status": "tested_clean"}]}),
+        encoding="utf-8")
+    assert core.session.skill_worked("ai-redteam") is True
+
+
+def test_ai_redteam_deep_hint_present_until_met():
+    core.session.start("chat.example.com")
+    core.session.set_skill("ai-redteam")
+    core.session.add_tool_called("garak")
+    assert "feedback_attack" in core.session.skill_deep_requirement_hint("ai-redteam")
+    core.session.add_tool_called("redteam")
+    assert core.session.skill_deep_requirement_hint("ai-redteam") == ""
+
+
+def test_deep_requirement_scoped_to_ai_redteam_only():
+    # a skill with no deep requirement still clears on a single tool (no regression)
+    core.session.start("example.com")
+    core.session.set_skill("web-exploit")
+    core.session.add_tool_called("http")
+    assert core.session.skill_worked("web-exploit") is True
+
+
+def test_pending_gates_carries_deep_hint():
+    core.session.start("chat.example.com")
+    core.session.set_skill("ai-redteam")
+    core.session.add_tool_called("garak")
+    core.session.trigger_gate("g-ai", "LLM endpoint registered", ["ai-redteam"])
+    pend = [g for g in core.session.pending_gates() if g.get("id") == "g-ai"]
+    assert pend and pend[0].get("deep_requirement_hint")
+
+
 def test_reconcile_worked_gates_only_satisfies_worked_skills():
     core.session.start("example.com")
     core.session.trigger_gate("api_coverage", "api discovered", ["api-security"])

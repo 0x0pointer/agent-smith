@@ -68,14 +68,20 @@ def satisfy_gate(gate_id: str, skill_name: str) -> dict | None:
 
 
 def pending_gates() -> list[dict]:
-    """Return unsatisfied, non-deferred gates."""
+    """Return unsatisfied, non-deferred gates. A gate whose required skill still owes
+    its MANUAL layer is annotated with ``deep_requirement_hint`` so the model sees WHY
+    it can't clear the gate by, e.g., firing garak alone."""
     if _sess._current is None:
         return []
     deferred = set(_sess._current.get("deferred_gates", []))
-    return [
-        g for g in _sess._current.get("gates", [])
-        if g.get("status") == "pending" and g.get("id", "") not in deferred
-    ]
+    out: list[dict] = []
+    for g in _sess._current.get("gates", []):
+        if g.get("status") != "pending" or g.get("id", "") in deferred:
+            continue
+        hints = [h for h in (skill_deep_requirement_hint(s)
+                             for s in g.get("required_skills", [])) if h]
+        out.append({**g, "deep_requirement_hint": " ; ".join(hints)} if hints else g)
+    return out
 
 
 def defer_gates(gate_ids: list[str]) -> None:
@@ -144,6 +150,68 @@ def set_skill(
     return _sess._current
 
 
+# ── Deep-work requirements ─────────────────────────────────────────────────────
+# Skills whose completion gate needs MORE than "any tool fired" — a single automated
+# tool is not the assessment. For such a skill the gate clears only when its MANUAL
+# layer is attributable to it: the required tool fired under it (A), OR the coverage
+# cells that layer produces are actually tested (B). Both paths are dischargeable, so
+# the gate always terminates once the manual work is genuinely done.
+_SKILL_DEEP_REQUIREMENTS = {
+    # ai-redteam's automated half is garak; its manual half is the redteam() attack
+    # engine (calibrate/filter_probe/feedback_attack — the k/N reproducibility). Garak
+    # alone is NOT the assessment, so the gate needs redteam() to have fired OR the LLM
+    # attack cells to be tested — otherwise the agent could fire garak once and leave.
+    "ai-redteam": {
+        "tool": "redteam",
+        "coverage_types": ("jailbreak", "system_prompt_leak", "prompt_injection",
+                           "sensitive_info_disclosure"),
+        "hint": ("garak is only ai-redteam's automated half — run "
+                 "redteam(action='feedback_attack') (the k/N attack engine), or test the "
+                 "jailbreak / system_prompt_leak / prompt_injection cells, before this gate clears"),
+    },
+}
+
+
+def _skill_did_tool(skill_name: str, tool_name: str) -> bool:
+    """True if ``tool_name`` fired while ``skill_name`` was the active skill."""
+    if not tool_name or _sess._current is None:
+        return False
+    return any(e.get("skill") == skill_name and tool_name in (e.get("tools") or [])
+               for e in _sess._current.get("skill_history", []))
+
+
+def _coverage_types_tested(types) -> bool:
+    """True if at least one matrix cell of these injection types was actually TESTED
+    (tested_clean/vulnerable — not merely deferred/NA). Deferred import + fail-soft so
+    a coverage read never breaks gate evaluation."""
+    if not types:
+        return False
+    try:
+        import core.coverage as _cov
+        cells = _cov._load().get("matrix", [])
+    except Exception:
+        return False
+    tset = set(types)
+    return any(c.get("injection_type") in tset and c.get("status") in ("tested_clean", "vulnerable")
+               for c in cells)
+
+
+def _deep_requirement_met(skill_name: str, req: dict) -> bool:
+    """The skill's MANUAL layer ran: its required tool fired under it (A), OR the
+    coverage cells that layer produces are tested (B)."""
+    return (_skill_did_tool(skill_name, req.get("tool", ""))
+            or _coverage_types_tested(req.get("coverage_types", ())))
+
+
+def skill_deep_requirement_hint(skill_name: str) -> str:
+    """Why a deep-work skill's gate is still open (for the model/dashboard), or '' if
+    the skill has no deep requirement or it is already met."""
+    req = _SKILL_DEEP_REQUIREMENTS.get(skill_name)
+    if not req or _deep_requirement_met(skill_name, req):
+        return ""
+    return req.get("hint", "")
+
+
 def skill_worked(skill_name: str) -> bool:
     """True ONLY when ``skill_name`` was DECLARED (set_skill) AND a tool fired WHILE
     IT WAS THE ACTIVE SKILL — the per-skill ``worked`` flag set by add_tool_called.
@@ -158,13 +226,21 @@ def skill_worked(skill_name: str) -> bool:
     anything. That let a freshly-declared skill's gate clear instantly as long as
     EARLIER skills had already run tools (recon almost always has), i.e. a pure
     set_skill rubber-stamp cleared the gate. That fallback is removed: each skill now
-    earns its own gate by doing its own work. (add_tool_called marks the active
-    skill's history entry worked=True, so the proper flow — set_skill then run the
-    skill — satisfies it naturally; declare-then-complete does not.)"""
+    earns its own gate by doing its own work.
+
+    A skill in ``_SKILL_DEEP_REQUIREMENTS`` (e.g. ai-redteam) needs MORE than "a tool
+    fired": its MANUAL layer must be attributable to it too (see _deep_requirement_met),
+    so firing garak once can no longer clear the ai-redteam gate — the redteam() attack
+    engine must run, or its LLM attack cells must be tested."""
     if _sess._current is None:
         return False
-    return any(e.get("skill") == skill_name and e.get("worked")
-               for e in _sess._current.get("skill_history", []))
+    if not any(e.get("skill") == skill_name and e.get("worked")
+               for e in _sess._current.get("skill_history", [])):
+        return False
+    req = _SKILL_DEEP_REQUIREMENTS.get(skill_name)
+    if req and not _deep_requirement_met(skill_name, req):
+        return False
+    return True
 
 
 def reconcile_worked_gates() -> None:
@@ -251,18 +327,25 @@ def advance_phase(target: str | None = None) -> dict:
     return {"ok": True, "from": cur, "to": nxt}
 
 
-def _mark_active_skill_worked() -> bool:
-    """Flag the current active skill's history entry as having done work. Returns True
-    if it changed anything (so the caller knows to flush)."""
+def _mark_active_skill_worked(tool_name: str = "") -> bool:
+    """Flag the current active skill's history entry as having done work, and record
+    the tool that fired under it (so a deep-work gate can require a SPECIFIC tool, not
+    just "any tool"). Returns True if it changed anything (so the caller knows to flush)."""
     active = _sess._current.get("skill")
     if not active:
         return False
     for e in reversed(_sess._current.get("skill_history", [])):
         if e.get("skill") == active:
+            changed = False
             if not e.get("worked"):
                 e["worked"] = True
-                return True
-            return False
+                changed = True
+            if tool_name:
+                tools = e.setdefault("tools", [])
+                if tool_name not in tools:
+                    tools.append(tool_name)
+                    changed = True
+            return changed
     return False
 
 
@@ -280,7 +363,7 @@ def add_tool_called(tool_name: str) -> None:
     if tool_name not in tools:
         tools.append(tool_name)
         changed = True
-    if _mark_active_skill_worked():
+    if _mark_active_skill_worked(tool_name):
         changed = True
     if changed:
         _sess._flush()
