@@ -235,22 +235,155 @@ def _pick_reply_field(data) -> str:
     return ""
 
 
-async def _autodetect_response_field(target: str, options: dict) -> str:
-    """Best-effort: POST one benign message and locate the reply field in the JSON
-    response, so garak's REST parser can extract the model output. Without it every
-    probe scores empty ('no eval entries parsed — check response_field'). Returns a
-    JSONPath or '' when undetectable. Fail-soft — never raises into the scan."""
+# Curated fallback input keys, tried after anything the API's own error names.
+_INPUT_KEYS = ("message", "user_input", "prompt", "input", "query", "text",
+               "content", "question", "q", "msg", "user_message", "chat", "utterance")
+
+# A param name/hint that looks like a free-text chat/prompt input (Layer-2 ranking).
+_TEXTY_RE = re.compile(
+    r"prompt|message|msg|text|input|query|question|chat|content|utterance|user", re.I)
+
+# Field name an API blames in a 4xx, e.g. {"error":"user_input is required"} or
+# "missing field: prompt". Two capture groups (before/after the keyword).
+_REQUIRED_FIELD_RE = re.compile(
+    r'["\']?([a-zA-Z_]\w*)["\']?\s+(?:field\s+)?(?:is\s+)?(?:required|missing|expected|not provided)'
+    r'|(?:missing|required|expected|provide|need)\s+(?:field|parameter|param|key|the)?[\s:=]*["\']?([a-zA-Z_]\w*)',
+    re.I)
+_NOT_A_FIELD = {"field", "parameter", "param", "key", "the", "a", "an", "json",
+                "body", "request", "input", "value", "data"}
+
+
+def _fields_from_error(text: str) -> list:
+    """Field names an API error blames — e.g. 'user_input is required' → ['user_input'].
+    Dynamic: catches a custom input key a fixed list would miss."""
+    out: list = []
+    for a, b in _REQUIRED_FIELD_RE.findall(text or ""):
+        name = a or b
+        if name and name.lower() not in _NOT_A_FIELD and name not in out:
+            out.append(name)
+    return out
+
+
+def _texty_param_names(params: list) -> list:
+    """Recorded param names that look like a free-text prompt input, plus the sole
+    param of the endpoint (an opaque single key IS the input on a chat API)."""
+    params = [p for p in params if isinstance(p, dict)]
+    sole = params[0].get("name") if len(params) == 1 else None
+    out: list = []
+    for p in params:
+        name = (p.get("name") or "").strip()
+        if not name or name.startswith("_") or name in out:
+            continue
+        texty = _TEXTY_RE.search(name) or _TEXTY_RE.search(p.get("value_hint") or "")
+        if texty or name == sole:
+            out.append(name)
+    return out
+
+
+def _keys_from_coverage(target: str) -> list:
+    """Input-key candidates from the endpoints the model ALREADY registered in the
+    coverage matrix during recon — reuse what agent-smith knows instead of guessing.
+
+    When the model flagged this endpoint as AI it registered its request shape
+    (`params=[{name, type, value_hint}]`); the prompt/text param's name is the
+    garak `body_key`. Returns those recorded names, most-likely first. This is what
+    reaches an endpoint whose input key is CUSTOM (e.g. `prompt_text_v2`) — a name
+    neither the curated `_INPUT_KEYS` list nor an unparseable error would ever
+    surface, but which the model wrote down during recon. Fail-soft: [] on error."""
     try:
-        import aiohttp
-        from tools.kali_runner import _host_rewrite
-        body = {options.get("body_key", "message"): "Hello — reply with a short sentence."}
-        async with aiohttp.ClientSession() as s:
-            async with s.post(_host_rewrite(target), json=body, headers=_ai_headers(options),
-                              timeout=aiohttp.ClientTimeout(total=20)) as r:
-                data = await r.json(content_type=None)
-        return _pick_reply_field(data)
+        from urllib.parse import urlparse
+        import core.coverage as _cov
+        tpath = _cov._normalize_path(urlparse(target).path or "/")
+        out: list = []
+        for ep in _cov._load().get("endpoints", []):
+            raw = ep.get("path") or ""
+            if _cov._normalize_path(urlparse(raw).path or raw) == tpath:
+                for name in _texty_param_names(ep.get("params") or []):
+                    if name not in out:
+                        out.append(name)
+        return out
     except Exception:
-        return ""
+        return []
+
+
+def _ordered_candidates(*groups) -> list:
+    """Flatten candidate-key groups in priority order, dropping blanks and dupes."""
+    out: list = []
+    for group in groups:
+        for k in group or []:
+            if k and k not in out:
+                out.append(k)
+    return out
+
+
+async def _empty_body_hint(session, post) -> tuple:
+    """POST an empty body so the API names its own required field. Returns
+    (derived_field_names, last_error_text). Fail-soft."""
+    try:
+        status, txt, _ = await post(session, {})
+        if status >= 400:
+            return _fields_from_error(txt), txt[:200]
+    except Exception:
+        pass
+    return [], ""
+
+
+async def _probe_candidates(session, post, candidates: list, last_err: str) -> tuple:
+    """Try each candidate input key; the first that returns 2xx with a parseable
+    reply field wins. Returns (body_key, response_field, diagnostic)."""
+    best_key, reached_diag = "", ""
+    for key in candidates:
+        try:
+            status, txt, data = await post(session, {key: "Hello — reply with a short sentence."})
+        except Exception:
+            continue
+        if status >= 400:
+            if not best_key:
+                last_err = txt[:200] or last_err
+            continue
+        field = _pick_reply_field(data)
+        if field:
+            return key, field, ""
+        if not best_key:                        # reached the target but reply field unclear
+            best_key = key
+            reached_diag = f"body_key={key} reached the target but no reply field in: {txt[:120]}"
+    return best_key, "", (reached_diag or last_err)
+
+
+async def _autodetect_rest_shape(target: str, options: dict):
+    """Discover the request input key AND the reply field by probing the endpoint,
+    so a garak REST run reaches a non-standard chat API and can parse its output.
+
+    Layered, most-authoritative first: (1) the operator's configured `body_key`,
+    (2) the field the API's OWN error names for an empty body, (3) the params the
+    model recorded for this endpoint during recon (`_keys_from_coverage` — reuse
+    what agent-smith already knows), (4) a curated common-key list. Each candidate
+    is confirmed with a real probe that also detects the response field. Returns
+    (body_key, response_field, diagnostic); `diagnostic` is a short hint (the
+    target's own error) when nothing worked. Fail-soft — never raises into the scan."""
+    import aiohttp
+    from tools.kali_runner import _host_rewrite
+    url = _host_rewrite(target)
+    headers = _ai_headers(options)
+
+    async def _post(session, body):
+        async with session.post(url, json=body, headers=headers,
+                                timeout=aiohttp.ClientTimeout(total=25)) as r:
+            txt = await r.text()
+            try:
+                return r.status, txt, json.loads(txt)
+            except Exception:
+                return r.status, txt, None
+
+    try:
+        async with aiohttp.ClientSession() as s:
+            derived, last_err = await _empty_body_hint(s, _post)
+            candidates = _ordered_candidates(
+                [options.get("body_key")], derived,
+                _keys_from_coverage(target), _INPUT_KEYS)
+            return await _probe_candidates(s, _post, candidates, last_err)
+    except Exception:
+        return "", "", ""
 
 
 async def _validated_probes(qualified: str) -> str:
@@ -270,17 +403,27 @@ async def _validated_probes(qualified: str) -> str:
         return qualified
 
 
-async def _resolved_response_field(target, options: dict) -> dict:
-    """Return `options` with an auto-detected `response_field` when the operator
-    didn't set one — a garak REST run with no response parser scores every probe
-    empty (the "no eval entries parsed" failure). Best-effort; unchanged on miss."""
-    if options.get("response_field"):
+async def _resolved_rest_options(target, options: dict) -> dict:
+    """Fill in `body_key` / `response_field` by probing the endpoint when the operator
+    didn't pin them — garak needs the right INPUT key to reach the target (a wrong one
+    just 4xxs, so every probe scores empty) and a response parser to score the reply.
+    Surfaces a clear diagnostic when it genuinely can't tell. Best-effort."""
+    if options.get("body_key") and options.get("response_field"):
         return options
-    rf = await _autodetect_response_field(target, options)
-    if rf:
-        log.note(f"garak: auto-detected response_field={rf} (was unset — needed for eval parsing)")
-        return {**options, "response_field": rf}
-    return options
+    body_key, field, diag = await _autodetect_rest_shape(target, options)
+    out = dict(options)
+    if body_key and not out.get("body_key"):
+        out["body_key"] = body_key
+    if field and not out.get("response_field"):
+        out["response_field"] = field
+    if body_key or field:
+        log.note(f"garak: auto-detected REST shape — body_key={out.get('body_key') or '(default)'} "
+                 f"response_field={out.get('response_field') or '(undetected)'}"
+                 + (f" — {diag}" if diag else ""))
+    elif diag:
+        log.note(f"garak: could NOT auto-detect the REST shape — set body_key/response_field "
+                 f"manually. Target said: {diag}")
+    return out
 
 
 async def _handle_garak(target, flags, options):
@@ -290,7 +433,7 @@ async def _handle_garak(target, flags, options):
     timeout = options.get("timeout", 900)
     qualified = await _validated_probes(
         _normalize_probes(options.get("probes", "dan,encoding,promptinject,leakreplay,xss")))
-    options = await _resolved_response_field(target, options)
+    options = await _resolved_rest_options(target, options)
     rest_cfg = _build_garak_rest_cfg(target, options)
 
     log.tool_call("garak", {"target": target, "probes": qualified})
