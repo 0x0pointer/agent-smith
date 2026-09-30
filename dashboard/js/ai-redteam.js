@@ -89,6 +89,14 @@
       + (sub ? `<div class="air-tile-sub">${esc(sub)}</div>` : '') + `</div>`;
   }
 
+  function _garakBarRow(g) {
+    const pct = Math.round((g.attack_success_rate || 0) * 100);
+    const col = pct >= 20 ? '#f85149' : pct > 0 ? '#d29922' : '#3fb950';
+    return `<div class="air-bar-row"><span class="air-bar-label">${esc(g.probe)}<span class="air-sub-note">/${esc(g.detector)}</span></span>`
+      + `<div class="air-meter"><div class="air-meter-fill" style="width:${pct}%;background:${col}"></div></div>`
+      + `<span class="air-bar-val" style="color:${col}">${pct}% <span class="air-sub-note">${g.fails}/${g.total}</span></span></div>`;
+  }
+
   function renderAiRedteam(ai, cov, fin) {
     const cells = (cov.matrix || []).filter(c =>
       (c.injection_type in _AI_LLM_LABELS) || (c.injection_type in _MCP_LABELS) || String(c.injection_type).startsWith('mcp_'));
@@ -283,13 +291,9 @@
 
     // ── garak ─────────────────────────────────────────────────────────────
     const garakWrap = document.getElementById('air-garak');
-    garakWrap.innerHTML = garak.length ? garak.slice(-40).reverse().map(g => {
-      const pct = Math.round((g.attack_success_rate || 0) * 100);
-      const col = pct >= 20 ? '#f85149' : pct > 0 ? '#d29922' : '#3fb950';
-      return `<div class="air-bar-row"><span class="air-bar-label">${esc(g.probe)}<span class="air-sub-note">/${esc(g.detector)}</span></span>`
-        + `<div class="air-meter"><div class="air-meter-fill" style="width:${pct}%;background:${col}"></div></div>`
-        + `<span class="air-bar-val" style="color:${col}">${pct}% <span class="air-sub-note">${g.fails}/${g.total}</span></span></div>`;
-    }).join('') : '<div class="empty-placeholder">No garak runs yet — scan(tool="garak", ...).</div>';
+    garakWrap.innerHTML = garak.length
+      ? garak.slice(-40).reverse().map(_garakBarRow).join('')
+      : '<div class="empty-placeholder">No garak runs yet — scan(tool="garak", ...).</div>';
 
     // ── Defenses: input-filter bypass map ─────────────────────────────────
     const filterWrap = document.getElementById('air-filter');
@@ -318,6 +322,27 @@
     } else {
       filterWrap.innerHTML = '<div class="empty-placeholder">No filter probe yet — redteam(action="filter_probe").</div>';
     }
+
+    // ── Overview: surface the top garak results so output is visible without
+    //    switching sub-tabs (the #1 "I only see findings" complaint) ─────────
+    const liteWrap = document.getElementById('air-garak-lite');
+    if (liteWrap) {
+      const top = garak.slice().sort((a, b) => (b.attack_success_rate || 0) - (a.attack_success_rate || 0)).slice(0, 8);
+      liteWrap.innerHTML = top.length
+        ? top.map(_garakBarRow).join('')
+          + (garak.length > 8 ? `<div class="air-sub-note" style="margin-top:6px">+${garak.length - 8} more under “Automated (garak)” →</div>` : '')
+        : '<div class="empty-placeholder">No garak runs yet — scan(tool="garak", ...).</div>';
+    }
+
+    // ── Sub-tab badges: show where the data is, so it isn't hidden ───────────
+    const subCount = { garak: garak.length, attacks: attacks.length, defenses: bypasses };
+    document.querySelectorAll('.air-subbtn').forEach(btn => {
+      const base = btn.getAttribute('data-label')
+        || btn.textContent.replace(/\s*\(\d+\)\s*$/, '').trim();
+      btn.setAttribute('data-label', base);            // remember the clean label across polls
+      const n = subCount[btn.getAttribute('data-sub')];
+      btn.textContent = n ? `${base} (${n})` : base;
+    });
   }
 
   window.pollAiRedteam = pollAiRedteam;
