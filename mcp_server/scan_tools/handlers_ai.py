@@ -235,22 +235,90 @@ def _pick_reply_field(data) -> str:
     return ""
 
 
-async def _autodetect_response_field(target: str, options: dict) -> str:
-    """Best-effort: POST one benign message and locate the reply field in the JSON
-    response, so garak's REST parser can extract the model output. Without it every
-    probe scores empty ('no eval entries parsed — check response_field'). Returns a
-    JSONPath or '' when undetectable. Fail-soft — never raises into the scan."""
+# Curated fallback input keys, tried after anything the API's own error names.
+_INPUT_KEYS = ("message", "user_input", "prompt", "input", "query", "text",
+               "content", "question", "q", "msg", "user_message", "chat", "utterance")
+
+# Field name an API blames in a 4xx, e.g. {"error":"user_input is required"} or
+# "missing field: prompt". Two capture groups (before/after the keyword).
+_REQUIRED_FIELD_RE = re.compile(
+    r'["\']?([a-zA-Z_]\w*)["\']?\s+(?:field\s+)?(?:is\s+)?(?:required|missing|expected|not provided)'
+    r'|(?:missing|required|expected|provide|need)\s+(?:field|parameter|param|key|the)?[\s:=]*["\']?([a-zA-Z_]\w*)',
+    re.I)
+_NOT_A_FIELD = {"field", "parameter", "param", "key", "the", "a", "an", "json",
+                "body", "request", "input", "value", "data"}
+
+
+def _fields_from_error(text: str) -> list:
+    """Field names an API error blames — e.g. 'user_input is required' → ['user_input'].
+    Dynamic: catches a custom input key a fixed list would miss."""
+    out: list = []
+    for a, b in _REQUIRED_FIELD_RE.findall(text or ""):
+        name = a or b
+        if name and name.lower() not in _NOT_A_FIELD and name not in out:
+            out.append(name)
+    return out
+
+
+async def _autodetect_rest_shape(target: str, options: dict):
+    """Discover the request input key AND the reply field by probing the endpoint,
+    so a garak REST run reaches a non-standard chat API and can parse its output.
+
+    Dynamic-first: POST an empty body and read the API's OWN error (e.g.
+    {"error":"user_input is required"}) to learn the field name; confirm with a real
+    probe and detect the response field. Falls back to a curated key list. Returns
+    (body_key, response_field, diagnostic); `diagnostic` is a short hint (the target's
+    own error) when nothing worked. Fail-soft — never raises into the scan."""
+    import aiohttp
+    from tools.kali_runner import _host_rewrite
+    url = _host_rewrite(target)
+    headers = _ai_headers(options)
+    configured = options.get("body_key")
+    last_err = ""
+
+    async def _post(session, body):
+        async with session.post(url, json=body, headers=headers,
+                                timeout=aiohttp.ClientTimeout(total=25)) as r:
+            txt = await r.text()
+            try:
+                return r.status, txt, json.loads(txt)
+            except Exception:
+                return r.status, txt, None
+
     try:
-        import aiohttp
-        from tools.kali_runner import _host_rewrite
-        body = {options.get("body_key", "message"): "Hello — reply with a short sentence."}
         async with aiohttp.ClientSession() as s:
-            async with s.post(_host_rewrite(target), json=body, headers=_ai_headers(options),
-                              timeout=aiohttp.ClientTimeout(total=20)) as r:
-                data = await r.json(content_type=None)
-        return _pick_reply_field(data)
+            derived: list = []
+            try:                                    # 1) empty body → let the API name its field
+                status0, txt0, _ = await _post(s, {})
+                if status0 >= 400:
+                    derived = _fields_from_error(txt0)
+                    last_err = txt0[:200]
+            except Exception:
+                pass
+            candidates: list = []                   # 2) configured → error-derived → common
+            for k in ([configured] if configured else []) + derived + list(_INPUT_KEYS):
+                if k and k not in candidates:
+                    candidates.append(k)
+            best_key, reached_diag = "", ""
+            for key in candidates:                  # 3) first 2xx with a parseable reply wins
+                try:
+                    status, txt, data = await _post(s, {key: "Hello — reply with a short sentence."})
+                except Exception:
+                    continue
+                if status >= 400:
+                    if not best_key:
+                        last_err = txt[:200] or last_err
+                    continue
+                field = _pick_reply_field(data)
+                if field:
+                    return key, field, ""
+                if not best_key:                    # reached the target but reply field unclear
+                    best_key = key
+                    reached_diag = f"body_key={key} reached the target but no reply field in: {txt[:120]}"
+            return best_key, "", (reached_diag or last_err)
     except Exception:
-        return ""
+        pass
+    return "", "", last_err
 
 
 async def _validated_probes(qualified: str) -> str:
@@ -270,17 +338,27 @@ async def _validated_probes(qualified: str) -> str:
         return qualified
 
 
-async def _resolved_response_field(target, options: dict) -> dict:
-    """Return `options` with an auto-detected `response_field` when the operator
-    didn't set one — a garak REST run with no response parser scores every probe
-    empty (the "no eval entries parsed" failure). Best-effort; unchanged on miss."""
-    if options.get("response_field"):
+async def _resolved_rest_options(target, options: dict) -> dict:
+    """Fill in `body_key` / `response_field` by probing the endpoint when the operator
+    didn't pin them — garak needs the right INPUT key to reach the target (a wrong one
+    just 4xxs, so every probe scores empty) and a response parser to score the reply.
+    Surfaces a clear diagnostic when it genuinely can't tell. Best-effort."""
+    if options.get("body_key") and options.get("response_field"):
         return options
-    rf = await _autodetect_response_field(target, options)
-    if rf:
-        log.note(f"garak: auto-detected response_field={rf} (was unset — needed for eval parsing)")
-        return {**options, "response_field": rf}
-    return options
+    body_key, field, diag = await _autodetect_rest_shape(target, options)
+    out = dict(options)
+    if body_key and not out.get("body_key"):
+        out["body_key"] = body_key
+    if field and not out.get("response_field"):
+        out["response_field"] = field
+    if body_key or field:
+        log.note(f"garak: auto-detected REST shape — body_key={out.get('body_key') or '(default)'} "
+                 f"response_field={out.get('response_field') or '(undetected)'}"
+                 + (f" — {diag}" if diag else ""))
+    elif diag:
+        log.note(f"garak: could NOT auto-detect the REST shape — set body_key/response_field "
+                 f"manually. Target said: {diag}")
+    return out
 
 
 async def _handle_garak(target, flags, options):
@@ -290,7 +368,7 @@ async def _handle_garak(target, flags, options):
     timeout = options.get("timeout", 900)
     qualified = await _validated_probes(
         _normalize_probes(options.get("probes", "dan,encoding,promptinject,leakreplay,xss")))
-    options = await _resolved_response_field(target, options)
+    options = await _resolved_rest_options(target, options)
     rest_cfg = _build_garak_rest_cfg(target, options)
 
     log.tool_call("garak", {"target": target, "probes": qualified})
