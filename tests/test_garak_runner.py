@@ -75,3 +75,52 @@ async def test_ai_env_forwards_aitest_key_as_anthropic(monkeypatch):
     flags = gr._ai_env_flags()
     assert "ANTHROPIC_API_KEY=sk-ant-test" in flags   # renamed key exposed as ANTHROPIC_API_KEY
     assert "OPENAI_API_KEY=sk-openai" in flags
+
+
+@pytest.mark.asyncio
+async def test_list_probes_runs_and_caches(monkeypatch):
+    gr._PROBE_LIST_CACHE.clear()
+
+    async def _img_present():
+        return True
+    monkeypatch.setattr(gr, "image_exists", _img_present)
+
+    calls = []
+
+    async def _fake_exec(*argv, stdout=None, stderr=None):
+        calls.append(argv)
+        return _FakeProc(b"   probes: dan.AntiDAN\n")
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+
+    out = await gr.list_probes()
+    assert "dan.AntiDAN" in out
+    out2 = await gr.list_probes()          # cached — no second docker run
+    assert out2 == out
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_list_probes_empty_when_image_unavailable(monkeypatch):
+    gr._PROBE_LIST_CACHE.clear()
+
+    async def _no_img():
+        return False
+    monkeypatch.setattr(gr, "image_exists", _no_img)
+    monkeypatch.setenv("SMITH_GARAK_AUTOBUILD", "0")   # ensure_image returns (False, …), no build
+
+    assert await gr.list_probes() == ""
+
+
+@pytest.mark.asyncio
+async def test_list_probes_failsoft_on_exec_error(monkeypatch):
+    gr._PROBE_LIST_CACHE.clear()
+
+    async def _img_present():
+        return True
+    monkeypatch.setattr(gr, "image_exists", _img_present)
+
+    async def _boom(*a, **k):
+        raise RuntimeError("docker gone")
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _boom)
+
+    assert await gr.list_probes() == ""

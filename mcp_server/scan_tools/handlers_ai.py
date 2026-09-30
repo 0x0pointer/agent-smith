@@ -253,34 +253,44 @@ async def _autodetect_response_field(target: str, options: dict) -> str:
         return ""
 
 
+async def _validated_probes(qualified: str) -> str:
+    """Drop probe names garak doesn't recognise — garak 0.15 ABORTS the whole run
+    on any unknown name, so one stale/renamed probe would kill the batch. Validate
+    against garak's own --list_probes (cached). If the list can't be learned, return
+    the request unchanged (no worse than before). Fail-soft."""
+    from tools import garak_runner
+    try:
+        classes, modules = _parse_known_probes(await garak_runner.list_probes())
+        kept, dropped = _filter_probes(qualified, classes, modules)
+        if dropped:
+            log.note(f"garak: dropped unknown probe(s) {dropped} (not in garak's probe list — "
+                     f"would abort the run); running {kept or '(none valid)'}")
+        return kept or qualified
+    except Exception:
+        return qualified
+
+
+async def _resolved_response_field(target, options: dict) -> dict:
+    """Return `options` with an auto-detected `response_field` when the operator
+    didn't set one — a garak REST run with no response parser scores every probe
+    empty (the "no eval entries parsed" failure). Best-effort; unchanged on miss."""
+    if options.get("response_field"):
+        return options
+    rf = await _autodetect_response_field(target, options)
+    if rf:
+        log.note(f"garak: auto-detected response_field={rf} (was unset — needed for eval parsing)")
+        return {**options, "response_field": rf}
+    return options
+
+
 async def _handle_garak(target, flags, options):
     from tools import garak_runner
 
     _record("garak")  # track for coverage/skill-worked gates
     timeout = options.get("timeout", 900)
-    qualified = _normalize_probes(options.get("probes", "dan,encoding,promptinject,leakreplay,xss"))
-    # Drop probe names garak doesn't recognise — garak 0.15 ABORTS the whole run on
-    # any unknown name, so one stale/renamed probe would kill the batch. Validate
-    # against garak's own --list_probes (cached); if the list can't be learned, run
-    # as-is (no worse than before).
-    try:
-        _classes, _modules = _parse_known_probes(await garak_runner.list_probes())
-        _kept, _dropped = _filter_probes(qualified, _classes, _modules)
-        if _dropped:
-            log.note(f"garak: dropped unknown probe(s) {_dropped} (not in garak's probe list — "
-                     f"would abort the run); running {_kept or '(none valid)'}")
-        if _kept:
-            qualified = _kept
-    except Exception:
-        pass
-    # Auto-detect the reply field when the operator didn't set one — a garak REST run
-    # with no response parser scores every probe empty (the "no eval entries parsed"
-    # failure). Best-effort; if detection fails the behaviour is unchanged.
-    if not options.get("response_field"):
-        _rf = await _autodetect_response_field(target, options)
-        if _rf:
-            options = {**options, "response_field": _rf}
-            log.note(f"garak: auto-detected response_field={_rf} (was unset — needed for eval parsing)")
+    qualified = await _validated_probes(
+        _normalize_probes(options.get("probes", "dan,encoding,promptinject,leakreplay,xss")))
+    options = await _resolved_response_field(target, options)
     rest_cfg = _build_garak_rest_cfg(target, options)
 
     log.tool_call("garak", {"target": target, "probes": qualified})
