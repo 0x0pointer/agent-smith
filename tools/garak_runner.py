@@ -286,6 +286,21 @@ async def _kill_container(name: str) -> None:
         pass
 
 
+def _reap_container_sync(name: str) -> None:
+    """Fire-and-forget `docker kill` that CANNOT be interrupted by event-loop
+    cancellation — run_garak can be cancelled mid-run (a client disconnect / the
+    driving client's own tool timeout firing before our 900s), and an *awaited* kill
+    in the finally would be cancelled too, leaving the container orphaned (observed:
+    a run still probing the target 39 min later). A synchronous fire-and-forget Popen
+    survives that. Harmless no-op if the container already exited via --rm."""
+    try:
+        import subprocess
+        subprocess.Popen([docker_executable(), "kill", name],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+
+
 async def _stream_progress(workdir: str, on_progress, interval: int, on_status=None) -> None:
     """Push newly-appended eval rows to `on_progress` every `interval`s so the AI
     Red Team dashboard fills in probe-by-probe instead of only when the run ends.
@@ -391,4 +406,10 @@ async def run_garak(rest_config: dict, probes: str, flags: str = "", timeout: in
                 await progress_task
             except BaseException:
                 pass
+        # Reap the container no matter HOW we exit — normal, timeout, exception, or
+        # CANCELLATION (client disconnect / its own tool timeout). Only the timeout
+        # branch above reaped before, so a cancelled run orphaned a container that
+        # kept probing the target for as long as the probe set took. Sync + fire-and-
+        # forget so cancellation can't interrupt it; a no-op if --rm already removed it.
+        _reap_container_sync(cname)
         shutil.rmtree(workdir, ignore_errors=True)
