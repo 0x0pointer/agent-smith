@@ -344,7 +344,8 @@ async def test_ensure_image_builds_custom_when_absent(_skip_image_pull, monkeypa
     assert "pentest-agent/semgrep" in _dr._pulled_images
     # the second subprocess call must be `docker build`, never `docker pull`
     build_argv = captured[1]
-    assert "build" in build_argv and "pull" not in build_argv
+    assert "build" in build_argv
+    assert "pull" not in build_argv
 
 
 @pytest.mark.asyncio

@@ -87,12 +87,14 @@ class TestFormatRunResultExitCode:
     def test_nonok_exit_no_output_is_failure(self):
         out = _format_run_result(REGISTRY["semgrep"], "", "fatal: bad config", exit_code=2)
         assert out.startswith(SCAN_FAILED_SENTINEL)
-        assert "exited 2" in out and "BROKEN scan" in out
+        assert "exited 2" in out
+        assert "BROKEN scan" in out
 
     def test_137_exit_includes_oom_hint(self):
         out = _format_run_result(REGISTRY["trufflehog"], "", "", exit_code=137)
         assert out.startswith(SCAN_FAILED_SENTINEL)
-        assert "137" in out and "OOM" in out
+        assert "137" in out
+        assert "OOM" in out
 
     def test_stderr_is_preserved_in_failure(self):
         out = _format_run_result(REGISTRY["nmap"], "", "name resolution failed", exit_code=1)
@@ -202,13 +204,15 @@ class TestResolveMount:
         mount, err = _resolve_mount(
             "semgrep", REGISTRY["semgrep"], {"path": str(tmp_path / "nope")})
         assert mount is None
-        assert err is not None and err.startswith(SCAN_FAILED_SENTINEL)
+        assert err is not None
+        assert err.startswith(SCAN_FAILED_SENTINEL)
         assert "no valid codebase" in err
         assert os.getcwd() not in err
 
     def test_non_mount_tool_resolves_to_none(self):
         mount, err = _resolve_mount("nmap", REGISTRY["nmap"], {"host": "example.com"})
-        assert mount is None and err is None
+        assert mount is None
+        assert err is None
 
 
 # ---------------------------------------------------------------------------
