@@ -544,6 +544,19 @@ else
     warn "Garak build skipped — auto-builds on first scan(tool='garak'), or run: docker build -t pentest-agent/garak $REPO_DIR/tools/garak/"
 fi
 
+# ZAP Client Spider image (pull) — the spider's `deep`/`thorough` discovery uses the
+# official ZAP image's Client Spider (issue #184). Large (~3.6 GB, ships Firefox + the
+# Client Side Integration add-on). Also auto-pulls on first spider use; pre-pull to
+# avoid the wait then.
+printf "  Pull the ZAP image now? (~3.6 GB — Client Spider; else auto-pulls on first use) [y/N]: "
+read -r _zap_answer || true
+if [[ "${_zap_answer:-N}" =~ ^[Yy]$ ]]; then
+    echo "  Pulling ghcr.io/zaproxy/zaproxy:stable..."
+    docker pull ghcr.io/zaproxy/zaproxy:stable || warn "ZAP pull skipped — auto-pulls on first scan(tool='spider', mode='deep')."
+else
+    warn "ZAP pull skipped — auto-pulls on first spider deep/thorough run, or: docker pull ghcr.io/zaproxy/zaproxy:stable"
+fi
+
 # MobSF needs no build — /android-security & /ios-security use the official MobSF
 # image, auto-pulled by tools/mobsf_runner.py on the first scan(tool='mobsf').
 
