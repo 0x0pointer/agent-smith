@@ -80,6 +80,13 @@
     document.querySelectorAll('.tab-btn').forEach((b, i) => {
       b.classList.toggle('active', TAB_NAMES[i] === name);
     });
+    // Reveal the active tab's group if it was collapsed (e.g. programmatic nav
+    // from a link), so the highlighted item is never hidden.
+    const activeBtn = document.getElementById('tab-btn-' + name);
+    const sec = activeBtn && activeBtn.closest('.rail-section');
+    if (sec && sec.classList.contains('collapsed')) {
+      toggleRailGroup(sec.getAttribute('data-group'));
+    }
     document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
     document.getElementById(`tab-${name}`).classList.add('active');
     if (name === 'topology')      renderTopology(allData.diagrams || []);
@@ -106,6 +113,55 @@
     if (name === 'session-log')   pollSessionLog();
     if (name === 'sessions')      pollSessions();
   }
+
+  // ── Collapsible rail groups ────────────────────────────────────────────────
+  // Group headers toggle their items so the rail never grows taller than the
+  // viewport. Collapsed group names persist in localStorage and are re-applied
+  // on load by _initRailGroups().
+  function _railLoadCollapsed() {
+    try { return new Set(JSON.parse(localStorage.getItem('smith_rail_collapsed') || '[]')); }
+    catch (_) { return new Set(); }
+  }
+  function _railSaveCollapsed(set) {
+    try { localStorage.setItem('smith_rail_collapsed', JSON.stringify(Array.from(set))); }
+    catch (_) { /* private mode / blocked storage — state just won't persist */ }
+  }
+  function _railApply(sec, collapsed) {
+    sec.classList.toggle('collapsed', collapsed);
+    const btn = sec.querySelector('.rail-group');
+    if (btn) btn.setAttribute('aria-expanded', String(!collapsed));
+  }
+  function toggleRailGroup(name) {
+    const sec = document.querySelector(`.rail-section[data-group="${name}"]`);
+    if (!sec) return;
+    const collapsed = !sec.classList.contains('collapsed');
+    _railApply(sec, collapsed);
+    const set = _railLoadCollapsed();
+    if (collapsed) set.add(name); else set.delete(name);
+    _railSaveCollapsed(set);
+  }
+  function _initRailGroups() {
+    let set;
+    let stored = null;
+    try { stored = localStorage.getItem('smith_rail_collapsed'); } catch (_) { /* blocked */ }
+    if (stored === null) {
+      // First visit (no saved state): collapse every group except Results, and
+      // persist it so the operator's later toggles start from this baseline.
+      set = new Set();
+      document.querySelectorAll('.rail-section').forEach(sec => {
+        const g = sec.getAttribute('data-group');
+        if (g && g !== 'results') set.add(g);
+      });
+      _railSaveCollapsed(set);
+    } else {
+      set = _railLoadCollapsed();
+    }
+    document.querySelectorAll('.rail-section').forEach(sec => {
+      _railApply(sec, set.has(sec.getAttribute('data-group')));
+    });
+  }
+  window.toggleRailGroup = toggleRailGroup;
+  window._initRailGroups = _initRailGroups;
 
   // ── HIR panel ────────────────────────────────────────────────────────────
   let _hirActive = false;

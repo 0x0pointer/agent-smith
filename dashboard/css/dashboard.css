@@ -1554,13 +1554,26 @@
 
     /* Section labels between groups. */
     .rail-nav { padding: var(--sp-3) var(--sp-3) var(--sp-4); gap: 2px; }
+    /* Collapsible group header (a <button> toggling .rail-section.collapsed). */
     .rail-group {
+      display: flex; align-items: center; gap: 0.4rem; width: 100%;
+      background: none; border: 0; cursor: pointer; text-align: left;
       font-family: var(--font-mono); font-size: 0.6rem; font-weight: 700;
       letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-dim);
       padding: 0.85rem 0.7rem 0.3rem;
-      user-select: none;
+      user-select: none; transition: color .15s;
     }
-    .rail-nav > .rail-group:first-child { padding-top: 0.2rem; }
+    .rail-group:hover { color: var(--text-muted); }
+    .rail-nav > .rail-section:first-child .rail-group { padding-top: 0.2rem; }
+    .rail-caret {
+      display: inline-block; width: 0; height: 0; flex-shrink: 0;
+      border-left: 4px solid currentColor;
+      border-top: 3.5px solid transparent; border-bottom: 3.5px solid transparent;
+      transition: transform .15s; transform: rotate(90deg); /* expanded = points down */
+    }
+    .rail-section.collapsed .rail-caret { transform: rotate(0deg); } /* collapsed = points right */
+    .rail-group-items { display: flex; flex-direction: column; gap: 2px; overflow: hidden; }
+    .rail-section.collapsed .rail-group-items { display: none; }
 
     /* Nav items: roomier, rounded, calm. */
     .rail-nav .tab-btn {
@@ -1581,6 +1594,8 @@
 
     @media (max-width: 1100px) {
       .rail-group { display: none; }
+      /* Header hidden → the collapse toggle is unreachable, so always show items. */
+      .rail-section.collapsed .rail-group-items { display: flex; }
       .rail-nav .tab-btn.active::after { display: none; }
       .rail-nav .tab-btn.active { background: rgba(91,242,155,0.12); }
     }

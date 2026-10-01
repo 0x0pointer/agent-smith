@@ -130,6 +130,9 @@
   // Request browser notification permission on load
   _requestNotifPermission();
 
+  // Apply any persisted collapsed state to the rail groups.
+  _initRailGroups();
+
   // Initial load
   pollOverview();
   pollFindings();
