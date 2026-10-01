@@ -26,5 +26,8 @@ RUN apk add --no-cache curl \
     && head -1 /rules/secrets.yaml | grep -q '^rules:'
 
 # Stage 2: the real semgrep image + the baked packs at /rules.
-FROM semgrep/semgrep:latest
+# Pinned by digest (not :latest) for reproducible, supply-chain-safe builds, as
+# tools/trufflehog.py pins its image. Refresh: docker pull semgrep/semgrep:latest
+# then update this digest (`docker inspect --format '{{index .RepoDigests 0}}'`).
+FROM semgrep/semgrep@sha256:acaac22ffc7b7cc5926de0751b223bce0b2491c33d18422fa72f632c78d81198
 COPY --from=rules /rules /rules
