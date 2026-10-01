@@ -7,6 +7,7 @@ from tools.docker_cli import docker_executable
 
 DEFAULT_TIMEOUT = 600
 PULL_TIMEOUT = 300  # 5 min max for pulling a single image
+BUILD_TIMEOUT = int(os.environ.get("SMITH_IMAGE_BUILD_TIMEOUT", "900"))  # custom-image build
 
 _pulled_images: set[str] = set()
 
@@ -22,11 +23,40 @@ async def image_exists(image: str) -> bool:
     return proc.returncode == 0
 
 
-async def _ensure_image(image: str) -> None:
-    """Pull an image if it hasn't been pulled this session."""
+async def _build_image(image: str, build_context: str) -> None:
+    """Build a CUSTOM image from a local Dockerfile context (no registry to pull).
+
+    Used for images like pentest-agent/semgrep that bake in offline assets. Opt
+    out with SMITH_IMAGE_AUTOBUILD=0 (then it errors with the manual build command).
+    """
+    manual = f"docker build -t {image} ./{build_context.rstrip('/')}/"
+    if os.environ.get("SMITH_IMAGE_AUTOBUILD", "1") == "0":
+        raise RuntimeError(f"Image '{image}' not found and autobuild is disabled. Build it: {manual}")
+    build = await asyncio.create_subprocess_exec(
+        docker_executable(), "build", "-t", image, build_context,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+    )
+    try:
+        out, _ = await asyncio.wait_for(build.communicate(), timeout=BUILD_TIMEOUT)
+    except asyncio.TimeoutError:
+        build.kill()
+        await build.communicate()
+        raise RuntimeError(f"Timed out building '{image}' after {BUILD_TIMEOUT}s. Build manually: {manual}")
+    if build.returncode != 0:
+        tail = out.decode(errors="replace").strip()[-800:]
+        raise RuntimeError(f"Failed to build '{image}': …{tail}. Build manually: {manual}")
+
+
+async def _ensure_image(image: str, build_context: str | None = None) -> None:
+    """Pull (or, for a custom image with a build_context, build) an image if it
+    hasn't been obtained this session."""
     if image in _pulled_images:
         return
     if await image_exists(image):
+        _pulled_images.add(image)
+        return
+    if build_context:
+        await _build_image(image, build_context)
         _pulled_images.add(image)
         return
     pull = await asyncio.create_subprocess_exec(
@@ -63,6 +93,7 @@ async def run_container(
     env_vars: dict[str, str] | None = None,
     network: str = "host",
     cap_add: list[str] | None = None,
+    build_context: str | None = None,
 ) -> tuple[str, str, int]:
     """
     Run a Docker container and return (stdout, stderr, exit_code).
@@ -79,7 +110,7 @@ async def run_container(
     Tools that need a specific capability add it back via cap_add; code analyzers
     (semgrep/trufflehog/mobsfscan) additionally run with network="none".
     """
-    await _ensure_image(image)
+    await _ensure_image(image, build_context=build_context)
     cmd = [
         docker_executable(), "run", "--rm",
         f"--network={network}",

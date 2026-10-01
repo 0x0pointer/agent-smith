@@ -313,3 +313,63 @@ async def test_output_bytes_decoded_with_replace():
     with patch("tools.docker_runner.asyncio.create_subprocess_exec", return_value=proc):
         stdout, _, _ = await run_container("nmap:latest", [])
     assert isinstance(stdout, str)
+
+
+# ---------------------------------------------------------------------------
+# _ensure_image — custom-image build path (issue #178 / pentest-agent/semgrep)
+# ---------------------------------------------------------------------------
+
+def _make_build_proc(returncode: int = 0, out: bytes = b""):
+    proc = MagicMock()
+    proc.returncode = returncode
+    proc.communicate = AsyncMock(return_value=(out, b""))
+    proc.kill = MagicMock()
+    return proc
+
+
+@pytest.mark.asyncio
+async def test_ensure_image_builds_custom_when_absent(_skip_image_pull, monkeypatch):
+    """Image absent + build_context given → `docker build`, not `docker pull`."""
+    monkeypatch.setenv("SMITH_IMAGE_AUTOBUILD", "1")
+    inspect_proc = _make_inspect_proc(returncode=1)  # not local
+    build_proc = _make_build_proc(returncode=0)
+    captured = []
+
+    async def _side_effect(*args, **kwargs):
+        captured.append(args)
+        return inspect_proc if len(captured) == 1 else build_proc
+
+    with patch("tools.docker_runner.asyncio.create_subprocess_exec", side_effect=_side_effect):
+        await _ensure_image("pentest-agent/semgrep", build_context="tools/semgrep-image")
+    assert "pentest-agent/semgrep" in _dr._pulled_images
+    # the second subprocess call must be `docker build`, never `docker pull`
+    build_argv = captured[1]
+    assert "build" in build_argv and "pull" not in build_argv
+
+
+@pytest.mark.asyncio
+async def test_ensure_image_build_failure_raises_with_manual_cmd(_skip_image_pull, monkeypatch):
+    monkeypatch.setenv("SMITH_IMAGE_AUTOBUILD", "1")
+    inspect_proc = _make_inspect_proc(returncode=1)
+    build_proc = _make_build_proc(returncode=1, out=b"COPY failed")
+    call = 0
+
+    async def _side_effect(*args, **kwargs):
+        nonlocal call
+        call += 1
+        return inspect_proc if call == 1 else build_proc
+
+    with patch("tools.docker_runner.asyncio.create_subprocess_exec", side_effect=_side_effect):
+        with pytest.raises(RuntimeError, match="docker build -t pentest-agent/semgrep"):
+            await _ensure_image("pentest-agent/semgrep", build_context="tools/semgrep-image")
+    assert "pentest-agent/semgrep" not in _dr._pulled_images
+
+
+@pytest.mark.asyncio
+async def test_ensure_image_autobuild_disabled_errors(_skip_image_pull, monkeypatch):
+    monkeypatch.setenv("SMITH_IMAGE_AUTOBUILD", "0")
+    inspect_proc = _make_inspect_proc(returncode=1)
+
+    with patch("tools.docker_runner.asyncio.create_subprocess_exec", return_value=inspect_proc):
+        with pytest.raises(RuntimeError, match="autobuild is disabled"):
+            await _ensure_image("pentest-agent/semgrep", build_context="tools/semgrep-image")

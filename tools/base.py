@@ -33,6 +33,11 @@ class Tool:
     # Capabilities to add back after the runner's --cap-drop=ALL (e.g. NET_RAW so
     # raw-socket scanners still work under the hardened default).
     cap_add:         list[str] = field(default_factory=list)
+    # Build context (dir with a Dockerfile) for a CUSTOM image that has no registry
+    # to pull from. When set and `image` is absent locally, the runner builds it
+    # from here on first use instead of pulling (e.g. pentest-agent/semgrep bakes
+    # in the offline rules bundle). None → pull `image` from a registry as usual.
+    build_context:   str | None = None
     # Container exit codes that are "clean even with no output". A code OUTSIDE
     # this set is treated as a BROKEN scan (crash / OOM-137 / config error) ONLY
     # when the run also produced no usable output — see _format_run_result, which

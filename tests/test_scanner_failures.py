@@ -36,6 +36,26 @@ from mcp_server._app import _format_run_result, _resolve_mount
 # 1. build_args remaps host paths to the /target mount (every mount tool)
 # ---------------------------------------------------------------------------
 
+class TestSemgrepOfflineConfig:
+    """Lock in the offline, no-sandbox-weakening semgrep setup (issue #178): a
+    custom image with rules baked in, scanned with --config=/rules under
+    network='none'. A regression here reintroduces the silent empty-as-clean."""
+
+    def test_semgrep_uses_custom_offline_image(self):
+        tool = REGISTRY["semgrep"]
+        assert tool.image == "pentest-agent/semgrep"
+        assert tool.build_context == "tools/semgrep-image"
+
+    def test_semgrep_stays_network_none(self):
+        # The hardening must NOT be relaxed — rules are baked in, so no fetch.
+        assert REGISTRY["semgrep"].network == "none"
+
+    def test_semgrep_config_points_at_baked_rules(self):
+        args = REGISTRY["semgrep"].build_args(path="/target")
+        assert "--config=/rules" in args
+        assert not any("p/python" in a or "semgrep.dev" in a for a in args)
+
+
 class TestMountPathRemap:
 
     @pytest.mark.parametrize("name", ["semgrep", "trufflehog", "mobsfscan"])

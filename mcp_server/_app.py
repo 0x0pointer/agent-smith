@@ -296,6 +296,7 @@ async def _run(name: str, **kwargs) -> str:
                 mount_path=mount, extra_volumes=tool.extra_volumes or None,
                 env_vars=env_vars,
                 network=tool.network, cap_add=tool.cap_add or None,
+                build_context=tool.build_context,
             )
         except asyncio.TimeoutError:
             result = (f"{SCAN_FAILED_SENTINEL}{name} timed out after "
