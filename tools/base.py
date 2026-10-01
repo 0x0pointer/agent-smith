@@ -33,13 +33,13 @@ class Tool:
     # Capabilities to add back after the runner's --cap-drop=ALL (e.g. NET_RAW so
     # raw-socket scanners still work under the hardened default).
     cap_add:         list[str] = field(default_factory=list)
-    # Container exit codes that mean "the scan RAN" (clean OR with findings).
-    # Any OTHER exit code is a BROKEN scan (crash / OOM-137 / config error) and
-    # is surfaced as a failure envelope rather than reported as empty/clean
-    # (issue #178). Default (0,) is correct for every current tool — verified:
-    #   semgrep   : 0 even with findings (no --error); real errors are >=2
-    #   trufflehog: 0 even with secrets (no --fail); 183 only if --fail is added
-    #   nuclei/httpx/naabu/nmap/subfinder/mobsfscan: 0 on success incl. findings
-    #     (mobsfscan would exit 1 on findings only with --exit-warning, unused)
-    # A tool that is ever invoked with a findings->nonzero flag must widen this.
+    # Container exit codes that are "clean even with no output". A code OUTSIDE
+    # this set is treated as a BROKEN scan (crash / OOM-137 / config error) ONLY
+    # when the run also produced no usable output — see _format_run_result, which
+    # parses FIRST so a tool that exits non-zero *because* it found issues keeps
+    # its findings (issue #178). Default (0,) fits every current tool: on a clean
+    # or empty run they all exit 0 (semgrep/trufflehog don't pass --error/--fail;
+    # mobsfscan doesn't pass --no-fail). The parse-first rule means we don't have
+    # to enumerate each tool's findings->nonzero code here; set this only to
+    # whitelist a NON-zero code that a tool legitimately returns with NO output.
     ok_exit_codes:   tuple[int, ...] = (0,)

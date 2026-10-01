@@ -15,6 +15,8 @@ import sys
 import traceback
 from datetime import datetime, timezone
 
+from tools.base import SCAN_FAILED_SENTINEL
+
 
 def _app_phase(label: str) -> None:
     """Write a timestamped phase marker to stderr (→ mcp_crash.log)."""
@@ -170,30 +172,42 @@ def _forward_env(tool) -> dict | None:
     return env_vars or None
 
 
+def _scan_failed_result(tool, stdout: str, stderr: str, exit_code: int) -> str:
+    """Build the SCAN_FAILED-sentinel string for a broken scan (issue #178).
+    wrap() elevates it into a visible failure envelope."""
+    tail = _clip((stderr.strip() or stdout.strip()), 1_500)
+    hint = ""
+    if exit_code == 137:
+        hint = (" (137 = OOM-killed / SIGKILL; the container's memory cap may be "
+                "too low for this target — narrow the path or raise the limit)")
+    return (
+        f"{SCAN_FAILED_SENTINEL}{tool.name} exited {exit_code}{hint}. "
+        f"This is a BROKEN scan, not a clean result — do NOT treat empty "
+        f"findings as secure; re-run before trusting the output.\nstderr:\n{tail}"
+    )
+
+
 def _format_run_result(tool, stdout: str, stderr: str, exit_code: int = 0) -> str:
     """Render a container's stdout/stderr into the tool's result string.
 
     A non-ok container exit (issue #178) is a BROKEN scan — a crashed/OOM/
     config-errored container returns empty stdout, which a parser happily reads
-    as zero findings and reports as "clean". We detect it from the exit code and
-    emit a SCAN_FAILED-sentinel string instead, which wrap() elevates into a
-    visible failure envelope. On a clean exit: clipped raw text when the tool has
-    no parser, else a JSON findings envelope."""
-    from tools.base import SCAN_FAILED_SENTINEL
-    if exit_code not in getattr(tool, "ok_exit_codes", (0,)):
-        tail = _clip((stderr.strip() or stdout.strip()), 1_500)
-        hint = ""
-        if exit_code == 137:
-            hint = (" (137 = OOM-killed / SIGKILL; the container's 2g memory cap "
-                    "may be too low for this target — narrow the path or raise the limit)")
-        return (
-            f"{SCAN_FAILED_SENTINEL}{tool.name} exited {exit_code}{hint}. "
-            f"This is a BROKEN scan, not a clean result — do NOT treat empty "
-            f"findings as secure; re-run before trusting the output.\nstderr:\n{tail}"
-        )
+    as zero findings and reports as "clean". We surface that as a SCAN_FAILED
+    sentinel. BUT we parse FIRST: a tool that exits non-zero yet still produced
+    usable output (e.g. a linter that exits 1 *because* it found issues) RAN
+    successfully — its results must not be discarded. So a run is only "broken"
+    when a non-ok exit coincides with NO usable output. On a clean/with-output
+    exit: clipped raw text when the tool has no parser, else a JSON envelope."""
+    nonok = exit_code not in tool.ok_exit_codes
     if tool.parser is None:
+        # "Usable output" is stdout (results) — stderr is the error channel, so a
+        # non-ok exit with empty stdout is a failure even when stderr is noisy.
+        if nonok and not stdout.strip():
+            return _scan_failed_result(tool, stdout, stderr, exit_code)
         return _clip(stdout or stderr, tool.max_output)
     parsed = tool.parser(stdout, stderr)
+    if nonok and not parsed:
+        return _scan_failed_result(tool, stdout, stderr, exit_code)
     return json.dumps({"findings": parsed, "raw": _clip(stdout, tool.max_output)}, indent=2)
 
 
@@ -209,7 +223,6 @@ def _resolve_mount(name: str, tool, kwargs: dict) -> tuple[str | None, str | Non
     error instead of silently scanning cwd."""
     if not tool.needs_mount:
         return None, None
-    from tools.base import SCAN_FAILED_SENTINEL
     for cand in (kwargs.get("path"), os.environ.get("PENTEST_TARGET_PATH", "")):
         if not cand:
             continue
@@ -285,7 +298,6 @@ async def _run(name: str, **kwargs) -> str:
                 network=tool.network, cap_add=tool.cap_add or None,
             )
         except asyncio.TimeoutError:
-            from tools.base import SCAN_FAILED_SENTINEL
             result = (f"{SCAN_FAILED_SENTINEL}{name} timed out after "
                       f"{tool.default_timeout}s — increase timeout or reduce scope. "
                       f"This is an INCOMPLETE scan, not a clean result.")

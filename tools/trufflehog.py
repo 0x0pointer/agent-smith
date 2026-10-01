@@ -15,7 +15,16 @@ from tools.base import Tool
 # Arg builder
 # ---------------------------------------------------------------------------
 
-def _build_args(path: str = "/target", flags: str = "") -> list[str]:
+_TARGET_MOUNT = "/target"
+
+
+def _build_args(path: str = _TARGET_MOUNT, flags: str = "") -> list[str]:
+    # Only the mount is visible inside the container — remap host paths to
+    # /target (as semgrep/mobsfscan do). Without this, a real host path like
+    # /Users/foo/repo is passed verbatim, does not exist in the container, and
+    # trufflehog scans nothing and exits "clean" — the exact issue #178 failure.
+    if path != _TARGET_MOUNT and not path.startswith(_TARGET_MOUNT):
+        path = _TARGET_MOUNT
     args = ["filesystem", path, "--json", "--no-verification"]
     if flags:
         args += flags.split()

@@ -91,7 +91,7 @@ from mcp_server.scan_engine.envelope.quick_log import (
 from tools.base import SCAN_FAILED_SENTINEL
 
 
-def _check_scan_failed(tool: str, raw_output: str, ctx: dict) -> str | None:
+def _check_scan_failed(tool: str, raw_output: str) -> str | None:
     """Return a failure-envelope JSON string when raw_output is a BROKEN-scan
     sentinel (issue #178), else None. Surfacing the failure as an anomaly +
     warning here guarantees it is visible for EVERY tool, regardless of whether
@@ -101,7 +101,8 @@ def _check_scan_failed(tool: str, raw_output: str, ctx: dict) -> str | None:
     msg = raw_output[len(SCAN_FAILED_SENTINEL):].strip()
     headline = msg.splitlines()[0] if msg else "scan did not complete"
     try:
-        artifact_id = store_artifact(tool, raw_output)
+        # Store the stripped message (never the NUL-prefixed sentinel) as the proof.
+        artifact_id = store_artifact(tool, msg or headline)
     except Exception:
         artifact_id = None
     try:
@@ -149,7 +150,7 @@ def wrap(tool: str, raw_output: str, context: dict | None = None,
     # failure cannot be swallowed into a clean-looking "0 results" (the net.py
     # summarizers drop "["-prefixed / non-JSON lines). This also fixes the
     # pre-existing timeout-string swallow.
-    failed = _check_scan_failed(tool, raw_output, context or {})
+    failed = _check_scan_failed(tool, raw_output)
     if failed:
         return failed
 
