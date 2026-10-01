@@ -15,6 +15,8 @@ import sys
 import traceback
 from datetime import datetime, timezone
 
+from tools.base import SCAN_FAILED_SENTINEL
+
 
 def _app_phase(label: str) -> None:
     """Write a timestamped phase marker to stderr (→ mcp_crash.log)."""
@@ -170,13 +172,70 @@ def _forward_env(tool) -> dict | None:
     return env_vars or None
 
 
-def _format_run_result(tool, stdout: str, stderr: str) -> str:
-    """Render a container's stdout/stderr into the tool's result string:
-    clipped raw text when the tool has no parser, else a JSON findings envelope."""
+def _scan_failed_result(tool, stdout: str, stderr: str, exit_code: int) -> str:
+    """Build the SCAN_FAILED-sentinel string for a broken scan (issue #178).
+    wrap() elevates it into a visible failure envelope."""
+    tail = _clip((stderr.strip() or stdout.strip()), 1_500)
+    hint = ""
+    if exit_code == 137:
+        hint = (" (137 = OOM-killed / SIGKILL; the container's memory cap may be "
+                "too low for this target — narrow the path or raise the limit)")
+    return (
+        f"{SCAN_FAILED_SENTINEL}{tool.name} exited {exit_code}{hint}. "
+        f"This is a BROKEN scan, not a clean result — do NOT treat empty "
+        f"findings as secure; re-run before trusting the output.\nstderr:\n{tail}"
+    )
+
+
+def _format_run_result(tool, stdout: str, stderr: str, exit_code: int = 0) -> str:
+    """Render a container's stdout/stderr into the tool's result string.
+
+    A non-ok container exit (issue #178) is a BROKEN scan — a crashed/OOM/
+    config-errored container returns empty stdout, which a parser happily reads
+    as zero findings and reports as "clean". We surface that as a SCAN_FAILED
+    sentinel. BUT we parse FIRST: a tool that exits non-zero yet still produced
+    usable output (e.g. a linter that exits 1 *because* it found issues) RAN
+    successfully — its results must not be discarded. So a run is only "broken"
+    when a non-ok exit coincides with NO usable output. On a clean/with-output
+    exit: clipped raw text when the tool has no parser, else a JSON envelope."""
+    nonok = exit_code not in tool.ok_exit_codes
     if tool.parser is None:
+        # "Usable output" is stdout (results) — stderr is the error channel, so a
+        # non-ok exit with empty stdout is a failure even when stderr is noisy.
+        if nonok and not stdout.strip():
+            return _scan_failed_result(tool, stdout, stderr, exit_code)
         return _clip(stdout or stderr, tool.max_output)
     parsed = tool.parser(stdout, stderr)
+    if nonok and not parsed:
+        return _scan_failed_result(tool, stdout, stderr, exit_code)
     return json.dumps({"findings": parsed, "raw": _clip(stdout, tool.max_output)}, indent=2)
+
+
+def _resolve_mount(name: str, tool, kwargs: dict) -> tuple[str | None, str | None]:
+    """Resolve the host dir to mount at /target for a needs_mount tool.
+
+    Returns (mount_path, error). Fixes issue #178 root-cause B: previously the
+    mount was ``PENTEST_TARGET_PATH or os.getcwd()`` while _build_args remaps any
+    path arg to /target — so a `target` passed to scan() was silently ignored and,
+    with no codebase set, the agent scanned its OWN repo (cwd) and reported it
+    "clean". Now, mirroring exec_sandbox (handlers_code.py): an explicit `target`
+    OVERRIDES the env, and if neither resolves to a real dir we return an explicit
+    error instead of silently scanning cwd."""
+    if not tool.needs_mount:
+        return None, None
+    for cand in (kwargs.get("path"), os.environ.get("PENTEST_TARGET_PATH", "")):
+        if not cand:
+            continue
+        abs_path = os.path.abspath(os.path.expanduser(cand))
+        if os.path.isdir(abs_path):
+            return abs_path, None
+    err = (
+        f"{SCAN_FAILED_SENTINEL}{name}: no valid codebase to scan. Pass "
+        f"target=<absolute dir> or call session(action='set_codebase', "
+        f"options={{'path': '/abs/path'}}) first. NOT scanning the current "
+        f"working directory."
+    )
+    return None, err
 
 
 def _report_run_error(name: str, kwargs: dict, exc: BaseException) -> str:
@@ -218,18 +277,31 @@ async def _run(name: str, **kwargs) -> str:
         call_id = cost_tracker.start(name)
         tool    = REGISTRY[name]
         args    = tool.build_args(**kwargs)
-        mount   = os.environ.get("PENTEST_TARGET_PATH", os.getcwd()) if tool.needs_mount else None
+
+        # Resolve the mount for needs_mount tools. A missing/invalid codebase is
+        # an explicit failure (sentinel) — never a silent scan of cwd (issue #178).
+        mount, mount_err = _resolve_mount(name, tool, kwargs)
+        if mount_err:
+            cost_tracker.finish(call_id, mount_err)
+            log.tool_result(name, mount_err)
+            return mount_err
+        if mount:
+            log.note(f"{name}: mounting {mount} at /target")
+
         env_vars = _forward_env(tool)
 
         try:
-            stdout, stderr, _ = await run_container(
+            stdout, stderr, exit_code = await run_container(
                 tool.image, args, timeout=tool.default_timeout,
                 mount_path=mount, extra_volumes=tool.extra_volumes or None,
                 env_vars=env_vars,
                 network=tool.network, cap_add=tool.cap_add or None,
+                build_context=tool.build_context,
             )
         except asyncio.TimeoutError:
-            result = f"[{name} timed out after {tool.default_timeout}s — increase timeout or reduce scope]"
+            result = (f"{SCAN_FAILED_SENTINEL}{name} timed out after "
+                      f"{tool.default_timeout}s — increase timeout or reduce scope. "
+                      f"This is an INCOMPLETE scan, not a clean result.")
             cost_tracker.finish(call_id, result)
             log.tool_result(name, result)
             return result
@@ -237,7 +309,7 @@ async def _run(name: str, **kwargs) -> str:
         # Log full verbose output before any clipping
         log.tool_result_verbose(name, stdout, stderr)
 
-        result = _format_run_result(tool, stdout, stderr)
+        result = _format_run_result(tool, stdout, stderr, exit_code)
 
         cost_tracker.finish(call_id, result)
         log.tool_result(name, result)

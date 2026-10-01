@@ -524,6 +524,14 @@ else
     warn "Metasploit build skipped — run later: docker build -t pentest-agent/metasploit $REPO_DIR/tools/metasploit/"
 fi
 
+# Semgrep image (build) — semgrep + curated rule packs baked in, so it runs
+# fully OFFLINE under network="none" (issue #178: --config=p/python failed to
+# fetch rules with no network and every scan silently read as "clean"). Also
+# auto-builds on first scan(tool="semgrep"); pre-build to avoid a wait then.
+echo "  Building pentest-agent/semgrep (bakes in offline rule packs)..."
+_build_image Semgrep pentest-agent/semgrep "$REPO_DIR/tools/semgrep-image/" \
+    || warn "Semgrep build skipped — auto-builds on first scan(tool='semgrep'), or run: docker build -t pentest-agent/semgrep $REPO_DIR/tools/semgrep-image/"
+
 # Garak image (build) — standalone LLM red-team scanner used by /ai-redteam.
 # Heavy (torch, ~6-7 GB). Optional here because it ALSO auto-builds on first
 # scan(tool="garak"); pre-build to avoid a ~5-min wait on first use.

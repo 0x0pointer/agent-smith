@@ -20,14 +20,16 @@ _TARGET_MOUNT = "/target"
 
 def _build_args(path: str = _TARGET_MOUNT, flags: str = "") -> list[str]:
     # _TARGET_MOUNT is the mount point inside the container (see needs_mount=True).
-    # The semgrep/semgrep image has no ENTRYPOINT, so the binary name must lead.
+    # The semgrep image has no ENTRYPOINT, so the binary name must lead.
     # User-supplied host paths are remapped to _TARGET_MOUNT since only the mount is visible inside the container.
     if path != _TARGET_MOUNT and not path.startswith(_TARGET_MOUNT):
         path = _TARGET_MOUNT
-    # --config=auto is invalid when --metrics=off (semgrep requires metrics for auto-detection).
-    # p/python is a stable registry config that works with metrics disabled.
+    # --config=/rules uses the semgrep-rules bundle BAKED into pentest-agent/semgrep
+    # (see tools/semgrep/Dockerfile) — one bundle covers EVERY language and needs
+    # NO network, so semgrep runs under network="none" instead of failing to fetch
+    # --config=p/python from semgrep.dev and silently returning "clean" (issue #178).
     # User-supplied flags can add further --config values or override behavior.
-    args = ["semgrep", "--config=p/python", "--json", "--metrics=off", path]
+    args = ["semgrep", "--config=/rules", "--json", "--metrics=off", path]
     if flags:
         args += flags.split()
     return args
@@ -66,8 +68,12 @@ def _parse(stdout: str, stderr: str) -> list[dict]:
 
 TOOL = Tool(
     name            = "semgrep",
-    network         = "none",   # analyzes untrusted mounted code, needs no network (AS-13)
-    image           = "semgrep/semgrep:latest",
+    network         = "none",   # rules are baked in (see build_context) — no network (AS-13)
+    # Custom image: semgrep + curated multi-language rule packs baked in (see the
+    # Dockerfile), so --config=/rules runs fully OFFLINE. Auto-built from
+    # build_context on first use by _run() (like garak).
+    image           = "pentest-agent/semgrep",
+    build_context   = "tools/semgrep-image",
     build_args      = _build_args,
     parser          = _parse,
     default_timeout = 900,

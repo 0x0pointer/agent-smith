@@ -87,6 +87,40 @@ from mcp_server.scan_engine.envelope.quick_log import (
     _quick_log_tool,
 )
 
+# --- Broken-scan sentinel ---------------------------------------------------
+from tools.base import SCAN_FAILED_SENTINEL
+
+
+def _check_scan_failed(tool: str, raw_output: str) -> str | None:
+    """Return a failure-envelope JSON string when raw_output is a BROKEN-scan
+    sentinel (issue #178), else None. Surfacing the failure as an anomaly +
+    warning here guarantees it is visible for EVERY tool, regardless of whether
+    the tool has a summarizer that would otherwise swallow a plain error line."""
+    if not isinstance(raw_output, str) or not raw_output.startswith(SCAN_FAILED_SENTINEL):
+        return None
+    msg = raw_output[len(SCAN_FAILED_SENTINEL):].strip()
+    headline = msg.splitlines()[0] if msg else "scan did not complete"
+    try:
+        # Store the stripped message (never the NUL-prefixed sentinel) as the proof.
+        artifact_id = store_artifact(tool, msg or headline)
+    except Exception:
+        artifact_id = None
+    try:
+        state = _compact_state(get_state())
+    except Exception:
+        state = {}
+    env = Envelope(
+        summary=f"⚠ SCAN FAILED — {tool}: {headline}",
+        facts=[],
+        anomalies=[f"{tool} scan did NOT complete — empty findings do NOT mean clean; re-run before trusting the output"],
+        evidence={"error": msg[:2_000]},
+        next={"required": [], "recommended": []},
+        artifact=artifact_id,
+        session_state=state,
+        warnings=[f"{tool} FAILED ({headline})"],
+    )
+    return env.to_json()
+
 
 def wrap(tool: str, raw_output: str, context: dict | None = None,
          artifact_raw: str | None = None) -> str:
@@ -109,6 +143,16 @@ def wrap(tool: str, raw_output: str, context: dict | None = None,
     blocked = _check_scan_gate(tool)
     if blocked:
         return blocked
+
+    # Broken-scan short-circuit (issue #178): a non-ok container exit / timeout /
+    # missing-codebase mount is marked with SCAN_FAILED_SENTINEL by _run(). Emit a
+    # visible failure envelope here — BEFORE any tool-specific summarizer — so the
+    # failure cannot be swallowed into a clean-looking "0 results" (the net.py
+    # summarizers drop "["-prefixed / non-JSON lines). This also fixes the
+    # pre-existing timeout-string swallow.
+    failed = _check_scan_failed(tool, raw_output)
+    if failed:
+        return failed
 
     ctx = context or {}
 
