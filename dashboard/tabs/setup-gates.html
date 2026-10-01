@@ -1,12 +1,50 @@
+<!-- Internal tab key stays "setup-gates" (switchTab/TAB_NAMES/panel id unchanged);
+     the visible label is "Operator Actions". This tab is the single place for
+     everything the agent needs from the operator — non-blocking resource
+     requests (wishlist, issue #181) and manual setup gates. -->
 <div id="tab-setup-gates" class="tab-content">
-  <h2 class="section-title">Manual Setup Gates</h2>
-  <p style="color:var(--text-dim);font-size:0.82rem;margin:0 0 0.9rem;line-height:1.5;">
-    Manual / physical prerequisites a skill declares (a hooked device, an emulator on the network, a
-    UART / JTAG hookup). <strong>Non-blocking</strong> — the scan never waits on these. Choose
-    <em>Now / Defer / Skip</em>, follow the runbook, then <em>Verify setup</em> to run the readiness
-    probe. A passing probe confirms the setup is genuinely live and resumes any deferred work.
+  <h2 class="section-title">Operator Actions</h2>
+  <p style="color:var(--text-dim);font-size:0.82rem;margin:0 0 1.1rem;line-height:1.5;">
+    Everything Smith needs from <em>you</em> to test deeper — all <strong>non-blocking</strong>, so the
+    scan never waits here. Resource requests Smith raises mid-test, and manual prerequisites a skill
+    declares, both surface in this one place with an unread count on the tab.
   </p>
-  <div id="setup-gates-wrap">
-    <div class="empty-placeholder">No manual-setup gates. Skills that ship a <code>capabilities.yaml</code> open them here when invoked.</div>
+
+  <!-- ── Resource requests (agent → operator wishlist, issue #181) ──────────── -->
+  <div class="activity-section">
+    <div class="activity-section-header">
+      <span class="activity-dot" style="background:#38bdf8;box-shadow:0 0 5px #38bdf8"></span>
+      <span class="activity-section-title">Resource requests</span>
+      <span class="activity-section-meta" style="color:var(--text-dim);font-size:0.7rem">Smith asks · you fulfil — non-blocking</span>
+    </div>
+    <div style="font-size:0.78rem;color:var(--text-dim);margin-bottom:0.65rem;line-height:1.5;">
+      Resources Smith needs to go deeper (creds, scope, rate-limit relief, tooling). Fulfilling one
+      reopens the coverage cells it was blocking — without pausing the scan.
+    </div>
+    <div id="wishlist-open-wrap">
+      <div class="empty-placeholder">No open requests — Smith has everything it asked for.</div>
+    </div>
+    <div class="qa-divider">Resolved</div>
+    <div id="wishlist-history-wrap">
+      <div class="empty-placeholder">No resolved wishlist items yet.</div>
+    </div>
+  </div>
+
+  <!-- ── Manual setup gates (capabilities.yaml prerequisites) ───────────────── -->
+  <div class="activity-section">
+    <div class="activity-section-header">
+      <span class="activity-dot" style="background:#a78bfa;box-shadow:0 0 5px #a78bfa"></span>
+      <span class="activity-section-title">Manual setup gates</span>
+      <span class="activity-section-meta" style="color:var(--text-dim);font-size:0.7rem">prerequisites · elect then verify</span>
+    </div>
+    <div style="font-size:0.78rem;color:var(--text-dim);margin-bottom:0.65rem;line-height:1.5;">
+      Manual / physical prerequisites a skill declares (a hooked device, an emulator on the network, a
+      UART / JTAG hookup). Choose <em>Now / Defer / Skip</em>, follow the runbook, then
+      <em>Verify setup</em> to run the readiness probe. A passing probe confirms the setup is genuinely
+      live and resumes any deferred work.
+    </div>
+    <div id="setup-gates-wrap">
+      <div class="empty-placeholder">No manual-setup gates. Skills that ship a <code>capabilities.yaml</code> open them here when invoked.</div>
+    </div>
   </div>
 </div>

@@ -114,6 +114,10 @@
   // watchdog-respawned session toasts and appears within seconds, even when the
   // operator is on another tab (issue #187, acceptance #1 & #4).
   setInterval(pollSessions,      POLL_MS * 2);
+  // Operator Actions (wishlist + setup gates): poll in the background, not
+  // tab-gated, so a new resource request toasts and badges the tab within
+  // seconds even when the operator is elsewhere (issue #181).
+  setInterval(pollSetupGates,    POLL_MS);
   // #status is a shared header shown on every tab, so the "last updated Ns ago"
   // counter must keep ticking regardless of which menu item is open.
   setInterval(() => { if (!scanDone && lastOk) updateFreshness(); }, 1000);
@@ -138,3 +142,4 @@
   pollQA();
   pollMetrics();
   pollSessions();
+  pollSetupGates();

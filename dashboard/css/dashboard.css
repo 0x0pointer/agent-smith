@@ -417,6 +417,15 @@
     }
     .tab-btn:hover  { color: var(--text); }
     .tab-btn.active { color: var(--green); border-bottom-color: var(--green); font-weight: 600; }
+    /* Unread "Operator Actions" — a new resource request / setup gate the
+       operator hasn't viewed yet (issue #181). Cleared on opening the tab. */
+    .tab-btn.oa-unseen:not(.active) { color: var(--green); }
+    .tab-btn.oa-unseen:not(.active)::before {
+      content: '●'; color: var(--green); font-size: .6rem;
+      margin-right: .35rem; vertical-align: middle;
+      animation: oa-pulse 1.6s ease-in-out infinite;
+    }
+    @keyframes oa-pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
     .tab-content { display: none; }
     .tab-content.active { display: block; }
 
