@@ -196,9 +196,15 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ note: note || '' }),
       });
-      if (!r.ok) alert('Failed: ' + r.status);
-    } catch { alert('Request failed'); }
-    pollSetupGates();   // refresh both sections + the unread badge
+      if (!r.ok) throw new Error('Failed: ' + r.status);
+      pollSetupGates();
+    } catch (e) {
+      alert(e && e.message ? e.message : 'Request failed');
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = action === 'fulfill' ? 'Fulfil' : 'Dismiss';
+      }
+    }
   }
 
   // ── Unread badge + notifications (issue #181) ───────────────────────────────
