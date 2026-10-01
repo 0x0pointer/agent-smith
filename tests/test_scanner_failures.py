@@ -225,16 +225,26 @@ def _docker_up() -> bool:
         return False
 
 
-_HAS_DOCKER = _docker_up()
+# OPT-IN ONLY. This test shells out to Docker, bind-mounts a host dir, and asserts
+# on trufflehog's detector output — so it depends on the Docker daemon sharing the
+# runner's filesystem (false in many CI / Docker-in-Docker setups, where the bind
+# mount is empty and trufflehog correctly finds nothing) AND on a third-party tool's
+# behaviour. That is not a property of OUR code and must never run in the default
+# suite. The real regression guard — that build_args remaps the host path to
+# /target — is covered hermetically by TestMountPathRemap. Run this manually with:
+#   SMITH_DOCKER_SMOKE=1 pytest tests/test_scanner_failures.py -k trufflehog_detects
+_RUN_DOCKER_SMOKE = os.environ.get("SMITH_DOCKER_SMOKE") == "1" and _docker_up()
 
 
-@pytest.mark.skipif(not _HAS_DOCKER, reason="docker daemon not available — integration smoke test")
+@pytest.mark.skipif(not _RUN_DOCKER_SMOKE,
+                    reason="opt-in Docker smoke test — set SMITH_DOCKER_SMOKE=1 to run")
 @pytest.mark.asyncio
 async def test_trufflehog_detects_planted_secret_via_production_path(tmp_path):
-    """Plant a runtime-generated private key and confirm trufflehog finds it
-    while driving the SAME code path production uses: mount the host dir, and
-    let build_args remap the host path to /target (the bug that made every real
-    trufflehog scan silently empty)."""
+    """OPT-IN smoke test (SMITH_DOCKER_SMOKE=1): plant a runtime-generated private
+    key and confirm trufflehog finds it while driving the SAME code path production
+    uses — mount the host dir and let build_args remap the host path to /target
+    (the bug that made every real trufflehog scan silently empty). The hermetic
+    guard for that remap lives in TestMountPathRemap; this only adds live proof."""
     from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.primitives.asymmetric import ec
     from tools.docker_runner import run_container
