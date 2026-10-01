@@ -281,7 +281,7 @@
   // flicker, and no wiping an in-flight "probing…" / disabled button).
   function _oaSig() {
     return JSON.stringify([
-      _oaGates.map(g => [g && g.id, g && g.status, g && g.probe_result && g.probe_result.ok]),
+      _oaGates.map(g => [g && g.id, g && g.status, g && g.probe_result && g.probe_result.ok, g && g.probe_result && g.probe_result.at, g && g.probe_result && g.probe_result.stdout_excerpt]),
       _oaWishAll.map(i => [i && i.id, i && i.status, (i && i.resolution_note) || '']),
     ]);
   }
