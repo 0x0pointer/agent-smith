@@ -197,6 +197,34 @@ def _format_run_result(tool, stdout: str, stderr: str, exit_code: int = 0) -> st
     return json.dumps({"findings": parsed, "raw": _clip(stdout, tool.max_output)}, indent=2)
 
 
+def _resolve_mount(name: str, tool, kwargs: dict) -> tuple[str | None, str | None]:
+    """Resolve the host dir to mount at /target for a needs_mount tool.
+
+    Returns (mount_path, error). Fixes issue #178 root-cause B: previously the
+    mount was ``PENTEST_TARGET_PATH or os.getcwd()`` while _build_args remaps any
+    path arg to /target — so a `target` passed to scan() was silently ignored and,
+    with no codebase set, the agent scanned its OWN repo (cwd) and reported it
+    "clean". Now, mirroring exec_sandbox (handlers_code.py): an explicit `target`
+    OVERRIDES the env, and if neither resolves to a real dir we return an explicit
+    error instead of silently scanning cwd."""
+    if not tool.needs_mount:
+        return None, None
+    from tools.base import SCAN_FAILED_SENTINEL
+    for cand in (kwargs.get("path"), os.environ.get("PENTEST_TARGET_PATH", "")):
+        if not cand:
+            continue
+        abs_path = os.path.abspath(os.path.expanduser(cand))
+        if os.path.isdir(abs_path):
+            return abs_path, None
+    err = (
+        f"{SCAN_FAILED_SENTINEL}{name}: no valid codebase to scan. Pass "
+        f"target=<absolute dir> or call session(action='set_codebase', "
+        f"options={{'path': '/abs/path'}}) first. NOT scanning the current "
+        f"working directory."
+    )
+    return None, err
+
+
 def _report_run_error(name: str, kwargs: dict, exc: BaseException) -> str:
     """Log a tool-run failure and report it to Sentry, returning the error string.
 
@@ -236,7 +264,17 @@ async def _run(name: str, **kwargs) -> str:
         call_id = cost_tracker.start(name)
         tool    = REGISTRY[name]
         args    = tool.build_args(**kwargs)
-        mount   = os.environ.get("PENTEST_TARGET_PATH", os.getcwd()) if tool.needs_mount else None
+
+        # Resolve the mount for needs_mount tools. A missing/invalid codebase is
+        # an explicit failure (sentinel) — never a silent scan of cwd (issue #178).
+        mount, mount_err = _resolve_mount(name, tool, kwargs)
+        if mount_err:
+            cost_tracker.finish(call_id, mount_err)
+            log.tool_result(name, mount_err)
+            return mount_err
+        if mount:
+            log.note(f"{name}: mounting {mount} at /target")
+
         env_vars = _forward_env(tool)
 
         try:
