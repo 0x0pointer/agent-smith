@@ -11,8 +11,12 @@ Why the official image (not Kali / the generic Tool path):
   * `zap-baseline.py` is PASSIVE — it spiders (now via the Client Spider with
     `-j --client-spider`) and runs passive rules only; it fires NO active-attack
     payloads, so it adds no scan noise. We use it purely for discovery.
-  * a per-call /zap/wrk bind mount carries the hook IN and the discovered-URL list
-    + JSON report OUT (the stdout-only Tool path can't do that).
+
+Output WITHOUT a writable host mount: ZAP runs as its own uid 1000 and will not
+start under a different `--user`, so a bind-mounted host output dir would need
+loose (world-writable) permissions. Instead we mount only the hook READ-ONLY and
+the hook PRINTS the discovered URLs to stdout between marker lines; the runner
+captures the container's stdout and parses them out. No chmod, no uid problem.
 
 Two-pass usage (driven by the spider handler):
   * black-box pass: run_client_spider(target)                 — anonymous crawl.
@@ -27,11 +31,8 @@ So {0,1,2} = "ran", 3 = failure.
 from __future__ import annotations
 
 import asyncio
-import json
 import os
-import shutil
 import subprocess
-import tempfile
 import uuid
 from pathlib import Path
 
@@ -49,6 +50,10 @@ _HOOK_SRC = Path(__file__).resolve().parent / "zap" / "client_spider_hook.py"
 _MEMORY = os.environ.get("SMITH_ZAP_MEMORY", "4g")      # ZAP JVM + a real Firefox
 _SHM = os.environ.get("SMITH_ZAP_SHM", "2g")            # Firefox crashes on a tiny /dev/shm
 _PULL_TIMEOUT = int(os.environ.get("SMITH_ZAP_PULL_TIMEOUT", "600"))
+
+# Must match tools/zap/client_spider_hook.py — the markers framing the URL list on stdout.
+_URLS_BEGIN = "=== SMITH_ZAP_URLS_BEGIN ==="
+_URLS_END = "=== SMITH_ZAP_URLS_END ==="
 
 _image_ready = False
 
@@ -77,6 +82,22 @@ def _auth_env(auth: dict | None) -> dict[str, str]:
     return env
 
 
+def _parse_urls(stdout: str) -> list[str]:
+    """Extract the discovered URLs the hook printed to stdout, between the markers."""
+    urls: list[str] = []
+    inside = False
+    for line in stdout.splitlines():
+        s = line.strip()
+        if s == _URLS_BEGIN:
+            inside = True
+            continue
+        if s == _URLS_END:
+            break
+        if inside and s:
+            urls.append(s)
+    return urls
+
+
 async def _image_exists() -> bool:
     proc = await asyncio.create_subprocess_exec(
         docker_executable(), "image", "inspect", ZAP_IMAGE,
@@ -87,7 +108,7 @@ async def _image_exists() -> bool:
 
 
 async def ensure_image() -> tuple[bool, str]:
-    """Ensure the ZAP image is present; pull it on first use (large, ~1.8 GB).
+    """Ensure the ZAP image is present; pull it on first use (large, ~3.6 GB).
     Fail-soft: returns (False, reason) so the caller degrades instead of raising."""
     global _image_ready
     if _image_ready or await _image_exists():
@@ -99,7 +120,8 @@ async def ensure_image() -> tuple[bool, str]:
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
     )
     try:
-        out, _ = await asyncio.wait_for(proc.communicate(), timeout=_PULL_TIMEOUT)
+        async with asyncio.timeout(_PULL_TIMEOUT):
+            out, _ = await proc.communicate()
     except asyncio.TimeoutError:
         proc.kill()
         await proc.communicate()
@@ -122,87 +144,64 @@ async def run_client_spider(target: str, minutes: int = 5, auth: dict | None = N
                             timeout: int = 1800) -> dict:
     """Run the ZAP Client Spider against `target` for up to `minutes`, optionally
     authenticated. Returns a dict:
-        {ok, exit_code, urls: [str], alert_count, note}
+        {ok, exit_code, urls: [str], note}
     `ok` is True when ZAP RAN (exit 0/1/2), False when it failed to run (exit 3) or
     was unavailable — in which case `note` says why and `urls` is empty. Never raises."""
     ok, msg = await ensure_image()
     if not ok:
-        return {"ok": False, "exit_code": None, "urls": [], "alert_count": 0,
-                "note": f"[zap unavailable: {msg}]"}
+        return {"ok": False, "exit_code": None, "urls": [], "note": f"[zap unavailable: {msg}]"}
 
-    workdir = tempfile.mkdtemp(prefix="smith_zap_")
     cname = f"smith_zap_{uuid.uuid4().hex[:12]}"
+    env_flags: list[str] = []
+    for k, v in _auth_env(auth).items():
+        env_flags += ["-e", f"{k}={v}"]
+
+    cmd = [
+        docker_executable(), "run", "--rm", "--name", cname,
+        "--add-host=host.docker.internal:host-gateway",
+        "--security-opt=no-new-privileges",
+        f"--memory={_MEMORY}", f"--shm-size={_SHM}", "--cpus=2",
+        # hook mounted READ-ONLY — no writable host mount, so no loose dir perms.
+        "-v", f"{os.path.abspath(_HOOK_SRC)}:/zap/hook.py:ro",
+        *env_flags,
+        ZAP_IMAGE,
+        "zap-baseline.py", "-t", _host_rewrite(target),
+        "-j", "--client-spider", "-m", str(max(1, minutes)),
+        "--hook=/zap/hook.py",
+        "-I",   # don't fail the run on WARN-level alerts; we read the exit code only for RUN/FAIL
+    ]
     try:
-        # The container runs as uid 1000 (user `zap`) and writes reports to /zap/wrk —
-        # make the host mount world-writable so those writes land on the host.
-        os.chmod(workdir, 0o777)
-        shutil.copy(_HOOK_SRC, Path(workdir) / "hook.py")
-
-        safe_target = _host_rewrite(target)
-        env_flags: list[str] = []
-        for k, v in _auth_env(auth).items():
-            env_flags += ["-e", f"{k}={v}"]
-
-        cmd = [
-            docker_executable(), "run", "--rm", "--name", cname,
-            "--add-host=host.docker.internal:host-gateway",
-            "--security-opt=no-new-privileges",
-            f"--memory={_MEMORY}", f"--shm-size={_SHM}", "--cpus=2",
-            "-v", f"{os.path.abspath(workdir)}:/zap/wrk:rw",
-            *env_flags,
-            ZAP_IMAGE,
-            "zap-baseline.py", "-t", safe_target,
-            "-j", "--client-spider", "-m", str(max(1, minutes)),
-            "-J", "report.json", "--hook=/zap/wrk/hook.py",
-            "-I",   # do not return a non-zero exit just because of warnings (we read exit for RUN/FAIL only)
-        ]
         proc = await asyncio.create_subprocess_exec(
             *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
         )
+    except Exception as exc:  # pragma: no cover - defensive
+        return {"ok": False, "exit_code": None, "urls": [], "note": f"[zap could not start: {exc}]"}
+
+    try:
         try:
-            out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            async with asyncio.timeout(timeout):
+                out, _ = await proc.communicate()
         except asyncio.TimeoutError:
             _reap(cname)
             proc.kill()
             try:
-                await asyncio.wait_for(proc.communicate(), timeout=10)
+                async with asyncio.timeout(10):
+                    await proc.communicate()
             except Exception:
                 pass
-            urls = _read_urls(workdir)   # partial crawl may still be on disk
-            return {"ok": bool(urls), "exit_code": None, "urls": urls, "alert_count": 0,
-                    "note": f"[zap client-spider timed out after {timeout}s — {len(urls)} URL(s) salvaged]"}
+            return {"ok": False, "exit_code": None, "urls": [],
+                    "note": f"[zap client-spider timed out after {timeout}s]"}
 
         rc = proc.returncode or 0
-        urls = _read_urls(workdir)
-        alert_count = _read_alert_count(workdir)
         stdout = out.decode(errors="replace")
+        urls = _parse_urls(stdout)
         if rc == 3:
             tail = stdout.strip()[-800:]
-            return {"ok": False, "exit_code": 3, "urls": urls, "alert_count": alert_count,
+            return {"ok": False, "exit_code": 3, "urls": urls,
                     "note": f"[zap client-spider FAILED to run (exit 3) — ZAP did not start / target "
                             f"unreachable]\n{tail}"}
-        return {"ok": True, "exit_code": rc, "urls": urls, "alert_count": alert_count,
+        return {"ok": True, "exit_code": rc, "urls": urls,
                 "note": f"[zap client-spider ran (exit {rc}) — {len(urls)} URL(s) discovered"
                         + (", authenticated" if auth else ", black-box") + "]"}
     finally:
         _reap(cname)
-        shutil.rmtree(workdir, ignore_errors=True)
-
-
-def _read_urls(workdir: str) -> list[str]:
-    path = Path(workdir) / "urls.txt"
-    try:
-        return [u.strip() for u in path.read_text(encoding="utf-8", errors="replace").splitlines() if u.strip()]
-    except Exception:
-        return []
-
-
-def _read_alert_count(workdir: str) -> int:
-    """Count passive-scan alerts in the JSON report (informational only — we do NOT
-    file them as findings here; the spider's job is discovery)."""
-    path = Path(workdir) / "report.json"
-    try:
-        data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
-    except Exception:
-        return 0
-    return sum(len(site.get("alerts", []) or []) for site in (data.get("site", []) or []))
