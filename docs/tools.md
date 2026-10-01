@@ -87,12 +87,14 @@ scan(tool="ffuf", target="https://example.com", flags="-mc 200,301 -fc 404", opt
 ---
 
 ### `spider`
-Web crawler to map all reachable endpoints. Uses katana (+ playwright / ZAP AJAX in richer modes). On a `thorough`-depth session it always runs the full katana + playwright + ZAP AJAX merge regardless of `mode`.
+Web crawler to map all reachable endpoints. Uses katana (+ playwright / the **ZAP Client Spider** in richer modes). On a `thorough`-depth session it always runs the full katana + playwright + ZAP Client Spider merge regardless of `mode`.
+
+The **ZAP Client Spider** (`deep` mode, and part of the `thorough` merge) is the DOM-aware spider from ZAP 2.16+, run via the official `ghcr.io/zaproxy/zaproxy` image (auto-pulled on first use, ~3.6 GB), replacing the discontinued `zap-cli` AJAX spider (issue #184). It is **discovery-only** — `zap-baseline.py -j --client-spider`, spider + passive rules, **no active-attack payloads** (no scan noise). It runs **two passes**: a black-box crawl always, and an **authenticated** crawl when the scan holds a session (captured cookies / bearer token are injected into every request via a ZAP Replacer rule, so the browser-driven spider reaches the app behind the login). When no session is available it files a `credentials` wishlist so the operator can supply one — then a later spider run does the authenticated pass.
 
 | Option | Default | Description |
 |---|---|---|
 | `depth` | `3` | Crawl depth |
-| `mode` | `fast` | `fast` (katana), `playwright` (headless JS render), or `deep` (heavier katana crawl) |
+| `mode` | `fast` | `fast` (katana), `playwright` (headless JS render), or `deep` (ZAP Client Spider) |
 | `cookies` | `{}` | Dict of cookies to send with the crawl (authenticated crawling) |
 | `max_pages` | `200` | Page cap for the crawl |
 | `timeout` | `7200` | Seconds before the crawl is killed (long default for deep enterprise nav trees) |

@@ -1,4 +1,8 @@
-"""Spider handler: fast/playwright/deep modes + thorough (katana+playwright+ZAP)."""
+"""Spider handler: fast/playwright/deep modes + thorough (katana+playwright+ZAP Client Spider).
+
+`deep` mode and the `thorough` merge use the ZAP **Client Spider** (ZAP 2.16+) via the
+official ZAP image (tools/zap_runner.py), replacing the discontinued zap-cli AJAX spider
+(issue #184). It crawls black-box, then authenticated when a session is available."""
 import shlex
 
 from core import cost as cost_tracker
@@ -20,7 +24,7 @@ async def _run_spider_thorough(target: str, flags: str, cookies: dict, depth: st
     # user-provided `budget_s` value (default 2h → ~40min per subtool, floor
     # 20min so a tiny budget doesn't starve any one tool).
     per_subtool = max(budget_s // 3, 1200)
-    log.note(f"spider: thorough mode — katana + playwright + zap-ajax (per-subtool timeout={per_subtool}s)")
+    log.note(f"spider: thorough mode — katana + playwright + zap-client-spider (per-subtool timeout={per_subtool}s)")
 
     safe_flags = shlex.join(shlex.split(flags)) if flags else ""
     rate_flag = "" if "-rate-limit" in (flags or "") else "-rate-limit 50"
@@ -33,21 +37,10 @@ async def _run_spider_thorough(target: str, flags: str, cookies: dict, depth: st
         f"--depth {depth} --max-pages {max_pages}"
     )
 
-    # Guard zap-cli: it isn't present in every Kali image build. Without this guard a
-    # missing binary leaks "zap-cli: command not found" into the merged spider output
-    # and muddies the result — skip the ZAP AJAX sub-tool cleanly instead.
-    zap_cmd = (
-        f"if command -v zap-cli >/dev/null 2>&1; then "
-        f"zap-cli --port 8090 --api-key zapscan quick-scan --spider --ajax-spider "
-        f"--start-options '-config api.key=zapscan -port 8090' {safe_url}; "
-        f"else echo '[zap-ajax skipped: zap-cli not installed in the Kali image]'; fi"
-    )
-
     parts = []
     for label, cmd, t in [
         ("=== katana ===", katana_cmd, per_subtool),
         ("=== playwright ===", playwright_cmd, per_subtool),
-        ("=== zap-ajax ===", zap_cmd, per_subtool),
     ]:
         async with _asyncio.timeout(t):
             # SP-11: keep the FULL sub-tool output — discovery parses every URL
@@ -56,6 +49,12 @@ async def _run_spider_thorough(target: str, flags: str, cookies: dict, depth: st
             # (the interesting admin/API routes) before cells were ever generated.
             out = await kali_runner.exec_command(cmd)
         parts.append(f"{label}\n{out}")
+
+    # ZAP Client Spider (issue #184) — official image, not Kali/zap-cli. DOM-aware
+    # discovery, two-pass (black-box + authenticated). Runs its own container, so it's
+    # outside the kali exec loop above.
+    zap_out = await _run_zap_client_spider(target, per_subtool, cookies)
+    parts.append(f"=== zap-client-spider ===\n{zap_out}")
 
     return "\n\n".join(parts)
 
@@ -69,17 +68,14 @@ async def _run_spider_fast(target: str, flags: str, cookies: dict, depth: str, m
     safe_url = shlex.quote(target)
     safe_cookies = shlex.quote(_json.dumps(cookies))
 
+    if mode == "deep":
+        # deep = the ZAP Client Spider (issue #184), its own official-image container.
+        return await _run_zap_client_spider(target, budget_s, cookies)
+
     if mode == "playwright":
         cmd = (
             f"playwright-spider --url {safe_url} --cookies {safe_cookies} "
             f"--depth {depth} --max-pages {max_pages}"
-        )
-    elif mode == "deep":
-        cmd = (
-            f"if command -v zap-cli >/dev/null 2>&1; then "
-            f"zap-cli --port 8090 --api-key zapscan quick-scan --spider --ajax-spider "
-            f"--start-options '-config api.key=zapscan -port 8090' {safe_url}; "
-            f"else echo '[zap-ajax skipped: zap-cli not installed in the Kali image]'; fi"
         )
     else:
         safe_flags = shlex.join(shlex.split(flags)) if flags else ""
@@ -91,6 +87,68 @@ async def _run_spider_fast(target: str, flags: str, cookies: dict, depth: str, m
     async with _asyncio.timeout(budget_s):
         # SP-11: return the FULL crawl; bounding happens in _handle_spider.
         return await kali_runner.exec_command(cmd)
+
+
+def _authpass_deferral_note(target: str) -> str:
+    """When the authenticated ZAP pass can't run (no session yet), either tell the
+    agent to log in with auth it already holds, or file a credentials wishlist so the
+    operator can supply a session — then a later spider run does the authenticated pass.
+    Mirrors the wishlist anti-moral-hazard rule: don't ask for creds you can mint yourself."""
+    ka = (scan_session.get() or {}).get("known_assets") or {}
+    if ka.get("credentials") or ka.get("auth_tokens") or ka.get("auth_endpoints"):
+        return ("[zap client-spider: black-box pass only — no active session yet. You already "
+                "hold credentials / a login endpoint: authenticate (mint a session), then re-run "
+                "the spider so the authenticated Client Spider pass crawls behind the login.]")
+    try:
+        from core.wishlist import wishlist_queue
+        wishlist_queue.add(
+            need=(f"an authenticated session (cookies or bearer token) for {target} — the ZAP "
+                  "Client Spider finds the real app behind the login; the black-box pass only "
+                  "reached the public surface"),
+            category="credentials",
+            rationale=("Two-pass discovery (issue #184): the black-box Client Spider pass is done; "
+                       "the authenticated pass needs a logged-in session to reach auth-gated "
+                       "DOM/endpoints."),
+        )
+        log.note(f"zap client-spider: filed credentials wishlist for authenticated pass on {target}")
+    except Exception as exc:  # pragma: no cover - defensive
+        log.note(f"zap client-spider: wishlist add skipped: {exc}")
+    return ("[zap client-spider: black-box pass only — no session and no credentials known. "
+            "Filed a credentials wishlist; once the operator supplies a session, re-run the "
+            "spider for the authenticated pass.]")
+
+
+async def _run_zap_client_spider(target: str, total_seconds: int, cookies: dict) -> str:
+    """ZAP Client Spider discovery (issue #184) — the official-image replacement for the
+    discontinued zap-cli AJAX spider. Runs a black-box pass always, then an AUTHENTICATED
+    pass when a session is available (session injected into every request via a ZAP
+    Replacer rule), else files a credentials wishlist. Returns merged discovered-URL lines
+    (+ notes) so the normal auto-discovery parses them. Fail-soft — never raises."""
+    from tools import zap_runner
+    try:
+        auth = _spider_discovery_auth(cookies)
+        passes = 2 if auth else 1
+        # Split the budget across the pass(es); bound each spider's -m to a sane range.
+        minutes = max(2, min(20, (total_seconds // 60) // passes))
+        per_pass_timeout = minutes * 60 + 180      # + ZAP/Firefox startup headroom
+        lines: list[str] = []
+
+        bb = await zap_runner.run_client_spider(target, minutes=minutes, auth=None,
+                                                timeout=per_pass_timeout)
+        lines.append(bb["note"])
+        lines.extend(bb["urls"])
+
+        if auth:
+            ap = await zap_runner.run_client_spider(target, minutes=minutes, auth=auth,
+                                                    timeout=per_pass_timeout)
+            lines.append(ap["note"])
+            lines.extend(ap["urls"])
+        else:
+            lines.append(_authpass_deferral_note(target))
+        return "\n".join(lines)
+    except Exception as exc:  # pragma: no cover - defensive
+        log.note(f"zap client-spider skipped: {exc}")
+        return f"[zap client-spider skipped: {exc}]"
 
 
 def _crawl_cookie_map(crawl_cookies: dict | None) -> dict:
