@@ -170,9 +170,27 @@ def _forward_env(tool) -> dict | None:
     return env_vars or None
 
 
-def _format_run_result(tool, stdout: str, stderr: str) -> str:
-    """Render a container's stdout/stderr into the tool's result string:
-    clipped raw text when the tool has no parser, else a JSON findings envelope."""
+def _format_run_result(tool, stdout: str, stderr: str, exit_code: int = 0) -> str:
+    """Render a container's stdout/stderr into the tool's result string.
+
+    A non-ok container exit (issue #178) is a BROKEN scan — a crashed/OOM/
+    config-errored container returns empty stdout, which a parser happily reads
+    as zero findings and reports as "clean". We detect it from the exit code and
+    emit a SCAN_FAILED-sentinel string instead, which wrap() elevates into a
+    visible failure envelope. On a clean exit: clipped raw text when the tool has
+    no parser, else a JSON findings envelope."""
+    from tools.base import SCAN_FAILED_SENTINEL
+    if exit_code not in getattr(tool, "ok_exit_codes", (0,)):
+        tail = _clip((stderr.strip() or stdout.strip()), 1_500)
+        hint = ""
+        if exit_code == 137:
+            hint = (" (137 = OOM-killed / SIGKILL; the container's 2g memory cap "
+                    "may be too low for this target — narrow the path or raise the limit)")
+        return (
+            f"{SCAN_FAILED_SENTINEL}{tool.name} exited {exit_code}{hint}. "
+            f"This is a BROKEN scan, not a clean result — do NOT treat empty "
+            f"findings as secure; re-run before trusting the output.\nstderr:\n{tail}"
+        )
     if tool.parser is None:
         return _clip(stdout or stderr, tool.max_output)
     parsed = tool.parser(stdout, stderr)
@@ -222,14 +240,17 @@ async def _run(name: str, **kwargs) -> str:
         env_vars = _forward_env(tool)
 
         try:
-            stdout, stderr, _ = await run_container(
+            stdout, stderr, exit_code = await run_container(
                 tool.image, args, timeout=tool.default_timeout,
                 mount_path=mount, extra_volumes=tool.extra_volumes or None,
                 env_vars=env_vars,
                 network=tool.network, cap_add=tool.cap_add or None,
             )
         except asyncio.TimeoutError:
-            result = f"[{name} timed out after {tool.default_timeout}s — increase timeout or reduce scope]"
+            from tools.base import SCAN_FAILED_SENTINEL
+            result = (f"{SCAN_FAILED_SENTINEL}{name} timed out after "
+                      f"{tool.default_timeout}s — increase timeout or reduce scope. "
+                      f"This is an INCOMPLETE scan, not a clean result.")
             cost_tracker.finish(call_id, result)
             log.tool_result(name, result)
             return result
@@ -237,7 +258,7 @@ async def _run(name: str, **kwargs) -> str:
         # Log full verbose output before any clipping
         log.tool_result_verbose(name, stdout, stderr)
 
-        result = _format_run_result(tool, stdout, stderr)
+        result = _format_run_result(tool, stdout, stderr, exit_code)
 
         cost_tracker.finish(call_id, result)
         log.tool_result(name, result)
