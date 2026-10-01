@@ -34,25 +34,48 @@
   </div>
 
   <nav class="rail-nav" aria-label="Sections">
-    <div class="rail-group">Results</div>
-    <button class="tab-btn active" id="tab-btn-findings"     onclick="switchTab('findings')">Findings</button>
-    <button class="tab-btn"        id="tab-btn-topology"     onclick="switchTab('topology')">Topology</button>
-    <button class="tab-btn"        id="tab-btn-components"   onclick="switchTab('components')">Components</button>
-    <div class="rail-group">AI Red Team</div>
-    <button class="tab-btn"        id="tab-btn-ai-redteam"  onclick="switchTab('ai-redteam')">AI Red Team</button>
-    <div class="rail-group">Progress</div>
-    <button class="tab-btn"        id="tab-btn-coverage"     onclick="switchTab('coverage')">Coverage</button>
-    <button class="tab-btn"        id="tab-btn-skills"       onclick="switchTab('skills')">Skills</button>
-    <button class="tab-btn"        id="tab-btn-activity"     onclick="switchTab('activity')">Activity</button>
-    <div class="rail-group">Analysis</div>
-    <button class="tab-btn"        id="tab-btn-world-model"  onclick="switchTab('world-model')">World Model</button>
-    <button class="tab-btn"        id="tab-btn-threat-model" onclick="switchTab('threat-model')">Threat Model</button>
-    <button class="tab-btn"        id="tab-btn-metrics"      onclick="switchTab('metrics')">Metrics</button>
-    <div class="rail-group">System</div>
-    <button class="tab-btn"        id="tab-btn-setup-gates"  onclick="switchTab('setup-gates')">Setup Gates</button>
-    <button class="tab-btn"        id="tab-btn-logs"         onclick="switchTab('logs')">Logs</button>
-    <button class="tab-btn"        id="tab-btn-session-log"  onclick="switchTab('session-log')">Session Log</button>
-    <button class="tab-btn"        id="tab-btn-sessions"     onclick="switchTab('sessions')">Sessions</button>
+    <!-- Each group header toggles its items (collapsible so the rail never
+         outgrows the viewport). State persists per group in localStorage;
+         see toggleRailGroup()/_initRailGroups() in common.js. -->
+    <div class="rail-section" data-group="results">
+      <button type="button" class="rail-group" aria-expanded="true" aria-controls="rail-items-results" onclick="toggleRailGroup('results')"><span class="rail-caret" aria-hidden="true"></span>Results</button>
+      <div class="rail-group-items" id="rail-items-results">
+        <button class="tab-btn active" id="tab-btn-findings"     onclick="switchTab('findings')">Findings</button>
+        <button class="tab-btn"        id="tab-btn-topology"     onclick="switchTab('topology')">Topology</button>
+        <button class="tab-btn"        id="tab-btn-components"   onclick="switchTab('components')">Components</button>
+      </div>
+    </div>
+    <div class="rail-section" data-group="ai-red-team">
+      <button type="button" class="rail-group" aria-expanded="true" aria-controls="rail-items-ai-red-team" onclick="toggleRailGroup('ai-red-team')"><span class="rail-caret" aria-hidden="true"></span>AI Red Team</button>
+      <div class="rail-group-items" id="rail-items-ai-red-team">
+        <button class="tab-btn"        id="tab-btn-ai-redteam"  onclick="switchTab('ai-redteam')">AI Red Team</button>
+      </div>
+    </div>
+    <div class="rail-section" data-group="progress">
+      <button type="button" class="rail-group" aria-expanded="true" aria-controls="rail-items-progress" onclick="toggleRailGroup('progress')"><span class="rail-caret" aria-hidden="true"></span>Progress</button>
+      <div class="rail-group-items" id="rail-items-progress">
+        <button class="tab-btn"        id="tab-btn-coverage"     onclick="switchTab('coverage')">Coverage</button>
+        <button class="tab-btn"        id="tab-btn-skills"       onclick="switchTab('skills')">Skills</button>
+        <button class="tab-btn"        id="tab-btn-activity"     onclick="switchTab('activity')">Activity</button>
+      </div>
+    </div>
+    <div class="rail-section" data-group="analysis">
+      <button type="button" class="rail-group" aria-expanded="true" aria-controls="rail-items-analysis" onclick="toggleRailGroup('analysis')"><span class="rail-caret" aria-hidden="true"></span>Analysis</button>
+      <div class="rail-group-items" id="rail-items-analysis">
+        <button class="tab-btn"        id="tab-btn-world-model"  onclick="switchTab('world-model')">World Model</button>
+        <button class="tab-btn"        id="tab-btn-threat-model" onclick="switchTab('threat-model')">Threat Model</button>
+        <button class="tab-btn"        id="tab-btn-metrics"      onclick="switchTab('metrics')">Metrics</button>
+      </div>
+    </div>
+    <div class="rail-section" data-group="system">
+      <button type="button" class="rail-group" aria-expanded="true" aria-controls="rail-items-system" onclick="toggleRailGroup('system')"><span class="rail-caret" aria-hidden="true"></span>System</button>
+      <div class="rail-group-items" id="rail-items-system">
+        <button class="tab-btn"        id="tab-btn-setup-gates"  onclick="switchTab('setup-gates')">Operator Actions</button>
+        <button class="tab-btn"        id="tab-btn-logs"         onclick="switchTab('logs')">Logs</button>
+        <button class="tab-btn"        id="tab-btn-session-log"  onclick="switchTab('session-log')">Session Log</button>
+        <button class="tab-btn"        id="tab-btn-sessions"     onclick="switchTab('sessions')">Sessions</button>
+      </div>
+    </div>
   </nav>
 
   <div class="rail-footer">
