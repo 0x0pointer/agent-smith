@@ -186,9 +186,9 @@
   async function _resolveWishlist(id, action, btn) {
     const msg = action === 'fulfill'
       ? 'What are you giving Smith? (e.g. "creds analyst/Pw123", "scope now includes staging.api") — sent to Smith as a steering directive:'
-      : 'Reason for dismissing (optional):';
+      : 'Reason for dismissing (optional — leave blank and press OK, or Cancel to abort):';
     const note = window.prompt(msg);
-    if (action === 'fulfill' && note === null) return;  // cancelled
+    if (note === null) return;   // Cancel/Escape aborts either action (symmetric)
     if (btn) { btn.disabled = true; btn.textContent = '…'; }
     try {
       const r = await fetch(`/api/wishlist/${encodeURIComponent(id)}/${action}`, {
@@ -201,16 +201,25 @@
     pollSetupGates();   // refresh both sections + the unread badge
   }
 
-  // ── Unread badge (issue #181) ───────────────────────────────────────────────
+  // ── Unread badge + notifications (issue #181) ───────────────────────────────
   // One count on the "Operator Actions" tab for everything awaiting the operator:
-  // open resource requests + gates still needing an election. Ids are tracked in
-  // localStorage so the "new since you last looked" highlight clears when the
-  // operator opens the tab, mirroring the Sessions tab's seen-set pattern.
+  // open resource requests + gates still needing an election. Two independent
+  // bits of state, deliberately NOT merged:
+  //   _oaSeen    — localStorage, drives the "new since you last looked" pulse;
+  //                cleared when the operator opens the tab.
+  //   _oaToasted — in-memory, dedupes the OS/title toast so each new request
+  //                notifies exactly once (NOT every poll). Keeping it separate
+  //                from _oaSeen is what lets the toast fire while the pulse also
+  //                stays lit until the tab is actually viewed.
 
-  let _oaGates    = [];      // last-polled setup gates
-  let _oaWishOpen = [];      // last-polled OPEN wishlist items
-  let _oaSeen     = null;    // Set<string> of "w:<id>" / "g:<id>" keys already viewed
-  let _oaInit     = false;   // first poll done — so a fresh load doesn't toast the backlog
+  let _oaGates    = [];        // last good setup gates (kept across a failed poll)
+  let _oaWishAll  = [];        // last good full wishlist (kept across a failed poll)
+  let _oaWishOpen = [];        // derived: open items only
+  let _oaSeen     = null;      // Set<"w:<id>"/"g:<id>"> the operator has viewed
+  let _oaToasted  = new Set(); // Set<"w:<id>"> already notified this page-load
+  let _oaInit     = false;     // first poll done — seeds _oaToasted so the backlog is silent
+  let _oaBusy     = false;     // reentrancy guard — one poll in flight at a time
+  let _oaRenderSig = null;     // signature of the last-rendered data (skip no-op re-renders)
 
   function _oaLoadSeen() {
     if (_oaSeen) return _oaSeen;
@@ -223,13 +232,18 @@
     catch (e) { /* private mode / blocked storage — highlight just won't persist */ }
   }
 
+  // Actionable keys: open requests (with an id) + gates awaiting election.
+  function _oaKeys() {
+    return [
+      ..._oaWishOpen.filter(i => i && i.id).map(i => 'w:' + i.id),
+      ..._oaGates.filter(g => g && g.id && g.status === 'pending_election').map(g => 'g:' + g.id),
+    ];
+  }
+
   function _oaUpdateBadge() {
     const btn = document.getElementById('tab-btn-setup-gates');
     if (!btn) return;
-    const keys = [
-      ..._oaWishOpen.map(i => 'w:' + i.id),
-      ..._oaGates.filter(g => g.status === 'pending_election').map(g => 'g:' + g.id),
-    ];
+    const keys = _oaKeys();
     const active = (typeof _activeTab !== 'undefined' && _activeTab === 'setup-gates');
     const seen = _oaLoadSeen();
     if (active) {                 // operator is looking → everything here is now seen
@@ -242,39 +256,78 @@
     btn.classList.toggle('oa-unseen', unseen > 0 && !active);
   }
 
-  async function pollSetupGates() {
-    let gates = [];
-    let items = [];
-    try {
-      const r = await fetch(`/api/session?_=${Date.now()}`);
-      if (r.ok) { const sess = await r.json(); gates = sess.setup_gates || []; }
-    } catch { /* ignore */ }
-    try {
-      const r = await fetch(`/api/wishlist?_=${Date.now()}`);
-      if (r.ok) { items = (await r.json()).items || []; }
-    } catch { /* ignore */ }
-
-    renderSetupGates(gates);
-    _renderWishlist(items);
-
-    _oaGates    = gates;
-    _oaWishOpen = items.filter(i => i.status === 'open');
-
-    // Toast a brand-new resource request — but only after the first poll (so a
-    // fresh browser doesn't toast the backlog) and only when the operator isn't
-    // already on this tab. This is what makes a request impossible to miss.
-    const active = (typeof _activeTab !== 'undefined' && _activeTab === 'setup-gates');
-    if (_oaInit && !active) {
-      const seen = _oaLoadSeen();
-      for (const it of _oaWishOpen) {
-        if (!seen.has('w:' + it.id) && typeof _notify === 'function') {
-          _notify('Smith needs a resource', (it.need || '').slice(0, 120), 'normal');
-        }
+  // Fire a one-shot toast for each OPEN request not yet notified this page-load.
+  // Independent of _oaSeen so the toast and the pulse don't cancel each other.
+  function _oaToastNew(active) {
+    for (const it of _oaWishOpen) {
+      if (!it || !it.id) continue;
+      const k = 'w:' + it.id;
+      if (_oaToasted.has(k)) continue;
+      _oaToasted.add(k);                      // mark first, so a failed/again poll can't re-fire
+      if (!active && typeof _notify === 'function') {
+        _notify('Smith needs a resource', (it.need || '').slice(0, 120), 'normal');
       }
     }
-    _oaInit = true;
+  }
 
-    _oaUpdateBadge();
+  // Cheap structural signature — only the fields the cards render — so the
+  // background poll re-renders ONLY when something actually changed (no 5s
+  // flicker, and no wiping an in-flight "probing…" / disabled button).
+  function _oaSig() {
+    return JSON.stringify([
+      _oaGates.map(g => [g && g.id, g && g.status, g && g.probe_result && g.probe_result.ok]),
+      _oaWishAll.map(i => [i && i.id, i && i.status, (i && i.resolution_note) || '']),
+    ]);
+  }
+
+  async function pollSetupGates() {
+    if (_oaBusy) return;          // don't let a slow poll overlap itself (toast/render amplification)
+    _oaBusy = true;
+    try {
+      // Gates ride along on the session blob pollSession() already fetches and
+      // caches — no second /api/session request just for setup_gates.
+      const cachedGates = (typeof _sessionData !== 'undefined' && _sessionData && _sessionData.setup_gates) || null;
+      if (cachedGates) _oaGates = cachedGates;
+
+      // The wishlist is this feature's only genuinely-new fetch. On any failure
+      // (non-200, or a half-written session.json racing a JSON parse) keep the
+      // last good data rather than blanking the tab and the badge.
+      let fetchOk = false;
+      try {
+        const r = await fetch(`/api/wishlist?_=${Date.now()}`);
+        if (r.ok) { _oaWishAll = (await r.json()).items || []; fetchOk = true; }
+      } catch { /* keep last good _oaWishAll */ }
+      _oaWishOpen = _oaWishAll.filter(i => i && i.status === 'open');
+
+      const active = (typeof _activeTab !== 'undefined' && _activeTab === 'setup-gates');
+
+      // Arm the toaster only after a SUCCESSFUL first fetch, seeding it with the
+      // current backlog so a reload is silent; thereafter each new request toasts
+      // exactly once. A failed first fetch leaves it disarmed (no backlog storm).
+      if (!_oaInit) {
+        if (fetchOk) {
+          for (const it of _oaWishOpen) { if (it && it.id) _oaToasted.add('w:' + it.id); }
+          _oaInit = true;
+        }
+      } else {
+        _oaToastNew(active);
+      }
+
+      // Render the cards only while the operator is on the tab, and only when the
+      // data actually changed — the background cadence just keeps the badge live.
+      if (active) {
+        const sig = _oaSig();
+        if (sig !== _oaRenderSig) {
+          renderSetupGates(_oaGates);
+          _renderWishlist(_oaWishAll);
+          _oaRenderSig = sig;
+        }
+      }
+
+      _oaUpdateBadge();
+    } finally {
+      _oaBusy = false;
+    }
   }
 
   async function _electSetupGate(id, choice, btn) {
