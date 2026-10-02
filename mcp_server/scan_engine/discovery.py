@@ -457,10 +457,17 @@ async def _discover_transports(base: str) -> list[dict]:
     they land in the matrix for a websocat/grpcurl follow-up. Bounded, concurrent,
     fail-soft."""
     out: list[dict] = []
+    baseline = await _fuzz_baseline(base)
     results = await asyncio.gather(
         *(_fetch(urljoin(base, p)) for p in _TRANSPORT_PATHS), return_exceptions=True)
     for path, res in zip(_TRANSPORT_PATHS, results):
-        if isinstance(res, tuple) and res[0] and res[0] != 404 and res[0] < 500:
+        if not (isinstance(res, tuple) and res[0]):
+            continue
+        status, body = res[0], (res[1] or "")
+        # Upgrade/handshake signals (101/426/400) or a live 2xx — NOT a blanket
+        # 401/403 deny, and not the host's soft-404/catch-all baseline.
+        hit = status in (101, 426) or 200 <= status < 400 or status == 400
+        if hit and not _matches_baseline(status, len(body), baseline):
             out.append({"path": path, "method": "GET", "params": [],
                         "discovered_by": "transport"})
     return out
@@ -472,21 +479,24 @@ async def _discover_ai_descriptors(base: str) -> list[dict]:
     registers the descriptor path (``ai-descriptor``) AND, on a 2xx body, is expanded
     by ``_descriptor_endpoints`` into the tools/skills/operations it enumerates.
 
-    An entry counts as a hit on anything but 404/5xx, so an AUTH-GATED MCP endpoint
-    (401/403) or a POST-only GraphQL endpoint (400 on GET) is still surfaced. Bounded,
-    concurrent, fail-soft."""
+    Registers only a LIVE 2xx/3xx descriptor — never a blanket 401/403 or the host's
+    soft-404/catch-all baseline, so a deny-everything or SPA target doesn't register
+    all ~20 paths as phantom endpoints. (An auth-gated MCP endpoint is still surfaced
+    via its PUBLIC card — .well-known/mcp.json / oauth-protected-resource — which is
+    2xx.) Bounded, concurrent, fail-soft."""
     out: list[dict] = []
+    baseline = await _fuzz_baseline(base)
     results = await asyncio.gather(
         *(_fetch(urljoin(base, p)) for p in _AI_DESCRIPTOR_PATHS), return_exceptions=True)
     for path, res in zip(_AI_DESCRIPTOR_PATHS, results):
         if not (isinstance(res, tuple) and res[0]):
             continue
         status, body = res[0], (res[1] or "")
-        if status == 404 or status >= 500:
-            continue                            # not present
+        if not (200 <= status < 400) or _matches_baseline(status, len(body), baseline):
+            continue                            # not a live, distinct descriptor
         out.append({"path": path, "method": "GET", "params": [],
                     "discovered_by": "ai-descriptor"})
-        if status < 400 and body:               # expand only a real body
+        if status < 300 and body:               # expand only a real 2xx body
             try:
                 out += _descriptor_endpoints(path, body)
             except Exception:

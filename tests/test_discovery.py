@@ -426,16 +426,16 @@ async def test_discover_ai_descriptors_expands_mcp_tools_bypassing_liveness(monk
 
 
 @pytest.mark.asyncio
-async def test_discover_ai_descriptors_registers_auth_gated_and_graphql(monkeypatch, coverage_file):
+async def test_discover_ai_descriptors_ignores_blanket_deny(monkeypatch, coverage_file):
+    # a host that 403s everything must NOT register every descriptor path as phantom —
+    # only the real public 2xx card registers (auth-gated endpoints are found via it).
     async def fake_fetch(url):
-        if url.endswith("/mcp"):
-            return 401, ""      # auth-gated MCP endpoint — still a hit
-        if url.endswith("/graphql"):
-            return 400, ""      # POST-only GraphQL — 400 on GET, still a hit
-        return 404, ""
+        if url.endswith("/.well-known/mcp.json"):
+            return 200, '{"tools":[]}'   # real public card
+        return 403, ""                   # blanket deny everything else
     monkeypatch.setattr(disc, "_fetch", fake_fetch)
     out = await disc.discover_and_register("http://t", [])
-    assert out["by_source"].get("ai-descriptor", 0) >= 2
+    assert out["by_source"].get("ai-descriptor", 0) == 1
 
 
 @pytest.mark.asyncio
