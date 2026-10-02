@@ -58,9 +58,23 @@ _STATIC_EXTS = {
 
 # Common locations a spec lives at when it isn't linked from the DOM.
 _SPEC_CANDIDATES = [
-    "/openapi.json", "/swagger.json", "/swagger/v1/swagger.json",
-    "/v3/api-docs", "/api-docs", "/api/openapi.json", "/static/openapi.json",
-    "/api/swagger.json", "/docs/openapi.json", "/openapi/v1.json",
+    "/openapi.json", "/openapi.yaml", "/openapi.yml",
+    "/swagger.json", "/swagger.yaml", "/swagger/v1/swagger.json",
+    "/v3/api-docs", "/api-docs", "/api/openapi.json", "/api/openapi.yaml",
+    "/static/openapi.json", "/api/swagger.json", "/docs/openapi.json", "/openapi/v1.json",
+]
+
+# Modern AI / MCP / agent / LLM discovery descriptors — surfaces a classic web
+# wordlist (seclists common.txt) and the OpenAPI probe both miss. A 2xx on any of
+# these is a high-value lead: an MCP server, an A2A agent card, an OpenAI plugin
+# manifest, or an LLM site descriptor — each a direct entry into the AI attack
+# surface (feeds /ai-redteam's MCP/agent phase).
+_AI_DESCRIPTOR_PATHS = [
+    "/.well-known/agent-card.json", "/.well-known/agent.json",
+    "/.well-known/mcp.json", "/.well-known/mcp/server-card.json",
+    "/.well-known/ai-plugin.json",
+    "/mcp", "/mcp/", "/sse",
+    "/llms.txt", "/llms-full.txt",
 ]
 
 _HTTP_METHODS = {"get", "post", "put", "delete", "patch"}
@@ -305,11 +319,17 @@ async def _fetch(url: str) -> tuple[int, str]:
 
 
 def _parse_spec_text(text: str) -> dict | None:
-    """Return a spec dict if text is a valid OpenAPI/Swagger JSON document."""
+    """Return a spec dict if text is a valid OpenAPI/Swagger document — JSON or YAML
+    (specs are served as either; a JSON-only parser missed every .yaml spec)."""
+    d = None
     try:
         d = json.loads(text)
     except Exception:
-        return None
+        try:
+            import yaml
+            d = yaml.safe_load(text)
+        except Exception:
+            return None
     if isinstance(d, dict) and isinstance(d.get("paths"), dict) and (d.get("openapi") or d.get("swagger")):
         return d
     return None
@@ -354,6 +374,22 @@ def _route_params(route: str) -> list[dict]:
             name = seg.strip(":{}") or f"id_{i}"
             params.append({"name": name, "type": "path", "value_hint": "integer"})
     return params
+
+
+async def _discover_ai_descriptors(base: str) -> list[dict]:
+    """Probe modern AI/MCP/agent/LLM discovery descriptors (``_AI_DESCRIPTOR_PATHS``)
+    and register any that respond — the surfaces a classic web wordlist misses. Each
+    hit becomes an endpoint tagged ``ai-descriptor`` so it lands in the coverage
+    matrix and the model/ai-redteam investigates it (an MCP server, an agent card,
+    an llms.txt). Bounded + concurrent + fail-soft."""
+    out: list[dict] = []
+    results = await asyncio.gather(
+        *(_fetch(urljoin(base, p)) for p in _AI_DESCRIPTOR_PATHS), return_exceptions=True)
+    for path, res in zip(_AI_DESCRIPTOR_PATHS, results):
+        if isinstance(res, tuple) and res[0] and res[0] < 400:
+            out.append({"path": path, "method": "GET", "params": [],
+                        "discovered_by": "ai-descriptor"})
+    return out
 
 
 async def _discover_js(spider_urls: list[str]) -> list[dict]:
@@ -691,6 +727,7 @@ async def discover_and_register(target: str, spider_urls: list[str], auth_contex
         spec_ops = await _discover_spec(base, spider_urls)
         if spec_ops:
             inventory += spec_ops
+        inventory += await _discover_ai_descriptors(base)   # MCP/agent/LLM surfaces
         inventory += await _discover_js(spider_urls)
         inventory += await _discover_forms(spider_urls)
 

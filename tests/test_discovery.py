@@ -367,3 +367,28 @@ async def test_verify_live_failsoft_keeps_on_probe_error(monkeypatch):
     monkeypatch.setattr(disc, "_fetch", boom)
     kept, dropped = await disc._verify_live("http://t", inventory)
     assert dropped == 0 and len(kept) == 1    # never drop on doubt
+
+
+# ── YAML specs + AI/MCP/LLM descriptor discovery (gap #2) ──────────────────────
+
+def test_parse_spec_text_accepts_yaml():
+    yaml_spec = "openapi: 3.0.0\npaths:\n  /x:\n    get: {}\n"
+    assert disc._parse_spec_text(yaml_spec) is not None     # YAML spec parsed
+    assert disc._parse_spec_text('{"no":"paths"}') is None  # not a spec
+    assert disc._parse_spec_text("see: ya: no") is None     # garbage
+
+
+@pytest.mark.asyncio
+async def test_discover_ai_descriptors_registers_mcp_and_llms(monkeypatch, coverage_file):
+    async def fake_fetch(url):
+        if url.endswith("/.well-known/mcp.json"):
+            return 200, '{"mcpVersion":"2025-06-18","tools":[]}'
+        if url.endswith("/mcp"):
+            return 200, "ok"
+        if url.endswith("/llms.txt"):
+            return 200, "# llms"
+        return 404, ""
+    monkeypatch.setattr(disc, "_fetch", fake_fetch)
+
+    out = await disc.discover_and_register("http://t", [])
+    assert out["by_source"].get("ai-descriptor", 0) >= 2    # mcp.json + /mcp + llms.txt live
