@@ -71,15 +71,49 @@ _clear_self_managed() {
     fi
 }
 
+_pids_on_port() {
+    # PIDs LISTENING on $PORT. Used to find an UNtracked holder, so we must be able
+    # to exclude the supervisor-managed PID — that rules out fuser (it can only kill
+    # indiscriminately, never list). lsof on macOS / most Linux; ss on minimal Linux.
+    if command -v lsof >/dev/null 2>&1; then
+        lsof -tiTCP:"$PORT" -sTCP:LISTEN 2>/dev/null
+    elif command -v ss >/dev/null 2>&1; then
+        ss -ltnpH "sport = :$PORT" 2>/dev/null \
+            | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u
+    fi
+}
+
+_reap_untracked_on_port() {
+    # Kill any process LISTENING on $PORT that the supervisor does NOT manage — an
+    # orphaned prior instance (a nohup whose pidfile was lost, or a process that got
+    # reparented to init after a launchd/systemd reload). _clear_self_managed only
+    # knows the pidfile; an UNTRACKED holder is invisible to it AND to `kickstart -k`
+    # / `systemctl restart` (they only act on the job's own PID), so it keeps the
+    # supervised instance from binding → the Errno-48 "address already in use"
+    # respawn crash-loop. This is the two-supervisors-fight-over-7778 footgun.
+    local managed holders pid killed=0
+    managed=" $(_launchd_pid 2>/dev/null) $(_systemd_pid 2>/dev/null) $(cat "$PID_FILE" 2>/dev/null) "
+    holders="$(_pids_on_port)"
+    for pid in $holders; do
+        case "$managed" in *" $pid "*) continue ;; esac   # leave the managed instance alone
+        echo "Clearing orphaned MCP instance on :$PORT (PID $pid) — not supervisor-managed, would block the bind"
+        kill "$pid" 2>/dev/null || true
+        killed=1
+    done
+    [[ "$killed" = 1 ]] && sleep 1 || true   # let the port actually free before (re)start
+}
+
 # ── systemd --user path (Linux production default) ──────────────────────────
 if _systemd_loaded; then
     _clear_self_managed
     case "${1:-start}" in
         start)
+            _reap_untracked_on_port
             systemctl --user start "$SYSTEMD_UNIT"
             echo "✓ MCP SSE server started via systemd ($SYSTEMD_UNIT)"
             ;;
         restart)
+            _reap_untracked_on_port
             systemctl --user restart "$SYSTEMD_UNIT"
             echo "✓ MCP SSE server restarted via systemd ($SYSTEMD_UNIT)"
             ;;
@@ -109,12 +143,15 @@ if _launchd_loaded; then
     _clear_self_managed
     case "${1:-start}" in
         start)
+            _reap_untracked_on_port
             launchctl kickstart "$LAUNCHD_TARGET" >/dev/null 2>&1 || true
             echo "✓ MCP SSE server start requested via launchd ($LAUNCHD_LABEL)"
             ;;
         restart)
             # kickstart -k cleanly kills the running instance and starts a fresh
-            # one — launchd hands off the port with no fight.
+            # one — launchd hands off the port with no fight. Reap first so an
+            # UNtracked orphan (which kickstart -k can't see) can't block the bind.
+            _reap_untracked_on_port
             launchctl kickstart -k "$LAUNCHD_TARGET" >/dev/null 2>&1 || true
             echo "✓ MCP SSE server restarted via launchd (kickstart -k)"
             ;;
