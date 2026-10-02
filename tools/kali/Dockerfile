@@ -141,6 +141,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends --fix-missing \
 # Decompress rockyou wordlist (needed by hydra, john, and web brute-force).
 RUN gzip -d /usr/share/wordlists/rockyou.txt.gz 2>/dev/null || true
 
+# Curated AI/MCP/agent/API discovery wordlist — the modern surfaces (MCP server
+# cards, A2A agent cards, OpenAPI YAML, llms.txt, /mcp, /sse) that seclists
+# common.txt predates. Dropped into the seclists Web-Content dir so ffuf resolves
+# it by bare name: options={"wordlist":"ai-mcp-api.txt"}.
+COPY wordlists/ai-mcp-api.txt /usr/share/seclists/Discovery/Web-Content/ai-mcp-api.txt
+
 # ============================================================================
 # WEB (INSTALL_WEB) — web/API exploitation: scanners, fuzzers, injection
 # specialists, JWT/OAuth, SSL/TLS, JS-aware crawling, deserialization gadgets.

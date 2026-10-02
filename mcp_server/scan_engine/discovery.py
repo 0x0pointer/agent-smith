@@ -58,9 +58,44 @@ _STATIC_EXTS = {
 
 # Common locations a spec lives at when it isn't linked from the DOM.
 _SPEC_CANDIDATES = [
-    "/openapi.json", "/swagger.json", "/swagger/v1/swagger.json",
-    "/v3/api-docs", "/api-docs", "/api/openapi.json", "/static/openapi.json",
-    "/api/swagger.json", "/docs/openapi.json", "/openapi/v1.json",
+    "/openapi.json", "/openapi.yaml", "/openapi.yml",
+    "/swagger.json", "/swagger.yaml", "/swagger/v1/swagger.json",
+    "/v3/api-docs", "/api-docs", "/api/openapi.json", "/api/openapi.yaml",
+    "/static/openapi.json", "/api/swagger.json", "/docs/openapi.json", "/openapi/v1.json",
+]
+
+# Modern AI / MCP / agent / LLM discovery descriptors — surfaces a classic web
+# wordlist (seclists common.txt) and the OpenAPI probe both miss. A 2xx on any of
+# these is a high-value lead: an MCP server, an A2A agent card, an OpenAI plugin
+# manifest, or an LLM site descriptor — each a direct entry into the AI attack
+# surface (feeds /ai-redteam's MCP/agent phase).
+_AI_DESCRIPTOR_PATHS = [
+    # MCP server + its 2025 OAuth discovery + SSE/streamable-HTTP transport
+    "/.well-known/mcp.json", "/.well-known/mcp/server-card.json",
+    "/.well-known/oauth-protected-resource", "/.well-known/oauth-authorization-server",
+    "/mcp", "/mcp/", "/mcp/sse", "/sse", "/messages", "/message",
+    # A2A / agent cards
+    "/.well-known/agent-card.json", "/.well-known/agent.json", "/.well-known/a2a.json",
+    # OpenAI plugin manifest
+    "/.well-known/ai-plugin.json",
+    # OpenAI-compatible + Ollama inference APIs (self-hosted LLMs: vLLM/LocalAI/LM Studio/Ollama)
+    "/v1/models", "/api/tags", "/api/version",
+    # GraphQL (often POST-only → 400 on GET, still a hit)
+    "/graphql",
+    # LLM site descriptors
+    "/llms.txt", "/llms-full.txt",
+]
+
+# Non-REST transports a DOM crawl + REST wordlist both miss. A plain GET is a reliable
+# PRESENCE signal: a WebSocket route answers 426/400 (Upgrade Required) or 101, and a
+# gRPC-web route answers (not 404). Deep enumeration is a follow-up — WebSocket with
+# websocat, gRPC-web with grpcurl + server reflection (methods are service-specific,
+# so a path list only flags that the surface exists).
+_TRANSPORT_PATHS = [
+    "/ws", "/ws/", "/websocket", "/socket", "/socket.io/", "/cable", "/signalr", "/hubs",
+    "/grpc", "/grpc.health.v1.Health/Check",
+    "/grpc.reflection.v1.ServerReflection/ServerReflectionInfo",
+    "/grpc.reflection.v1alpha.ServerReflection/ServerReflectionInfo",
 ]
 
 _HTTP_METHODS = {"get", "post", "put", "delete", "patch"}
@@ -305,11 +340,17 @@ async def _fetch(url: str) -> tuple[int, str]:
 
 
 def _parse_spec_text(text: str) -> dict | None:
-    """Return a spec dict if text is a valid OpenAPI/Swagger JSON document."""
+    """Return a spec dict if text is a valid OpenAPI/Swagger document — JSON or YAML
+    (specs are served as either; a JSON-only parser missed every .yaml spec)."""
+    d = None
     try:
         d = json.loads(text)
     except Exception:
-        return None
+        try:
+            import yaml
+            d = yaml.safe_load(text)
+        except Exception:
+            return None
     if isinstance(d, dict) and isinstance(d.get("paths"), dict) and (d.get("openapi") or d.get("swagger")):
         return d
     return None
@@ -354,6 +395,113 @@ def _route_params(route: str) -> list[dict]:
             name = seg.strip(":{}") or f"id_{i}"
             params.append({"name": name, "type": "path", "value_hint": "integer"})
     return params
+
+
+def _descriptor_endpoints(path: str, text: str) -> list[dict]:
+    """Expand a fetched AI/MCP/agent descriptor into the REAL surface it enumerates —
+    the same job ``parse_openapi`` does for a spec, so finding the card actually maps
+    the attack surface instead of registering one dead stub. Fail-soft; returns [].
+
+      * MCP ``mcp.json`` / ``server-card.json`` ``tools[]`` → one endpoint per tool,
+        args typed ``mcp_tool_arg`` so the matrix fans out the MCP weakness cells.
+      * A2A agent card ``skills[]`` → one endpoint per skill.
+      * OpenAI-compatible ``/v1/models`` → the real ``/v1/chat/completions`` inference
+        endpoint (llm_prompt).
+      * A descriptor that IS an OpenAPI/Swagger doc → every operation.
+      * ``llms.txt`` → the same-host relative paths it lists.
+    """
+    out: list[dict] = []
+    try:
+        data = json.loads(text)
+    except Exception:
+        data = None
+
+    if isinstance(data, dict):
+        for t in (data.get("tools") or [])[:_MAX_OPS]:
+            if not isinstance(t, dict):
+                continue
+            name = re.sub(r"[^A-Za-z0-9_.-]", "", str(t.get("name") or ""))[:64]
+            if not name:
+                continue
+            props = (t.get("inputSchema") or t.get("input_schema") or {}).get("properties") or {}
+            params = [{"name": str(k)[:64], "type": "mcp_tool_arg", "value_hint": "string"}
+                      for k in (props if isinstance(props, dict) else {})]
+            out.append({"path": f"/mcp/tools/{name}", "method": "POST",
+                        "params": params, "discovered_by": "mcp-tool"})
+        for s in (data.get("skills") or [])[:_MAX_OPS]:
+            if isinstance(s, dict) and (s.get("id") or s.get("name")):
+                sid = re.sub(r"[^A-Za-z0-9_.-]", "", str(s.get("id") or s.get("name")))[:64]
+                out.append({"path": f"/agent/skills/{sid}", "method": "POST",
+                            "params": [{"name": "input", "type": "llm_prompt"}],
+                            "discovered_by": "agent-skill"})
+        if path.rstrip("/").endswith("/models") and isinstance(data.get("data"), list) \
+                and any(isinstance(m, dict) and m.get("id") for m in data["data"]):
+            out.append({"path": "/v1/chat/completions", "method": "POST",
+                        "params": [{"name": "messages", "type": "llm_prompt"}],
+                        "discovered_by": "openai-compat"})
+
+    spec = _parse_spec_text(text)
+    if spec:
+        out += parse_openapi(spec)
+
+    if path.endswith(".txt"):
+        for rel in re.findall(r"(?<![\w:])/[A-Za-z0-9_./%-]{1,120}", text)[:_MAX_OPS]:
+            out.append({"path": rel, "method": "GET", "params": [], "discovered_by": "llms-txt"})
+    return out
+
+
+async def _discover_transports(base: str) -> list[dict]:
+    """Probe non-REST transports (``_TRANSPORT_PATHS``) — WebSocket + gRPC-web — that a
+    DOM crawl and a REST wordlist miss. A GET is a presence signal: a WS route answers
+    426/400/101, a gRPC-web route answers (not 404). Register hits (``transport``) so
+    they land in the matrix for a websocat/grpcurl follow-up. Bounded, concurrent,
+    fail-soft."""
+    out: list[dict] = []
+    baseline = await _fuzz_baseline(base)
+    results = await asyncio.gather(
+        *(_fetch(urljoin(base, p)) for p in _TRANSPORT_PATHS), return_exceptions=True)
+    for path, res in zip(_TRANSPORT_PATHS, results):
+        if not (isinstance(res, tuple) and res[0]):
+            continue
+        status, body = res[0], (res[1] or "")
+        # Upgrade/handshake signals (101/426/400) or a live 2xx — NOT a blanket
+        # 401/403 deny, and not the host's soft-404/catch-all baseline.
+        hit = status in (101, 426) or 200 <= status < 400 or status == 400
+        if hit and not _matches_baseline(status, len(body), baseline):
+            out.append({"path": path, "method": "GET", "params": [],
+                        "discovered_by": "transport"})
+    return out
+
+
+async def _discover_ai_descriptors(base: str) -> list[dict]:
+    """Probe modern AI/MCP/agent/LLM discovery descriptors (``_AI_DESCRIPTOR_PATHS``)
+    and register what they expose — the surfaces a classic web wordlist misses. A hit
+    registers the descriptor path (``ai-descriptor``) AND, on a 2xx body, is expanded
+    by ``_descriptor_endpoints`` into the tools/skills/operations it enumerates.
+
+    Registers only a LIVE 2xx/3xx descriptor — never a blanket 401/403 or the host's
+    soft-404/catch-all baseline, so a deny-everything or SPA target doesn't register
+    all ~20 paths as phantom endpoints. (An auth-gated MCP endpoint is still surfaced
+    via its PUBLIC card — .well-known/mcp.json / oauth-protected-resource — which is
+    2xx.) Bounded, concurrent, fail-soft."""
+    out: list[dict] = []
+    baseline = await _fuzz_baseline(base)
+    results = await asyncio.gather(
+        *(_fetch(urljoin(base, p)) for p in _AI_DESCRIPTOR_PATHS), return_exceptions=True)
+    for path, res in zip(_AI_DESCRIPTOR_PATHS, results):
+        if not (isinstance(res, tuple) and res[0]):
+            continue
+        status, body = res[0], (res[1] or "")
+        if not (200 <= status < 400) or _matches_baseline(status, len(body), baseline):
+            continue                            # not a live, distinct descriptor
+        out.append({"path": path, "method": "GET", "params": [],
+                    "discovered_by": "ai-descriptor"})
+        if status < 300 and body:               # expand only a real 2xx body
+            try:
+                out += _descriptor_endpoints(path, body)
+            except Exception:
+                pass
+    return out
 
 
 async def _discover_js(spider_urls: list[str]) -> list[dict]:
@@ -511,6 +659,10 @@ _SOURCE_RANK = {"openapi": 0, "swagger": 0, "graphql": 0, "form": 1, "js": 2, "s
 # Provenance labels produced by wordlist/extension-permutation fuzzing — these get
 # strict liveness classification (confirmed vs candidate) before registration.
 _FUZZ_SOURCES = frozenset({"ffuf", "wordlist"})
+# Endpoints PARSED out of an authoritative descriptor (MCP tools, agent skills) — not
+# aspirational guesses — don't exist as GET paths, so they'd be wrongly 404-dropped by
+# _verify_live. They skip it and register directly.
+_NO_VERIFY_SOURCES = frozenset({"mcp-tool", "agent-skill"})
 
 
 def _merge_key(ep: dict) -> tuple:
@@ -691,14 +843,20 @@ async def discover_and_register(target: str, spider_urls: list[str], auth_contex
         spec_ops = await _discover_spec(base, spider_urls)
         if spec_ops:
             inventory += spec_ops
+        inventory += await _discover_ai_descriptors(base)   # MCP/agent/LLM surfaces
+        inventory += await _discover_transports(base)        # WebSocket + gRPC-web
         inventory += await _discover_js(spider_urls)
         inventory += await _discover_forms(spider_urls)
 
         # Wordlist-derived paths get strict liveness classification (confirmed vs
         # candidate); everything else keeps the lenient spec-oriented 404-drop.
         fuzz = [ep for ep in inventory if ep.get("discovered_by") in _FUZZ_SOURCES]
-        rest = [ep for ep in inventory if ep.get("discovered_by") not in _FUZZ_SOURCES]
+        no_verify = [ep for ep in inventory if ep.get("discovered_by") in _NO_VERIFY_SOURCES]
+        rest = [ep for ep in inventory
+                if ep.get("discovered_by") not in _FUZZ_SOURCES
+                and ep.get("discovered_by") not in _NO_VERIFY_SOURCES]
         rest, dropped = await _verify_live(base, rest)
+        rest += no_verify   # descriptor-parsed tools/skills: authoritative, skip the 404 drop
         if fuzz:
             fuzz, fuzz_dropped = await _classify_fuzz_paths(base, fuzz)
             dropped += fuzz_dropped

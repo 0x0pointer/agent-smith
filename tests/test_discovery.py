@@ -367,3 +367,87 @@ async def test_verify_live_failsoft_keeps_on_probe_error(monkeypatch):
     monkeypatch.setattr(disc, "_fetch", boom)
     kept, dropped = await disc._verify_live("http://t", inventory)
     assert dropped == 0 and len(kept) == 1    # never drop on doubt
+
+
+# ── YAML specs + AI/MCP/LLM descriptor discovery (gap #2) ──────────────────────
+
+def test_parse_spec_text_accepts_yaml():
+    yaml_spec = "openapi: 3.0.0\npaths:\n  /x:\n    get: {}\n"
+    assert disc._parse_spec_text(yaml_spec) is not None     # YAML spec parsed
+    assert disc._parse_spec_text('{"no":"paths"}') is None  # not a spec
+    assert disc._parse_spec_text("see: ya: no") is None     # garbage
+
+
+@pytest.mark.asyncio
+async def test_discover_ai_descriptors_registers_mcp_and_llms(monkeypatch, coverage_file):
+    async def fake_fetch(url):
+        if url.endswith("/.well-known/mcp.json"):
+            return 200, '{"mcpVersion":"2025-06-18","tools":[]}'
+        if url.endswith("/mcp"):
+            return 200, "ok"
+        if url.endswith("/llms.txt"):
+            return 200, "# llms"
+        return 404, ""
+    monkeypatch.setattr(disc, "_fetch", fake_fetch)
+
+    out = await disc.discover_and_register("http://t", [])
+    assert out["by_source"].get("ai-descriptor", 0) >= 2    # mcp.json + /mcp + llms.txt live
+
+
+def test_descriptor_endpoints_parses_mcp_tools():
+    import json as _j
+    mcp = {"tools": [{"name": "run_sql", "inputSchema": {"properties": {"query": {"type": "string"}}}}]}
+    eps = disc._descriptor_endpoints("/.well-known/mcp.json", _j.dumps(mcp))
+    assert any(e["path"] == "/mcp/tools/run_sql" and e["discovered_by"] == "mcp-tool"
+               and e["params"] and e["params"][0]["type"] == "mcp_tool_arg" for e in eps)
+
+
+def test_descriptor_endpoints_parses_models_and_llmstxt():
+    import json as _j
+    eps = disc._descriptor_endpoints("/v1/models", _j.dumps({"data": [{"id": "llama3"}]}))
+    assert any(e["path"] == "/v1/chat/completions" and e["discovered_by"] == "openai-compat" for e in eps)
+    eps2 = disc._descriptor_endpoints("/llms.txt", "docs at /admin/api and /internal/users")
+    assert {e["path"] for e in eps2} == {"/admin/api", "/internal/users"}
+
+
+@pytest.mark.asyncio
+async def test_discover_ai_descriptors_expands_mcp_tools_bypassing_liveness(monkeypatch, coverage_file):
+    import json as _j
+    mcp = {"tools": [{"name": "run_sql", "inputSchema": {"properties": {"query": {}}}},
+                     {"name": "read_file", "inputSchema": {"properties": {"path": {}}}}]}
+
+    async def fake_fetch(url):
+        if url.endswith("/.well-known/mcp.json"):
+            return 200, _j.dumps(mcp)
+        return 404, ""   # /mcp/tools/* would 404 on GET — the no-verify bypass must keep them
+    monkeypatch.setattr(disc, "_fetch", fake_fetch)
+    out = await disc.discover_and_register("http://t", [])
+    assert out["by_source"].get("mcp-tool", 0) == 2
+
+
+@pytest.mark.asyncio
+async def test_discover_ai_descriptors_ignores_blanket_deny(monkeypatch, coverage_file):
+    # a host that 403s everything must NOT register every descriptor path as phantom —
+    # only the real public 2xx card registers (auth-gated endpoints are found via it).
+    async def fake_fetch(url):
+        if url.endswith("/.well-known/mcp.json"):
+            return 200, '{"tools":[]}'   # real public card
+        return 403, ""                   # blanket deny everything else
+    monkeypatch.setattr(disc, "_fetch", fake_fetch)
+    out = await disc.discover_and_register("http://t", [])
+    assert out["by_source"].get("ai-descriptor", 0) == 1
+
+
+@pytest.mark.asyncio
+async def test_discover_transports_registers_ws_and_grpc(monkeypatch, coverage_file):
+    async def fake_fetch(url):
+        if url.endswith("/ws"):
+            return 426, ""          # WebSocket: Upgrade Required
+        if url.endswith("/socket.io/"):
+            return 400, ""          # socket.io handshake without params
+        if url.endswith("/grpc.health.v1.Health/Check"):
+            return 200, ""          # gRPC-web health present
+        return 404, ""
+    monkeypatch.setattr(disc, "_fetch", fake_fetch)
+    out = await disc.discover_and_register("http://t", [])
+    assert out["by_source"].get("transport", 0) >= 2
