@@ -436,3 +436,18 @@ async def test_discover_ai_descriptors_registers_auth_gated_and_graphql(monkeypa
     monkeypatch.setattr(disc, "_fetch", fake_fetch)
     out = await disc.discover_and_register("http://t", [])
     assert out["by_source"].get("ai-descriptor", 0) >= 2
+
+
+@pytest.mark.asyncio
+async def test_discover_transports_registers_ws_and_grpc(monkeypatch, coverage_file):
+    async def fake_fetch(url):
+        if url.endswith("/ws"):
+            return 426, ""          # WebSocket: Upgrade Required
+        if url.endswith("/socket.io/"):
+            return 400, ""          # socket.io handshake without params
+        if url.endswith("/grpc.health.v1.Health/Check"):
+            return 200, ""          # gRPC-web health present
+        return 404, ""
+    monkeypatch.setattr(disc, "_fetch", fake_fetch)
+    out = await disc.discover_and_register("http://t", [])
+    assert out["by_source"].get("transport", 0) >= 2

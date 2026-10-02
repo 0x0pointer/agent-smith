@@ -86,6 +86,18 @@ _AI_DESCRIPTOR_PATHS = [
     "/llms.txt", "/llms-full.txt",
 ]
 
+# Non-REST transports a DOM crawl + REST wordlist both miss. A plain GET is a reliable
+# PRESENCE signal: a WebSocket route answers 426/400 (Upgrade Required) or 101, and a
+# gRPC-web route answers (not 404). Deep enumeration is a follow-up — WebSocket with
+# websocat, gRPC-web with grpcurl + server reflection (methods are service-specific,
+# so a path list only flags that the surface exists).
+_TRANSPORT_PATHS = [
+    "/ws", "/ws/", "/websocket", "/socket", "/socket.io/", "/cable", "/signalr", "/hubs",
+    "/grpc", "/grpc.health.v1.Health/Check",
+    "/grpc.reflection.v1.ServerReflection/ServerReflectionInfo",
+    "/grpc.reflection.v1alpha.ServerReflection/ServerReflectionInfo",
+]
+
 _HTTP_METHODS = {"get", "post", "put", "delete", "patch"}
 
 
@@ -435,6 +447,22 @@ def _descriptor_endpoints(path: str, text: str) -> list[dict]:
     if path.endswith(".txt"):
         for rel in re.findall(r"(?<![\w:])/[A-Za-z0-9_./%-]{1,120}", text)[:_MAX_OPS]:
             out.append({"path": rel, "method": "GET", "params": [], "discovered_by": "llms-txt"})
+    return out
+
+
+async def _discover_transports(base: str) -> list[dict]:
+    """Probe non-REST transports (``_TRANSPORT_PATHS``) — WebSocket + gRPC-web — that a
+    DOM crawl and a REST wordlist miss. A GET is a presence signal: a WS route answers
+    426/400/101, a gRPC-web route answers (not 404). Register hits (``transport``) so
+    they land in the matrix for a websocat/grpcurl follow-up. Bounded, concurrent,
+    fail-soft."""
+    out: list[dict] = []
+    results = await asyncio.gather(
+        *(_fetch(urljoin(base, p)) for p in _TRANSPORT_PATHS), return_exceptions=True)
+    for path, res in zip(_TRANSPORT_PATHS, results):
+        if isinstance(res, tuple) and res[0] and res[0] != 404 and res[0] < 500:
+            out.append({"path": path, "method": "GET", "params": [],
+                        "discovered_by": "transport"})
     return out
 
 
@@ -806,6 +834,7 @@ async def discover_and_register(target: str, spider_urls: list[str], auth_contex
         if spec_ops:
             inventory += spec_ops
         inventory += await _discover_ai_descriptors(base)   # MCP/agent/LLM surfaces
+        inventory += await _discover_transports(base)        # WebSocket + gRPC-web
         inventory += await _discover_js(spider_urls)
         inventory += await _discover_forms(spider_urls)
 

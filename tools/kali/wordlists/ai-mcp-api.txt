@@ -48,3 +48,13 @@ tools/list
 api/tags
 api/version
 message
+ws
+ws/
+websocket
+socket
+socket.io/
+cable
+signalr
+hubs
+grpc
+grpc.health.v1.Health/Check
