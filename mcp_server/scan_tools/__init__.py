@@ -79,8 +79,8 @@ async def scan(tool: str, target: str, flags: str = "", options: dict | str | No
 
     | tool       | target type | options (defaults)                                |
     |------------|-------------|---------------------------------------------------|
-    | nmap       | host/IP     | ports=top-1000                                    |
-    | naabu      | host/IP     | ports=top-100                                     |
+    | nmap       | host/IP     | ports=top-1000 \| full \| udp \| udp-full \| '80,443'  |
+    | naabu      | host/IP     | ports=top-100 \| full \| '1-10000'                 |
     | subfinder  | domain      |                                                   |
     | httpx      | URL         |                                                   |
     | nuclei     | URL         | templates=cve,exposure,misconfig,default-login    |

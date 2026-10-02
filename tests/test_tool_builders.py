@@ -27,6 +27,15 @@ def test_nmap_custom_ports():
     assert "-p" in args
     assert "80,443" in args
 
+def test_nmap_udp_top():
+    args = nmap_args("example.com", ports="udp")
+    assert "-sU" in args
+    assert "--top-ports" in args and "100" in args
+
+def test_nmap_udp_full():
+    args = nmap_args("example.com", ports="udp-full")
+    assert "-sU" in args and "-p-" in args
+
 def test_nmap_flags_appended():
     args = nmap_args("example.com", flags="-sV -O")
     assert "-sV" in args
