@@ -43,3 +43,8 @@ chat/completions
 completions
 tools
 tools/list
+.well-known/oauth-protected-resource
+.well-known/oauth-authorization-server
+api/tags
+api/version
+message

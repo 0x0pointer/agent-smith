@@ -392,3 +392,47 @@ async def test_discover_ai_descriptors_registers_mcp_and_llms(monkeypatch, cover
 
     out = await disc.discover_and_register("http://t", [])
     assert out["by_source"].get("ai-descriptor", 0) >= 2    # mcp.json + /mcp + llms.txt live
+
+
+def test_descriptor_endpoints_parses_mcp_tools():
+    import json as _j
+    mcp = {"tools": [{"name": "run_sql", "inputSchema": {"properties": {"query": {"type": "string"}}}}]}
+    eps = disc._descriptor_endpoints("/.well-known/mcp.json", _j.dumps(mcp))
+    assert any(e["path"] == "/mcp/tools/run_sql" and e["discovered_by"] == "mcp-tool"
+               and e["params"] and e["params"][0]["type"] == "mcp_tool_arg" for e in eps)
+
+
+def test_descriptor_endpoints_parses_models_and_llmstxt():
+    import json as _j
+    eps = disc._descriptor_endpoints("/v1/models", _j.dumps({"data": [{"id": "llama3"}]}))
+    assert any(e["path"] == "/v1/chat/completions" and e["discovered_by"] == "openai-compat" for e in eps)
+    eps2 = disc._descriptor_endpoints("/llms.txt", "docs at /admin/api and /internal/users")
+    assert {e["path"] for e in eps2} == {"/admin/api", "/internal/users"}
+
+
+@pytest.mark.asyncio
+async def test_discover_ai_descriptors_expands_mcp_tools_bypassing_liveness(monkeypatch, coverage_file):
+    import json as _j
+    mcp = {"tools": [{"name": "run_sql", "inputSchema": {"properties": {"query": {}}}},
+                     {"name": "read_file", "inputSchema": {"properties": {"path": {}}}}]}
+
+    async def fake_fetch(url):
+        if url.endswith("/.well-known/mcp.json"):
+            return 200, _j.dumps(mcp)
+        return 404, ""   # /mcp/tools/* would 404 on GET — the no-verify bypass must keep them
+    monkeypatch.setattr(disc, "_fetch", fake_fetch)
+    out = await disc.discover_and_register("http://t", [])
+    assert out["by_source"].get("mcp-tool", 0) == 2
+
+
+@pytest.mark.asyncio
+async def test_discover_ai_descriptors_registers_auth_gated_and_graphql(monkeypatch, coverage_file):
+    async def fake_fetch(url):
+        if url.endswith("/mcp"):
+            return 401, ""      # auth-gated MCP endpoint — still a hit
+        if url.endswith("/graphql"):
+            return 400, ""      # POST-only GraphQL — 400 on GET, still a hit
+        return 404, ""
+    monkeypatch.setattr(disc, "_fetch", fake_fetch)
+    out = await disc.discover_and_register("http://t", [])
+    assert out["by_source"].get("ai-descriptor", 0) >= 2
