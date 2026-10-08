@@ -1580,7 +1580,8 @@ class TestSpawnSmith:
         assert "--model" in argv
         assert argv[argv.index("--model") + 1] == "security-one-spark/superagent-ai/security-one-27b"
         # --session <id> comes first, then --model, then the prompt (last)
-        assert argv.index("--session") < argv.index("--model") < len(argv) - 1
+        assert argv.index("--session") < argv.index("--model")
+        assert argv.index("--model") < len(argv) - 1
 
     def test_opencode_respawn_omits_model_when_unresolvable(self, spawn_env):
         """If the session's model can't be read (export failure), omit --model and let
@@ -1589,6 +1590,64 @@ class TestSpawnSmith:
             argv = self._capture_opencode_argv(spawn_env, lambda *_a, **_k: "ses_RESUMEME123")
         assert "--model" not in argv
         assert "--session" in argv  # still resumes the session
+
+    def test_last_model_in_export_returns_newest(self):
+        from core.api_server.smith import spawn
+        doc = {"messages": [
+            {"info": {"role": "user"}},
+            {"info": {"role": "assistant", "providerID": "anthropic", "modelID": "claude-sonnet-4-5"}},
+            {"info": {"role": "assistant",
+                      "providerID": "security-one-spark", "modelID": "superagent-ai/security-one-27b"}},
+        ]}
+        assert spawn._last_model_in_export(doc) == "security-one-spark/superagent-ai/security-one-27b"
+
+    def test_last_model_in_export_none_when_absent(self):
+        from core.api_server.smith import spawn
+        assert spawn._last_model_in_export({"messages": [{"info": {"role": "user"}}]}) is None
+        assert spawn._last_model_in_export({}) is None
+        assert spawn._last_model_in_export([]) is None
+
+    def test_opencode_session_model_rejects_bad_sid(self):
+        """The sid format guard refuses anything but ``ses_<alnum>`` before any
+        subprocess runs — hardening + CodeQL 'uncontrolled command line' sanitizer."""
+        from core.api_server.smith import spawn
+        assert spawn._opencode_session_model("/bin/opencode", "ses_bad; rm -rf /") is None
+        assert spawn._opencode_session_model("/bin/opencode", "../../etc") is None
+        assert spawn._opencode_session_model("", "ses_abc123") is None
+
+    def test_opencode_session_model_parses_export(self):
+        """Happy path: export redirected to a temp file is parsed to provider/model."""
+        import json as _json
+        from core.api_server.smith import spawn
+        doc = {"messages": [
+            {"info": {"role": "assistant",
+                      "providerID": "security-one-spark", "modelID": "superagent-ai/security-one-27b"}},
+        ]}
+
+        def fake_run(cmd, stdout=None, stderr=None, timeout=None):
+            stdout.write(_json.dumps(doc)); stdout.flush()
+            return MagicMock(returncode=0)
+
+        with patch("subprocess.run", side_effect=fake_run):
+            assert spawn._opencode_session_model("/bin/opencode", "ses_abc123") == \
+                "security-one-spark/superagent-ai/security-one-27b"
+
+    def test_opencode_session_model_none_on_nonzero_rc(self):
+        from core.api_server.smith import spawn
+        with patch("subprocess.run", return_value=MagicMock(returncode=1)):
+            assert spawn._opencode_session_model("/bin/opencode", "ses_abc123") is None
+
+    def test_opencode_session_model_none_on_bad_json(self):
+        """Malformed export → the except branch returns None (and the temp file is
+        still cleaned up in finally)."""
+        from core.api_server.smith import spawn
+
+        def fake_run(cmd, stdout=None, stderr=None, timeout=None):
+            stdout.write("{not valid json"); stdout.flush()
+            return MagicMock(returncode=0)
+
+        with patch("subprocess.run", side_effect=fake_run):
+            assert spawn._opencode_session_model("/bin/opencode", "ses_abc123") is None
 
     def _capture_claude_argv(self, env, resolver):
         """Run _spawn_smith('claude') with the claude session resolver patched in;

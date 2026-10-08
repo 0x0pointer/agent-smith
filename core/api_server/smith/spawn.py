@@ -66,6 +66,22 @@ def _latest_opencode_session(directory: str) -> str | None:
         return None
 
 
+def _last_model_in_export(doc) -> str | None:
+    """The newest ``providerID/modelID`` in a parsed ``opencode export`` doc, or None.
+
+    Split out of _opencode_session_model to keep that function's cognitive
+    complexity in check (and to be unit-testable without a subprocess)."""
+    messages = doc.get("messages") if isinstance(doc, dict) else None
+    if not isinstance(messages, list):
+        return None
+    for m in reversed(messages):  # newest message with a model wins
+        info = m.get("info", m) if isinstance(m, dict) else {}
+        provider, model = info.get("providerID"), info.get("modelID")
+        if provider and model:
+            return f"{provider}/{model}"
+    return None
+
+
 def _opencode_session_model(binary: str, sid: str) -> str | None:
     """The ``provider/model`` an opencode session last ran on, or None.
 
@@ -83,9 +99,16 @@ def _opencode_session_model(binary: str, sid: str) -> str | None:
     """
     import json
     import os
+    import re
     import subprocess
     import tempfile
     if not binary or not sid:
+        return None
+    # Guard the session id against a strict allow-list before it reaches a subprocess
+    # argv: it originates from opencode's own session list (an external value), and a
+    # format check both hardens the call and clears CodeQL's "uncontrolled command
+    # line" taint. opencode session ids are ``ses_<alphanumerics>``.
+    if not re.fullmatch(r"ses_[A-Za-z0-9]{1,64}", sid):
         return None
     # opencode (a Bun binary) truncates stdout at ~64 KB when it's a PIPE, so
     # capture_output() would silently cut a large export mid-JSON. Redirect to a
@@ -101,16 +124,7 @@ def _opencode_session_model(binary: str, sid: str) -> str | None:
         if rc != 0:
             return None
         with open(tmp) as f:
-            doc = json.load(f)
-        messages = doc.get("messages") if isinstance(doc, dict) else None
-        if not isinstance(messages, list):
-            return None
-        for m in reversed(messages):  # newest message with a model wins
-            info = m.get("info", m) if isinstance(m, dict) else {}
-            provider, model = info.get("providerID"), info.get("modelID")
-            if provider and model:
-                return f"{provider}/{model}"
-        return None
+            return _last_model_in_export(json.load(f))
     except Exception:
         return None
     finally:
