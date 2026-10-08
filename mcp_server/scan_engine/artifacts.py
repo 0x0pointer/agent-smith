@@ -42,6 +42,19 @@ def artifact_exists(artifact_id: str) -> bool:
     return (_ARTIFACTS_DIR / f"{artifact_id.strip()}.txt").exists()
 
 
+def read_artifact_raw(artifact_id: str) -> str | None:
+    """Full, unclipped content of a stored artifact, or None if it doesn't exist.
+
+    For tools that DELIVER a stored payload (``payload_artifact_id=``) — a token-bomb
+    or steg payload is saved once and replayed by id, so the agent never has to
+    round-trip the bytes through its context. Rejects path-like ids."""
+    aid = (artifact_id or "").strip()
+    if not aid or "/" in aid or "\\" in aid or ".." in aid:
+        return None
+    path = _ARTIFACTS_DIR / f"{aid}.txt"
+    return path.read_text(encoding="utf-8") if path.exists() else None
+
+
 # Bounds for a SINGLE artifact retrieval, so one pull can't dominate/overflow the
 # model window (a max_chars=1_000_000 'full' pull previously returned ~1MB inline).
 _ARTIFACT_ABS_CEILING = 120_000   # never return more than ~30K tokens in one call

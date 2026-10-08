@@ -31,6 +31,10 @@ def _strip_scheme(target: str) -> str:
 # config into a /work mount.)
 def _ai_headers(options: dict) -> dict:
     hdrs = {"Content-Type": "application/json"}
+    if options.get("headers_from") == "known_assets":
+        # Reuse the scan's freshest JWT + session cookies instead of a pasted dict.
+        from mcp_server.redteam.transport import known_asset_headers
+        hdrs.update(known_asset_headers())
     extra = options.get("headers") or {}
     if isinstance(extra, dict):
         hdrs.update({str(k): str(v) for k, v in extra.items()})

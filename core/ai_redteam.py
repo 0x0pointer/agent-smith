@@ -39,6 +39,7 @@ def _load() -> dict:
 
 def _empty() -> dict:
     return {"garak": [], "filter": None, "calibration": None, "attacks": [],
+            "reproductions": [], "probe_sessions": {}, "rate_limit": {},
             "garak_status": None, "updated_at": None}
 
 
@@ -154,11 +155,61 @@ def record_attack(result: dict, goal: str = "", target: str = "") -> None:
             "ts": _now(), "target": target, "goal": goal,
             "jailbroken": bool(result.get("jailbroken")),
             "attempts": result.get("attempts"),
+            # reached-model vs blocked split + full code histogram — kept even though
+            # the transcript below is trimmed (the full one is in artifact_id).
+            "codes": result.get("codes"),
+            "reached_model": result.get("reached_model"),
+            "blocked": result.get("blocked"),
+            "rate_limited": result.get("rate_limited"),
+            "auth_failed": result.get("auth_failed"),
+            "phase_counts": result.get("phase_counts"),
+            "artifact_id": result.get("artifact_id"),
             "best": result.get("best"),
             "reproducibility": result.get("reproducibility"),
             "transcript": (result.get("transcript") or [])[:12],
         }
         doc["attacks"] = (doc["attacks"] + [entry])[-_MAX_ATTACKS:]
+        _save(doc)
+
+
+def record_reproduce(result: dict, goal: str = "", target: str = "") -> None:
+    """Store a fixed-payload k/N replay (per-variant k/N over reached-model attempts)."""
+    with _LOCK:
+        doc = get()
+        entry = {"ts": _now(), "target": target, "goal": goal,
+                 "variants": {k: {"k": v.get("k"), "n": v.get("n"), "rate": v.get("rate"),
+                                  "sent": v.get("sent")}
+                              for k, v in (result.get("variants") or {}).items()},
+                 "insufficient_samples": result.get("insufficient_samples"),
+                 "artifact_id": result.get("artifact_id")}
+        doc["reproductions"] = (doc["reproductions"] + [entry])[-_MAX_ATTACKS:]
+        _save(doc)
+
+
+def record_rate_limit(target: str, stats: dict) -> None:
+    """Per-target transport status (429 backoffs, retries, code histogram) so the
+    dashboard can show a target is rate-limiting instead of looking 'clean'."""
+    if not stats:
+        return
+    with _LOCK:
+        doc = get()
+        rl = stats.get("rate_limit") or {}
+        doc["rate_limit"][target] = {"retries": stats.get("retries", 0),
+                                     "rate_limited": rl.get("rate_limited", 0),
+                                     "last_retry_after": rl.get("last_retry_after"),
+                                     "codes": stats.get("codes"), "ts": _now()}
+        _save(doc)
+
+
+def get_probe_session(session_id: str) -> dict | None:
+    return (get().get("probe_sessions") or {}).get(session_id)
+
+
+def save_probe_session(sess: dict) -> None:
+    """Upsert an agent-in-the-loop probe session (probe_turn)."""
+    with _LOCK:
+        doc = get()
+        doc["probe_sessions"][sess["id"]] = {**sess, "ts": _now()}
         _save(doc)
 
 

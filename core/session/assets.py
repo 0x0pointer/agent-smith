@@ -91,6 +91,22 @@ def _update_dict_assets(assets: dict, asset_type: str, items: list, dedup_keys: 
             existing.add(key)
 
 
+def _upsert_session_cookies(assets: dict, items: list) -> None:
+    """Session cookies ROTATE (per-response tokens, sliding expiry) — a re-seen name
+    replaces the stored value instead of being dropped as a duplicate, so the
+    freshest cookie is what auth-reuse (headers_from="known_assets") sends."""
+    target_list = assets.setdefault("session_cookies", [])
+    index = {e.get("name"): i for i, e in enumerate(target_list) if isinstance(e, dict)}
+    for item in items:
+        if not isinstance(item, dict) or not item.get("name"):
+            continue
+        if item["name"] in index:
+            target_list[index[item["name"]]] = item
+        else:
+            index[item["name"]] = len(target_list)
+            target_list.append(item)
+
+
 def update_known_assets(asset_type: str, items: list) -> None:
     """Accumulate discovered assets into session.json['known_assets']."""
     if not _sess._current or _sess._current.get("status") != "running" or not items:
@@ -108,7 +124,7 @@ def update_known_assets(asset_type: str, items: list) -> None:
     elif asset_type == "auth_tokens":
         _update_dict_assets(assets, asset_type, items, ("value",))
     elif asset_type == "session_cookies":
-        _update_dict_assets(assets, asset_type, items, ("name",))
+        _upsert_session_cookies(assets, items)
     elif asset_type == "auth_endpoints":
         _update_dict_assets(assets, asset_type, items, ("path", "method"))
     elif asset_type == "oob_interactions":

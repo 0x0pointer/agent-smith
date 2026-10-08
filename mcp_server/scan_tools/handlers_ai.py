@@ -185,6 +185,9 @@ def _build_garak_rest_cfg(target, options) -> dict:
         "method":  options.get("method", "post"),
         "headers": _ai_headers(options),
         "req_template_json_object": {options.get("body_key", "message"): "$INPUT"},
+        # Back off (garak's REST generator retries these) instead of scoring a
+        # rate-limit page as the model's output.
+        "ratelimit_codes": [int(c) for c in options.get("ratelimit_codes", [429, 503])],
     }
     resp_field = options.get("response_field", "")  # JSONPath to the reply text
     if resp_field:

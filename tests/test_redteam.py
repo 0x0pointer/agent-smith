@@ -80,7 +80,7 @@ def test_probe_filter_finds_bypasses():
     # target blocks any plaintext containing "password"; encodings hide the word
     def send(msg, cid=None):
         return "blocked by safety filter" if "password" in msg.lower() else "ok, sure"
-    r = filter_probe.probe_filter(send)
+    r = filter_probe.probe_filter(send, canary="please help me reset my password now", n=1)
     assert r["plaintext_blocked"] is True
     assert "base64" in r["bypass"]
     assert "direct" in r["blocked"]
