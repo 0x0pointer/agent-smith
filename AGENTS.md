@@ -24,8 +24,11 @@ Run any security scanner.
 | garak | URL | probes=dan,encoding,promptinject,..., generator=rest — the remaining automated LLM scanner, now in its OWN image `pentest-agent/garak` (auto-built on first use, no longer in Kali). Payload crafting is the separate `transform()` tool. |
 | metasploit | host/IP | module=, payload=, rport=, lhost=, lport=4444 |
 
-### `kali(command, timeout)`
+### `kali(command, timeout, files, background, job_id)`
 Run any command in the Kali container (auto-starts if needed). Hundreds of tools: nikto, sqlmap, gobuster, hydra, testssl, enum4linux-ng, wapiti, searchsploit, etc.
+- `timeout` (default 600, max 7200) is honoured end-to-end; a command that exceeds it returns partial output with a plain "exceeded timeout" note (the time-based-blind LEAD hint fires only when a network probe's own request timed out).
+- `files={"/tmp/p.txt": "<artifact_id>", "/tmp/x.json": {"content": "..."}}` — stage engine payloads in the container before the command runs. Session artifacts are also mounted read-only at `/artifacts/<artifact_id>.txt`.
+- `background=true` — detach a long batch job (e.g. a k/N runner) and get a `job_id`; poll with `kali(job_id="<id>")` → `running` / `done rc=N` + output tail.
 
 ### `transform(action, text, options)`
 Pure-Python, in-process payload-crafting engine for AI red-teaming (P4RS3LT0NGV3-style techniques, clean-room). No Docker/npm/pip/API keys. Obfuscate a jailbreak/injection payload past input filters, then decode an obfuscated reply. 64 transforms across 8 categories (base, cipher, radio, homoglyph, invisible, script, word, case).
@@ -34,20 +37,25 @@ Pure-Python, in-process payload-crafting engine for AI red-teaming (P4RS3LT0NGV3
 - `action="decode"` — reverse a known chain (`transforms=[...]`) or auto-detect (universal decoder)
 - `action="mutate"` — N obfuscated variants (fuzzer). options: `count=10`, `techniques=[...]`, `seed=`
 - `action="bijection"` — Bijection-Learning jailbreak scaffold. options: `mapping_type=letters|digits|tokens`, `seed=`
-- `action="tokenbomb"` — token-exhaustion payload (LLM10). options: `size=200`, `seed=`
-- `action="steg"` — hide/reveal via invisible Unicode. options: `mode=hide|reveal`, `method=variation_selector|zero_width|unicode_tags`
+- `action="tokenbomb"` — token-exhaustion payload (LLM10). options: `size=200`, `seed=`, `save_artifact=true`
+- `action="steg"` — hide/reveal via invisible Unicode. options: `mode=hide|reveal`, `method=variation_selector|zero_width|unicode_tags`, `save_artifact=false`
+- Any action with `save_artifact=true` returns ONLY `{artifact_id, char_count, est_tokens, preview}` — deliver it by id with `http(options={payload_artifact_id})` or `kali(files={path: artifact_id})`.
 
 ### `redteam(action, target, options)`
 Manual-layer red-team **engine** (pure-Python, in-process) that makes the agent-driven layer systematic instead of improvised — the companion to `transform()`. Deterministic core (no API key); optional LLM-judge/attacker when a key is configured.
 - `action="techniques"` — the curated jailbreak technique-family library (direct, roleplay, dev_mode, hypothetical, authority, refusal_suppression, payload_split, virtualization, many_shot, repeat_above, cot_forgery, bad_likert, crescendo). options: `category=`
-- `action="filter_probe"` — canary each encoding to learn which the target's input filter lets through, so payloads only use bypassing transforms. options: `body_key=message`, `reply_key=reply`, `headers={}`
-- `action="feedback_attack"` — feedback-guided (PAIR/TAP-style) hill-climb on an oracle score: breadth-sweep the technique families, then stack bypass encodings on the best. options: `goal` (required), `success_markers=[...]`, `transforms=[...]`, `max_attempts=24`, `reproduce_n=0` (auto k/N on success), `body_key=`, `reply_key=`, `headers={}`
-- `action="judge"` — score a response (refusal classifier + marker match + optional LLM-judge). options: `text`, `goal`, `success_markers=[...]`
-- `action="calibrate"` — canary self-test the engine against the OWASP labs (must catch known vulns + not flag a refuse-always control) before you trust a clean result. `target=` labs base URL
+- **Transport options (every HTTP action):** `body_key=message`, `reply_key=reply`, `headers={}`, `headers_from="known_assets"` (reuse the scan's freshest JWT + session cookies; `Set-Cookie` rotation is followed), `rps=` (per-host throttle, env `SMITH_TARGET_RPS`), `max_retries=3` (429/503 backoff honouring `Retry-After` — retries are never counted as attempts). HTTP errors come back as `[send error: HTTP <code> <body>]` and are scored as NOT reaching the model (blocked / auth_failure / rate_limited), never as a model reply.
+- `action="filter_probe"` — send a jailbreak canary through each encoding `n` times → per-encoding pass **rate**, with a benign control + plaintext canary (HTTP 403/5xx blocks count as blocked; `notes` warn when plaintext isn't blocked). options: `n=5`, `canary=`, `control=`, `candidates=[...]`
+- `action="feedback_attack"` — feedback-guided (PAIR/TAP-style) hill-climb on an oracle score: breadth-sweep the technique families, then stack bypass encodings on the best. options: `goal` (required), `success_markers=[...]`, `transforms=[...]`, `max_attempts=24`, `reproduce_n=0` (auto k/N on success), `preflight=true` (aborts on a dead session / unreachable target). Returns `codes` histogram, `reached_model` vs `blocked`, `success_rate_over_reached`, `phase_counts`, `leads` (partial compliance to continue with `probe_turn`) and an `artifact_id` holding the FULL transcript.
+- `action="reproduce"` — k/N for a FIXED payload set: `payloads={name: text}` / `payload_artifact_ids={name: id}`, `n=10`, `success_markers=[...]` or `predicates=[...]` (+ `baseline_payload=`). k/N is over attempts that REACHED the model; blocked sends are retried, `insufficient_samples` flags a shortfall.
+- `action="compare"` — matched samples across variants (content bias / any comparative test): `variants={name: text}`, `n=10` (min 10), `min_matched=`. Returns per-variant samples + refusal rate, or `verdict: "insufficient matched samples"`.
+- `action="probe_turn"` — **agent-in-the-loop** depth layer: ONE probe per call, RAW output back, no auto-verdict — YOU judge it. `objective=` (first turn), `payload=` | `payload_artifact_id=`, `baseline=true` (clean reference turn → later turns get a structured `diff`), `predicates=[...]` (JSONPath objective, e.g. `{"path":"$.records[?(@.name=='X')]","op":"absent"}`), `assessment=` (**required** from the 2nd probe: your read of the previous output — also file `report(action="decision")`), `conclude={verdict: met|not_met|unreachable, rationale}`. Use it for integrity objectives (dropped/falsified/injected records in a 200 JSON reply), partial-compliance follow-up and multi-turn escalation.
+- `action="judge"` — score a response (refusal classifier + marker match + optional LLM-judge; with markers, no marker = never success). options: `text`, `goal`, `success_markers=[...]`; or `baseline=` + `predicates=[...]` for the structured/integrity oracle
+- `action="calibrate"` — canary self-test the engine against the OWASP labs (must catch known vulns + not flag a refuse-always control) before you trust a clean result. `target=` labs base URL. Returns `unreachable: true` (not a fake "1/4 passed") when the labs aren't running.
 
 ### `http(action, url, method, headers, body, options)`
 Raw HTTP requests and PoC saving.
-- `action="request"` — send an HTTP request. options: `poc=false`, `burp_proxy=http://127.0.0.1:8080`
+- `action="request"` — send an HTTP request. options: `poc=false`, `burp_proxy=http://127.0.0.1:8080`, `payload_artifact_id=` (deliver a stored `transform(save_artifact=true)` payload by id: replaces `{{PAYLOAD}}` raw / `{{PAYLOAD_JSON}}` JSON-escaped in `body`, or becomes the body)
 - `action="save_poc"` — save a raw .http file to pocs/. options: `title=poc`, `notes=`
 
 ### `report(action, data)`
@@ -61,6 +69,8 @@ Log findings, diagrams, notes, and coverage matrix updates.
 - `action="coverage"` — data: `{type, ...}` — manage the coverage matrix:
   - `type="endpoint"` — register endpoint + auto-generate cells: `{path, method, params=[{name, type, value_hint}], discovered_by, auth_context}`
   - `type="tested"` — mark cell tested: `{cell_id, status (tested_clean|vulnerable|not_applicable|skipped), notes, finding_id}`
+    - **LLM cells (first-try gate):** `prompt_injection` / `jailbreak` / `system_prompt_leak` / `improper_output_handling` / `unbounded_consumption` close `tested_clean` ONLY on a `redteam_*` artifact whose evidence shows ≥5/10/20 attempts that reached the model (recon/standard/thorough; feedback_attack also ≥2 technique families), a concluded `probe_turn` session (verdict not_met/unreachable, ≥3 assessed turns), or a garak artifact — a single http() response is rejected. `vulnerable` without a k/N record (n≥3) is tagged `needs_reproduction`.
+    - `skipped` may carry `skip_reason` (`agent_policy_block` — your own safety policy stopped the attempt client-side, nothing reached the target; also operator_declined, out_of_scope, target_unavailable, rate_limited, auth_unavailable, prior_engagement, other). `agent_policy_block` requires `notes`.
   - `type="bulk_tested"` — mark multiple cells: `{updates=[{cell_id, status, notes, finding_id}]}`
   - `type="reset"` — clear the matrix
 
