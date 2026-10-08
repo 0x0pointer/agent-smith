@@ -31,6 +31,11 @@ import secrets as _secrets
 _REPO_ROOT = _pathlib.Path(__file__).resolve().parents[1]
 _GUARD_SRC = _REPO_ROOT / "tools" / "kali" / "api_guard.py"
 _TOKEN_FILE = _REPO_ROOT / "logs" / ".kali_api_token"
+# Session artifacts (transform/redteam payloads, tool output) are mounted READ-ONLY at
+# /artifacts so a Kali batch runner can read engine payloads by id without a temporary
+# HTTP server: /artifacts/<artifact_id>.txt.
+_ARTIFACTS_DIR = _REPO_ROOT / "artifacts"
+KALI_ARTIFACTS_MOUNT = "/artifacts"
 # kali-server-mcp runs loopback-only inside the container on this port; only the
 # in-container guard (published on :5000) can reach it.
 _KALI_UPSTREAM_PORT = "5555"
@@ -118,6 +123,10 @@ async def ensure_running() -> tuple[bool, str]:
                 f"  docker build -t {KALI_IMAGE} ./tools/kali/"
             )
 
+        try:
+            _ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)   # else docker creates it root-owned
+        except OSError:
+            pass
         # Forward AI API keys into the container (see _forward_ai_keys).
         env_flags: list[str] = _forward_ai_keys(os.environ)
 
@@ -160,6 +169,8 @@ async def ensure_running() -> tuple[bool, str]:
                 # guard is MOUNTED so this is live without an image rebuild; the Dockerfile bakes
                 # the same guard for clean builds.
                 "-v", f"{_GUARD_SRC}:/usr/local/bin/kali-api-guard:ro",
+                # Session artifacts, read-only (see KALI_ARTIFACTS_MOUNT).
+                "-v", f"{_ARTIFACTS_DIR}:{KALI_ARTIFACTS_MOUNT}:ro",
                 "-e", f"KALI_API_TOKEN={_token}",
                 "-e", f"KALI_UPSTREAM_PORT={_KALI_UPSTREAM_PORT}",
                 "-e", "KALI_GUARD_PORT=5000",
@@ -301,3 +312,53 @@ async def exec_command(command: str, timeout: int = 600) -> str:
                 return output or "[no output]"
     except BaseException as exc:
         return f"Error calling kali API: {type(exc).__name__}: {exc}"
+
+
+# ---------------------------------------------------------------------------
+# File delivery + background jobs
+# ---------------------------------------------------------------------------
+
+async def put_file(path: str, data: bytes) -> str | None:
+    """Write ``data`` to absolute ``path`` inside the container (via ``docker exec -i``
+    + stdin, so content never touches a shell command line). Returns an error string,
+    or None on success."""
+    if not path.startswith("/") or "\x00" in path:
+        return f"invalid container path '{path}' (must be absolute)"
+    ok, msg = await ensure_running()
+    if not ok:
+        return msg
+    q = shlex.quote(path)
+    proc = await asyncio.create_subprocess_exec(
+        docker_executable(), "exec", "-i", KALI_CONTAINER, "sh", "-c",
+        f'mkdir -p "$(dirname {q})" && cat > {q}',
+        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _, err = await proc.communicate(data)
+    if proc.returncode != 0:
+        return f"failed to write {path}: {err.decode(errors='replace').strip()}"
+    return None
+
+
+_JOB_DIR = "/tmp/smith-jobs"
+
+
+def job_paths(job_id: str) -> tuple[str, str]:
+    return f"{_JOB_DIR}/{job_id}.log", f"{_JOB_DIR}/{job_id}.rc"
+
+
+def background_command(command: str, job_id: str) -> str:
+    """Shell that detaches ``command`` (nohup, own session) writing output to
+    <id>.log and its exit code to <id>.rc, and returns immediately."""
+    log_f, rc_f = job_paths(job_id)
+    inner = f"bash -c {shlex.quote(command)} > {log_f} 2>&1; echo $? > {rc_f}"
+    return (f"mkdir -p {_JOB_DIR} && nohup setsid sh -c {shlex.quote(inner)} "
+            f"> /dev/null 2>&1 < /dev/null & echo started job {job_id}")
+
+
+def poll_command(job_id: str, tail_bytes: int = 6000) -> str:
+    log_f, rc_f = job_paths(job_id)
+    return (f"if [ -f {rc_f} ]; then echo \"__JOB_STATUS__ done rc=$(cat {rc_f})\"; "
+            f"elif [ -f {log_f} ]; then echo '__JOB_STATUS__ running'; "
+            f"else echo '__JOB_STATUS__ unknown'; fi; "
+            f"[ -f {log_f} ] && tail -c {int(tail_bytes)} {log_f}")

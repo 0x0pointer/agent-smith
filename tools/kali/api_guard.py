@@ -15,9 +15,18 @@ shell as root, and has no token/Host checks of its own. This guard sits in front
 Combined with a loopback-only Docker publish (``-p 127.0.0.1:5001:5000``) this closes the
 network, rebinding, and local-process vectors. Stdlib-only (no pip deps in the image).
 If ``KALI_API_TOKEN`` is empty the guard runs OPEN and logs a warning (back-compat).
+
+``POST /api/command`` is executed HERE rather than forwarded: upstream kali-server-mcp
+ignores the request's ``timeout`` field and kills every command at a hard-coded 180 s,
+so a ``kali(command, timeout=900)`` batch job was silently cut off at ~3 min. The guard
+runs the command itself honouring ``timeout`` (clamped to [1, MAX_COMMAND_TIMEOUT]) and
+returns the same JSON shape upstream does. Every other route is still proxied.
 """
 import http.server
+import json
 import os
+import signal
+import subprocess
 import urllib.error
 import urllib.request
 
@@ -28,6 +37,51 @@ GUARD_PORT = int(os.environ.get("KALI_GUARD_PORT", "5000"))
 # arrives with the attacker's domain in Host, so it is rejected here.
 ALLOWED_HOSTS = {"localhost", "127.0.0.1", "kali", "pentest-kali"}
 _FORWARD_TIMEOUT = None  # long tools (nmap/gobuster) hold the connection; upstream owns the tool timeout
+DEFAULT_COMMAND_TIMEOUT = 180
+MAX_COMMAND_TIMEOUT = int(os.environ.get("KALI_MAX_COMMAND_TIMEOUT", "7200"))
+
+
+def _clamp_timeout(raw) -> int:
+    try:
+        t = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_COMMAND_TIMEOUT
+    return max(1, min(t, MAX_COMMAND_TIMEOUT))
+
+
+def run_command(command: str, timeout) -> dict:
+    """Run ``command`` via /bin/sh honouring ``timeout``; on expiry kill the whole
+    process group (so a backgrounded child can't hold the pipes open) and return the
+    partial output. Mirrors kali-server-mcp's response shape."""
+    timeout = _clamp_timeout(timeout)
+    proc = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE,  # noqa: S602 — this IS the command API
+                            stderr=subprocess.PIPE, start_new_session=True)
+    timed_out = False
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            try:
+                os.killpg(proc.pid, sig)
+            except ProcessLookupError:
+                break
+            try:
+                proc.wait(timeout=5)
+                break
+            except subprocess.TimeoutExpired:
+                continue
+        try:
+            out, err = proc.communicate(timeout=5)
+        except Exception:
+            out, err = b"", b""
+    stdout = (out or b"").decode("utf-8", "replace")
+    stderr = (err or b"").decode("utf-8", "replace")
+    rc = -1 if timed_out else proc.returncode
+    return {"stdout": stdout, "stderr": stderr, "return_code": rc,
+            "success": bool(stdout or stderr) if timed_out else rc == 0,
+            "timed_out": timed_out, "timeout": timeout,
+            "partial_results": timed_out and bool(stdout or stderr)}
 
 
 class Guard(http.server.BaseHTTPRequestHandler):
@@ -59,6 +113,8 @@ class Guard(http.server.BaseHTTPRequestHandler):
             return self._send(401, b'{"error":"unauthorized"}')
         length = int(self.headers.get("Content-Length", 0) or 0)
         body = self.rfile.read(length) if length else None
+        if self.command == "POST" and self.path.split("?")[0] == "/api/command":
+            return self._command(body)
         req = urllib.request.Request(UPSTREAM + self.path, data=body, method=self.command)
         for k, v in self.headers.items():
             if k.lower() not in ("host", "content-length", "x-kali-token", "authorization"):
@@ -74,6 +130,16 @@ class Guard(http.server.BaseHTTPRequestHandler):
             self._send(e.code, data, e.headers.get("Content-Type", "application/json"))
         except Exception:
             self._send(502, b'{"error":"upstream unreachable"}')
+
+    def _command(self, body) -> None:
+        try:
+            params = json.loads(body or b"{}")
+        except ValueError:
+            return self._send(400, b'{"error":"invalid JSON"}')
+        command = (params or {}).get("command", "")
+        if not command:
+            return self._send(400, b'{"error":"Command parameter is required"}')
+        self._send(200, json.dumps(run_command(command, params.get("timeout"))).encode())
 
     do_GET = do_POST = do_PUT = do_DELETE = do_PATCH = _proxy
 

@@ -100,3 +100,69 @@ async def test_kali_returns_output_unchanged_when_short():
         result = await kali("id")
 
     assert result == short_output
+
+
+# ---------------------------------------------------------------------------
+# #253 / #254 — files=, background=, job_id=
+# ---------------------------------------------------------------------------
+
+def _patched(**runner):
+    from contextlib import ExitStack
+    st = ExitStack()
+    ms = st.enter_context(patch("mcp_server.kali_tools.scan_session"))
+    mc = st.enter_context(patch("mcp_server.kali_tools.cost_tracker"))
+    st.enter_context(patch("mcp_server.kali_tools.log"))
+    ms.check_limits.return_value = None
+    mc.get_summary.return_value = {}
+    mc.start.return_value = "cid"
+    for name, m in runner.items():
+        st.enter_context(patch(f"tools.kali_runner.{name}", m))
+    return st
+
+
+@pytest.mark.asyncio
+async def test_kali_background_returns_job_id():
+    ex = AsyncMock(return_value="started job x")
+    with _patched(exec_command=ex):
+        out = await kali("python3 long.py", background=True)
+    assert "job_id=" in out and "nohup" in ex.call_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_kali_poll_job_and_reject_bad_id():
+    ex = AsyncMock(return_value="__JOB_STATUS__ running\n...")
+    with _patched(exec_command=ex):
+        assert "running" in await kali(job_id="abcdef123456")
+        assert "invalid job_id" in await kali(job_id="../x; rm -rf /")
+
+
+@pytest.mark.asyncio
+async def test_kali_stages_files_before_command(monkeypatch, tmp_path):
+    import mcp_server.scan_engine.artifacts as arts
+    monkeypatch.setattr(arts, "_ARTIFACTS_DIR", tmp_path)
+    aid = arts.store_artifact("transform", "PAYLOAD")
+    put = AsyncMock(return_value=None)
+    ex = AsyncMock(return_value="ok")
+    with _patched(put_file=put, exec_command=ex), \
+         patch("mcp_server.scan_engine.wrap", return_value="wrapped"):
+        await kali("cat /tmp/a /tmp/b", files={"/tmp/a": aid, "/tmp/b": {"content": "X"}})
+    assert [c.args for c in put.call_args_list] == [("/tmp/a", b"PAYLOAD"), ("/tmp/b", b"X")]
+    ex.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_kali_missing_file_artifact_aborts(monkeypatch, tmp_path):
+    import mcp_server.scan_engine.artifacts as arts
+    monkeypatch.setattr(arts, "_ARTIFACTS_DIR", tmp_path)
+    ex = AsyncMock(return_value="ok")
+    with _patched(exec_command=ex):
+        out = await kali("cat /tmp/a", files={"/tmp/a": "nope_1_2"})
+    assert "Error staging files" in out and not ex.called
+
+
+@pytest.mark.asyncio
+async def test_kali_whole_command_timeout_note_not_lead():
+    ex = AsyncMock(return_value="[partial — command timed out]\nsome")
+    with _patched(exec_command=ex), patch("mcp_server.scan_engine.wrap", side_effect=lambda k, raw, ctx: raw):
+        out = await kali("python3 batch.py", timeout=900)
+    assert "exceeded timeout=900s" in out and "TIMEOUT SIGNAL" not in out

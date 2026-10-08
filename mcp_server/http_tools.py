@@ -27,6 +27,25 @@ _MAX_ARTIFACT_BODY = 1_000_000
 _CLIENT_MAX_HDR = 256 * 1024
 
 
+def _resolve_payload_artifact(body, artifact_id: str):
+    """Splice a stored payload (transform save_artifact / redteam) into the body.
+
+    Returns (body, error). ``{{PAYLOAD}}`` in ``body`` is replaced verbatim;
+    ``{{PAYLOAD_JSON}}`` is replaced JSON-string-escaped (no surrounding quotes) so the
+    payload can sit inside a JSON string field. With no placeholder the payload IS the
+    body. Lets the agent deliver a token-bomb / steg payload by id instead of pasting
+    ~10k tokens of escaped Unicode into the call."""
+    from mcp_server.scan_engine.artifacts import read_artifact_raw
+    payload = read_artifact_raw(str(artifact_id))
+    if payload is None:
+        return body, (f"payload_artifact_id '{artifact_id}' not found — use the artifact_id "
+                      "returned by transform(save_artifact=true) / session(action='artifact')")
+    if isinstance(body, str) and ("{{PAYLOAD}}" in body or "{{PAYLOAD_JSON}}" in body):
+        body = body.replace("{{PAYLOAD_JSON}}", json.dumps(payload)[1:-1])
+        return body.replace("{{PAYLOAD}}", payload), None
+    return payload, None
+
+
 def _write_text(path: str, content: str) -> None:
     with open(path, "w") as fh:
         fh.write(content)
@@ -53,6 +72,9 @@ async def http(
     request options:
       poc=false        — set true to route through Burp proxy
       burp_proxy=http://127.0.0.1:8080
+      payload_artifact_id= — deliver a stored payload (transform save_artifact=true) by id:
+                         it replaces {{PAYLOAD}} (raw) / {{PAYLOAD_JSON}} (JSON-escaped) in
+                         `body`, or becomes the whole body when there is no placeholder
 
     save_poc options:
       title=poc        — filename label
@@ -63,6 +85,10 @@ async def http(
         body = json.dumps(body)
     headers = _ensure_dict(headers)
     opts = _ensure_dict(options) or {}
+    if opts.get("payload_artifact_id"):
+        body, err = _resolve_payload_artifact(body, opts["payload_artifact_id"])
+        if err:
+            return json.dumps({"error": err})
 
     if action == "request":
         return await _do_request(url, method, headers, body, opts)
