@@ -1939,3 +1939,43 @@ async def test_cycle_notify_exception_is_swallowed(tmp_path, monkeypatch):
         await daemon._cycle()  # must not raise
 
     assert qa_state.exists()  # cycle still wrote state despite notification failure
+
+
+# _check_ai_redteam_automated_half — garak must run once ai-redteam targets an LLM endpoint
+
+def test_ai_redteam_automated_half_nudges_until_garak_runs():
+    from core.qa_agent.checks_skills import _check_ai_redteam_automated_half as chk
+    cov = {"endpoints": [{"path": "/chat", "params": [{"name": "message", "type": "llm_prompt"}]}]}
+    assert chk(cov, {"skill_history": [], "tools_called": []}) == []           # skill not declared
+    assert chk({"endpoints": []}, {"skill_history": [{"skill": "ai-redteam"}]}) == []  # no LLM endpoint
+    out = chk(cov, {"skill_history": [{"skill": "ai-redteam"}], "tools_called": ["redteam"]})
+    assert out and out[0]["code"] == "MISSING_GARAK" and "/chat" in out[0]["message"]
+    assert chk(cov, {"skill_history": [{"skill": "ai-redteam"}], "tools_called": ["garak"]}) == []
+
+
+def test_stuck_on_target_redteam_run_with_artifact_counts_as_progress(tmp_path, monkeypatch):
+    """redteam() entries carry the target URL, so a 5-call engine battery with no
+    finding would trip the stuck rule mid-run. A run that stored an evidence artifact
+    (k/N record / transcript) is progress; a battery with NO artifacts still trips it."""
+    import core.steering as st_mod
+    import core.qa_agent as qa_mod
+    steering_file = tmp_path / "steering_queue.json"
+    monkeypatch.setattr(st_mod, "_STEERING_FILE", steering_file)
+    monkeypatch.setattr(qa_mod, "_STEERING_FILE", steering_file)
+
+    battery = [_tool_entry("redteam", "http://t/chat", offset_min=5) for _ in range(6)]
+    battery[-1] = {**battery[-1], "artifact_id": "redteam_feedback_attack_160000_ab12"}
+    assert _check_stuck_on_target(battery, {}, {}, []) is None
+
+    bare = [_tool_entry("redteam", "http://t/chat", offset_min=5) for _ in range(6)]
+    alert = _check_stuck_on_target(bare, {}, {}, [])
+    assert alert is not None and alert["code"] == "STUCK_ON_TARGET"
+
+
+def test_phase_advance_ready_alert_follows_phase_advice():
+    from core.qa_agent.checks_skills import _check_phase_advance_ready as chk
+    assert chk({"status": "running", "scan_phase": "exploit"}) is None
+    assert chk({"status": "completed", "scan_phase": "exploit", "phase_advice": "coverage"}) is None
+    out = chk({"status": "running", "scan_phase": "exploit", "phase_advice": "coverage"})
+    assert out["code"] == "PHASE_ADVANCE_READY" and not out["blocking"]
+    assert "advance to phase B" in out["message"] and "never auto-advance" in out["message"]

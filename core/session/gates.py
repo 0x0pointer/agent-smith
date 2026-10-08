@@ -168,8 +168,25 @@ _SKILL_DEEP_REQUIREMENTS = {
         "hint": ("garak is only ai-redteam's automated half — run "
                  "redteam(action='feedback_attack') (the k/N attack engine), or test the "
                  "jailbreak / system_prompt_leak / prompt_injection cells, before this gate clears"),
+        # The skill's Phase 2 calls scan(tool='garak') at every depth, but nothing
+        # enforced it: the FinBot run cleared the gate on redteam() alone and garak
+        # never ran. The automated half is now obligated too — the ATTEMPT counts
+        # (a garak run that errors still lands in tools_called), so a broken image
+        # cannot wall the gate; what cannot clear it is never calling the tool.
+        "automated_tool": "garak",
+        "automated_hint": ("garak has not run — ai-redteam's automated half is missing. Run "
+                           "scan(tool='garak', target=<LLM endpoint>, options={probes: "
+                           "'encoding,promptinject,leakreplay,misleading', body_key: ..., "
+                           "response_field: ...}) before this gate clears"),
     },
 }
+
+
+def _tool_fired_in_scan(tool_name: str) -> bool:
+    """True if ``tool_name`` fired at any point of the scan (session tools_called)."""
+    if not tool_name or _sess._current is None:
+        return False
+    return tool_name in (_sess._current.get("tools_called") or [])
 
 
 def _skill_did_tool(skill_name: str, tool_name: str) -> bool:
@@ -196,20 +213,38 @@ def _coverage_types_tested(types) -> bool:
                for c in cells)
 
 
-def _deep_requirement_met(skill_name: str, req: dict) -> bool:
+def _manual_layer_met(skill_name: str, req: dict) -> bool:
     """The skill's MANUAL layer ran: its required tool fired under it (A), OR the
     coverage cells that layer produces are tested (B)."""
     return (_skill_did_tool(skill_name, req.get("tool", ""))
             or _coverage_types_tested(req.get("coverage_types", ())))
 
 
+def _automated_layer_met(skill_name: str, req: dict) -> bool:
+    """The skill's AUTOMATED tool (if it declares one) fired — under the skill or
+    anywhere in the scan. Skills without one are trivially met."""
+    tool = req.get("automated_tool", "")
+    return not tool or _skill_did_tool(skill_name, tool) or _tool_fired_in_scan(tool)
+
+
+def _deep_requirement_met(skill_name: str, req: dict) -> bool:
+    """Both halves of a deep-work skill have run: the manual layer AND, when the
+    skill declares one, its automated tool."""
+    return _manual_layer_met(skill_name, req) and _automated_layer_met(skill_name, req)
+
+
 def skill_deep_requirement_hint(skill_name: str) -> str:
     """Why a deep-work skill's gate is still open (for the model/dashboard), or '' if
-    the skill has no deep requirement or it is already met."""
+    the skill has no deep requirement or it is already met. Names every missing half."""
     req = _SKILL_DEEP_REQUIREMENTS.get(skill_name)
-    if not req or _deep_requirement_met(skill_name, req):
+    if not req:
         return ""
-    return req.get("hint", "")
+    hints = []
+    if not _manual_layer_met(skill_name, req):
+        hints.append(req.get("hint", ""))
+    if not _automated_layer_met(skill_name, req):
+        hints.append(req.get("automated_hint", f"{req['automated_tool']} has not run"))
+    return " ; ".join(h for h in hints if h)
 
 
 def skill_worked(skill_name: str) -> bool:
@@ -287,8 +322,35 @@ def maybe_advance_phase() -> str | None:
         advice = None
     if _sess._current.get("phase_advice") != advice:
         _sess._current["phase_advice"] = advice
+        if advice:
+            # First time this phase looks saturated: tell the OPERATOR, not just the
+            # dashboard hint text — otherwise a headless run sits in Phase A forever.
+            _sess._current["phase_advice_at"] = datetime.now(timezone.utc).isoformat()
+            _signal_phase_advance_ready(cur, advice, _sess._current.get("target", ""))
         _sess._flush()
     return None   # never auto-advances — the operator decides via advance_phase()
+
+
+def _signal_phase_advance_ready(cur: str, advice: str, target: str) -> None:
+    """Operator-visible signal that the current phase is saturated: a PHASE_ADVANCE_READY
+    log line (pentest.log / activity feed) and a push notification through every configured
+    notifier (Slack / Telegram / Discord). Fail-soft — never blocks the status call."""
+    from core.session import phases as _phases
+    try:
+        from core import logger as _log
+        _log.note(f"PHASE_ADVANCE_READY: {_phases.phase_label(cur)} looks saturated — operator "
+                  f"may advance to '{advice}' (dashboard: 'advance to phase "
+                  f"{_phases.phase_letter(advice)}')")
+    except Exception:
+        pass
+    try:
+        from core.notifiers import notify
+        notify(f"Phase advance ready: {target or 'scan'}",
+               f"{_phases.phase_label(cur)} looks saturated. Advance to '{advice}' from the "
+               f"dashboard (type 'advance to phase {_phases.phase_letter(advice)}'). The scan "
+               f"keeps working the current phase until you do.")
+    except Exception:
+        pass
 
 
 def advance_phase(target: str | None = None) -> dict:

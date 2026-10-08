@@ -247,9 +247,26 @@ def _add_testing_actions(required: list[str], recommended: list[str], target: st
     )
 
 
+def _origin(target: str) -> str:
+    """scheme://host[:port] of the scan target, with no path.
+
+    Coverage paths are absolute (spider/OpenAPI register ``/auth/login``), so they
+    join onto the ORIGIN — never onto the target's own path. A target given as
+    ``http://h:8000/admin/dashboard`` otherwise produced probes for
+    ``/admin/dashboard/auth/login`` that 404 (and a sweep could close them clean).
+    """
+    from urllib.parse import urlsplit
+    t = (target or "").strip()
+    if "://" not in t:
+        return t.split("/", 1)[0]
+    parts = urlsplit(t)
+    return f"{parts.scheme}://{parts.netloc}"
+
+
 def _resolve_url(target: str, path: str, param: str, param_type: str, payload: str) -> str:
     """Build the test URL, handling path vs query params correctly."""
     import re
+    target = _origin(target)
     if param_type == "path":
         # Replace {id} or {param_name} in path with payload
         resolved = re.sub(r'\{[^}]+\}', payload, path, count=1)
@@ -378,7 +395,7 @@ def _injection_command_endpoint_level(inj: str, url: str) -> str | None:
 
 def _concrete_test_command(inj: str, target: str, path: str, method: str, param: str, param_type: str = "query") -> str:
     """Return an exact tool call string for the given injection type."""
-    url = f"{target}{path}"
+    url = f"{_origin(target)}{path}"
     result = _injection_command_with_payload(inj, target, path, method, param, param_type)
     if result is not None:
         return result

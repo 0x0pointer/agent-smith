@@ -94,3 +94,23 @@ def test_inject_pending_gates_skips_already_invoked_skill():
          patch("core.session.get", return_value={"skill_history": [{"skill": "credential-audit"}]}):
         planner._inject_pending_gates(required)
     assert required == []   # skill already chained → no directive
+
+
+def test_resolve_url_joins_onto_origin_not_target_path():
+    """A target given WITH a path (``…/admin/dashboard``) must not prefix every
+    registered absolute endpoint path — that produced ``/admin/dashboard/auth/…``
+    probes that 404 and a sweep could close clean."""
+    t = "http://localhost:8000/admin/dashboard"
+    assert planner._resolve_url(t, "/auth/verify", "token", "query", "x") == \
+        "http://localhost:8000/auth/verify?token=x"
+    assert planner._resolve_url(t, "/api/pulse", "_endpoint", "query", "") == \
+        "http://localhost:8000/api/pulse"
+    assert planner._resolve_url(t, "/u/{id}", "id", "path", "7") == "http://localhost:8000/u/7"
+    assert planner._resolve_url("http://h/", "/a", "_endpoint", "query", "") == "http://h/a"
+    assert "http://localhost:8000/auth/magic-link'" in planner._concrete_test_command(
+        "security_headers", t, "/auth/magic-link", "POST", "_endpoint")
+
+
+def test_build_probe_uses_origin():
+    p = planner.build_probe("xss", "https://app.test:8443/portal/home", "/search", "GET", "q")
+    assert p["url"].startswith("https://app.test:8443/search?q=")

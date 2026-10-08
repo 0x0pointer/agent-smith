@@ -43,7 +43,7 @@ _DISCOVERY_AUTH: contextvars.ContextVar = contextvars.ContextVar("discovery_auth
 
 # ── bounds (enrichment must stay cheap relative to the spider itself) ──────────
 _MAX_OPS = 500          # cap operations expanded from one spec
-_MAX_JS_FILES = 6       # JS bundles to mine
+_MAX_JS_FILES = 20      # JS bundles to mine (per-page admin/vendor bundles add up fast)
 _MAX_HTML_PAGES = 15    # HTML pages to read forms from
 _MAX_FETCH_BYTES = 5 * 1024 * 1024
 _FETCH_TIMEOUT = 8      # per-fetch seconds
@@ -259,7 +259,12 @@ def _path_ext(path: str) -> str:
 
 def _clean_js_route(raw: str) -> str | None:
     """Normalize a mined string into a route path, or None if it isn't one."""
-    route = raw.split("${", 1)[0].split("?", 1)[0].split("#", 1)[0].strip()
+    # `/api/files/${file.id}` -> `/api/files/{id}`: keep the segment as a path
+    # placeholder (so _route_params yields the IDOR/injection path param) instead of
+    # truncating the route at the template expression.
+    route = re.sub(r"\$\{([^}]*)\}",
+                   lambda m: "{" + (re.findall(r"\w+", m.group(1)) or ["param"])[-1] + "}", raw)
+    route = route.split("?", 1)[0].split("#", 1)[0].strip()
     if not route.startswith("/") or not (2 <= len(route) <= 200):
         return None
     return None if _path_ext(route) in _STATIC_EXTS else route

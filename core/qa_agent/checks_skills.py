@@ -220,6 +220,46 @@ def _check_post_exploit_depth(session_data: dict) -> list[dict]:
     return alerts
 
 
+def _check_ai_redteam_automated_half(coverage_data: dict, session_data: dict) -> list[dict]:
+    """ai-redteam has two halves: garak (automated) and the redteam() engine / hand-tested
+    LLM cells (manual). The gate enforces both at completion; this surfaces the missing
+    garak run MID-SCAN, while the LLM endpoint is still the active target, instead of as
+    a completion blocker. Fires once an LLM endpoint is registered (an llm_prompt param)
+    and ai-redteam has been declared, until garak lands in tools_called."""
+    skills_run = {e.get("skill") for e in session_data.get("skill_history", [])}
+    if "ai-redteam" not in skills_run or "garak" in (session_data.get("tools_called") or []):
+        return []
+    llm_eps = [ep.get("path", "") for ep in coverage_data.get("endpoints", [])
+               if any((p or {}).get("type") == "llm_prompt" for p in ep.get("params", []))]
+    if not llm_eps:
+        return []
+    return [{"code": "MISSING_GARAK", "urgency": "high", "blocking": False,
+             "message": (f"/ai-redteam is active on {len(llm_eps)} LLM endpoint(s) "
+                         f"({', '.join(llm_eps[:3])}) but scan(tool='garak') has never run — "
+                         "the automated half of the assessment is missing and the ai-redteam "
+                         "gate will not clear without it. Run scan(tool='garak', target=<endpoint>, "
+                         "options={probes: 'encoding,promptinject,leakreplay,misleading', "
+                         "body_key: <prompt field>, response_field: <reply JSONPath>}).")}]
+
+
+def _check_phase_advance_ready(session_data: dict) -> dict | None:
+    """The current phase looks saturated (phase_advice set) but phases are operator-gated,
+    so nothing happens until a human types 'advance to phase B/C' on the dashboard. Keep
+    that request visible on the dashboard QA panel every cycle (non-blocking) and remind
+    the agent it must keep working the current phase meanwhile — the FinBot run sat in
+    Phase A with every breadth call refused and nobody asked the operator."""
+    advice = session_data.get("phase_advice")
+    if not advice or session_data.get("status") != "running":
+        return None
+    from core.session.phases import phase_letter
+    cur = session_data.get("scan_phase", "exploit")
+    return {"code": "PHASE_ADVANCE_READY", "urgency": "high", "blocking": False,
+            "message": (f"Phase '{cur}' looks saturated — OPERATOR: advance to '{advice}' from the "
+                        f"dashboard (type 'advance to phase {phase_letter(advice)}'). SMITH: phases "
+                        f"never auto-advance; keep working '{cur}' until scan_phase changes, or call "
+                        f"session(action='intervene') if you are out of deep work.")}
+
+
 def _check_missing_skill(coverage_data: dict, session_data: dict) -> list[dict]:
     """Flag when a discovered endpoint type requires a skill that has never been invoked."""
     try:

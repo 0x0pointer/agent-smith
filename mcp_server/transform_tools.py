@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 
 from core import logger as log
-from mcp_server._app import mcp, _ensure_dict, _record
+from mcp_server._app import mcp, _ensure_dict, _record, quick_log_activity
 from mcp_server.transforms import (
     CATEGORIES,
     TRANSFORMS,
@@ -89,6 +89,9 @@ async def transform(action: str, text: str = "", options: dict | str | None = No
         result = json.dumps({"error": str(exc)})
     except Exception as exc:  # fail-soft — never crash the agent's turn
         result = json.dumps({"error": f"{type(exc).__name__}: {exc}"})
+    # Raw-JSON tool (no envelope): write its own activity entry so payload crafting
+    # counts as work for the QA stall checks and the dashboard feed.
+    quick_log_activity("transform", {"action": action}, f"transform {action}")
     log.tool_result("transform", result)
     return result
 

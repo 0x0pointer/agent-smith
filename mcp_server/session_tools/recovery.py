@@ -254,6 +254,8 @@ def _do_recovery():
         target, tools_run, action_list, next_call, resume_step,
     )
     result["scan_phase"] = _phases.phase_label(phase)
+    result["phase_advice"] = current.get("phase_advice")
+    result["phase_advance"] = _phases.advance_note(current.get("phase_advice"))
 
     # Manual-setup gates still open (capabilities.yaml prerequisites). Surfaced so
     # a deferred/failed gate survives compaction and the operator/agent can resume

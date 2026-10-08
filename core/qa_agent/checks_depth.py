@@ -389,6 +389,15 @@ def _check_stuck_on_target(entries: list[dict], findings_data: dict, session_dat
         # Smith is making progress — findings are being logged
         return None
 
+    # A redteam() engine run that stored an evidence artifact (k/N record, probe
+    # transcript, filter-bypass rates) IS progress even when it confirms nothing: a
+    # long attack battery against one LLM endpoint is the assessment, not spinning.
+    # Engine entries now carry the target URL, so without this they would trip the
+    # 5-calls-no-finding rule and escalate to an HIR mid-battery.
+    if any(e.get("name") == "redteam" and e.get("artifact_id")
+           and e.get("target") == stuck_target for e in tool_entries):
+        return None
+
     # Was the same target flagged as stuck in the previous QA cycle?
     was_flagged_before = any(
         a.get("code") == "STUCK_ON_TARGET" and stuck_target in a.get("message", "")

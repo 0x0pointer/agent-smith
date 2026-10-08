@@ -9,7 +9,9 @@ importable from the module is re-exported here.
 from core import cost as cost_tracker
 from core import logger as log
 from core import session as scan_session
-from mcp_server._app import mcp, _ensure_dict
+from mcp.server.fastmcp import Context
+
+from mcp_server._app import mcp, _ensure_dict, with_heartbeat
 
 # ── Shared state + helpers (re-exported for consumers/tests) ────────────────────
 from ._common import (
@@ -69,7 +71,8 @@ _DISPATCH = {
 
 
 @mcp.tool()
-async def scan(tool: str, target: str, flags: str = "", options: dict | str | None = None) -> str:
+async def scan(tool: str, target: str, flags: str = "", options: dict | str | None = None,
+               ctx: Context | None = None) -> str:
     """Run a security scanner.
 
     tool    : scanner name (see table)
@@ -123,7 +126,7 @@ async def scan(tool: str, target: str, flags: str = "", options: dict | str | No
     # never ran" at completion time.
 
     try:
-        return await handler(target, flags, options)
+        return await with_heartbeat(ctx, handler(target, flags, options), f"scan {tool}")
     except Exception as exc:
         err = f"[{tool} error: {type(exc).__name__}: {exc}]"
         log.tool_result(tool, err)

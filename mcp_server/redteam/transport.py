@@ -16,7 +16,12 @@ that contract but:
   * carries session auth: ``headers_from="known_assets"`` pulls the freshest JWT +
     session cookies captured during the scan, and ``Set-Cookie`` on every response
     rotates the jar (sliding/rotating cookie sessions stay alive);
-  * can deliver a document/file carrier as multipart/form-data (``send_file``).
+  * can deliver a document/file carrier as multipart/form-data (``send_file``);
+  * reads streaming replies: a ``text/event-stream`` (SSE) body is reassembled from
+    its ``data:`` token events, with tool/status events appended as a
+    ``[stream events]`` trailer (they are the excessive-agency evidence);
+  * fetches a CSRF token before each send when ``csrf`` is configured (JSON key or
+    ``<meta name="csrf-token">``), re-fetching once on a 403/419.
 """
 from __future__ import annotations
 
@@ -186,9 +191,128 @@ def _persist_rotated_cookies(pairs: dict, url: str) -> None:
         pass
 
 
+# ── CSRF token ────────────────────────────────────────────────────────────────
+
+_META_CSRF_RE = re.compile(
+    r'<meta[^>]+name=["\'](?:csrf-token|csrf_token|_csrf|csrf)["\'][^>]*content=["\']([^"\']+)'
+    r'|<meta[^>]+content=["\']([^"\']+)["\'][^>]*name=["\'](?:csrf-token|csrf_token|_csrf|csrf)["\']',
+    re.I)
+
+
+def _csrf_from_body(raw: bytes, json_key: str | None) -> str | None:
+    """Token from a JSON body (dotted ``json_key``) or an HTML ``<meta name=csrf-token>``."""
+    text = raw.decode("utf-8", "replace")
+    try:
+        data = json.loads(text)
+    except ValueError:
+        data = None
+    if data is not None:
+        if json_key:
+            cur = data
+            for part in json_key.split("."):
+                cur = cur.get(part) if isinstance(cur, dict) else None
+            return cur if isinstance(cur, str) and cur else None
+        # auto: first well-known key, breadth-first through nested objects
+        queue = [data]
+        while queue:
+            cur = queue.pop(0)
+            if not isinstance(cur, dict):
+                continue
+            for key in ("csrf_token", "csrfToken", "csrf", "_csrf", "xsrf_token"):
+                if isinstance(cur.get(key), str) and cur[key]:
+                    return cur[key]
+            queue.extend(v for v in cur.values() if isinstance(v, dict))
+        return None
+    m = _META_CSRF_RE.search(text)
+    return (m.group(1) or m.group(2)) if m else None
+
+
+def _csrf_config(opt) -> dict | None:
+    """Normalise the ``csrf`` option: a URL string, or {url, header, json_key, refresh}."""
+    if not opt:
+        return None
+    if isinstance(opt, str):
+        try:
+            opt = json.loads(opt)
+        except ValueError:
+            opt = {"url": opt}
+    if not isinstance(opt, dict) or not opt.get("url"):
+        return None
+    return {"url": opt["url"], "header": opt.get("header", "X-CSRF-Token"),
+            "json_key": opt.get("json_key"),
+            "refresh": opt.get("refresh", "always")}      # always | on_error
+
+
 # ── the sender ────────────────────────────────────────────────────────────────
 
-def _extract_reply(raw: bytes, reply_key: str) -> str:
+# SSE event "type" values that carry reply text; anything else typed (status,
+# tool_call, done, …) is an out-of-band event, not model output.
+_SSE_TEXT_TYPES = {"token", "text", "delta", "content", "chunk", "message",
+                   "text_delta", "content_block_delta", "response.output_text.delta"}
+_SSE_TEXT_KEYS = ("content", "token", "text", "delta")
+
+
+def _is_sse(raw: bytes, content_type: str) -> bool:
+    if "text/event-stream" in (content_type or "").lower():
+        return True
+    head = raw.lstrip()[:64]
+    return head.startswith(b"data:") or head.startswith(b"event:")
+
+
+def _sse_text(ev, reply_key: str):
+    """Reply text carried by one parsed SSE event, or None."""
+    if isinstance(ev, str):
+        return ev
+    if not isinstance(ev, dict):
+        return None
+    if reply_key and isinstance(ev.get(reply_key), str):
+        return ev[reply_key]
+    ch = ev.get("choices")
+    if isinstance(ch, list) and ch and isinstance(ch[0], dict):      # OpenAI-style chunk
+        d = ch[0].get("delta") or ch[0].get("message") or {}
+        return d.get("content") if isinstance(d, dict) else None
+    for k in _SSE_TEXT_KEYS:
+        v = ev.get(k)
+        if isinstance(v, str):
+            return v
+        if isinstance(v, dict) and isinstance(v.get("text"), str):   # Anthropic-style delta
+            return v["text"]
+    return None
+
+
+def _extract_sse(raw: bytes, reply_key: str) -> str:
+    text: list[str] = []
+    events: list[str] = []
+    for line in raw.decode("utf-8", "replace").splitlines():
+        if not line.startswith("data:"):
+            continue
+        payload = line[5:].strip()
+        if not payload or payload == "[DONE]":
+            continue
+        try:
+            ev = json.loads(payload)
+        except ValueError:
+            text.append(payload)
+            continue
+        etype = ev.get("type") if isinstance(ev, dict) else None
+        if etype is None or etype in _SSE_TEXT_TYPES:
+            chunk = _sse_text(ev, reply_key)
+            if chunk is not None:
+                text.append(chunk)
+                continue
+        if etype in ("done", "end", "message_stop"):
+            continue
+        detail = _sse_text(ev, reply_key) if isinstance(ev, dict) else None
+        events.append(f"{etype}: {detail}" if etype and detail else json.dumps(ev)[:300])
+    out = "".join(text)
+    if events:
+        out += "\n\n[stream events]\n" + "\n".join(events)
+    return out
+
+
+def _extract_reply(raw: bytes, reply_key: str, content_type: str = "") -> str:
+    if _is_sse(raw, content_type):
+        return _extract_sse(raw, reply_key)
     try:
         data = json.loads(raw)
     except ValueError:
@@ -208,7 +332,7 @@ class HttpSender:
     def __init__(self, target: str, body_key: str = "message", reply_key: str = "reply",
                  headers: dict | None = None, rps: float | None = None,
                  max_retries: int = 3, timeout: float = 30.0, persist_cookies: bool = False,
-                 extra_body: dict | None = None):
+                 extra_body: dict | None = None, csrf: dict | None = None):
         self.target = target
         self.body_key = body_key
         self.reply_key = reply_key
@@ -225,6 +349,8 @@ class HttpSender:
         self.retries = 0                     # 429/503 retries (not counted as attempts)
         self.last_code: int | None = None
         self.last_raw: bytes = b""
+        self.csrf = csrf                     # normalised by _csrf_config, or None
+        self._csrf_token: str | None = None
 
     # --- public -----------------------------------------------------------
     def __call__(self, message: str, conversation_id: str | None = None) -> str:
@@ -265,20 +391,46 @@ class HttpSender:
             if self.persist_cookies:
                 _persist_rotated_cookies(pairs, self.target)
 
+    def _fetch_csrf(self) -> None:
+        """GET the configured token source with the current jar (absorbing any
+        Set-Cookie — this also bootstraps a session) and remember the token."""
+        req = urllib.request.Request(self.csrf["url"], None, self._request_headers({}))
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+                raw = r.read()
+                self._absorb_cookies(r.headers)
+        except urllib.error.HTTPError as e:
+            self._absorb_cookies(e.headers)
+            raw = _safe_read(e)
+        except Exception:
+            return
+        self._csrf_token = _csrf_from_body(raw, self.csrf.get("json_key")) or self._csrf_token
+
     def _send(self, data: bytes, content_headers: dict) -> str:
         attempt = 0
+        csrf_retried = False
         while True:
             THROTTLE.wait(self.host, self.rps)
-            req = urllib.request.Request(self.target, data, self._request_headers(content_headers))
+            hdrs = dict(content_headers)
+            if self.csrf:
+                if self._csrf_token is None or self.csrf["refresh"] == "always":
+                    self._fetch_csrf()
+                if self._csrf_token:
+                    hdrs[self.csrf["header"]] = self._csrf_token
+            req = urllib.request.Request(self.target, data, self._request_headers(hdrs))
             try:
                 with urllib.request.urlopen(req, timeout=self.timeout) as r:
                     raw = r.read()
                     self._absorb_cookies(r.headers)
                     self._record(r.status or 200, raw)
-                    return _extract_reply(raw, self.reply_key)
+                    return _extract_reply(raw, self.reply_key, r.headers.get("Content-Type", ""))
             except urllib.error.HTTPError as e:
                 raw = _safe_read(e)
                 self._absorb_cookies(e.headers)
+                if self.csrf and e.code in (403, 419) and not csrf_retried:
+                    csrf_retried = True          # stale token — refetch once, not an attempt
+                    self._csrf_token = None
+                    continue
                 if e.code in _RETRY_CODES and attempt < self.max_retries:
                     self.retries += 1
                     THROTTLE.backoff(self.host, _retry_after(e.headers, attempt))
@@ -315,4 +467,5 @@ def sender_from_options(target: str, opts: dict, persist_cookies: bool = True) -
         timeout=float(opts.get("timeout", 30)),
         persist_cookies=persist_cookies and opts.get("headers_from") == "known_assets",
         extra_body=opts.get("extra_body") if isinstance(opts.get("extra_body"), dict) else None,
+        csrf=_csrf_config(opts.get("csrf")),
     )

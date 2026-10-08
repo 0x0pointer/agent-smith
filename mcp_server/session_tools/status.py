@@ -4,6 +4,7 @@ import json
 from core import cost as cost_tracker
 from core import findings as findings_store
 from core import session as scan_session
+from core.session import phases as _phases
 
 import mcp_server.session_tools as _st
 from .blocker_response import _pending_steer_block
@@ -54,6 +55,9 @@ def _build_status_base(
         "skill": current.get("skill"),
         "current_step": current.get("current_step"),
         "scan_phase": _phase_label(current),
+        # Advisory next phase (None until the current phase saturates) + how it changes.
+        "phase_advice": current.get("phase_advice"),
+        "phase_advance": _phases.advance_note(current.get("phase_advice")),
         "tools_run": all_tools,
         "findings_count": len(data.get("findings", [])),
         "diagrams_count": len(data.get("diagrams", [])),

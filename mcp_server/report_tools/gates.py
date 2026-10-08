@@ -21,6 +21,18 @@ from ._common import (
 _CVE_RE = re.compile(r"cve-\d{4}-\d{4,7}", re.IGNORECASE)
 
 
+def _keyword_present(text: str, keywords) -> bool:
+    """Token-boundary keyword match. Plain ``kw in text`` let "rce" fire inside
+    "source" / "resource" / "enforce", which opened the post_exploit_rce gate on an
+    LLM prompt-injection finding whose description said "the injection source is
+    vendor-controlled" (FinBot run). Boundaries are alphanumerics only, so
+    "RCE-equivalent", "(rce)" and "rce," still match."""
+    for kw in keywords:
+        if re.search(r"(?<![a-z0-9])" + re.escape(kw) + r"(?![a-z0-9])", text):
+            return True
+    return False
+
+
 def _maybe_trigger_cve_gate(text: str, cve: str, speculative: bool, severity: str) -> str | None:
     """CH-3: a confirmed CVE (cve= field or CVE-id in the text) auto-opens an
     exploitability-validation chain (analyze-cve; +metasploit at high/critical)
@@ -50,7 +62,7 @@ def _maybe_trigger_rce_gate(text: str, title: str, severity: str, speculative: b
     outcome — an egress-blocked target that can't yield a shell still satisfies by
     recording why), so they never become an unsatisfiable wall."""
     if not (severity in ("critical", "high")
-            and any(kw in text for kw in _RCE_KEYWORDS)
+            and _keyword_present(text, _RCE_KEYWORDS)
             and not speculative):
         return []
     # An "RCE-equivalent" / "shell is redundant" finding is application-layer takeover,

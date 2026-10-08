@@ -197,8 +197,10 @@ def _exploit_hunt_call() -> str:
         "far as it goes (privilege, lateral, cloud/IMDS, data access, second-order), and file "
         "report(action='chain', ...) for every proven kill-chain. When every high/critical "
         "finding is either driven to a terminal or has a documented dead-end (dismissed "
-        "escalation_lead), the scan AUTO-ADVANCES to Phase B (systematic coverage) — you don't "
-        "call anything to switch phases."
+        "escalation_lead), depth is saturated and session(status) shows phase_advice='coverage'. "
+        "Phase changes are OPERATOR-GATED — nothing auto-advances; the operator advances from the "
+        "dashboard ('advance to phase B'). Keep hunting until scan_phase actually changes; if you "
+        "are out of deep work, call session(action='intervene') to make the request explicit."
     )
 
 

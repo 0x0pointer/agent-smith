@@ -1080,3 +1080,52 @@ def test_start_lhost_out_of_range_port_falls_back(monkeypatch):
     monkeypatch.setenv("SMITH_LHOST", "1.2.3.4:70000")
     sess = core.session.start("example.com")
     assert sess["known_assets"]["attacker_host"]["lport"] == 4444
+
+
+# ── ai-redteam gate needs BOTH halves: garak (automated) + redteam()/cells (manual) ──
+
+def test_ai_redteam_gate_requires_garak_as_well_as_the_manual_layer():
+    """The FinBot run cleared ai-redteam on redteam() alone; garak never ran. The
+    automated half is now obligated too, and the hint names the missing half."""
+    core.session.start("example.com")
+    core.session.set_skill("ai-redteam")
+    core.session.add_tool_called("redteam")          # manual layer done under the skill
+    assert core.session.skill_worked("ai-redteam") is False
+    assert "garak" in core.session.skill_deep_requirement_hint("ai-redteam")
+    core.session.add_tool_called("garak")            # automated half fires (any outcome)
+    assert core.session.skill_worked("ai-redteam") is True
+    assert core.session.skill_deep_requirement_hint("ai-redteam") == ""
+
+
+def test_ai_redteam_gate_garak_alone_still_not_enough():
+    core.session.start("example.com")
+    core.session.set_skill("ai-redteam")
+    core.session.add_tool_called("garak")
+    assert core.session.skill_worked("ai-redteam") is False
+    hint = core.session.skill_deep_requirement_hint("ai-redteam")
+    assert "feedback_attack" in hint and "garak has not run" not in hint
+
+
+def test_maybe_advance_phase_signals_operator_once(monkeypatch):
+    """Saturation is operator-gated, so the first time a phase looks saturated the OPERATOR
+    must be told (notifier + PHASE_ADVANCE_READY), once — not on every status call."""
+    core.session.start("example.com")
+    from core.session import phases as ph
+    import core.notifiers as nf
+    sent = []
+    monkeypatch.setattr(nf, "notify", lambda title, body, **k: sent.append((title, body)))
+    monkeypatch.setattr(ph, "next_phase", lambda *a, **k: "coverage")
+    core.session.maybe_advance_phase()
+    core.session.maybe_advance_phase()                       # unchanged advice → no re-signal
+    assert len(sent) == 1 and "advance to phase B" in sent[0][1]
+    assert core.session.get().get("phase_advice_at")
+    assert core.session.get()["scan_phase"] == "exploit"     # still never auto-advances
+
+
+def test_advance_note_is_truthful_about_operator_gating():
+    from core.session import phases as ph
+    saturated = ph.advance_note("coverage")
+    assert "OPERATOR-GATED" in saturated and "phase_advice='coverage'" in saturated
+    assert "nothing auto-advances" in saturated and "AUTO-ADVANCES to" not in saturated
+    assert "operator" in ph.advance_note(None).lower()
+    assert ph.phase_letter("coverage") == "B" and ph.phase_letter("synthesis") == "C"

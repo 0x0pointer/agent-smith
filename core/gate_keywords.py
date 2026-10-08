@@ -86,6 +86,12 @@ RCE_EQUIVALENT_MARKERS = (
     "shell adds nothing", "reverse shell' step is redundant", "would not expand blast",
     "not a true rce", "not actual code execution", "not host code execution",
     "no actual code execution",
+    # Command reached a RECORDING / mock sandbox (e.g. an MCP tool that logs the
+    # attempted command but runs nothing) — an injection defect, not a host exec
+    # primitive, so there is no shell to escalate to (FinBot SystemUtils run).
+    "no actual execution", "no execution was observed", "executes nothing",
+    "records but does not execute", "recording sandbox", "mock sandbox",
+    "mock backend", "sandboxed mock",
 )
 
 # Dead-end / blocked-on-a-missing-primitive phrasing in a NOTE. When the agent types

@@ -8,7 +8,9 @@ import uuid
 from core import cost as cost_tracker
 from core import logger as log
 from core import session as scan_session
-from mcp_server._app import mcp, _clip, _record, _inject_qa_alerts
+from mcp.server.fastmcp import Context
+
+from mcp_server._app import mcp, _clip, _record, _inject_qa_alerts, with_heartbeat
 
 
 # A request/command that hit its time bound is a LEAD, not just wasted wall-clock —
@@ -71,7 +73,7 @@ async def _stage_files(files: dict) -> str | None:
 
 @mcp.tool()
 async def kali(command: str = "", timeout: int = 600, files: dict | None = None,
-               background: bool = False, job_id: str = "") -> str:
+               background: bool = False, job_id: str = "", ctx: Context | None = None) -> str:
     """Run any command in the Kali container (auto-starts if needed).
     Hundreds of tools available: nikto, sqlmap, gobuster, hydra, testssl,
     enum4linux-ng, wapiti, sslscan, ssh-audit, theHarvester, dnsrecon, etc.
@@ -116,7 +118,8 @@ async def kali(command: str = "", timeout: int = 600, files: dict | None = None,
                 f"output → {log_f}")
 
     call_id = cost_tracker.start("kali")
-    raw_output = await kali_runner.exec_command(command, timeout=timeout)
+    raw_output = await with_heartbeat(
+        ctx, kali_runner.exec_command(command, timeout=timeout), "kali command")
     log.tool_result_verbose("kali", raw_output, "")
 
     # Layer 3 — timeout-as-signal: surface a hung request as a LEAD instead of letting

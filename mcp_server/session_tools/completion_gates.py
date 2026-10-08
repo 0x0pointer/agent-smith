@@ -90,17 +90,17 @@ def _phase_completion_blocker() -> str | None:
     ph = _phases.current_phase(cur)
     if ph == _phases.SYNTHESIS:
         return None
+    advice = cur.get("phase_advice")
     if ph == _phases.EXPLOIT:
         return (
             "PHASE A NOT COMPLETE — you can't finish yet. Drive EVERY high/critical finding to a "
             "terminal (RCE / pivot / takeover) or a documented dead-end (dismissed escalation_lead), "
-            "and attempt every provable exploit bridge. The scan AUTO-ADVANCES to Phase B (coverage) "
-            "the moment depth saturates — keep hunting, don't stop to summarise."
+            "and attempt every provable exploit bridge. " + _phases.advance_note(advice)
         )
     return (
         "PHASE B NOT COMPLETE — drain the pending coverage cells (report(action='coverage', "
-        "data={type:'sweep'}) / bulk_tested). The scan AUTO-ADVANCES to Phase C (synthesis) at 0 "
-        "pending, where you compose the final kill-chains and then complete."
+        "data={type:'sweep'}) / bulk_tested). Phase C (synthesis) is where you compose the final "
+        "kill-chains and then complete. " + _phases.advance_note(advice)
     )
 
 

@@ -26,8 +26,10 @@ import asyncio
 import json
 import uuid
 
+from mcp.server.fastmcp import Context
+
 from core import logger as log
-from mcp_server._app import mcp, _ensure_dict, _record
+from mcp_server._app import mcp, _ensure_dict, _record, with_heartbeat, quick_log_activity
 from mcp_server import redteam as _rt
 from mcp_server.redteam import calibration as _cal
 from mcp_server.redteam import filter_probe as _fp
@@ -87,7 +89,8 @@ def _preflight(send: _tp.HttpSender, probe: str) -> dict | None:
 
 
 @mcp.tool()
-async def redteam(action: str, target: str = "", options: dict | str | None = None) -> str:
+async def redteam(action: str, target: str = "", options: dict | str | None = None,
+                  ctx: Context | None = None) -> str:
     """Manual-layer red-team engine.
 
     action : techniques | taxonomy | filter_probe | feedback_attack | reproduce | compare |
@@ -97,7 +100,12 @@ async def redteam(action: str, target: str = "", options: dict | str | None = No
       body_key=message, reply_key=reply, headers={}, headers_from="known_assets"
       (reuse the scan's JWT/session cookies; Set-Cookie rotation is followed),
       rps= (per-host throttle; env SMITH_TARGET_RPS), max_retries=3 (429/503 backoff,
-      Retry-After honoured — retries are never counted as attempts), extra_body={}
+      Retry-After honoured — retries are never counted as attempts), extra_body={},
+      timeout=30 (raise it for agentic targets that run tools before replying),
+      csrf="<token url>" | {url, header="X-CSRF-Token", json_key=, refresh=always|on_error}
+      (fetches the token from a JSON key or <meta name="csrf-token"> before each send,
+      refetches once on 403/419). text/event-stream (SSE) replies are reassembled from
+      their token events; status/tool events are appended as a "[stream events]" trailer.
     options per action:
       techniques      — category=single_turn|multi_turn|structural
       taxonomy        — pillar=intents|techniques|evasions|inputs, code=PIT-x-NN, query=<text>
@@ -121,11 +129,38 @@ async def redteam(action: str, target: str = "", options: dict | str | None = No
     _record("redteam")   # count as AI red-team work for coverage/skill gates
     log.tool_call("redteam", {"action": action, "target": target, "options": opts})
     try:
-        result = await asyncio.to_thread(_dispatch, action, target, opts)
+        # filter_probe / feedback_attack / compare send dozens of LLM round-trips and
+        # stayed silent for minutes; Claude Code aborts an MCP call after 300s without
+        # a result or progress notification (a filter_probe run died that way, result
+        # lost). Heartbeat like scan()/kali() do.
+        result = await with_heartbeat(
+            ctx, asyncio.to_thread(_dispatch, action, target, opts), f"redteam {action}")
     except Exception as exc:      # fail-soft
         result = json.dumps({"error": f"{type(exc).__name__}: {exc}"})
+    # The engine bypasses the response envelope, so write its activity entry here —
+    # otherwise the QA daemon sees a long battery as silence (TOOL_INACTIVITY).
+    summary, artifact_id = _activity_meta(action, result)
+    quick_log_activity("redteam", {"url": target, "action": action}, summary, artifact_id)
     log.tool_result("redteam", result)
     return result
+
+
+def _activity_meta(action: str, result: str) -> tuple[str, str | None]:
+    """(one-line summary, artifact_id) for the activity feed: action + the engine's
+    headline numbers, and the evidence artifact when the run stored one."""
+    try:
+        r = json.loads(result)
+    except Exception:
+        return f"redteam {action}", None
+    if not isinstance(r, dict):
+        return f"redteam {action}", None
+    if "error" in r:
+        return f"redteam {action}: error", None
+    bits = [f"redteam {action}"]
+    for k in ("attempts", "reached_model", "successes", "jailbroken", "turn", "verdict"):
+        if k in r:
+            bits.append(f"{k}={r[k]}")
+    return " ".join(bits), (r.get("artifact_id") or None)
 
 
 def _do_techniques(target, opts):
