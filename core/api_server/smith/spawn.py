@@ -100,20 +100,19 @@ def _opencode_session_model(binary: str, sid: str) -> str | None:
     import json
     import os
     import re
-    import shlex
     import subprocess
     import tempfile
     if not binary or not sid:
         return None
-    # The session id originates from opencode's own session list (an external value)
-    # that reaches a subprocess argv. Guard it against a strict allow-list — opencode
-    # ids are ``ses_<alphanumerics>`` — which both hardens the call and makes the
-    # shlex.quote() below a guaranteed no-op (quote() never alters a pure-alnum
-    # string). The quote() is the CodeQL-recognised sanitiser that clears the
-    # "uncontrolled command line" taint; the regex keeps it a value-preserving no-op.
+    # The session id comes from opencode's OWN local session list (a trusted local
+    # source resolved by _resolve_resume_sid — never an HTTP/user parameter) and is
+    # passed as a LIST argv element (no shell). Still, validate it to a strict
+    # ``ses_<alphanumerics>`` allow-list as defense-in-depth before the subprocess.
+    # (CodeQL's extended py/command-line-injection flags any tainted value in an argv
+    # and models neither this regex nor shlex.quote as a sanitizer — a known false
+    # positive here given the trusted source + strict validation + no shell.)
     if not re.fullmatch(r"ses_[A-Za-z0-9]{1,64}", sid):
         return None
-    safe_sid = shlex.quote(sid)
     # opencode (a Bun binary) truncates stdout at ~64 KB when it's a PIPE, so
     # capture_output() would silently cut a large export mid-JSON. Redirect to a
     # real temp file (the only reliably-complete path) and parse that instead.
@@ -122,7 +121,7 @@ def _opencode_session_model(binary: str, sid: str) -> str | None:
         with tempfile.NamedTemporaryFile("w+", suffix=".json", delete=False) as fh:
             tmp = fh.name
             rc = subprocess.run(
-                [binary, "export", safe_sid],
+                [binary, "export", sid],
                 stdout=fh, stderr=subprocess.DEVNULL, timeout=20,
             ).returncode
         if rc != 0:
