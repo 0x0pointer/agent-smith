@@ -88,6 +88,7 @@ async def _do_coverage_tested(data: dict, cov: Any) -> str:
         finding_id=data.get("finding_id"),
         tested_by=data.get("tested_by", ""),
         artifact_id=data.get("artifact_id", ""),
+        skip_reason=data.get("skip_reason", ""),
     )
     if result is False:
         # Common after context compaction: Smith carried the cell ID across a
