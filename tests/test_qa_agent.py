@@ -1941,16 +1941,35 @@ async def test_cycle_notify_exception_is_swallowed(tmp_path, monkeypatch):
     assert qa_state.exists()  # cycle still wrote state despite notification failure
 
 
-# _check_ai_redteam_automated_half — garak must run once ai-redteam targets an LLM endpoint
+# _check_ai_redteam_engines — garak + redteam + transform must all run on an LLM endpoint
 
-def test_ai_redteam_automated_half_nudges_until_garak_runs():
-    from core.qa_agent.checks_skills import _check_ai_redteam_automated_half as chk
+def test_ai_redteam_engines_nudge_each_missing_one(monkeypatch):
+    from core.qa_agent.checks_skills import _check_ai_redteam_engines as chk
     cov = {"endpoints": [{"path": "/chat", "params": [{"name": "message", "type": "llm_prompt"}]}]}
     assert chk(cov, {"skill_history": [], "tools_called": []}) == []           # skill not declared
     assert chk({"endpoints": []}, {"skill_history": [{"skill": "ai-redteam"}]}) == []  # no LLM endpoint
-    out = chk(cov, {"skill_history": [{"skill": "ai-redteam"}], "tools_called": ["redteam"]})
-    assert out and out[0]["code"] == "MISSING_GARAK" and "/chat" in out[0]["message"]
-    assert chk(cov, {"skill_history": [{"skill": "ai-redteam"}], "tools_called": ["garak"]}) == []
+    # none of the three engines ran -> three nudges
+    out = chk(cov, {"skill_history": [{"skill": "ai-redteam"}], "tools_called": []})
+    codes = {a["code"] for a in out}
+    assert codes == {"MISSING_GARAK", "MISSING_REDTEAM", "MISSING_TRANSFORM"}
+    assert all("/chat" in a["message"] for a in out)
+    # garak + redteam ran, transform missing -> only the transform nudge
+    out = chk(cov, {"skill_history": [{"skill": "ai-redteam"}], "tools_called": ["garak", "redteam"]})
+    assert [a["code"] for a in out] == ["MISSING_TRANSFORM"]
+    # all three ran, depth shallow -> SHALLOW advisory (no MISSING_*)
+    import core.ai_redteam as ar
+    monkeypatch.setattr(ar, "depth_summary", lambda: {
+        "transform_actions": 1, "transform_distinct_chains": 1, "transform_max_stack": 1,
+        "redteam_families": 1, "redteam_encodings": 0, "reproductions": 0})
+    out = chk(cov, {"skill_history": [{"skill": "ai-redteam"}],
+                    "tools_called": ["garak", "redteam", "transform"]})
+    assert [a["code"] for a in out] == ["SHALLOW_AI_REDTEAM"] and out[0]["urgency"] == "medium"
+    # all three ran, depth sufficient -> silent
+    monkeypatch.setattr(ar, "depth_summary", lambda: {
+        "transform_actions": 5, "transform_distinct_chains": 3, "transform_max_stack": 2,
+        "redteam_families": 3, "redteam_encodings": 2, "reproductions": 2})
+    assert chk(cov, {"skill_history": [{"skill": "ai-redteam"}],
+                     "tools_called": ["garak", "redteam", "transform"]}) == []
 
 
 def test_stuck_on_target_redteam_run_with_artifact_counts_as_progress(tmp_path, monkeypatch):

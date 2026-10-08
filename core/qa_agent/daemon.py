@@ -47,7 +47,7 @@ from .checks_shortcuts import (
     _check_suspicious_speed,
 )
 from .checks_skills import (
-    _check_ai_redteam_automated_half,
+    _check_ai_redteam_engines,
     _check_core_skill_chain,
     _check_missing_skill,
     _check_no_spider_after_httpx,
@@ -100,7 +100,7 @@ _CHECKS: list[tuple] = [
     (_check_core_skill_chain,      ("entries", "session_data", "coverage_data")),
     (_check_missing_skill,         ("coverage_data", "session_data")),
     # ai-redteam's automated half (garak) never fired while an LLM endpoint is under test
-    (_check_ai_redteam_automated_half, ("coverage_data", "session_data")),
+    (_check_ai_redteam_engines, ("coverage_data", "session_data")),
     # Current phase saturated but phases are operator-gated → keep the request visible
     (_check_phase_advance_ready,   ("session_data",)),
     # Deep post-exploitation: RCE→shell, container escape, real lateral movement

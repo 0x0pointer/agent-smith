@@ -161,23 +161,42 @@ _SKILL_DEEP_REQUIREMENTS = {
     # engine (calibrate/filter_probe/feedback_attack — the k/N reproducibility). Garak
     # alone is NOT the assessment, so the gate needs redteam() to have fired OR the LLM
     # attack cells to be tested — otherwise the agent could fire garak once and leave.
+    # ai-redteam has THREE engines, not two, and all three must run:
+    #   • garak          — the AUTOMATED probe scanner (one-shot recon that feeds the
+    #                       manual layer). Attempt counts: a run that errors (image
+    #                       build / bad body_key) still lands in tools_called, so a
+    #                       broken image never walls the gate — but it must be CALLED.
+    #   • redteam()      — MANUAL attack engine (feedback_attack / probe_turn — the k/N
+    #                       reproducibility hunt). Reaches the target.
+    #   • transform()    — MANUAL payload-crafting engine. Its encoded/obfuscated output
+    #                       is DELIVERED to the target (http payload_artifact_id /
+    #                       redteam transforms= / encoded body), so it is an attack
+    #                       activity, not prep — the same manual layer as redteam().
+    # The manual engines are what the FinBot run under-used (garak skipped entirely,
+    # transform never enforced). transform() is pure-Python (no Docker, cannot fail),
+    # so requiring it is never an unsatisfiable wall. redteam() is dischargeable by
+    # tested LLM cells too (its first-try coverage gate already demands a real
+    # redteam/garak artifact to close them), covering an engine-unavailable / CI run.
     "ai-redteam": {
-        "tool": "redteam",
+        "automated_tools": ("garak",),
+        "manual_tools": ("redteam", "transform"),
+        "cell_dischargeable": ("redteam",),   # tested LLM cells stand in for these
         "coverage_types": ("jailbreak", "system_prompt_leak", "prompt_injection",
                            "sensitive_info_disclosure"),
-        "hint": ("garak is only ai-redteam's automated half — run "
-                 "redteam(action='feedback_attack') (the k/N attack engine), or test the "
-                 "jailbreak / system_prompt_leak / prompt_injection cells, before this gate clears"),
-        # The skill's Phase 2 calls scan(tool='garak') at every depth, but nothing
-        # enforced it: the FinBot run cleared the gate on redteam() alone and garak
-        # never ran. The automated half is now obligated too — the ATTEMPT counts
-        # (a garak run that errors still lands in tools_called), so a broken image
-        # cannot wall the gate; what cannot clear it is never calling the tool.
-        "automated_tool": "garak",
-        "automated_hint": ("garak has not run — ai-redteam's automated half is missing. Run "
-                           "scan(tool='garak', target=<LLM endpoint>, options={probes: "
-                           "'encoding,promptinject,leakreplay,misleading', body_key: ..., "
-                           "response_field: ...}) before this gate clears"),
+        "hints": {
+            "garak": ("garak has NOT run — the automated half is missing. Run "
+                      "scan(tool='garak', target=<LLM endpoint>, options={probes: "
+                      "'encoding,promptinject,leakreplay,misleading', body_key: ..., "
+                      "response_field: ...})"),
+            "redteam": ("redteam() has NOT run — the manual attack engine is missing. Run "
+                        "redteam(action='filter_probe') then redteam(action='feedback_attack', "
+                        "reproduce_n=...) (the k/N hunt), or test the jailbreak / "
+                        "system_prompt_leak / prompt_injection cells"),
+            "transform": ("transform() has NOT run — the payload-crafting engine is missing. Use "
+                          "transform(action='encode'/'mutate'/'bijection'/'steg') to craft evasive "
+                          "payloads and DELIVER them (http payload_artifact_id / redteam "
+                          "transforms=[...]); escalate encodings as the model resists"),
+        },
     },
 }
 
@@ -213,38 +232,38 @@ def _coverage_types_tested(types) -> bool:
                for c in cells)
 
 
-def _manual_layer_met(skill_name: str, req: dict) -> bool:
-    """The skill's MANUAL layer ran: its required tool fired under it (A), OR the
-    coverage cells that layer produces are tested (B)."""
-    return (_skill_did_tool(skill_name, req.get("tool", ""))
-            or _coverage_types_tested(req.get("coverage_types", ())))
+def _tool_requirement_met(skill_name: str, req: dict, tool: str) -> bool:
+    """One required engine has run: it fired (under the skill or anywhere in the scan),
+    OR — only for a ``cell_dischargeable`` tool — the LLM attack cells it produces are
+    tested (the engine-unavailable / hand-driven fallback)."""
+    if _skill_did_tool(skill_name, tool) or _tool_fired_in_scan(tool):
+        return True
+    if tool in req.get("cell_dischargeable", ()):
+        return _coverage_types_tested(req.get("coverage_types", ()))
+    return False
 
 
-def _automated_layer_met(skill_name: str, req: dict) -> bool:
-    """The skill's AUTOMATED tool (if it declares one) fired — under the skill or
-    anywhere in the scan. Skills without one are trivially met."""
-    tool = req.get("automated_tool", "")
-    return not tool or _skill_did_tool(skill_name, tool) or _tool_fired_in_scan(tool)
+def _missing_tools(skill_name: str, req: dict) -> list[str]:
+    """Required engines (automated + manual) that have not run yet, in a stable order."""
+    want = tuple(req.get("automated_tools", ())) + tuple(req.get("manual_tools", ()))
+    return [t for t in want if not _tool_requirement_met(skill_name, req, t)]
 
 
 def _deep_requirement_met(skill_name: str, req: dict) -> bool:
-    """Both halves of a deep-work skill have run: the manual layer AND, when the
-    skill declares one, its automated tool."""
-    return _manual_layer_met(skill_name, req) and _automated_layer_met(skill_name, req)
+    """Every required engine of a deep-work skill has run (garak + redteam + transform
+    for ai-redteam)."""
+    return not _missing_tools(skill_name, req)
 
 
 def skill_deep_requirement_hint(skill_name: str) -> str:
     """Why a deep-work skill's gate is still open (for the model/dashboard), or '' if
-    the skill has no deep requirement or it is already met. Names every missing half."""
+    the skill has no deep requirement or it is already met. Names every missing engine."""
     req = _SKILL_DEEP_REQUIREMENTS.get(skill_name)
     if not req:
         return ""
-    hints = []
-    if not _manual_layer_met(skill_name, req):
-        hints.append(req.get("hint", ""))
-    if not _automated_layer_met(skill_name, req):
-        hints.append(req.get("automated_hint", f"{req['automated_tool']} has not run"))
-    return " ; ".join(h for h in hints if h)
+    hints = req.get("hints", {})
+    missing = _missing_tools(skill_name, req)
+    return " ; ".join(hints.get(t, f"{t} has not run") for t in missing)
 
 
 def skill_worked(skill_name: str) -> bool:

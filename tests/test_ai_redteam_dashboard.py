@@ -241,3 +241,28 @@ def test_record_garak_status(store):
     assert gs["ts"]
     store.record_garak_status({"running": False})
     assert store.get()["garak_status"]["running"] is False
+
+
+# ── depth ladder: transform recording + depth_summary ("deeper and deeper") ──
+
+def test_record_transform_and_depth_summary(store):
+    store.record_transform("encode", ["base64"], "base")
+    store.record_transform("encode", ["base64", "rot13", "homoglyph"], "cipher")  # stack of 3
+    store.record_transform("bijection", "letters", "")
+    store.record_attack({"jailbroken": False, "attempts": 8,
+                         "best": {"technique": "roleplay", "transform": "base64"},
+                         "transcript": [{"technique": "authority", "transform": "zero_width"}],
+                         "reproducibility": {"k": 2, "n": 5}}, goal="leak", target="t")
+    d = store.depth_summary()
+    assert d["transform_actions"] == 3
+    assert d["transform_distinct_chains"] == 3
+    assert d["transform_max_stack"] == 3            # the 3-chain stack
+    assert d["redteam_families"] == 2               # roleplay + authority
+    assert d["redteam_encodings"] == 2              # base64 + zero_width
+    assert d["reproductions"] == 1
+
+
+def test_depth_summary_empty_is_all_zero(store):
+    d = store.depth_summary()
+    assert d == {"transform_actions": 0, "transform_distinct_chains": 0, "transform_max_stack": 0,
+                 "redteam_families": 0, "redteam_encodings": 0, "reproductions": 0}

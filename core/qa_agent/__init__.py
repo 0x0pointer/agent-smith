@@ -112,7 +112,7 @@ from .checks_depth import (  # noqa: E402
     _check_whitebox_passes,
 )
 from .checks_skills import (  # noqa: E402
-    _check_ai_redteam_automated_half,
+    _check_ai_redteam_engines,
     _check_core_skill_chain,
     _check_missing_skill,
     _check_phase_advance_ready,

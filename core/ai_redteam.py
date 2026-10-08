@@ -39,8 +39,8 @@ def _load() -> dict:
 
 def _empty() -> dict:
     return {"garak": [], "filter": None, "calibration": None, "attacks": [],
-            "reproductions": [], "probe_sessions": {}, "rate_limit": {},
-            "garak_status": None, "updated_at": None}
+            "reproductions": [], "probe_sessions": {}, "transforms": [],
+            "rate_limit": {}, "garak_status": None, "updated_at": None}
 
 
 def record_garak_status(status: dict) -> None:
@@ -184,6 +184,57 @@ def record_reproduce(result: dict, goal: str = "", target: str = "") -> None:
                  "artifact_id": result.get("artifact_id")}
         doc["reproductions"] = (doc["reproductions"] + [entry])[-_MAX_ATTACKS:]
         _save(doc)
+
+
+def record_transform(action: str, chain, category: str = "", est_tokens=None) -> None:
+    """Record a transform() crafting call so the depth ladder is measurable. The chain
+    (e.g. ['base64','rot13'] or a single technique) and action feed depth_summary():
+    distinct chains + max stack length = how far the payload-evasion escalation went.
+    Fail-soft."""
+    with _LOCK:
+        doc = get()
+        entry = {"ts": _now(), "action": action,
+                 "chain": list(chain) if isinstance(chain, (list, tuple)) else ([chain] if chain else []),
+                 "category": category}
+        if est_tokens is not None:
+            entry["est_tokens"] = est_tokens
+        doc["transforms"] = (doc["transforms"] + [entry])[-_MAX_ATTACKS:]
+        _save(doc)
+
+
+def depth_summary() -> dict:
+    """How DEEP the manual layer (redteam + transform) went — the 'deeper and deeper'
+    signal. Not a gate (that only checks the engines RAN); this quantifies escalation so
+    the dashboard and a non-blocking QA advisory can push a shallow run further:
+      transform : distinct chains tried, max stack length (chained encodings)
+      redteam   : technique families + bypass encodings reached, k/N reproductions
+    """
+    doc = get()
+    tfs = doc.get("transforms") or []
+    chains = [tuple(t.get("chain") or []) for t in tfs if t.get("chain")]
+    fams, encs = set(), set()
+    for a in doc.get("attacks") or []:
+        best = a.get("best") or {}
+        if best.get("technique"):
+            fams.add(best["technique"])
+        if best.get("transform"):
+            encs.add(best["transform"])
+        for t in a.get("transcript") or []:
+            if t.get("technique"):
+                fams.add(t["technique"])
+            if t.get("transform"):
+                encs.add(t["transform"])
+    reproduced = sum(
+        1 for a in (doc.get("attacks") or []) if (a.get("reproducibility") or {}).get("k")
+    ) + len(doc.get("reproductions") or [])
+    return {
+        "transform_actions": len(tfs),
+        "transform_distinct_chains": len(set(chains)),
+        "transform_max_stack": max((len(c) for c in chains), default=0),
+        "redteam_families": len(fams),
+        "redteam_encodings": len(encs),
+        "reproductions": reproduced,
+    }
 
 
 def record_rate_limit(target: str, stats: dict) -> None:

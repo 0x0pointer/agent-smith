@@ -92,8 +92,26 @@ async def transform(action: str, text: str = "", options: dict | str | None = No
     # Raw-JSON tool (no envelope): write its own activity entry so payload crafting
     # counts as work for the QA stall checks and the dashboard feed.
     quick_log_activity("transform", {"action": action}, f"transform {action}")
+    # Record the crafting call so the manual-layer depth ladder is measurable
+    # (distinct chains + max stack length = how far payload-evasion escalation went).
+    if action in ("encode", "mutate", "bijection", "steg", "tokenbomb"):
+        _record_transform_depth(action, opts, result)
     log.tool_result("transform", result)
     return result
+
+
+def _record_transform_depth(action: str, opts: dict, result: str) -> None:
+    """Persist a transform crafting call into the AI red-team store (depth ladder). Fail-soft."""
+    try:
+        from core import ai_redteam
+        chain = opts.get("transforms") or opts.get("techniques") or opts.get("method") or action
+        try:
+            est = json.loads(result).get("est_tokens")
+        except Exception:
+            est = None
+        ai_redteam.record_transform(action, chain, opts.get("category", ""), est)
+    except Exception:
+        pass
 
 
 def _do_list(text, opts):
