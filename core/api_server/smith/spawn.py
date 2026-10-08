@@ -66,6 +66,78 @@ def _latest_opencode_session(directory: str) -> str | None:
         return None
 
 
+def _last_model_in_export(doc) -> str | None:
+    """The newest ``providerID/modelID`` in a parsed ``opencode export`` doc, or None.
+
+    Split out of _opencode_session_model to keep that function's cognitive
+    complexity in check (and to be unit-testable without a subprocess)."""
+    messages = doc.get("messages") if isinstance(doc, dict) else None
+    if not isinstance(messages, list):
+        return None
+    for m in reversed(messages):  # newest message with a model wins
+        info = m.get("info", m) if isinstance(m, dict) else {}
+        provider, model = info.get("providerID"), info.get("modelID")
+        if provider and model:
+            return f"{provider}/{model}"
+    return None
+
+
+def _opencode_session_model(binary: str, sid: str) -> str | None:
+    """The ``provider/model`` an opencode session last ran on, or None.
+
+    A watchdog respawn must continue a scan on the SAME model the operator chose
+    for it — a run started on a local Spark model must resume local, one started on
+    Claude must resume Claude — rather than silently falling back to opencode.json's
+    default (which, when that default was a Claude model with no API credit, killed
+    every respawn with "Credit balance is too low"). opencode records the model per
+    message, so we read it from ``opencode export <sid>`` (its own stable JSON export,
+    not its SQLite schema) and return the LAST message's ``providerID/modelID``.
+
+    Best-effort: returns None on ANY problem (binary/sid missing, export failure,
+    timeout, parse error, no model recorded) so the caller cleanly omits ``--model``
+    and lets opencode resolve its own default.
+    """
+    import json
+    import os
+    import re
+    import subprocess
+    import tempfile
+    if not binary or not sid:
+        return None
+    # The session id comes from opencode's OWN local session list (a trusted local
+    # source resolved by _resolve_resume_sid — never an HTTP/user parameter) and is
+    # passed as a LIST argv element (no shell). Still, validate it to a strict
+    # ``ses_<alphanumerics>`` allow-list as defense-in-depth before the subprocess.
+    # (CodeQL's extended py/command-line-injection flags any tainted value in an argv
+    # and models neither this regex nor shlex.quote as a sanitizer — a known false
+    # positive here given the trusted source + strict validation + no shell.)
+    if not re.fullmatch(r"ses_[A-Za-z0-9]{1,64}", sid):
+        return None
+    # opencode (a Bun binary) truncates stdout at ~64 KB when it's a PIPE, so
+    # capture_output() would silently cut a large export mid-JSON. Redirect to a
+    # real temp file (the only reliably-complete path) and parse that instead.
+    tmp = None
+    try:
+        with tempfile.NamedTemporaryFile("w+", suffix=".json", delete=False) as fh:
+            tmp = fh.name
+            rc = subprocess.run(
+                [binary, "export", sid],
+                stdout=fh, stderr=subprocess.DEVNULL, timeout=20,
+            ).returncode
+        if rc != 0:
+            return None
+        with open(tmp) as f:
+            return _last_model_in_export(json.load(f))
+    except Exception:
+        return None
+    finally:
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+
 def _recorded_claude_session() -> str | None:
     """The scan's OWN recorded claude session id, or None if none recorded yet.
 
@@ -247,9 +319,17 @@ def _build_spawn_args(binary: str, client: str, resume_sid: str | None, prompt: 
             args += ["--session-id", assign_session_id]
         args += ["-p", prompt]
         return args
+    # opencode: keep the respawn on the SAME model the scan was started with.
+    # SMITH_SPAWN_MODEL (explicit operator override) wins; otherwise inherit the
+    # resumed session's own model (read from `opencode export`), so a scan started
+    # local resumes local and one started on Claude resumes Claude — never a silent
+    # fall-through to opencode.json's default (the credit-balance-death footgun).
+    oc_model = model or (_opencode_session_model(binary, resume_sid) if resume_sid else None)
+    model_args = ["--model", oc_model] if oc_model else []
     if resume_sid:
-        return [binary, "run", "--session", resume_sid, "--dangerously-skip-permissions", prompt]
-    return [binary, "run", "--dangerously-skip-permissions", prompt]
+        return [binary, "run", "--session", resume_sid, *model_args,
+                "--dangerously-skip-permissions", prompt]
+    return [binary, "run", *model_args, "--dangerously-skip-permissions", prompt]
 
 
 def _spawn_child_env(client: str) -> dict:
