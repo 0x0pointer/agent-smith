@@ -119,6 +119,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends --fix-missing \
     naabu httpx-toolkit subfinder amass dnsx nuclei \
     && rm -rf /var/lib/apt/lists/*
 
+# WebSocket clients — the FinBot run found an unauthenticated /ws/connect feed but the
+# image had neither websocat nor python websockets, so the proof had to run on the host.
+RUN apt-get update && apt-get install -y --no-install-recommends --fix-missing \
+    websocat python3-websockets \
+    && rm -rf /var/lib/apt/lists/* \
+    || (pip3 install --no-cache-dir websockets --break-system-packages || echo "WARN: websocket clients not installed (continuing)")
+
 # interactsh-client — out-of-band callback listener for blind SSRF / RCE / XXE /
 # DNS exfil. OOB confirmation is cross-cutting (web injection AND infra blind
 # RCE), so it lives in core rather than a single domain. Prebuilt binary.

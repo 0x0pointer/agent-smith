@@ -23,10 +23,13 @@ from .classify import (
     endpoint_value_rank,
 )
 from .validation import (
+    SKIP_REASONS,
     _integrity_warning_for_status,
     _validate_artifact,
     _validate_auth_response,
     _validate_finding_link,
+    _validate_llm_attempt_budget,
+    llm_reproduction_warning,
 )
 
 _CTRL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
@@ -194,6 +197,21 @@ async def add_endpoint(
     return result
 
 
+def _validate_skip_reason(status: str, skip_reason: str, notes: str) -> str:
+    """skip_reason is only meaningful on 'skipped' and must be a known value;
+    agent_policy_block needs notes saying what was not executed."""
+    if not skip_reason:
+        return ""
+    if status != "skipped":
+        return f"REJECTED: skip_reason is only valid with status='skipped' (got '{status}')."
+    if skip_reason not in SKIP_REASONS:
+        return f"REJECTED: unknown skip_reason '{skip_reason}'. Use: {', '.join(sorted(SKIP_REASONS))}."
+    if skip_reason == "agent_policy_block" and not (notes or "").strip():
+        return ("REJECTED: skip_reason='agent_policy_block' needs notes describing the attempt that "
+                "was stopped client-side (nothing reached the target).")
+    return ""
+
+
 def _find_cell(matrix: list[dict], cell_id: str) -> dict | None:
     """Return the first matrix cell whose id matches, or None if none do."""
     for cell in matrix:
@@ -209,6 +227,7 @@ def _write_cell_fields(
     tested_by: str,
     artifact_id: str,
     finding_id: str | None,
+    skip_reason: str = "",
 ) -> None:
     """Write a closure's fields onto a cell in-place (shared by single + bulk update).
 
@@ -221,6 +240,10 @@ def _write_cell_fields(
     cell["artifact_id"] = artifact_id
     if finding_id:
         cell["finding_id"] = finding_id
+    if status == "skipped" and skip_reason:
+        cell["skip_reason"] = skip_reason
+    else:
+        cell.pop("skip_reason", None)
     cell["tested_at"] = datetime.now(timezone.utc).isoformat()
 
 
@@ -240,7 +263,7 @@ def _reject_single_cell_update(
     reuse_reject = _validate_artifact_reuse(artifact_id, status, cell, matrix)
     if reuse_reject:
         return reuse_reject
-    return None
+    return _validate_llm_attempt_budget(artifact_id, status, cell) or None
 
 
 async def update_cell(
@@ -250,6 +273,7 @@ async def update_cell(
     finding_id: str | None = None,
     tested_by: str = "",
     artifact_id: str = "",
+    skip_reason: str = "",
 ) -> bool | str:
     """Update a single matrix cell.
 
@@ -263,6 +287,9 @@ async def update_cell(
     valid = {"pending", "in_progress", "tested_clean", "vulnerable", "not_applicable", "skipped"}
     if status not in valid:
         return False
+    skip_reject = _validate_skip_reason(status, skip_reason, notes)
+    if skip_reject:
+        return skip_reject
     rejection = _validate_artifact(artifact_id, status)
     if rejection:
         return rejection
@@ -287,7 +314,10 @@ async def update_cell(
             cell_id, cell["status"], status,
             cell.get("injection_type", ""), notes,
         )
-        _write_cell_fields(cell, status, notes, tested_by, artifact_id, finding_id)
+        _write_cell_fields(cell, status, notes, tested_by, artifact_id, finding_id, skip_reason)
+        repro_warning = llm_reproduction_warning(artifact_id, status, cell)
+        if repro_warning:
+            warning = f"{warning}\n{repro_warning}" if warning else repro_warning
         _cov._recount(data)
         _cov._save(data)
         return warning if warning else True
@@ -310,7 +340,11 @@ def _apply_bulk_cell(cell: dict, upd: dict, warnings: list[str]) -> None:
     _write_cell_fields(
         cell, st, notes_text,
         upd.get("tested_by", ""), upd.get("artifact_id", ""), upd.get("finding_id", ""),
+        upd.get("skip_reason", ""),
     )
+    repro_warning = llm_reproduction_warning(upd.get("artifact_id", ""), st, cell)
+    if repro_warning:
+        warnings.append(repro_warning)
 
 
 def _reject_bulk_final_update(
@@ -338,7 +372,8 @@ def _reject_bulk_final_update(
     # onto its matrix entry so updates later in THIS batch citing the
     # same artifact see prior closures and get rejected accordingly.
     from core.coverage.validation import _validate_artifact_reuse
-    return _validate_artifact_reuse(artifact_id, st, cell, matrix)
+    return (_validate_artifact_reuse(artifact_id, st, cell, matrix)
+            or _validate_llm_attempt_budget(artifact_id, st, cell))
 
 
 async def bulk_update(updates: list[dict]) -> dict:
@@ -363,6 +398,11 @@ async def bulk_update(updates: list[dict]) -> dict:
             cid = upd.get("cell_id", "")
             st  = upd.get("status", "")
             if st not in valid or cid not in cell_map:
+                continue
+            skip_reject = _validate_skip_reason(st, upd.get("skip_reason", ""), upd.get("notes", ""))
+            if skip_reject:
+                warnings.append(f"REJECTED cell {cid}: {skip_reject}")
+                rejected += 1
                 continue
             if st in _TESTED_FINAL:
                 rejection = _reject_bulk_final_update(upd, st, cell_map[cid], data["matrix"])

@@ -546,37 +546,44 @@ def test_skill_worked_false_for_freshly_declared_skill_even_after_prior_scan_wor
     assert core.session.skill_worked("business-logic") is True
 
 
-# ── ai-redteam deep-work gate: garak alone must NOT clear it (A + B) ──────────
+# ── ai-redteam deep-work gate: THREE engines required (garak + redteam + transform) ──
 
-def test_ai_redteam_gate_needs_manual_layer_not_just_garak():
+def test_ai_redteam_gate_needs_all_three_engines():
     core.session.start("chat.example.com")
     core.session.set_skill("ai-redteam")
     core.session.add_tool_called("garak")            # automated half only
     assert core.session.skill_worked("ai-redteam") is False
-    core.session.add_tool_called("redteam")          # (A) the manual attack engine fired
+    core.session.add_tool_called("redteam")          # manual attack engine
+    assert core.session.skill_worked("ai-redteam") is False   # transform still missing
+    core.session.add_tool_called("transform")        # manual crafting engine (reaches target)
     assert core.session.skill_worked("ai-redteam") is True
 
 
-def test_ai_redteam_gate_satisfied_by_tested_llm_cells():
+def test_ai_redteam_tested_cells_discharge_redteam_but_not_transform():
     import json
     import core.coverage as cov
     core.session.start("chat.example.com")
     core.session.set_skill("ai-redteam")
     core.session.add_tool_called("garak")
-    assert core.session.skill_worked("ai-redteam") is False
-    # (B) an LLM attack cell was actually tested -> the manual layer engaged
+    core.session.add_tool_called("transform")
+    assert core.session.skill_worked("ai-redteam") is False   # redteam/cells still missing
+    # a tested LLM attack cell stands in for the redteam() engine (engine-free fallback)
     cov.COVERAGE_FILE.write_text(
         json.dumps({"matrix": [{"injection_type": "jailbreak", "status": "tested_clean"}]}),
         encoding="utf-8")
     assert core.session.skill_worked("ai-redteam") is True
 
 
-def test_ai_redteam_deep_hint_present_until_met():
+def test_ai_redteam_deep_hint_names_each_missing_engine():
     core.session.start("chat.example.com")
     core.session.set_skill("ai-redteam")
     core.session.add_tool_called("garak")
-    assert "feedback_attack" in core.session.skill_deep_requirement_hint("ai-redteam")
+    hint = core.session.skill_deep_requirement_hint("ai-redteam")
+    assert "feedback_attack" in hint and "transform(" in hint   # both manual engines named
     core.session.add_tool_called("redteam")
+    hint = core.session.skill_deep_requirement_hint("ai-redteam")
+    assert "transform(" in hint and "feedback_attack" not in hint   # only transform left
+    core.session.add_tool_called("transform")
     assert core.session.skill_deep_requirement_hint("ai-redteam") == ""
 
 
@@ -1080,3 +1087,54 @@ def test_start_lhost_out_of_range_port_falls_back(monkeypatch):
     monkeypatch.setenv("SMITH_LHOST", "1.2.3.4:70000")
     sess = core.session.start("example.com")
     assert sess["known_assets"]["attacker_host"]["lport"] == 4444
+
+
+# ── ai-redteam gate needs BOTH halves: garak (automated) + redteam()/cells (manual) ──
+
+def test_ai_redteam_gate_requires_garak_as_well_as_the_manual_engines():
+    """The FinBot run cleared ai-redteam on redteam() alone; garak + transform never ran.
+    All three engines are obligated now, and the hint names each missing one."""
+    core.session.start("example.com")
+    core.session.set_skill("ai-redteam")
+    core.session.add_tool_called("redteam")          # one manual engine only
+    assert core.session.skill_worked("ai-redteam") is False
+    assert "garak" in core.session.skill_deep_requirement_hint("ai-redteam")
+    core.session.add_tool_called("garak")            # automated half fires (any outcome)
+    assert core.session.skill_worked("ai-redteam") is False   # transform still missing
+    core.session.add_tool_called("transform")
+    assert core.session.skill_worked("ai-redteam") is True
+    assert core.session.skill_deep_requirement_hint("ai-redteam") == ""
+
+
+def test_ai_redteam_gate_garak_alone_still_not_enough():
+    core.session.start("example.com")
+    core.session.set_skill("ai-redteam")
+    core.session.add_tool_called("garak")
+    assert core.session.skill_worked("ai-redteam") is False
+    hint = core.session.skill_deep_requirement_hint("ai-redteam")
+    assert "feedback_attack" in hint and "transform(" in hint and "garak has NOT run" not in hint
+
+
+def test_maybe_advance_phase_signals_operator_once(monkeypatch):
+    """Saturation is operator-gated, so the first time a phase looks saturated the OPERATOR
+    must be told (notifier + PHASE_ADVANCE_READY), once — not on every status call."""
+    core.session.start("example.com")
+    from core.session import phases as ph
+    import core.notifiers as nf
+    sent = []
+    monkeypatch.setattr(nf, "notify", lambda title, body, **k: sent.append((title, body)))
+    monkeypatch.setattr(ph, "next_phase", lambda *a, **k: "coverage")
+    core.session.maybe_advance_phase()
+    core.session.maybe_advance_phase()                       # unchanged advice → no re-signal
+    assert len(sent) == 1 and "advance to phase B" in sent[0][1]
+    assert core.session.get().get("phase_advice_at")
+    assert core.session.get()["scan_phase"] == "exploit"     # still never auto-advances
+
+
+def test_advance_note_is_truthful_about_operator_gating():
+    from core.session import phases as ph
+    saturated = ph.advance_note("coverage")
+    assert "OPERATOR-GATED" in saturated and "phase_advice='coverage'" in saturated
+    assert "nothing auto-advances" in saturated and "AUTO-ADVANCES to" not in saturated
+    assert "operator" in ph.advance_note(None).lower()
+    assert ph.phase_letter("coverage") == "B" and ph.phase_letter("synthesis") == "C"

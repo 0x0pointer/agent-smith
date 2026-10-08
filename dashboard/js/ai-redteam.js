@@ -291,7 +291,10 @@
         return `<details class="air-tx" data-txid="${esc(id)}"${_airOpenTx.has(id) ? ' open' : ''}>`
           + `<summary><span class="air-pill" style="color:${col};border-color:${col}">`
           + `${a.jailbroken ? 'JAILBROKEN' : 'resisted'}</span> `
-          + `<span class="air-sub-note">${a.attempts} attempts</span> `
+          + `<span class="air-sub-note">${a.attempts} attempts`
+          + (typeof a.reached_model === 'number'
+              ? ` · ${a.reached_model} reached model · ${a.attempts - a.reached_model} blocked/not delivered` : '')
+          + `</span> `
           + `<span class="air-row-label">${esc((a.goal || '').slice(0, 80))}</span></summary>`
           + `<div class="air-tx-body">${turns || '<span class="air-sub-note">no transcript</span>'}</div></details>`;
       }).join('');
@@ -320,7 +323,9 @@
       const bypass = Object.keys(flt.detail).filter(t => flt.detail[t] && t !== 'direct').sort();
       const blocked = Object.keys(flt.detail).filter(t => !flt.detail[t]).sort();
       const total = bypass.length + blocked.length;
-      const chip = (t, ok) => `<span class="air-fchip" style="border-color:${ok ? '#f85149' : '#3fb950'};color:${ok ? '#f85149' : '#3fb950'}">${esc(t)}</span>`;
+      const rates = flt.rates || {};
+      const rateTxt = t => (rates[t] && typeof rates[t].rate === 'number') ? ` ${Math.round(rates[t].rate * 100)}%` : '';
+      const chip = (t, ok) => `<span class="air-fchip" style="border-color:${ok ? '#f85149' : '#3fb950'};color:${ok ? '#f85149' : '#3fb950'}">${esc(t)}${rateTxt(t)}</span>`;
       const scol = bypass.length ? '#f85149' : '#3fb950';
       const posture = flt.plaintext_blocked ? 'blocks plaintext keywords' : 'does not even block plaintext keywords';
       const assess = bypass.length === 0
@@ -330,7 +335,9 @@
         `<div class="air-banner" style="border-left-color:${scol}"><span class="air-cal-dot" style="background:${scol}"></span>`
         + `<div><b style="color:${scol}">Input filter ${posture}</b> · `
         + `<b style="color:#f85149">${bypass.length}</b> bypass · <b style="color:#3fb950">${blocked.length}</b> blocked<br>`
-        + `<span class="air-sub-note">${esc(assess)}</span></div></div>`
+        + `<span class="air-sub-note">${esc(assess)}</span>`
+        + (flt.notes || []).map(n => `<br><span class="air-sub-note">⚠ ${esc(n)}</span>`).join('')
+        + `</div></div>`
         + `<div class="air-def-cols">`
         + `<div class="air-def-col"><div class="air-def-col-title" style="color:#f85149">↯ Bypasses the filter (${bypass.length})</div>`
         + `<div class="air-fchips">${bypass.map(t => chip(t, true)).join('') || '<span class="air-sub-note">none</span>'}</div></div>`
@@ -339,6 +346,15 @@
         + `</div>`;
     } else {
       filterWrap.innerHTML = '<div class="empty-placeholder">No filter probe yet — redteam(action="filter_probe").</div>';
+    }
+    // Rate limiting: a throttled target must not read as "clean".
+    const limited = Object.entries(ai.rate_limit || {}).filter(([, r]) => (r.rate_limited || 0) > 0);
+    if (limited.length) {
+      filterWrap.insertAdjacentHTML('afterbegin', limited.map(([tgt, r]) =>
+        `<div class="air-banner" style="border-left-color:#d29922"><span class="air-cal-dot" style="background:#d29922"></span>`
+        + `<div><b style="color:#d29922">Rate-limited</b> · ${esc(tgt)} · ${r.rate_limited} backoff(s)`
+        + (r.last_retry_after != null ? ` · last Retry-After ${esc(String(r.last_retry_after))}s` : '')
+        + `</div></div>`).join(''));
     }
 
     // ── Overview: surface the top garak results so output is visible without

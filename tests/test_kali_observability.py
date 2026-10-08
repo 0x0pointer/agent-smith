@@ -77,3 +77,24 @@ class TestEnrichKaliEntry:
         assert entry["type"] == "TOOL" and entry["name"] == "kali"
         assert entry["command"] == "curl -s http://t/x"
         assert "timed_out" not in entry  # falsy → omitted
+
+
+class TestTimeoutClassification:
+    """#254 — only a network probe's own timeout is a time-based LEAD."""
+
+    def test_whole_command_timeout_is_not_a_lead(self):
+        assert kt._classify_timeout("python3 runner.py", "[partial — command timed out]\nx") == "command"
+
+    def test_whole_command_timeout_even_for_curl_loop(self):
+        out = "[partial — command timed out]\ncurl: (28) Operation timed out"
+        assert kt._classify_timeout("for i in 1 2; do curl http://t; done", out) == "command"
+
+    def test_probe_timeout_is_a_lead(self):
+        assert kt._classify_timeout("curl -s http://t/x", "curl: (28) Operation timed out") == "probe"
+        assert kt._classify_timeout("echo a | sqlmap -u http://t", "connection timed out") == "probe"
+
+    def test_non_probe_inner_timeout_ignored(self):
+        assert kt._classify_timeout("python3 x.py", "Connection timed out") is None
+
+    def test_http_url_is_not_a_probe_word(self):
+        assert not kt._is_network_probe("python3 x.py http://t")

@@ -197,3 +197,50 @@ async def test_transform_tool_unknown_action():
     from mcp_server.transform_tools import transform
     out = json.loads(await transform("frobnicate", "x", {}))
     assert "error" in out
+
+
+# ── transform() tool: artifact-backed payloads are never inlined (#252) ─────────
+
+def _tool_payload(monkeypatch, tmp_path, action, text="", **opts):
+    import mcp_server.scan_engine.artifacts as arts
+    import mcp_server.transform_tools as tt
+    monkeypatch.setattr(arts, "_ARTIFACTS_DIR", tmp_path)
+    return json.loads(tt._dispatch(action, text, opts))
+
+
+def test_tokenbomb_saved_returns_ref_not_payload(monkeypatch, tmp_path):
+    from mcp_server.scan_engine.artifacts import read_artifact_raw
+    r = _tool_payload(monkeypatch, tmp_path, "tokenbomb", size=200, seed=1)
+    assert "payload" not in r and r["artifact_id"]
+    assert r["char_count"] > 0 and r["est_tokens"] >= r["char_count"] // 4
+    assert len(r["preview"]) <= 80 * 10 and r["preview"].isascii()
+    assert len(read_artifact_raw(r["artifact_id"])) == r["char_count"]
+
+
+def test_tokenbomb_unsaved_still_inline(monkeypatch, tmp_path):
+    r = _tool_payload(monkeypatch, tmp_path, "tokenbomb", size=20, seed=1, save_artifact=False)
+    assert r["payload"] and r["artifact_id"] is None
+
+
+def test_steg_save_artifact(monkeypatch, tmp_path):
+    r = _tool_payload(monkeypatch, tmp_path, "steg", "secret", method="unicode_tags",
+                      save_artifact=True)
+    assert "output" not in r and r["artifact_id"] and r["method"] == "unicode_tags"
+    r2 = _tool_payload(monkeypatch, tmp_path, "steg", "secret", method="unicode_tags")
+    assert r2["output"] and r2["artifact_id"] is None
+
+
+def test_encode_and_mutate_save_artifact(monkeypatch, tmp_path):
+    r = _tool_payload(monkeypatch, tmp_path, "encode", "hello", transforms=["base64"],
+                      save_artifact=True)
+    assert "output" not in r and r["transforms"] == ["base64"] and r["artifact_id"]
+    m = _tool_payload(monkeypatch, tmp_path, "mutate", "hello", count=3, seed=1,
+                      save_artifact=True)
+    assert "variants" not in m and m["count"] == 3 and len(m["chains"]) == 3
+
+
+def test_read_artifact_raw_rejects_path_ids(monkeypatch, tmp_path):
+    import mcp_server.scan_engine.artifacts as arts
+    monkeypatch.setattr(arts, "_ARTIFACTS_DIR", tmp_path)
+    assert arts.read_artifact_raw("../etc/passwd") is None
+    assert arts.read_artifact_raw("missing_1_x") is None

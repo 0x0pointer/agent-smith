@@ -66,17 +66,21 @@ def get_state() -> dict:
         for c in cov.get("matrix", []) if c["status"] == "in_progress"
     ][:3]
 
-    # Pending escalation leads count
+    # Findings + pending escalation leads. (This import used to be
+    # ``from core.findings import findings_store`` — a name that module doesn't
+    # define — so it always raised and both counts silently read 0.)
     try:
-        from core.findings import findings_store
-        findings_data = findings_store._load()
+        from core import findings as findings_store
+        findings_list = [f for f in findings_store._load().get("findings", [])
+                         if f.get("status") != "false_positive"]
+        findings_count = len(findings_list)
         pending_escalations = sum(
-            1 for f in findings_data.get("findings", [])
+            1 for f in findings_list
             for lead in f.get("escalation_leads", [])
             if lead.get("status") == "pending"
         )
     except Exception:
-        pending_escalations = 0
+        findings_count = pending_escalations = 0
 
     state: dict = {
         "target":               current.get("target", ""),
@@ -85,7 +89,8 @@ def get_state() -> dict:
         "tools_run":            sorted(tools_run),
         "endpoints":            endpoints,
         "coverage":             f"{tested}/{total_cells}" if total_cells else "no endpoints registered",
-        "findings":             vulnerable,
+        "findings":             findings_count,
+        "vulnerable_cells":     vulnerable,
         "calls_used":           summary.get("tool_calls_total", 0),
         "time_pct":             remaining.get("time_pct", 0),
         "pending_escalations":  pending_escalations,

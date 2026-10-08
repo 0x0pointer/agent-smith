@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 
 from core import logger as log
-from mcp_server._app import mcp, _ensure_dict, _record
+from mcp_server._app import mcp, _ensure_dict, _record, quick_log_activity
 from mcp_server.transforms import (
     CATEGORIES,
     TRANSFORMS,
@@ -36,6 +36,26 @@ def _maybe_artifact(tool_label: str, raw: str, save: bool) -> str | None:
     return store_artifact(tool_label, raw)
 
 
+def _est_tokens(payload: str) -> int:
+    """Rough token estimate for a payload. Plain ASCII runs ~4 chars/token, but
+    invisible/astral Unicode (tag chars, variation selectors, zero-width) tokenizes
+    at ~1 token per 1-3 UTF-8 bytes — so estimate from UTF-8 bytes / 3, never below
+    chars / 4. Deliberately pessimistic: it sizes what the payload costs the target."""
+    return max(len(payload) // 4, len(payload.encode("utf-8", "surrogatepass")) // 3)
+
+
+def _artifact_ref(art: str, payload: str, **extra) -> str:
+    """Compact result for a payload that was saved as an artifact: the id + size +
+    an escaped preview, never the payload itself (a token-bomb / steg / mutation set
+    inline costs ~10k+ context tokens of escapes). Deliver it with
+    http(payload_artifact_id=...) or kali(files={...}) instead of round-tripping it."""
+    return json.dumps({**extra, "artifact_id": art, "char_count": len(payload),
+                       "est_tokens": _est_tokens(payload),
+                       "preview": ascii(payload[:80])[1:-1],
+                       "note": "payload saved as artifact (not inlined) — deliver it with "
+                               "http(options={payload_artifact_id: ...}) or kali(files={...})"})
+
+
 @mcp.tool()
 async def transform(action: str, text: str = "", options: dict | str | None = None) -> str:
     """Craft, mutate, or decode obfuscated LLM payloads (P4RS3LT0NGV3-style).
@@ -50,7 +70,11 @@ async def transform(action: str, text: str = "", options: dict | str | None = No
     mutate    — N obfuscated variants (fuzzer).  options: count=10, techniques=[...], seed=, save_artifact=false
     bijection — Bijection-Learning jailbreak scaffold.  options: mapping_type=letters|digits|tokens, alphabet_size=26, seed=
     tokenbomb — token-exhaustion payload (LLM10).  options: size=200, seed=, save_artifact=true
-    steg      — hide/reveal via invisible Unicode.  options: mode=hide|reveal, method=variation_selector|zero_width|unicode_tags, carrier=
+    steg      — hide/reveal via invisible Unicode.  options: mode=hide|reveal, method=variation_selector|zero_width|unicode_tags, carrier=, save_artifact=false
+
+    save_artifact=true stores the payload and returns ONLY {artifact_id, char_count,
+    est_tokens, preview} — deliver it by id with http(options={payload_artifact_id})
+    or kali(files={path: artifact_id}) so the bytes never round-trip through context.
 
     Categories: base, cipher, radio, homoglyph, invisible, script, word, case.
     """
@@ -65,8 +89,29 @@ async def transform(action: str, text: str = "", options: dict | str | None = No
         result = json.dumps({"error": str(exc)})
     except Exception as exc:  # fail-soft — never crash the agent's turn
         result = json.dumps({"error": f"{type(exc).__name__}: {exc}"})
+    # Raw-JSON tool (no envelope): write its own activity entry so payload crafting
+    # counts as work for the QA stall checks and the dashboard feed.
+    quick_log_activity("transform", {"action": action}, f"transform {action}")
+    # Record the crafting call so the manual-layer depth ladder is measurable
+    # (distinct chains + max stack length = how far payload-evasion escalation went).
+    if action in ("encode", "mutate", "bijection", "steg", "tokenbomb"):
+        _record_transform_depth(action, opts, result)
     log.tool_result("transform", result)
     return result
+
+
+def _record_transform_depth(action: str, opts: dict, result: str) -> None:
+    """Persist a transform crafting call into the AI red-team store (depth ladder). Fail-soft."""
+    try:
+        from core import ai_redteam
+        chain = opts.get("transforms") or opts.get("techniques") or opts.get("method") or action
+        try:
+            est = json.loads(result).get("est_tokens")
+        except Exception:
+            est = None
+        ai_redteam.record_transform(action, chain, opts.get("category", ""), est)
+    except Exception:
+        pass
 
 
 def _do_list(text, opts):
@@ -82,6 +127,8 @@ def _do_encode(text, opts):
         return json.dumps({"error": "encode requires options.transforms=[...]"})
     out = _encode_chain(text, names)
     art = _maybe_artifact("transform", out, opts.get("save_artifact", False))
+    if art:
+        return _artifact_ref(art, out, transforms=names, input_len=len(text))
     return json.dumps({"transforms": names, "input_len": len(text),
                        "output": out[:_INLINE_CAP], "output_len": len(out),
                        "truncated": len(out) > _INLINE_CAP, "artifact_id": art})
@@ -105,7 +152,11 @@ def _do_mutate(text, opts):
         techniques=opts.get("techniques"),
         seed=opts.get("seed"),
     )
-    art = _maybe_artifact("transform", json.dumps(variants), opts.get("save_artifact", False))
+    raw = json.dumps(variants)
+    art = _maybe_artifact("transform", raw, opts.get("save_artifact", False))
+    if art:
+        return _artifact_ref(art, raw, count=len(variants),
+                             chains=[v["chain"] for v in variants])
     preview = [{"chain": v["chain"], "payload": v["payload"][:400]} for v in variants]
     return json.dumps({"count": len(variants), "variants": preview, "artifact_id": art}, indent=2)
 
@@ -123,6 +174,8 @@ def _do_bijection(text, opts):
 def _do_tokenbomb(text, opts):
     tb = generators.tokenbomb(size=int(opts.get("size", 200)), seed=opts.get("seed"))
     art = _maybe_artifact("transform", tb["payload"], opts.get("save_artifact", True))
+    if art:
+        return _artifact_ref(art, tb["payload"], description=tb["note"])
     return json.dumps({"char_count": tb["char_count"], "note": tb["note"],
                        "payload": tb["payload"][:_INLINE_CAP],
                        "truncated": tb["char_count"] > _INLINE_CAP, "artifact_id": art})
@@ -142,6 +195,9 @@ def _do_steg(text, opts):
     else:
         return json.dumps({"error": f"unknown steg method '{method}'"})
     art = _maybe_artifact("transform", out, opts.get("save_artifact", False))
+    if art:
+        return _artifact_ref(art, out, mode="hide", method=method,
+                             renders_visibly=method == "variation_selector")
     return json.dumps({"mode": "hide", "method": method, "output": out,
                        "renders_visibly": method == "variation_selector", "artifact_id": art})
 

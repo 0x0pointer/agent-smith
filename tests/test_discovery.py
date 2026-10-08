@@ -211,8 +211,17 @@ def test_extract_js_routes_mines_fetch_axios_and_literals():
     assert "/api/transfer" in routes
     assert "/api/ai/chat" in routes
     assert "/internal/secret" in routes
-    assert "/api/users/" in routes          # template literal truncated at ${
+    assert "/api/users/{id}/posts" in routes  # template expr kept as a path param
     assert "/static/app.css" not in routes  # static asset filtered
+
+
+def test_extract_js_routes_template_expr_becomes_path_param():
+    js = "fetch(`/admin/api/v1/findrive/${fileId}`); fetch(`/admin/api/v1/mcp/servers/${server.server_type}/toggle`)"
+    routes = disc.extract_js_routes(js)
+    assert "/admin/api/v1/findrive/{fileId}" in routes
+    assert "/admin/api/v1/mcp/servers/{server_type}/toggle" in routes
+    params = disc._route_params("/admin/api/v1/findrive/{fileId}")
+    assert params == [{"name": "fileId", "type": "path", "value_hint": "integer"}]
 
 
 # ── _spider_endpoints ─────────────────────────────────────────────────────────

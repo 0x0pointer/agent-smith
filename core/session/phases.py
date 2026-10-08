@@ -28,6 +28,32 @@ _LABEL = {
 }
 
 
+ADVANCE_HOW = ("Phase changes are OPERATOR-GATED (since 8d2f58e): nothing auto-advances. The operator "
+               "advances from the dashboard (type 'advance to phase B' / 'advance to phase C' in the "
+               "steer box, or the phase button).")
+
+
+def phase_letter(phase: str) -> str:
+    """exploit→A, coverage→B, synthesis→C — the letters the dashboard steer understands."""
+    return {EXPLOIT: "A", COVERAGE: "B", SYNTHESIS: "C"}.get(phase, "?")
+
+
+def advance_note(advice: str | None, current: str | None = None) -> str:
+    """The one truthful sentence about phase progression for every agent-facing surface
+    (status, recovery, the Phase-A DEFERRED refusal, the completion gate). Until this
+    existed those surfaces said the scan 'AUTO-ADVANCES' — it never has since phases
+    became operator-gated, so the agent waited for an event that cannot happen and
+    every breadth call was refused until a human typed the steer (FinBot run)."""
+    if advice:
+        return (f"DEPTH LOOKS EXHAUSTED — phase_advice='{advice}'. {ADVANCE_HOW} The operator has "
+                f"been signalled (PHASE_ADVANCE_READY); keep working the current phase until the "
+                f"phase actually changes (check scan_phase in session(status)). If you are "
+                f"genuinely out of deep work, call session(action='intervene') so the request is "
+                f"explicit — do not stop and summarise.")
+    return (f"{ADVANCE_HOW} It will be offered once the current phase saturates — session(status) "
+            f"then shows phase_advice='<next phase>'.")
+
+
 def current_phase(sess: dict | None) -> str:
     """The active phase; defaults to EXPLOIT for sessions predating this field."""
     p = (sess or {}).get("scan_phase")

@@ -224,6 +224,15 @@ Trust-and-skip assumes an unchanged target; use `mode=context` to load prior res
 
 ---
 
+## Credits
+
+The AI red-team layer builds on public research by [Arcanum Information Security](https://arcanum-sec.com/):
+
+- **Arcanum Prompt Injection Taxonomy (PITAX)** — [arcanum-sec.github.io/arc_pi_taxonomy](https://arcanum-sec.github.io/arc_pi_taxonomy/), licensed [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Shipped as the reference data behind `redteam(action="taxonomy")` (intents, techniques, evasions, inputs) and cross-referenced by the technique library.
+- **P4RS3LT0NGV3** — [arcanum-sec.github.io/P4RS3LT0NGV3](https://arcanum-sec.github.io/P4RS3LT0NGV3/). The payload transforms in `transform()` are a clean-room Python reimplementation of its techniques (encodings, ciphers, homoglyphs, invisible Unicode, steganography, mutation).
+
+---
+
 ## License
 
 GNU Affero General Public License v3.0 — see [LICENSE](LICENSE).

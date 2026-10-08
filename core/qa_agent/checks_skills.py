@@ -220,6 +220,80 @@ def _check_post_exploit_depth(session_data: dict) -> list[dict]:
     return alerts
 
 
+_AI_ENGINE_NUDGE = {
+    "garak": ("MISSING_GARAK", "the AUTOMATED scanner",
+              "scan(tool='garak', target=<endpoint>, options={probes: "
+              "'encoding,promptinject,leakreplay,misleading', body_key: <prompt field>, "
+              "response_field: <reply JSONPath>})"),
+    "redteam": ("MISSING_REDTEAM", "the MANUAL attack engine",
+                "redteam(action='filter_probe') then redteam(action='feedback_attack', reproduce_n=...)"),
+    "transform": ("MISSING_TRANSFORM", "the MANUAL payload-crafting engine",
+                  "transform(action='encode'/'mutate'/'bijection'/'steg') and DELIVER the result "
+                  "(http payload_artifact_id / redteam transforms=[...])"),
+}
+
+
+def _check_ai_redteam_engines(coverage_data: dict, session_data: dict) -> list[dict]:
+    """ai-redteam runs THREE engines — garak (automated) + redteam() and transform()
+    (manual) — all gate-required. Surface each one that has NOT run MID-SCAN (while the
+    LLM endpoint is still the active target) instead of only as a completion blocker,
+    and add a non-blocking SHALLOW advisory once both manual engines ran but the depth
+    ladder is thin — the 'deeper and deeper' push. Fires only when ai-redteam is active
+    and an llm_prompt endpoint is registered."""
+    skills_run = {e.get("skill") for e in session_data.get("skill_history", [])}
+    if "ai-redteam" not in skills_run:
+        return []
+    llm_eps = [ep.get("path", "") for ep in coverage_data.get("endpoints", [])
+               if any((p or {}).get("type") == "llm_prompt" for p in ep.get("params", []))]
+    if not llm_eps:
+        return []
+    ran = set(session_data.get("tools_called") or [])
+    scope = f"/ai-redteam is active on {len(llm_eps)} LLM endpoint(s) ({', '.join(llm_eps[:3])})"
+    alerts: list[dict] = []
+    for tool in ("garak", "redteam", "transform"):
+        if tool in ran:
+            continue
+        code, role, how = _AI_ENGINE_NUDGE[tool]
+        alerts.append({"code": code, "urgency": "high", "blocking": False,
+                       "message": (f"{scope} but {tool}() has never run — {role} is missing and the "
+                                   f"ai-redteam gate will not clear without it. Run: {how}.")})
+    # Depth ladder — advisory only, once both manual engines have run.
+    if {"redteam", "transform"} <= ran:
+        try:
+            from core.ai_redteam import depth_summary
+            d = depth_summary()
+            if (d["redteam_families"] < 2 or d["transform_max_stack"] < 1
+                    or d["transform_distinct_chains"] < 2 or d["reproductions"] < 1):
+                alerts.append({"code": "SHALLOW_AI_REDTEAM", "urgency": "medium", "blocking": False,
+                               "message": (f"{scope}; the manual engines ran but shallow — "
+                                           f"{d['redteam_families']} technique families, transform stack "
+                                           f"depth {d['transform_max_stack']} ({d['transform_distinct_chains']} "
+                                           f"distinct chains), {d['reproductions']} k/N run(s). Go DEEPER: "
+                                           "escalate encodings (base64 → homoglyph/zero-width → bijection → "
+                                           "steg), add technique families, and reproduce every hit (k/N).")})
+        except Exception:
+            pass
+    return alerts
+
+
+def _check_phase_advance_ready(session_data: dict) -> dict | None:
+    """The current phase looks saturated (phase_advice set) but phases are operator-gated,
+    so nothing happens until a human types 'advance to phase B/C' on the dashboard. Keep
+    that request visible on the dashboard QA panel every cycle (non-blocking) and remind
+    the agent it must keep working the current phase meanwhile — the FinBot run sat in
+    Phase A with every breadth call refused and nobody asked the operator."""
+    advice = session_data.get("phase_advice")
+    if not advice or session_data.get("status") != "running":
+        return None
+    from core.session.phases import phase_letter
+    cur = session_data.get("scan_phase", "exploit")
+    return {"code": "PHASE_ADVANCE_READY", "urgency": "high", "blocking": False,
+            "message": (f"Phase '{cur}' looks saturated — OPERATOR: advance to '{advice}' from the "
+                        f"dashboard (type 'advance to phase {phase_letter(advice)}'). SMITH: phases "
+                        f"never auto-advance; keep working '{cur}' until scan_phase changes, or call "
+                        f"session(action='intervene') if you are out of deep work.")}
+
+
 def _check_missing_skill(coverage_data: dict, session_data: dict) -> list[dict]:
     """Flag when a discovered endpoint type requires a skill that has never been invoked."""
     try:

@@ -112,8 +112,10 @@ from .checks_depth import (  # noqa: E402
     _check_whitebox_passes,
 )
 from .checks_skills import (  # noqa: E402
+    _check_ai_redteam_engines,
     _check_core_skill_chain,
     _check_missing_skill,
+    _check_phase_advance_ready,
     _check_post_exploit_depth,
     _check_no_spider_after_httpx,
     _maybe_inject_business_logic_directive,

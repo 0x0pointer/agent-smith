@@ -1939,3 +1939,62 @@ async def test_cycle_notify_exception_is_swallowed(tmp_path, monkeypatch):
         await daemon._cycle()  # must not raise
 
     assert qa_state.exists()  # cycle still wrote state despite notification failure
+
+
+# _check_ai_redteam_engines — garak + redteam + transform must all run on an LLM endpoint
+
+def test_ai_redteam_engines_nudge_each_missing_one(monkeypatch):
+    from core.qa_agent.checks_skills import _check_ai_redteam_engines as chk
+    cov = {"endpoints": [{"path": "/chat", "params": [{"name": "message", "type": "llm_prompt"}]}]}
+    assert chk(cov, {"skill_history": [], "tools_called": []}) == []           # skill not declared
+    assert chk({"endpoints": []}, {"skill_history": [{"skill": "ai-redteam"}]}) == []  # no LLM endpoint
+    # none of the three engines ran -> three nudges
+    out = chk(cov, {"skill_history": [{"skill": "ai-redteam"}], "tools_called": []})
+    codes = {a["code"] for a in out}
+    assert codes == {"MISSING_GARAK", "MISSING_REDTEAM", "MISSING_TRANSFORM"}
+    assert all("/chat" in a["message"] for a in out)
+    # garak + redteam ran, transform missing -> only the transform nudge
+    out = chk(cov, {"skill_history": [{"skill": "ai-redteam"}], "tools_called": ["garak", "redteam"]})
+    assert [a["code"] for a in out] == ["MISSING_TRANSFORM"]
+    # all three ran, depth shallow -> SHALLOW advisory (no MISSING_*)
+    import core.ai_redteam as ar
+    monkeypatch.setattr(ar, "depth_summary", lambda: {
+        "transform_actions": 1, "transform_distinct_chains": 1, "transform_max_stack": 1,
+        "redteam_families": 1, "redteam_encodings": 0, "reproductions": 0})
+    out = chk(cov, {"skill_history": [{"skill": "ai-redteam"}],
+                    "tools_called": ["garak", "redteam", "transform"]})
+    assert [a["code"] for a in out] == ["SHALLOW_AI_REDTEAM"] and out[0]["urgency"] == "medium"
+    # all three ran, depth sufficient -> silent
+    monkeypatch.setattr(ar, "depth_summary", lambda: {
+        "transform_actions": 5, "transform_distinct_chains": 3, "transform_max_stack": 2,
+        "redteam_families": 3, "redteam_encodings": 2, "reproductions": 2})
+    assert chk(cov, {"skill_history": [{"skill": "ai-redteam"}],
+                     "tools_called": ["garak", "redteam", "transform"]}) == []
+
+
+def test_stuck_on_target_redteam_run_with_artifact_counts_as_progress(tmp_path, monkeypatch):
+    """redteam() entries carry the target URL, so a 5-call engine battery with no
+    finding would trip the stuck rule mid-run. A run that stored an evidence artifact
+    (k/N record / transcript) is progress; a battery with NO artifacts still trips it."""
+    import core.steering as st_mod
+    import core.qa_agent as qa_mod
+    steering_file = tmp_path / "steering_queue.json"
+    monkeypatch.setattr(st_mod, "_STEERING_FILE", steering_file)
+    monkeypatch.setattr(qa_mod, "_STEERING_FILE", steering_file)
+
+    battery = [_tool_entry("redteam", "http://t/chat", offset_min=5) for _ in range(6)]
+    battery[-1] = {**battery[-1], "artifact_id": "redteam_feedback_attack_160000_ab12"}
+    assert _check_stuck_on_target(battery, {}, {}, []) is None
+
+    bare = [_tool_entry("redteam", "http://t/chat", offset_min=5) for _ in range(6)]
+    alert = _check_stuck_on_target(bare, {}, {}, [])
+    assert alert is not None and alert["code"] == "STUCK_ON_TARGET"
+
+
+def test_phase_advance_ready_alert_follows_phase_advice():
+    from core.qa_agent.checks_skills import _check_phase_advance_ready as chk
+    assert chk({"status": "running", "scan_phase": "exploit"}) is None
+    assert chk({"status": "completed", "scan_phase": "exploit", "phase_advice": "coverage"}) is None
+    out = chk({"status": "running", "scan_phase": "exploit", "phase_advice": "coverage"})
+    assert out["code"] == "PHASE_ADVANCE_READY" and not out["blocking"]
+    assert "advance to phase B" in out["message"] and "never auto-advance" in out["message"]

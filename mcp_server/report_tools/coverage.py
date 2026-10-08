@@ -88,6 +88,7 @@ async def _do_coverage_tested(data: dict, cov: Any) -> str:
         finding_id=data.get("finding_id"),
         tested_by=data.get("tested_by", ""),
         artifact_id=data.get("artifact_id", ""),
+        skip_reason=data.get("skip_reason", ""),
     )
     if result is False:
         # Common after context compaction: Smith carried the cell ID across a
@@ -799,17 +800,20 @@ def _phase_a_deepwork_redirect(cov_type: str) -> str:
             lines.append(
                 f"  • {bridges} provable exploit bridge(s) unattempted — report(action='chain', "
                 "data={type:'suggest'}), then prove or dismiss each.")
+        # Refresh the advisory so the refusal can say whether depth already looks exhausted
+        # (and the operator has been signalled) instead of promising an auto-advance.
+        _sess.maybe_advance_phase()
+        advice = (_sess.get() or {}).get("phase_advice")
     except Exception:
-        pass
+        advice = None
     body = "\n".join(lines) if lines else (
         "  • Drive every confirmed finding to its terminal and attempt every provable exploit bridge.")
+    from core.session import phases as _ph
     return (
         f"DEFERRED — '{cov_type}' is breadth cell-testing (Phase B work) and you are in PHASE A "
         "(deep exploitation). The matrix is being built for Phase B, but do NOT drain it yet — do "
         "the DEEP work still owed:\n" + body + "\n"
-        "The scan AUTO-ADVANCES to Phase B only when depth is exhausted (all applicable skills run, "
-        "every high/critical driven to a terminal or a documented dead-end, and no provable bridge "
-        "left) — the sweep runs THEN. Keep hunting; don't burn cells."
+        + _ph.advance_note(advice) + " Keep hunting; don't burn cells."
     )
 
 

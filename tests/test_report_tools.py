@@ -75,6 +75,22 @@ def test_finding_gates_skip_benign(monkeypatch):
     assert sess.triggered == []
 
 
+def test_finding_gates_rce_suppressed_on_recording_sandbox(monkeypatch):
+    """Command injection into a RECORDING/mock tool (an MCP server that logs the
+    attempted command but runs nothing) is an input-validation defect, not a host exec
+    primitive — there is no shell to escalate to, so the gate must stay closed
+    (FinBot SystemUtils run: the gate opened and QA demanded /reverse-shell)."""
+    from mcp_server.report_tools import gates as gmod
+    sess = _FakeSession()
+    monkeypatch.setattr(gmod, "scan_session", sess)
+    out = _auto_trigger_finding_gates(
+        "MCP05 Command Injection - shell metacharacters forwarded to run_diagnostics", "high",
+        "Against a real backend this is OS command execution. In this deployment the "
+        "SystemUtils server is a recording sandbox ('records attempted commands but "
+        "executes nothing'), so no actual execution was observed.")
+    assert "post_exploit_rce" not in out
+
+
 def test_finding_gates_credential_audit_needs_weakness(monkeypatch):
     """Merely naming an auth service must not fire credential-audit; a real weakness does."""
     import mcp_server.report_tools as rt
@@ -700,3 +716,19 @@ def test_phase_a_redirect_names_remaining_deepwork(monkeypatch):
     assert "1 high/critical finding(s)" in out
     assert "/param-fuzz" in out                          # names the owed applicable skill
     assert "2 provable exploit bridge" in out            # names the unattempted bridges
+
+
+def test_finding_gates_rce_not_fired_by_rce_inside_another_word(monkeypatch):
+    """'rce' inside 'source' / 'resource' opened post_exploit_rce on an LLM prompt-
+    injection finding (FinBot run). Keyword matching is token-bounded now; a real
+    'RCE' token still fires."""
+    import mcp_server.report_tools as rt
+    sess = _FakeSession()
+    monkeypatch.setattr(rt, "scan_session", sess)
+    out = _auto_trigger_finding_gates(
+        "LLM01 Indirect Prompt Injection via uploaded file", "high",
+        "The injection source is vendor-controlled; the assistant obeyed embedded instructions.")
+    assert "post_exploit_rce" not in out and "post_exploit_rce" not in sess.triggered
+    out = _auto_trigger_finding_gates(
+        "Confirmed RCE via template engine", "high", "command output returned uid=1000")
+    assert "post_exploit_rce" in out

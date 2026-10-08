@@ -258,3 +258,54 @@ async def test_exec_command_bash_wrap_composes_with_host_rewrite():
     assert posted.startswith("bash -c ")
     assert "localhost" not in posted
     assert "host.docker.internal" in posted
+
+
+# ---------------------------------------------------------------------------
+# #253 / #254 — file delivery, background jobs, artifacts mount
+# ---------------------------------------------------------------------------
+
+def test_background_command_detaches_and_records_rc():
+    cmd = kr.background_command("python3 run.py 'a b'", "abc12345")
+    assert "nohup setsid sh -c" in cmd and cmd.rstrip().endswith("echo started job abc12345")
+    assert "/tmp/smith-jobs/abc12345.log" in cmd and "/tmp/smith-jobs/abc12345.rc" in cmd
+
+
+def test_poll_command_reports_status_and_tail():
+    cmd = kr.poll_command("abc12345", tail_bytes=100)
+    assert "__JOB_STATUS__ done" in cmd and "__JOB_STATUS__ running" in cmd
+    assert "tail -c 100 /tmp/smith-jobs/abc12345.log" in cmd
+
+
+@pytest.mark.asyncio
+async def test_put_file_rejects_relative_path():
+    assert "must be absolute" in await kr.put_file("tmp/x", b"x")
+
+
+@pytest.mark.asyncio
+async def test_put_file_pipes_stdin():
+    proc = MagicMock()
+    proc.communicate = AsyncMock(return_value=(b"", b""))
+    proc.returncode = 0
+    with patch.object(kr, "ensure_running", AsyncMock(return_value=(True, "running"))), \
+         patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)) as cse:
+        assert await kr.put_file("/tmp/p dir/x.txt", b"DATA") is None
+    argv = cse.call_args.args
+    assert argv[1:4] == ("exec", "-i", kr.KALI_CONTAINER)
+    assert "'/tmp/p dir/x.txt'" in argv[-1]
+    proc.communicate.assert_awaited_once_with(b"DATA")
+
+
+def test_guard_honours_timeout_and_kills_group():
+    import importlib.util
+    import pathlib
+    import time
+    spec = importlib.util.spec_from_file_location(
+        "kali_api_guard", pathlib.Path(kr.__file__).parent / "kali" / "api_guard.py")
+    g = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(g)
+    r = g.run_command("echo hi", 5)
+    assert r["stdout"].strip() == "hi" and r["return_code"] == 0 and not r["timed_out"]
+    t0 = time.time()
+    r = g.run_command("echo start; sleep 30 & sleep 30", 1)
+    assert r["timed_out"] and "start" in r["stdout"] and time.time() - t0 < 15
+    assert g._clamp_timeout(10**9) == g.MAX_COMMAND_TIMEOUT and g._clamp_timeout("x") == 180

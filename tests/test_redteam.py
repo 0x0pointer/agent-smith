@@ -80,7 +80,7 @@ def test_probe_filter_finds_bypasses():
     # target blocks any plaintext containing "password"; encodings hide the word
     def send(msg, cid=None):
         return "blocked by safety filter" if "password" in msg.lower() else "ok, sure"
-    r = filter_probe.probe_filter(send)
+    r = filter_probe.probe_filter(send, canary="please help me reset my password now", n=1)
     assert r["plaintext_blocked"] is True
     assert "base64" in r["bypass"]
     assert "direct" in r["blocked"]
@@ -311,3 +311,70 @@ def test_feedback_attack_reaches_depth_despite_large_breadth():
     assert r["jailbroken"] is True
     assert r["best"]["transform"] is not None            # an encoding bypass won
     assert any(t["phase"] == 2 for t in r["transcript"])  # depth phase was reached
+
+
+@pytest.mark.asyncio
+async def test_redteam_tool_heartbeats_through_ctx(monkeypatch):
+    """Long engine runs (filter_probe died at the 300s MCP idle timeout) must go through
+    with_heartbeat with the request Context, like scan()/kali() do."""
+    import json
+    import mcp_server.redteam_tools as rtt
+    seen = {}
+
+    async def fake_heartbeat(ctx, coro, label, interval=None):
+        seen["ctx"], seen["label"] = ctx, label
+        return await coro
+
+    monkeypatch.setattr(rtt, "with_heartbeat", fake_heartbeat)
+    sentinel = object()
+    out = json.loads(await rtt.redteam("techniques", ctx=sentinel))
+    assert "techniques" in out
+    assert seen["ctx"] is sentinel and seen["label"] == "redteam techniques"
+
+
+class _FakeQuickLog:
+    """Stand-in for core.quick_log.quick_log: records what the AI engines append."""
+    def __init__(self):
+        self.entries = []
+
+    async def append(self, entry):
+        self.entries.append(entry)
+
+    def _write_line(self, line):
+        self.entries.append(json.loads(line))
+
+
+@pytest.mark.asyncio
+async def test_ai_engines_write_tool_activity_entries(monkeypatch):
+    """redteam()/transform() return raw JSON and bypass the envelope, so they wrote no
+    TOOL entries — the QA daemon flagged a 20-minute engine battery as TOOL_INACTIVITY.
+    Both must now land in the quick log like scan/kali/http do."""
+    import asyncio
+    import core.quick_log
+    from mcp_server.redteam_tools import redteam
+    from mcp_server.transform_tools import transform
+    fake = _FakeQuickLog()
+    monkeypatch.setattr(core.quick_log, "quick_log", fake)
+    await redteam("techniques", target="http://t/chat")
+    await transform("list")
+    await asyncio.sleep(0)                      # let the fire-and-forget tasks run
+    names = [(e.get("type"), e.get("name"), e.get("target")) for e in fake.entries]
+    assert ("TOOL", "redteam", "http://t/chat") in names
+    assert ("TOOL", "transform", "") in names
+    rt = next(e for e in fake.entries if e.get("name") == "redteam")
+    assert rt["summary"].startswith("redteam techniques")
+
+
+@pytest.mark.asyncio
+async def test_quick_log_activity_carries_engine_artifact(monkeypatch):
+    import asyncio
+    import core.quick_log
+    from mcp_server._app import quick_log_activity
+    fake = _FakeQuickLog()
+    monkeypatch.setattr(core.quick_log, "quick_log", fake)
+    quick_log_activity("redteam", {"url": "http://t/chat", "action": "feedback_attack"},
+                       "redteam feedback_attack attempts=8", artifact_id="redteam_feedback_attack_x")
+    await asyncio.sleep(0)
+    e = fake.entries[0]
+    assert e["type"] == "TOOL" and e["name"] == "redteam" and e["target"] == "http://t/chat"
+    assert e["artifact_id"] == "redteam_feedback_attack_x"

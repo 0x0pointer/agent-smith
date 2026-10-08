@@ -261,6 +261,61 @@ def _report_run_error(name: str, kwargs: dict, exc: BaseException) -> str:
     return err
 
 
+# MCP clients abort a tool call that sends neither a result nor a progress
+# notification for a while (Claude Code: 300s), which killed full-port naabu and
+# the spider mid-run. Long tools await through this so the client sees activity.
+HEARTBEAT_INTERVAL_S = float(os.environ.get("SMITH_HEARTBEAT_S", "25") or 25)
+
+
+async def with_heartbeat(ctx, coro, label: str, interval: float | None = None):
+    """Await ``coro``, sending an MCP progress notification every ``interval``
+    seconds until it finishes. No-op wrapper when there is no request context or
+    the client sent no progressToken. Cancelling the call cancels ``coro``."""
+    interval = interval or HEARTBEAT_INTERVAL_S
+    task = asyncio.ensure_future(coro)
+    if ctx is None:
+        return await task
+    beats = 0
+    try:
+        while True:
+            done, _ = await asyncio.wait({task}, timeout=interval)
+            if done:
+                return task.result()
+            beats += 1
+            try:
+                await ctx.report_progress(
+                    beats, None, f"{label} still running ({int(beats * interval)}s)")
+            except Exception:
+                pass    # progress is best-effort; never fail the tool over it
+    except asyncio.CancelledError:
+        task.cancel()
+        raise
+
+
+def quick_log_activity(tool: str, ctx: dict, summary: str, artifact_id: str | None = None) -> None:
+    """Write the TOOL activity entry that the response envelope writes for scan/kali/http,
+    for tools that return raw JSON and bypass the envelope (the AI engines: redteam(),
+    transform()). Without it a 20-minute engine battery produced NO activity entries:
+    the QA daemon raised TOOL_INACTIVITY / RESUME_REQUIRED mid-run and the dashboard's
+    'last tool call' pointed at the previous kali call. Works from async tools (loop task)
+    and sync tools (direct write). Fire-and-forget, fail-soft."""
+    try:
+        from core.quick_log import quick_log as _qlog
+        from mcp_server.scan_engine.envelope.quick_log import _build_quick_log_entry
+        target = ctx.get("url", ctx.get("host", ctx.get("domain", ctx.get("path", ""))))
+        entry = _build_quick_log_entry(tool, target, summary, None, ctx)
+        entry["summary"] = summary
+        if artifact_id:
+            entry["artifact_id"] = artifact_id    # evidence stored → counts as progress
+        try:
+            asyncio.get_running_loop().create_task(_qlog.append(entry))
+        except RuntimeError:                      # sync tool: no running loop
+            entry.setdefault("ts", datetime.now(timezone.utc).isoformat())
+            _qlog._write_line(json.dumps(entry) + "\n")
+    except Exception:
+        pass    # activity logging must never affect tool dispatch
+
+
 async def _run(name: str, **kwargs) -> str:
     """Run a lightweight Docker tool from the registry with logging + cost tracking."""
     import time
