@@ -1569,6 +1569,27 @@ class TestSpawnSmith:
         assert "Recover the active pentest scan" in prompt
         assert "resuming your OWN pentest session" not in prompt
 
+    def test_opencode_respawn_inherits_session_model(self, spawn_env):
+        """A resumed opencode respawn passes --model = the session's OWN model, so a
+        scan started local resumes local and one started on Claude resumes Claude —
+        instead of silently falling back to opencode.json's default (the credit-death
+        footgun). Model is looked up from `opencode export` via _opencode_session_model."""
+        with patch("core.api_server.smith.spawn._opencode_session_model",
+                   return_value="security-one-spark/superagent-ai/security-one-27b"):
+            argv = self._capture_opencode_argv(spawn_env, lambda *_a, **_k: "ses_RESUMEME123")
+        assert "--model" in argv
+        assert argv[argv.index("--model") + 1] == "security-one-spark/superagent-ai/security-one-27b"
+        # --session <id> comes first, then --model, then the prompt (last)
+        assert argv.index("--session") < argv.index("--model") < len(argv) - 1
+
+    def test_opencode_respawn_omits_model_when_unresolvable(self, spawn_env):
+        """If the session's model can't be read (export failure), omit --model and let
+        opencode resolve its own default — never guess a wrong model."""
+        with patch("core.api_server.smith.spawn._opencode_session_model", return_value=None):
+            argv = self._capture_opencode_argv(spawn_env, lambda *_a, **_k: "ses_RESUMEME123")
+        assert "--model" not in argv
+        assert "--session" in argv  # still resumes the session
+
     def _capture_claude_argv(self, env, resolver):
         """Run _spawn_smith('claude') with the claude session resolver patched in;
         return argv. Mirrors _capture_opencode_argv for the claude resume path."""
