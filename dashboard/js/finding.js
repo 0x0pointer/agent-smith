@@ -143,6 +143,35 @@
       </div>`).join('');
   }
 
+  // Upgrade raw <pre class="mermaid"> fallbacks (emitted when the server SVG is empty)
+  // to client-rendered SVGs. This is the OS-agnostic path: the bundled mermaid.min.js
+  // renders in the viewer's browser with no server-side headless Chrome. Mirrors
+  // topology.js — mermaid.render() returns an SVG string with no DOM-attachment
+  // dependency, and a per-diagram try/catch keeps one bad diagram from blanking the
+  // rest (on error the readable raw source stays, with an inline error note).
+  async function renderPendingMermaid(scope) {
+    if (typeof mermaid === 'undefined' || !scope) return;
+    const pres = scope.querySelectorAll('pre.mermaid');
+    let i = 0;
+    for (const pre of pres) {
+      const src = (pre.textContent || '').trim();
+      if (!src) continue;
+      try {
+        const { svg } = await mermaid.render('fdiag-' + Date.now().toString(36) + '-' + (i++), src);
+        const holder = document.createElement('div');
+        holder.innerHTML = svg;
+        const svgEl = holder.querySelector('svg');
+        if (svgEl) { svgEl.style.maxWidth = '100%'; svgEl.style.height = 'auto'; }
+        pre.replaceWith(svgEl || holder);
+      } catch (err) {
+        const warn = document.createElement('div');
+        warn.style.cssText = 'color:#ff4d4f;font-size:.8rem;margin-bottom:.4rem';
+        warn.textContent = '⚠ Mermaid render error: ' + (err && err.message ? err.message : String(err));
+        if (pre.parentNode) pre.parentNode.insertBefore(warn, pre);
+      }
+    }
+  }
+
   // ── main render ──────────────────────────────────────────────────────────────
   function render(data) {
     const f = data.finding || {};
@@ -229,6 +258,9 @@
         ${mainCol}
         ${railCol}
       </div>`;
+
+    // Render any Mermaid fallbacks (exploit-chain kill-chains) client-side.
+    renderPendingMermaid(root).catch(() => {});
   }
 
   function renderMissing() {
