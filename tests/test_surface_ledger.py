@@ -225,7 +225,28 @@ def test_record_skipped_surfaces(monkeypatch):
     assert session._current["skipped_surfaces"] == snap
 
 
-def test_complete_records_skipped_surfaces_and_is_nonblocking(monkeypatch, findings_file):
+def test_cover_directive_and_bounded_nudge(monkeypatch):
+    """The active cover directive names only the UNcovered instances, and the nudge is
+    BOUNDED by the pending fingerprint: the same gap won't re-nudge, so it can't stall."""
+    monkeypatch.setattr(session, "_current", _running(surface_coverage={
+        "ai-redteam": {"unit": "ai_endpoint", "discovered": ["/chat", "/tutor"], "covered": ["/chat"]}}))
+    assert ledger.nudge_needed() is True
+    d = ledger.cover_directive()
+    assert "/ai-redteam" in d          # names the skill to re-run
+    assert "/tutor" in d               # the uncovered instance
+    assert "/chat" not in d            # the covered one is not listed
+    ledger.mark_nudged()
+    assert ledger.nudge_needed() is False             # same gap already nudged → no re-nudge
+    ledger.record_covered("ai-redteam", "/tutor")     # cover it → gap closes
+    assert ledger.pending("ai-redteam") == []
+    assert ledger.nudge_needed() is False             # nothing uncovered
+
+
+def test_complete_nudges_once_then_proceeds(monkeypatch, findings_file):
+    """PR-C refinement: the FIRST complete() with an uncovered gap bounces the agent back
+    with an active cover-directive (naming the exact re-run) AND records skipped_surfaces;
+    the SECOND complete() on the SAME (already-nudged) gap proceeds — bounded so it can
+    never stall the way an unbounded hard gate would."""
     import mcp_server.session_tools as st
     from mcp_server.session_tools.complete import _do_complete
 
@@ -235,19 +256,22 @@ def test_complete_records_skipped_surfaces_and_is_nonblocking(monkeypatch, findi
             "unit": "ai_endpoint", "discovered": ["/chat"], "covered": []}},
         complete_attempts=0, analysis_passes=0,
     ))
-    # Isolate from the (heavy) completion-blocker machinery: with no blockers the
-    # call must reach the clean "held for human sign-off" path — proving uncovered
-    # surface never adds a blocker.
     monkeypatch.setattr(st, "_collect_completion_blockers", lambda data, effective: [])
     st._complete_attempts = 0
     st._analysis_passes = 0
     st._last_blocker_count = None
 
-    resp = _do_complete()
-
-    assert isinstance(resp, str)
-    assert "COMPLETION HELD" in resp          # completion not refused over pending surface
+    # 1st attempt: the bounded cover-before-complete nudge fires + skipped is recorded.
+    r1 = _do_complete()
+    assert isinstance(r1, str)
+    assert "COVER UNCOVERED SURFACE" in r1   # the bounded nudge fired
+    assert "/ai-redteam" in r1               # names the skill
+    assert "/chat" in r1                     # names the uncovered instance
     assert session._current["skipped_surfaces"]["ai-redteam"]["pending"] == ["/chat"]
+
+    # 2nd attempt: SAME gap already nudged → no re-nudge → proceeds (never refuses).
+    r2 = _do_complete()
+    assert "COVER UNCOVERED SURFACE" not in r2
 
 
 # ── 6. GET /api/skill-usage shape (PR-E consumer) ────────────────────────────────

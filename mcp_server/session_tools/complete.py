@@ -133,17 +133,64 @@ def _thorough_gate(current: dict) -> str:
     return _thorough_keep_working_response(current)
 
 
-def _do_complete():
-    current0 = _st.scan_session.get() or {}
-    # PR-C: snapshot the still-uncovered per-instance surface into
-    # session['skipped_surfaces'] (reason defaults to budget/time). ADVISORY ONLY —
-    # this RECORDS pending>0, it NEVER blocks or refuses completion (no uncovered-surface
-    # blocker is ever added to _collect_completion_blockers). Fail-soft.
+def _surface_cover_nudge():
+    """BOUNDED cover-before-complete nudge (PR-C). Record the still-uncovered per-skill
+    surface, then — once per distinct gap (bounded by the ledger pending fingerprint) —
+    return a blocker response naming the EXACT re-runs so the agent DRIVES coverage of the
+    gap instead of recording it and deferring. Returns None when there's nothing new to
+    cover (completion proceeds). An unchanged / unreachable gap never re-nudges, so this
+    can't stall the local model the way an unbounded hard gate would. Fail-soft."""
     try:
         from core.session import surface_ledger as _ledger
         _ledger.record_skipped_surfaces("budget/time")
+        if _ledger.nudge_needed():
+            _ledger.mark_nudged()
+            directive = _ledger.cover_directive()
+            if directive:
+                return _build_blocker_response([directive])
     except Exception:
         pass
+    return None
+
+
+def _blocker_response_or_none(data):
+    """Evaluate completion blockers with the progress-aware HIR accounting; return a
+    blocker response to send back, or None when the scan is clear to complete. Extracted
+    from _do_complete to keep its cognitive complexity bounded."""
+    effective = _st._effective_tools()
+    blockers = _st._collect_completion_blockers(data, effective)
+    # Progress-aware HIR (condensed profiles): blockers surfaced one at a time, so a model
+    # clearing them across several complete() calls is progressing, not stalling. When the
+    # count DROPS, refund the attempt budget; HIR still fires when the count is stuck.
+    if _st._condensed_directives() and blockers:
+        n = len(blockers)
+        if _st._last_blocker_count is not None and n < _st._last_blocker_count:
+            _st._complete_attempts = 1
+        _st._last_blocker_count = n
+    elif not blockers:
+        _st._last_blocker_count = None
+    if blockers:
+        # Log the adjudication directive whenever the gate fires so the Activity tab
+        # reflects that a review pass is owed.
+        try:
+            from core.adjunction import pending_findings
+            from core.adjunction.log import log_directive
+            pending = pending_findings(data)
+            if pending:
+                log_directive(pending)
+        except Exception:
+            pass
+        return _build_blocker_response(blockers)
+    return None
+
+
+def _do_complete():
+    current0 = _st.scan_session.get() or {}
+    # PR-C: record the still-uncovered per-instance surface, and (bounded, once per gap)
+    # bounce the agent back to COVER it before completing — see _surface_cover_nudge().
+    _nudge = _surface_cover_nudge()
+    if _nudge is not None:
+        return _nudge
     # THOROUGH = 3 mandatory re-run passes, THEN unlimited/operator-terminated. The
     # AGENT can never end a thorough scan (only the operator's dashboard Complete Scan
     # → scan_session.complete() does), but it MUST be driven through the 3 escalating
@@ -154,7 +201,7 @@ def _do_complete():
     _st._complete_attempts += 1
 
     data = findings_store._load()
-    current = _persist_completion_counters()
+    _persist_completion_counters()  # side effect: persist counters (return value unused)
 
     # Skill-chain gates must be EVALUATED honestly at completion:
     #  - restore_gates() un-defers gates the per-response throttle parked, so a
@@ -167,34 +214,9 @@ def _do_complete():
     _st.scan_session.restore_gates()
     _st.scan_session.reconcile_worked_gates()
 
-    effective = _st._effective_tools()
-    blockers = _st._collect_completion_blockers(data, effective)
-
-    # Progress-aware HIR (condensed profiles): blockers are surfaced one at a
-    # time, so a model clearing them across several complete() calls is making
-    # progress, not stalling. When the count DROPS, refund the attempt budget so
-    # serialized fixing doesn't trip the 8-attempt HIR; HIR still fires when the
-    # count is stuck (genuine inability to progress).
-    if _st._condensed_directives() and blockers:
-        n = len(blockers)
-        if _st._last_blocker_count is not None and n < _st._last_blocker_count:
-            _st._complete_attempts = 1
-        _st._last_blocker_count = n
-    elif not blockers:
-        _st._last_blocker_count = None
-
-    if blockers:
-        # Log the adjudication directive whenever the gate fires so the Activity
-        # tab reflects that a review pass is owed.
-        try:
-            from core.adjunction import pending_findings
-            from core.adjunction.log import log_directive
-            pending = pending_findings(data)
-            if pending:
-                log_directive(pending)
-        except Exception:
-            pass
-        return _build_blocker_response(blockers)
+    resp = _blocker_response_or_none(data)
+    if resp is not None:
+        return resp
 
     _st._complete_attempts = 0
     _st._analysis_passes = 0

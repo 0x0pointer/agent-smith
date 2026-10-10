@@ -327,6 +327,74 @@ def advisory_line(max_skills: int = 4) -> str:
             + " — cover in priority order; skipping is allowed.")
 
 
+def cover_directive(max_skills: int = 6) -> str:
+    """ACTIVE directive (stronger than advisory_line): name the EXACT re-runs needed to
+    close the per-instance coverage gap before completing. Empty when nothing is
+    uncovered. Used by the bounded cover-before-complete nudge so the agent drives
+    coverage itself instead of recording the gap and deferring it."""
+    ov = pending_overview(limit_per_skill=8)
+    if not ov:
+        return ""
+    lines = []
+    for item in ov[:max_skills]:
+        keys = ", ".join(item["pending"])
+        extra = item["pending_count"] - len(item["pending"])
+        more = f" (+{extra} more)" if extra > 0 else ""
+        lines.append(f"  - re-run /{item['skill']} on: {keys}{more}  [{item['pending_count']} {item['unit']}]")
+    return ("COVER UNCOVERED SURFACE BEFORE COMPLETING — these are per-skill coverage "
+            "obligations, NOT deferrable Phase-B matrix breadth. Re-run the named skill on "
+            "each uncovered instance:\n" + "\n".join(lines) +
+            "\nCover each, then complete. If an instance is genuinely unreachable, record why "
+            "in a finding/note and call complete again to log it as a justified skip.")
+
+
+def pending_fingerprint() -> str:
+    """Stable short hash of the CURRENT uncovered-surface set (all skills, all keys).
+    Used to bound the cover nudge: an unchanged gap won't re-nudge; a new/changed gap gets
+    one fresh nudge. Empty string when nothing is uncovered."""
+    try:
+        if not _sess._current:
+            return ""
+        sc = _sess._current.get("surface_coverage") or {}
+        parts = []
+        for skill in sorted(sc):
+            pend = pending(skill)
+            if pend:
+                parts.append(f"{skill}:{','.join(sorted(pend))}")
+        sig = ";".join(parts)
+        if not sig:
+            return ""
+        import hashlib
+        return hashlib.sha256(sig.encode()).hexdigest()[:16]
+    except Exception:
+        return ""
+
+
+def nudge_needed() -> bool:
+    """True when uncovered surfaces exist that have NOT yet been nudged at completion.
+    BOUNDED: once mark_nudged() stores the current pending-fingerprint, the SAME set never
+    nudges again — so a genuinely-unreachable surface can never stall completion — while a
+    new/changed uncovered set gets exactly one driven coverage pass."""
+    try:
+        fp = pending_fingerprint()
+        if not fp:
+            return False
+        return (_sess._current or {}).get("surface_nudged") != fp
+    except Exception:
+        return False
+
+
+def mark_nudged() -> None:
+    """Record the current pending-fingerprint as having been nudged (bounds nudge_needed)."""
+    try:
+        if not _sess._current:
+            return
+        _sess._current["surface_nudged"] = pending_fingerprint()
+        _sess._flush()
+    except Exception:
+        pass
+
+
 def record_skipped_surfaces(reason: str = "budget/time") -> dict:
     """Snapshot the still-uncovered per-instance surface into
     ``_current['skipped_surfaces']`` at completion. ADVISORY ONLY — this records
