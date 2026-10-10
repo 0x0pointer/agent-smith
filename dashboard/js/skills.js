@@ -4,6 +4,14 @@
       const r = await fetch(`/api/session?_=${Date.now()}`);
       if (!r.ok) return;
       _skillsSession = await r.json();
+      // PR-E: per-skill USAGE metric (invocation count + per-instance covered/discovered/
+      // pending) from the Surface-Coverage Ledger. Best-effort — the /api/skill-usage route
+      // exists only once the ledger backend is present; if absent the card still shows the
+      // invocation count derived from skill_history.
+      try {
+        const ru = await fetch(`/api/skill-usage?_=${Date.now()}`);
+        _skillsSession._skillUsage = ru.ok ? await ru.json() : null;
+      } catch { _skillsSession._skillUsage = null; }
       renderSkills();
       // Update tab badge
       const history = _skillsSession.skill_history || [];
@@ -80,6 +88,9 @@
         const nameClass = inv ? 'skill-name invoked-name' : 'skill-name';
         const activeDot = isActive ? ' <span style="font-size:.65rem;color:#58a6ff;background:rgba(88,166,255,.15);padding:.1rem .3rem;border-radius:3px;font-style:normal">ACTIVE</span>' : '';
 
+        // PR-E: how many times this skill ran (count all skill_history entries, not just the first)
+        const runs = history.filter(h => h.skill === sk.name).length + (sk.name === 'pentester' ? 1 : 0);
+
         let meta = '';
         if (inv) {
           const ts = inv.timestamp ? new Date(inv.timestamp).toLocaleTimeString() : '';
@@ -87,10 +98,35 @@
           const reason = inv.reason && inv.reason !== 'session start'
             ? `<div class="skill-reason">${esc(inv.reason)}</div>`
             : '';
-          meta = `<div class="skill-invoked-at">Invoked${ts ? ' at ' + ts : ''}</div>${reason}${chainedFrom}`;
+          const ranLabel = runs > 1 ? ` · ran ${runs}×` : '';
+          meta = `<div class="skill-invoked-at">Invoked${ts ? ' at ' + ts : ''}${ranLabel}</div>${reason}${chainedFrom}`;
         } else if (req) {
           meta = `<div><span class="skill-required-badge">GATE REQUIRED</span></div>
                   <div class="skill-gate-reason">${esc(req.trigger)}</div>`;
+        }
+
+        // PR-E: WHERE the skill was used — per-instance coverage from the ledger. Each
+        // discovered surface instance is a chip: ✓ covered (green) / ✗ uncovered (amber).
+        // Surfaces the re-invocation gap visually (e.g. ai-redteam covered 1/2 AI endpoints).
+        let usageHtml = '';
+        const u = s._skillUsage && s._skillUsage[sk.name];
+        if (u && ((u.discovered || []).length || (u.covered || []).length)) {
+          const covered = new Set(u.covered || []);
+          const discovered = u.discovered || [];
+          const unit = esc(u.unit || 'instance');
+          const nCov = covered.size, nDisc = discovered.length;
+          const nPend = (u.pending || []).length;
+          const chips = discovered.map(k => {
+            const done = covered.has(k);
+            const short = k.length > 30 ? k.slice(0, 29) + '…' : k;
+            return `<span title="${esc(k)}" style="font-size:.62rem;padding:.08rem .3rem;border-radius:3px;`
+              + `background:${done ? 'rgba(63,185,80,.14)' : 'rgba(210,153,34,.14)'};`
+              + `color:${done ? '#3fb950' : '#d29922'}">${done ? '✓' : '✗'} ${esc(short)}</span>`;
+          }).join('');
+          usageHtml = `<div style="margin-top:.4rem">`
+            + `<span style="font-size:.7rem;color:#3fb950">${nCov}/${nDisc} ${unit} covered</span>`
+            + (nPend ? `<span style="font-size:.7rem;color:#d29922;margin-left:.45rem">${nPend} uncovered</span>` : '')
+            + `<div style="margin-top:.25rem;display:flex;flex-wrap:wrap;gap:.25rem">${chips}</div></div>`;
         }
 
         html += `<div class="${cardClass}">
@@ -99,6 +135,7 @@
             <div class="${nameClass}">/${esc(sk.name)}${activeDot}</div>
             <div class="skill-desc">${esc(sk.desc)}</div>
             ${meta}
+            ${usageHtml}
           </div>
         </div>`;
       }
