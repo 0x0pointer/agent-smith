@@ -165,7 +165,7 @@ from .setup_gates import (
 async def session(action: str, options: dict | str | None = None, ctx: Context | None = None) -> str:
     """Scan lifecycle and infrastructure management.
 
-    action  : start | complete | status | recovery | artifact | qa_reply | set_skill | set_step | wishlist_add | wishlist_list | start_kali | stop_kali | start_metasploit | stop_metasploit | pull_images | set_codebase
+    action  : start | complete | status | recovery | artifact | qa_reply | set_skill | set_step | wishlist_add | wishlist_list | job_poll | job_list | start_kali | stop_kali | start_metasploit | stop_metasploit | pull_images | set_codebase
 
     wishlist_add options (NON-BLOCKING agent→operator backlog — use instead of
       marking a cell not_applicable when you're blocked by a missing resource):
@@ -196,6 +196,18 @@ async def session(action: str, options: dict | str | None = None, ctx: Context |
     artifact options:
       id= (artifact ID from tool response), mode=summary (summary|head|tail|grep|full),
       max_chars=4000, pattern= (regex for grep mode)
+
+    job_poll options:
+      job_id= (the id returned by a background tool call — kali(background=true) or
+               scan(background=true)). Returns {status:"running", elapsed_seconds}
+               while it runs, or {status:"done", artifact_id, result:<envelope>} once
+               finished (result is the same summary/facts/evidence envelope the
+               synchronous call would have produced). {status:"error"} on failure,
+               {status:"unknown"} for an unrecognised id.
+
+    job_list options:
+      status= (optional filter: running|done|error). Lists active + finished
+              background jobs with their status, elapsed time, and artifact_id.
 
     set_skill options:
       skill= (name of the active skill, e.g. "pentester", "ai-redteam")
@@ -301,4 +313,10 @@ def _dispatch_sync_action(action: str, opts: dict) -> str:
         return _do_wishlist_list()
     if action == "oob_mint":
         return _do_oob_mint(opts)
-    return f"Unknown action '{action}'. Use: start, complete, status, qa_reply, recovery, artifact, pre_chain, set_skill, set_step, resume, wishlist_add, wishlist_list, setup_gate, start_kali, stop_kali, start_metasploit, stop_metasploit, start_mobsf, stop_mobsf, pull_images, set_codebase, oob_start, oob_mint, oob_poll"
+    if action == "job_poll":
+        from mcp_server import jobs
+        return jobs.poll_response(opts)
+    if action == "job_list":
+        from mcp_server import jobs
+        return jobs.list_response(opts)
+    return f"Unknown action '{action}'. Use: start, complete, status, qa_reply, recovery, artifact, pre_chain, set_skill, set_step, resume, wishlist_add, wishlist_list, setup_gate, start_kali, stop_kali, start_metasploit, stop_metasploit, start_mobsf, stop_mobsf, pull_images, set_codebase, oob_start, oob_mint, oob_poll, job_poll, job_list"
