@@ -60,9 +60,11 @@ except BaseException:
 _session_tools_called: set[str] = set()
 
 
-def _record(tool_name: str) -> None:
+def _record(tool_name: str, target: str = "") -> None:
     _session_tools_called.add(tool_name)
-    scan_session.add_tool_called(tool_name)
+    # ``target`` (PR-C, optional) is forwarded only to the advisory surface-coverage
+    # ledger (per-instance covered-attribution); it has no effect on the gate flags.
+    scan_session.add_tool_called(tool_name, target)
 
 
 def _rehydrate_tools() -> None:

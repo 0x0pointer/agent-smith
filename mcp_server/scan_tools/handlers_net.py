@@ -8,28 +8,28 @@ from ._common import _strip_scheme
 
 
 async def _handle_nmap(target, flags, options):
-    _record("nmap")
+    _record("nmap", target)
     raw = await _run("nmap", host=_strip_scheme(target), ports=options.get("ports", "top-1000"), flags=flags)
     from mcp_server.scan_engine import wrap
     return wrap("nmap", raw, {"host": _strip_scheme(target)})
 
 
 async def _handle_naabu(target, flags, options):
-    _record("naabu")
+    _record("naabu", target)
     raw = await _run("naabu", host=_strip_scheme(target), ports=options.get("ports", "top-100"), flags=flags)
     from mcp_server.scan_engine import wrap
     return wrap("naabu", raw, {"host": _strip_scheme(target)})
 
 
 async def _handle_subfinder(target, flags, _options):
-    _record("subfinder")
+    _record("subfinder", target)
     raw = await _run("subfinder", domain=_strip_scheme(target), flags=flags)
     from mcp_server.scan_engine import wrap
     return wrap("subfinder", raw, {"domain": _strip_scheme(target)})
 
 
 async def _handle_httpx(target, flags, options):
-    _record("httpx")
+    _record("httpx", target)
     raw = await _run("httpx", url=target, flags=flags)
     if options.get("_raw"):
         return raw
@@ -38,7 +38,7 @@ async def _handle_httpx(target, flags, options):
 
 
 async def _handle_nuclei(target, flags, options):
-    _record("nuclei")
+    _record("nuclei", target)
     if "-rate-limit" not in flags:
         flags = f"-rate-limit 50 {flags}".strip()
     raw = await _run(
@@ -84,7 +84,7 @@ async def _handle_ffuf(target, flags, options):
     log.tool_call("ffuf", {"url": target, "wordlist": wordlist, "extensions": extensions, "flags": flags})
     call_id = cost_tracker.start("ffuf")
     raw = _clip(await kali_runner.exec_command(cmd, timeout=900), 8_000)
-    _record("ffuf")
+    _record("ffuf", target)
     cost_tracker.finish(call_id, raw)
     log.tool_result("ffuf", raw)
     from mcp_server.scan_engine import wrap

@@ -429,7 +429,7 @@ async def _resolved_rest_options(target, options: dict) -> dict:
 async def _handle_garak(target, flags, options):
     from tools import garak_runner
 
-    _record("garak")  # track for coverage/skill-worked gates
+    _record("garak", target)  # track for coverage/skill-worked gates
     timeout = options.get("timeout", 900)
     # Default to the FAST, valid probes whose results DIRECTLY feed the agent-driven
     # manual layer: `encoding` (which obfuscations bypass the input filter — the input

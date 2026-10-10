@@ -118,6 +118,10 @@ def start(
         # → synthesis (compose everything). Saturation-driven; see core/session/phases.py.
         "scan_phase":    "exploit",
         "gates":         [],          # triggered gates that block completion
+        # PR-C: advisory per-instance surface-coverage ledger (non-blocking). Maps each
+        # re-triggerable skill to the surface instances it has discovered vs covered;
+        # populated/consumed by core.session.surface_ledger. Never gates completion.
+        "surface_coverage": {},
         "deferred_gates": [],         # gate IDs suppressed while a skill is active
         "setup_gates":   [],          # manual-setup prerequisites (capabilities.yaml) — NON-blocking, distinct from gates
         "spider_failures": {},        # targets where spider failed; cleared on success

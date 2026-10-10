@@ -122,6 +122,21 @@ def _check_scan_failed(tool: str, raw_output: str) -> str | None:
     return env.to_json()
 
 
+def _attribute_http_surface_coverage(tool: str, ctx: dict) -> None:
+    """PR-C: attribute an http_request to a discovered surface instance of the active
+    skill (AI / auth). http_request does NOT flow through _record()/add_tool_called,
+    so the per-instance ledger would otherwise never see HTTP probing. The scan/kali/
+    redteam tools already attribute via add_tool_called, so only http_request is handled
+    here. NON-BLOCKING + fail-soft; idempotent with the add_tool_called path."""
+    if tool != "http_request":
+        return
+    try:
+        from core.session import surface_ledger as _ledger
+        _ledger.attribute_covered("http_request", ctx.get("url") or ctx.get("target") or "")
+    except Exception:
+        pass
+
+
 def wrap(tool: str, raw_output: str, context: dict | None = None,
          artifact_raw: str | None = None) -> str:
     """Central entry point: raw tool output in, canonical envelope JSON out.
@@ -175,6 +190,10 @@ def wrap(tool: str, raw_output: str, context: dict | None = None,
 
     # 2b. Extract and persist known assets (P2 — auto-accumulation)
     _extract_and_persist_assets(tool, result, ctx)
+
+    # 2c. PR-C: advisory surface-coverage attribution for http_request (bypasses
+    # _record/add_tool_called, so attribute it here). NON-BLOCKING + fail-soft.
+    _attribute_http_surface_coverage(tool, ctx)
 
     # 3. Compute server-determined state and planner next-actions
     state = get_state()

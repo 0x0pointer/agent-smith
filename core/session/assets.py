@@ -135,6 +135,78 @@ def update_known_assets(asset_type: str, items: list) -> None:
                 f"{len(distinct)} distinct identities known — test cross-account access (BOLA/BFLA)",
                 ["business-logic"])
 
+    # PR-C: advisory per-instance surface ledger (NON-BLOCKING, fail-soft). Hook the
+    # asset-discovery signals the engine already records — never a new scan.
+    _ledger_record_assets(asset_type, items)
+
+
+def _host_instances() -> list[str]:
+    """Hosts in scope for the host-unit skills: the scan target host + known ips/domains.
+    De-duped, order-preserving, bounded."""
+    from core.session import surface_ledger as _ledger
+    cur = _sess._current or {}
+    raw = [cur.get("target", "")]
+    ka = cur.get("known_assets", {}) or {}
+    for lst in (ka.get("ips", []), ka.get("domains", [])):
+        raw.extend(x for x in (lst or []) if isinstance(x, str))
+    out: list[str] = []
+    seen: set[str] = set()
+    for r in raw:
+        h = _ledger.host_key(r)
+        if h and h not in seen:
+            seen.add(h)
+            out.append(h)
+    return out[:20]
+
+
+_CONTAINER_TECH = ("kubernetes", "k8s", "kubelet", "containerd", "docker",
+                   "openshift", "rancher")
+_CLOUD_TECH = ("aws", "amazon", "azure", "gcp", "google cloud", "s3",
+               "lambda", "cloudfront", "ec2")
+
+
+def _ledger_record_creds(_ledger) -> None:
+    for h in _host_instances():
+        for sk in ("post-exploit", "lateral-movement", "reverse-shell"):
+            _ledger.record_discovered(sk, h, "host")
+
+
+def _ledger_record_auth_endpoints(_ledger, items: list) -> None:
+    for it in items:
+        if isinstance(it, dict) and it.get("path"):
+            _ledger.record_discovered(
+                "credential-audit", f"api:{it.get('path')}", "auth_surface")
+
+
+def _ledger_record_technologies(_ledger, items: list) -> None:
+    for it in items:
+        s = it if isinstance(it, str) else str(it)
+        sl = s.lower()
+        if any(k in sl for k in _CONTAINER_TECH):
+            _ledger.record_discovered("container-k8s-security", s, "cluster_or_pod")
+        if any(k in sl for k in _CLOUD_TECH):
+            _ledger.record_discovered("cloud-security", s, "account_or_identity")
+
+
+def _ledger_record_assets(asset_type: str, items: list) -> None:
+    """Translate a known-assets write into advisory surface-ledger discoveries.
+
+    - credentials    → a foothold/compromise signal: every in-scope host becomes a
+                       post-exploit / lateral-movement / reverse-shell candidate.
+    - auth_endpoints → a credential-audit auth_surface per endpoint.
+    - technologies   → container/cloud evidence opens those skills' surface.
+    Fail-soft: never raises into the known-assets hot path."""
+    try:
+        from core.session import surface_ledger as _ledger
+        if asset_type == "credentials":
+            _ledger_record_creds(_ledger)
+        elif asset_type == "auth_endpoints":
+            _ledger_record_auth_endpoints(_ledger, items)
+        elif asset_type == "technologies":
+            _ledger_record_technologies(_ledger, items)
+    except Exception:
+        pass
+
 
 # ── Out-of-band (OOB) collaborator state ───────────────────────────────────────
 # The minted listener domain + the minted-callback registry live in session
