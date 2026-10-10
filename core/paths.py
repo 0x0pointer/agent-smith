@@ -41,6 +41,7 @@ METRICS_FILE     = REPO_ROOT / "pentest_metrics.jsonl"
 # ── Directories ───────────────────────────────────────────────────────────────
 LOGS_DIR         = REPO_ROOT / "logs"
 SMITH_EVENTS_DIR = LOGS_DIR / "smith-events"  # per-session reasoning/event streams (<engagement_id>.jsonl)
+JOBS_DIR         = LOGS_DIR / "jobs"          # background-job registry (one <job_id>.json per job, gitignored)
 ARTIFACTS_DIR    = REPO_ROOT / "artifacts"
 TEMPLATES_DIR    = REPO_ROOT / "templates"
 DASHBOARD_DIR    = REPO_ROOT / "dashboard"

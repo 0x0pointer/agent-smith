@@ -69,13 +69,22 @@ _DISPATCH = {
 
 
 @mcp.tool()
-async def scan(tool: str, target: str, flags: str = "", options: dict | str | None = None) -> str:
+async def scan(tool: str, target: str, flags: str = "", options: dict | str | None = None,
+               background: bool = False) -> str:
     """Run a security scanner.
 
     tool    : scanner name (see table)
     target  : URL, host, domain, or local path
     flags   : extra CLI flags (optional)
     options : tool-specific settings (optional dict)
+    background : when True, DO NOT block this turn — launch the scan as a tracked
+      background job and return IMMEDIATELY with {"status":"running","job_id":...}.
+      Collect the result with session(action="job_poll", options={"job_id":"<id>"})
+      (returns the same summary/facts/evidence + artifact_id envelope a synchronous
+      scan would), list jobs with session(action="job_list"). Use it for big sweeps
+      (large nuclei/ffuf runs) so you can keep testing while it runs. Simultaneous
+      background jobs are capped (default 4); beyond the cap the submission is
+      rejected with a reason. Default (omitted/false) = normal synchronous scan.
 
     | tool       | target type | options (defaults)                                |
     |------------|-------------|---------------------------------------------------|
@@ -122,6 +131,23 @@ async def scan(tool: str, target: str, flags: str = "", options: dict | str | No
     # Phase 7's tool-class coverage gate still catches "web target but ffuf
     # never ran" at completion time.
 
+    # Background: launch the handler as a tracked job and return immediately.
+    # The job runs the SAME _scan_execute() the synchronous path uses, so its
+    # stored result is the identical envelope (incl. a real artifact_id).
+    if background:
+        from mcp_server import jobs
+        return jobs.submit(
+            f"scan:{tool}",
+            {"tool": tool, "target": target, "flags": flags, "options": options},
+            lambda: _scan_execute(tool, handler, target, flags, options),
+        )
+
+    return await _scan_execute(tool, handler, target, flags, options)
+
+
+async def _scan_execute(tool, handler, target, flags, options) -> str:
+    """Run a scan handler and return its envelope, with the spider-specific
+    failure handling. Shared by the synchronous and background paths."""
     try:
         return await handler(target, flags, options)
     except Exception as exc:
