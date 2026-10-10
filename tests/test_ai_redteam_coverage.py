@@ -68,6 +68,100 @@ def test_ai_redteam_trigger_gate_registered():
 
 
 # ---------------------------------------------------------------------------
+# OAuth / SAML routing to their specialist skills (PR-A, goal 1)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("path", [
+    "/oauth", "/oauth2/authorize", "/authorize", "/token", "/userinfo",
+    "/.well-known/openid-configuration", "/openid/connect",
+])
+def test_oauth_paths_classify_as_oauth(path):
+    assert classify_endpoint(path) == "oauth"
+
+
+@pytest.mark.parametrize("path", [
+    "/saml", "/saml2/acs", "/sso", "/acs", "/sls", "/scim/v2/Users",
+    "/login/callback?SAMLResponse=abc",
+])
+def test_saml_paths_classify_as_saml(path):
+    assert classify_endpoint(path) == "saml"
+
+
+@pytest.mark.parametrize("path", ["/login", "/logout", "/signin", "/register", "/auth"])
+def test_generic_auth_still_classifies_as_auth(path):
+    assert classify_endpoint(path) == "auth"
+
+
+def test_oauth_gate_requires_specialist_plus_credential_audit():
+    import core.session as sess
+    entry = sess._TRIGGER_MAP.get("oauth")
+    assert entry is not None
+    assert set(entry["required_skills"]) == {"oauth-security", "credential-audit"}
+    # specialist first so the QA missing-skill nudge (required_skills[0]) points at it
+    assert entry["required_skills"][0] == "oauth-security"
+
+
+def test_saml_gate_requires_specialist_plus_credential_audit():
+    import core.session as sess
+    entry = sess._TRIGGER_MAP.get("saml")
+    assert entry is not None
+    assert set(entry["required_skills"]) == {"saml-sso", "credential-audit"}
+    assert entry["required_skills"][0] == "saml-sso"
+
+
+def test_generic_auth_gate_unchanged():
+    import core.session as sess
+    assert sess._TRIGGER_MAP["auth"]["required_skills"] == ["credential-audit"]
+
+
+# ---------------------------------------------------------------------------
+# AI response-shape detection (PR-A, goal 2)
+# ---------------------------------------------------------------------------
+
+def test_classify_ai_response_detects_openai_chat_object():
+    body = json.dumps({"object": "chat.completion",
+                       "choices": [{"message": {"role": "assistant", "content": "hi"}}]})
+    assert tax.classify_ai_response(200, "application/json", body) == "ai-redteam"
+
+
+def test_classify_ai_response_detects_choices_message_without_object():
+    body = json.dumps({"id": "x", "choices": [{"index": 0, "message": {"content": "hi"}}]})
+    assert tax.classify_ai_response(200, "", body) == "ai-redteam"
+
+
+def test_classify_ai_response_detects_streaming_delta():
+    body = json.dumps({"choices": [{"delta": {"content": "he"}}]})
+    assert tax.classify_ai_response(200, "", body) == "ai-redteam"
+
+
+def test_classify_ai_response_detects_sse_content_type():
+    assert tax.classify_ai_response(200, "text/event-stream; charset=utf-8", "") == "ai-redteam"
+
+
+def test_classify_ai_response_detects_openai_sse_body_without_content_type():
+    body = 'data: {"object":"chat.completion.chunk","choices":[{"delta":{"content":"h"}}]}\n\ndata: [DONE]\n\n'
+    assert tax.classify_ai_response(200, "", body) == "ai-redteam"
+
+
+def test_classify_ai_response_detects_mcp_handshake():
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "result": {
+        "protocolVersion": "2025-06-18", "serverInfo": {"name": "x"}, "capabilities": {}}})
+    assert tax.classify_ai_response(200, "application/json", body) == "ai-redteam"
+
+
+def test_classify_ai_response_ignores_generic_json_api():
+    body = json.dumps({"users": [{"id": 1, "name": "a"}], "total": 1})
+    assert tax.classify_ai_response(200, "application/json", body) is None
+
+
+def test_classify_ai_response_ignores_non_2xx_and_empty():
+    chat = json.dumps({"object": "chat.completion", "choices": [{"message": {"content": "x"}}]})
+    assert tax.classify_ai_response(404, "", chat) is None          # error status → not AI
+    assert tax.classify_ai_response(200, "", "") is None            # empty body
+    assert tax.classify_ai_response(200, "text/html", "<html>ok</html>") is None
+
+
+# ---------------------------------------------------------------------------
 # coverage matrix — LLM endpoint registration
 # ---------------------------------------------------------------------------
 

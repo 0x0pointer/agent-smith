@@ -5,14 +5,15 @@ The injection/endpoint knowledge that drives coverage-matrix generation and
 the cell-closure gates, in one place. Previously these tables were spread
 across coverage/classify.py and coverage/validation.py and (for
 BYPASS_REQUIRED_TYPES) re-imported from coverage by other modules — which
-forced a circular-import workaround. As a **leaf** module (imports only
-``re``), anything may depend on it without a cycle.
+forced a circular-import workaround. As a **leaf** module (imports only the
+stdlib ``re`` / ``json``), anything may depend on it without a cycle.
 
 Consumers alias these (e.g. ``_APPLICABILITY = _tax.APPLICABILITY``) so their
 existing local names are unchanged.
 """
 from __future__ import annotations
 
+import json
 import re
 
 # ── Applicability: which injection types apply to each param type ─────────────
@@ -104,7 +105,20 @@ def normalize_param_type(raw: str) -> str:
 TYPE_PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r'/graphql\b',                   re.IGNORECASE), "graphql"),
     (re.compile(r'/graph\b',                     re.IGNORECASE), "graphql"),
-    (re.compile(r'/(?:login|logout|signin|signup|register|auth|oauth|token|sso)\b', re.IGNORECASE), "auth"),
+    # OAuth2 / OIDC authorization surfaces → the oauth-security specialist (plus
+    # credential-audit). MUST precede the generic auth pattern below (first match
+    # wins) so an /oauth, /authorize, /token, /userinfo or OIDC-discovery path does
+    # NOT fall into the generic credential-audit-only auth gate and skip the
+    # oauth-security deep assessment entirely.
+    (re.compile(r'/(?:oauth2?|authorize|authorization|userinfo|introspect|revoke|token|openid)\b'
+                r'|/\.well-known/openid-configuration\b', re.IGNORECASE), "oauth"),
+    # SAML / enterprise-SSO / SCIM surfaces → the saml-sso specialist (plus
+    # credential-audit). Also precedes generic auth. Matches SAMLRequest/SAMLResponse
+    # when they appear in the classified path/query, not just the obvious /saml route.
+    (re.compile(r'/(?:saml2?|sso|acs|sls|scim)\b|\bsaml(?:request|response)\b', re.IGNORECASE), "saml"),
+    # Generic auth (login / registration / session) → credential-audit. OAuth and
+    # SAML are split out above so they reach their specialists; everything else here.
+    (re.compile(r'/(?:login|logout|signin|signup|register|auth)\b', re.IGNORECASE), "auth"),
     (re.compile(r'/admin\b',                     re.IGNORECASE), "admin"),
     (re.compile(r'/(?:upload|file|attachment|media|import)\b', re.IGNORECASE), "upload"),
     (re.compile(r'/(?:payment|invoice|checkout|billing|transaction|transfer|balance|wallet)\b', re.IGNORECASE), "financial"),
@@ -125,7 +139,9 @@ TYPE_PATTERNS: list[tuple[re.Pattern, str]] = [
 # endpoints fall to the default and are pulled forward only by a high-value param.
 ENDPOINT_VALUE_RANK: dict[str, int] = {
     "financial":  0,   # payment / transfer / balance — crown jewels
-    "auth":       1,   # login / token / sso
+    "auth":       1,   # login / registration / session
+    "oauth":      1,   # OAuth2 / OIDC authorization surface
+    "saml":       1,   # SAML / enterprise SSO / SCIM
     "admin":      1,
     "ai-redteam": 2,
     "graphql":    2,
@@ -197,3 +213,89 @@ AUTH_GATED_TYPES = {
     "cot_forgery", "role_prefix_spoofing",
     "mcp_command_injection", "mcp_intent_subversion", "mcp_context_oversharing",
 }
+
+# ── AI/LLM response-shape detection (companion to classify_endpoint) ──────────
+# The path-keyword classifier above can only recognise a NAMED AI route (/chat,
+# /completions, /mcp, …). A non-standard AI path (``/api/assistant/ask``,
+# ``/v2/query``) therefore never routes to ai-redteam and its LLM assessment
+# never registers. When an endpoint's PROBE RESPONSE is in hand we can still
+# recognise the surface from its SHAPE. DELIBERATELY CONSERVATIVE — a generic
+# JSON API must NOT be misread as an LLM endpoint — so a positive classification
+# requires one of these specific markers:
+#   * an SSE stream (``text/event-stream`` content-type, or OpenAI streaming
+#     ``data:`` frames carrying a chat.completion chunk / ``[DONE]`` sentinel);
+#   * an OpenAI-style chat/completions object (``object`` == "chat.completion"
+#     / ".chunk" / "text_completion", or ``choices[].message`` / ``choices[].delta``);
+#   * an MCP / JSON-RPC 2.0 handshake (``protocolVersion`` + ``serverInfo`` /
+#     ``capabilities``, or a ``"method": "initialize"`` request).
+_AI_SSE_CT_RE = re.compile(r"text/event-stream", re.IGNORECASE)
+# An SSE event frame: a line starting with one of the SSE field names, or a
+# ``data:`` line opening a JSON object / the OpenAI ``[DONE]`` stream sentinel.
+_AI_SSE_BODY_RE = re.compile(
+    r"^\s*(?:event|id|retry):|^\s*data:\s*(?:\[DONE\]|\{)", re.IGNORECASE | re.MULTILINE)
+_AI_CHAT_OBJECTS = {"chat.completion", "chat.completion.chunk", "text_completion"}
+
+
+def _looks_like_chat_json(data: object) -> bool:
+    """True if a decoded JSON body is an OpenAI-style chat/completions response."""
+    if not isinstance(data, dict):
+        return False
+    if str(data.get("object") or "") in _AI_CHAT_OBJECTS:
+        return True
+    choices = data.get("choices")
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        c0 = choices[0]
+        msg = c0.get("message")
+        if isinstance(msg, dict) and ("content" in msg or "role" in msg):
+            return True
+        if isinstance(c0.get("delta"), dict):
+            return True
+    return False
+
+
+def _looks_like_mcp_json(data: object) -> bool:
+    """True if a decoded JSON body is an MCP / JSON-RPC 2.0 handshake."""
+    if not isinstance(data, dict):
+        return False
+    if str(data.get("jsonrpc")) == "2.0":
+        if data.get("method") == "initialize":
+            return True
+        res = data.get("result")
+        if isinstance(res, dict) and {"protocolVersion", "serverInfo", "capabilities"} & set(res):
+            return True
+    # A bare MCP initialize result / server descriptor (no JSON-RPC envelope).
+    if "protocolVersion" in data and (
+            isinstance(data.get("serverInfo"), dict) or isinstance(data.get("capabilities"), dict)):
+        return True
+    return False
+
+
+def classify_ai_response(status: int, content_type: str, body: str) -> str | None:
+    """Return ``"ai-redteam"`` when a probe RESPONSE looks like an AI/LLM/MCP surface,
+    else ``None`` — the shape-sniff companion to the path-based ``classify_endpoint``,
+    for the many AI routes a keyword list can't name.
+
+    Conservative by construction (see the markers above): an ordinary JSON API,
+    an empty body, or a non-2xx response is never classified as AI.
+    """
+    try:
+        if not (200 <= int(status) < 300):
+            return None
+    except (TypeError, ValueError):
+        return None
+    if _AI_SSE_CT_RE.search(content_type or ""):
+        return "ai-redteam"
+    text = body or ""
+    stripped = text.lstrip()
+    if stripped[:1] in ("{", "["):
+        try:
+            data = json.loads(text)
+        except Exception:
+            data = None
+        if _looks_like_chat_json(data) or _looks_like_mcp_json(data):
+            return "ai-redteam"
+    # SSE framing carrying an OpenAI streaming payload (when no content-type is in hand).
+    if _AI_SSE_BODY_RE.search(text) and (
+            "chat.completion" in text or '"choices"' in text or "[DONE]" in text):
+        return "ai-redteam"
+    return None
