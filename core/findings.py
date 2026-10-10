@@ -135,6 +135,17 @@ async def add_finding(
         data = _load()
         data["findings"].append(entry)
         _save(data)
+    # PR-C: advisory per-instance surface ledger (NON-BLOCKING, fail-soft). A finding
+    # carrying a CVE makes that CVE a DISCOVERED instance for analyze-cve + metasploit,
+    # so the surfacer flags a 2nd/3rd CVE the one-shot gate would miss. Never raises
+    # into finding storage.
+    if cve:
+        try:
+            from core.session import surface_ledger as _ledger
+            for _sk in ("analyze-cve", "metasploit"):
+                _ledger.record_discovered(_sk, cve, "cve")
+        except Exception:
+            pass
     return entry
 
 

@@ -126,6 +126,20 @@ def _build_recovery_result(
     except Exception:
         pass
 
+    # PR-C: ADVISORY uncovered per-instance surface (non-blocking). Surfaced in the
+    # recovery brief so a respawned/compacted model still sees a 2nd AI endpoint / new
+    # host / CVE / auth surface the one-shot gate won't re-flag. Fail-soft.
+    try:
+        from core.session import surface_ledger as _ledger
+        overview = _ledger.pending_overview()
+        if overview:
+            result["uncovered_surface"] = {
+                "advisory": _ledger.advisory_line(),
+                "by_skill": overview,
+            }
+    except Exception:
+        pass
+
     # Open wishlist items — needs Smith raised for the operator. Surfaced so a
     # fulfilled need (operator dropped in creds/scope) is picked up after
     # compaction and the linked cells get reopened instead of forgotten.

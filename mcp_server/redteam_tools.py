@@ -71,7 +71,7 @@ async def redteam(action: str, target: str = "", options: dict | str | None = No
                         code=PIT-x-NN (full node), query=<text> (search). No args = overview.
     """
     opts = _ensure_dict(options) or {}
-    _record("redteam")   # count as AI red-team work for coverage/skill gates
+    _record("redteam", target)   # count as AI red-team work for coverage/skill gates
     log.tool_call("redteam", {"action": action, "target": target, "options": opts})
     try:
         result = await asyncio.to_thread(_dispatch, action, target, opts)

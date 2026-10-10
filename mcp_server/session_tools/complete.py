@@ -56,6 +56,15 @@ def _thorough_keep_working_response(current: dict) -> str:
         "dashboard 'Complete Scan' button). Do NOT call session(action='complete') again — no "
         f"cost/time/call limits; keep working. Current phase: {_phases.phase_label(phase)}."
     )
+    # PR-C: append the ADVISORY uncovered per-instance surface to the next-work directive
+    # (non-blocking — the agent may cover these or skip them). Fail-soft.
+    try:
+        from core.session import surface_ledger as _ledger
+        _adv = _ledger.advisory_line()
+        if _adv:
+            header += "\n" + _adv
+    except Exception:
+        pass
     from .recovery_build import _exploit_hunt_call, _synthesis_call
     if phase == _phases.EXPLOIT:
         return header + "\n\n" + _exploit_hunt_call()
@@ -126,6 +135,15 @@ def _thorough_gate(current: dict) -> str:
 
 def _do_complete():
     current0 = _st.scan_session.get() or {}
+    # PR-C: snapshot the still-uncovered per-instance surface into
+    # session['skipped_surfaces'] (reason defaults to budget/time). ADVISORY ONLY —
+    # this RECORDS pending>0, it NEVER blocks or refuses completion (no uncovered-surface
+    # blocker is ever added to _collect_completion_blockers). Fail-soft.
+    try:
+        from core.session import surface_ledger as _ledger
+        _ledger.record_skipped_surfaces("budget/time")
+    except Exception:
+        pass
     # THOROUGH = 3 mandatory re-run passes, THEN unlimited/operator-terminated. The
     # AGENT can never end a thorough scan (only the operator's dashboard Complete Scan
     # → scan_session.complete() does), but it MUST be driven through the 3 escalating
