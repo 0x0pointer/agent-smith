@@ -50,6 +50,7 @@ from .findings import (
     _coerce_finding_adjudication,
     _do_update_finding,
     _do_delete_finding,
+    _do_list_findings,
 )
 from .diagrams import (
     _do_diagram,
@@ -97,7 +98,7 @@ def _do_decision(data: Any) -> str:
 async def report(action: str, data: Any) -> str:
     """Log findings, diagrams, notes, coverage updates, or the DECISION behind your next action.
 
-    action : finding | update_finding | delete_finding | diagram | note | dashboard | coverage | chain | decision
+    action : finding | update_finding | delete_finding | list_findings | diagram | note | dashboard | coverage | chain | decision
 
     decision data (record BEFORE a non-trivial tool call — captures the 'why' for training data;
     provide what you actually reasoned, omit the rest):
@@ -132,6 +133,12 @@ async def report(action: str, data: Any) -> str:
 
     delete_finding data:
       id — moves the finding to the archived[] array (not permanently deleted)
+
+    list_findings data (all optional):
+      severity (exact, e.g. 'critical') / query (substring of title/description) — returns
+      every matching finding's id + severity + title, so you can pass those ids straight into
+      report(action='chain') / update_finding WITHOUT re-filing (re-filing a known issue is
+      rejected by the dedup guard). Use this the moment you need a finding's UUID to build a chain.
 
     diagram data:
       title, mermaid (valid Mermaid source)
@@ -191,6 +198,8 @@ async def report(action: str, data: Any) -> str:
         return await _do_update_finding(data)
     elif action == "delete_finding":
         return await _do_delete_finding(data)
+    elif action == "list_findings":
+        return _do_list_findings(data)
     elif action == "diagram":
         return await _do_diagram(data)
     elif action == "note":
@@ -206,5 +215,5 @@ async def report(action: str, data: Any) -> str:
     elif action == "recall":
         return await _do_recall(data)
     else:
-        return ("Unknown action '{}'. Use: finding, update_finding, delete_finding, diagram, note, "
-                "dashboard, coverage, chain, decision, recall").format(action)
+        return ("Unknown action '{}'. Use: finding, update_finding, delete_finding, list_findings, "
+                "diagram, note, dashboard, coverage, chain, decision, recall").format(action)

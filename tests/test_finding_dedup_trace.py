@@ -75,3 +75,63 @@ async def test_invalid_trace_rejected_on_update(findings_file):
         title="T", severity="low", target="t", description="d", evidence="e")
     res = await _do_update_finding({"id": entry["id"], "trace": [{"kind": "sink"}]})
     assert "REJECTED" in res
+
+
+# ── list_findings + chain-aware dedup + non-blocking near-duplicate hint ──────
+from mcp_server.report_tools import _do_list_findings  # noqa: E402
+
+
+@pytest.mark.asyncio
+async def test_list_findings_returns_ids_and_titles(findings_file):
+    await _do_finding(_f(severity="critical", title="SQL injection in /transfer to_account"))
+    await _do_finding(_f(severity="high", title="XSS in /transfer description"))
+    out = _do_list_findings({})
+    assert "SQL injection in /transfer" in out
+    assert "XSS in /transfer description" in out
+    # ids are surfaced for direct use in chain/update
+    assert "report(action='chain')" in out
+
+
+@pytest.mark.asyncio
+async def test_list_findings_severity_and_query_filters(findings_file):
+    await _do_finding(_f(severity="critical", title="SQL injection in /transfer"))
+    await _do_finding(_f(severity="low", title="Missing security headers"))
+    crit = _do_list_findings({"severity": "critical"})
+    assert "SQL injection" in crit and "Missing security headers" not in crit
+    q = _do_list_findings({"query": "security headers"})
+    assert "Missing security headers" in q and "SQL injection" not in q
+
+
+@pytest.mark.asyncio
+async def test_list_findings_empty(findings_file):
+    assert "No findings on record" in _do_list_findings({})
+
+
+@pytest.mark.asyncio
+async def test_dedup_message_is_chain_aware(findings_file):
+    await _do_finding(_f(title="Wildcard CORS on all responses"))
+    res = await _do_finding(_f(title="Wildcard CORS on all responses"))
+    assert "DUPLICATE" in res
+    assert "chain" in res.lower()           # tells the agent it can chain with the existing id
+    assert "list_findings" in res           # and how to discover ids
+
+
+@pytest.mark.asyncio
+async def test_near_duplicate_hint_fires_but_does_not_suppress(findings_file):
+    await _do_finding(_f(severity="critical", target="https://app",
+                         title="AI chat endpoint leaks full system prompt via prompt injection"))
+    res = await _do_finding(_f(severity="critical", target="https://app",
+                               title="AI chat endpoint exposes full system prompt including database"))
+    # filed (never auto-suppressed) AND flagged as a possible duplicate
+    assert "Finding logged" in res
+    assert "POSSIBLE DUPLICATE" in res
+
+
+@pytest.mark.asyncio
+async def test_distinct_finding_has_no_near_duplicate_hint(findings_file):
+    await _do_finding(_f(severity="critical", target="https://app",
+                         title="AI chat endpoint leaks full system prompt via prompt injection"))
+    res = await _do_finding(_f(severity="high", target="https://app",
+                               title="Open redirect on /go to attacker domain"))
+    assert "Finding logged" in res
+    assert "POSSIBLE DUPLICATE" not in res
