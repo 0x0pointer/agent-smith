@@ -327,26 +327,34 @@ def advance_phase(target: str | None = None) -> dict:
     return {"ok": True, "from": cur, "to": nxt}
 
 
-def _mark_active_skill_worked(tool_name: str = "") -> bool:
+def _mark_active_skill_worked(tool_name: str = "") -> tuple[bool, bool]:
     """Flag the current active skill's history entry as having done work, and record
     the tool that fired under it (so a deep-work gate can require a SPECIFIC tool, not
-    just "any tool"). Returns True if it changed anything (so the caller knows to flush)."""
+    just "any tool").
+
+    Returns ``(changed, newly_worked)``: ``changed`` is whether anything was written
+    (so the caller knows to flush); ``newly_worked`` is whether the skill's ``worked``
+    flag flipped False→True on THIS call, so the caller can reconcile the skill-chain
+    gates the instant a skill first does real work instead of waiting for the next
+    completion attempt."""
     active = _sess._current.get("skill")
     if not active:
-        return False
+        return False, False
     for e in reversed(_sess._current.get("skill_history", [])):
         if e.get("skill") == active:
             changed = False
+            newly_worked = False
             if not e.get("worked"):
                 e["worked"] = True
                 changed = True
+                newly_worked = True
             if tool_name:
                 tools = e.setdefault("tools", [])
                 if tool_name not in tools:
                     tools.append(tool_name)
                     changed = True
-            return changed
-    return False
+            return changed, newly_worked
+    return False, False
 
 
 def add_tool_called(tool_name: str, target: str = "") -> None:
@@ -367,10 +375,23 @@ def add_tool_called(tool_name: str, target: str = "") -> None:
     if tool_name not in tools:
         tools.append(tool_name)
         changed = True
-    if _mark_active_skill_worked(tool_name):
+    marked_changed, newly_worked = _mark_active_skill_worked(tool_name)
+    if marked_changed:
         changed = True
     if changed:
         _sess._flush()
+    # When a skill FIRST does real work, reconcile its skill-chain gates immediately
+    # rather than waiting for the next session(action='complete') call. Otherwise a gate
+    # can stay pending between completion attempts even though its skill just worked —
+    # and the keep-working / coverage directives keep naming the already-done skill,
+    # which is exactly what loops a local model back onto it. Only runs on the
+    # False→True transition (cheap), and fail-soft so gate reconciliation can never
+    # break a tool call.
+    if newly_worked:
+        try:
+            reconcile_worked_gates()
+        except Exception:
+            pass
     # PR-C: advisory per-instance coverage attribution. add_tool_called already knows
     # the active skill; the ledger maps the tool's target to a discovered instance of
     # that skill's unit and marks it covered. NON-BLOCKING + fail-soft — a ledger error

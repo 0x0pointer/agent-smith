@@ -612,6 +612,26 @@ def test_reconcile_worked_gates_only_satisfies_worked_skills():
                for g in core.session.get()["gates"] if g["id"] == "api_coverage")
 
 
+def test_add_tool_called_eagerly_reconciles_gate_without_complete():
+    """A skill's chain-gate clears the INSTANT it does real work — no complete() needed.
+
+    Regression for the HTTP-only-skill stall: the gate used to stay pending between
+    completion attempts even after the skill worked, so the thorough keep-working /
+    coverage directives kept naming the already-done skill and a local model looped
+    back onto it (re-chain + identical-note spam). add_tool_called now reconciles on
+    the worked False→True transition so the directive stops naming it immediately."""
+    core.session.start("example.com")
+    core.session.trigger_gate("financial_coverage", "transfer endpoint", ["business-logic"])
+    core.session.set_skill("business-logic")
+    assert any(g["id"] == "financial_coverage" and g["status"] == "pending"
+               for g in core.session.get()["gates"])
+    # One tool fires under the active skill — gate reconciles immediately, with NO
+    # explicit reconcile_worked_gates() / complete() call in between.
+    core.session.add_tool_called("http")
+    assert all(g["status"] == "satisfied"
+               for g in core.session.get()["gates"] if g["id"] == "financial_coverage")
+
+
 # ── context meter resets at the compaction/recovery boundary ──────────────────
 
 def test_reset_context_meter_drops_to_fixed_overhead():
