@@ -202,6 +202,7 @@ from .gates import (  # noqa: E402
     add_tool_called,
     advance_phase,
     defer_gates,
+    dismiss_gate,
     maybe_advance_phase,
     open_trigger_gate,
     pending_gates,

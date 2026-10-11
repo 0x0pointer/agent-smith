@@ -130,6 +130,7 @@ from .skills import (
     _do_artifact,
     _do_pre_chain,
     _manage_skill_gates,
+    _do_dismiss_gate,
     _do_set_skill,
     _enqueue_setup_gates,
     _do_set_step,
@@ -165,7 +166,16 @@ from .setup_gates import (
 async def session(action: str, options: dict | str | None = None, ctx: Context | None = None) -> str:
     """Scan lifecycle and infrastructure management.
 
-    action  : start | complete | status | recovery | artifact | qa_reply | set_skill | set_step | wishlist_add | wishlist_list | job_poll | job_list | start_kali | stop_kali | start_metasploit | stop_metasploit | pull_images | set_codebase
+    action  : start | complete | status | recovery | artifact | qa_reply | set_skill | set_step | dismiss_gate | wishlist_add | wishlist_list | job_poll | job_list | start_kali | stop_kali | start_metasploit | stop_metasploit | pull_images | set_codebase
+
+    dismiss_gate options (close a PENDING skill-chain gate as a documented dead-end when
+      its required skill genuinely cannot run on this target — a false-positive trigger or
+      an absent precondition, e.g. a post_exploit_rce gate with no code-execution so
+      reverse-shell has nothing to launch). The honest alternative to re-chaining an
+      un-runnable skill forever; NOT a way to skip real work:
+      gate_id=  (required — the pending gate's id)
+      rationale= (required, >=30 chars — WHY the skill is not applicable here)
+      evidence= (optional — a finding_id/artifact supporting 'not applicable')
 
     wishlist_add options (NON-BLOCKING agent→operator backlog — use instead of
       marking a cell not_applicable when you're blocked by a missing resource):
@@ -303,6 +313,12 @@ def _dispatch_sync_action(action: str, opts: dict) -> str:
         return _do_artifact(opts)
     if action == "pre_chain":
         return _do_pre_chain(opts)
+    return _dispatch_sync_action_extra(action, opts)
+
+
+def _dispatch_sync_action_extra(action: str, opts: dict) -> str:
+    """Second half of the sync action table (kept separate so each dispatcher stays
+    under the cognitive-complexity bound)."""
     if action == "resume":
         return _do_resume(opts)
     if action == "intervene":
@@ -311,6 +327,8 @@ def _dispatch_sync_action(action: str, opts: dict) -> str:
         return _do_wishlist_add(opts)
     if action == "wishlist_list":
         return _do_wishlist_list()
+    if action == "dismiss_gate":
+        return _do_dismiss_gate(opts)
     if action == "oob_mint":
         return _do_oob_mint(opts)
     if action == "job_poll":
@@ -319,4 +337,4 @@ def _dispatch_sync_action(action: str, opts: dict) -> str:
     if action == "job_list":
         from mcp_server import jobs
         return jobs.list_response(opts)
-    return f"Unknown action '{action}'. Use: start, complete, status, qa_reply, recovery, artifact, pre_chain, set_skill, set_step, resume, wishlist_add, wishlist_list, setup_gate, start_kali, stop_kali, start_metasploit, stop_metasploit, start_mobsf, stop_mobsf, pull_images, set_codebase, oob_start, oob_mint, oob_poll, job_poll, job_list"
+    return f"Unknown action '{action}'. Use: start, complete, status, qa_reply, recovery, artifact, pre_chain, set_skill, set_step, resume, dismiss_gate, wishlist_add, wishlist_list, setup_gate, start_kali, stop_kali, start_metasploit, stop_metasploit, start_mobsf, stop_mobsf, pull_images, set_codebase, oob_start, oob_mint, oob_poll, job_poll, job_list"

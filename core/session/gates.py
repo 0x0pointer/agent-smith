@@ -58,6 +58,11 @@ def satisfy_gate(gate_id: str, skill_name: str) -> dict | None:
         return None
     for gate in _sess._current.get("gates", []):
         if gate["id"] == gate_id:
+            # A deliberately dismissed (not_applicable) gate is terminal — don't let a
+            # later tool-call silently resurrect it to satisfied. Re-open it only via
+            # trigger_gate (an explicit new trigger).
+            if gate.get("status") == "not_applicable":
+                return _sess._current
             if skill_name not in gate["satisfied_skills"]:
                 gate["satisfied_skills"].append(skill_name)
             if set(gate["required_skills"]).issubset(set(gate["satisfied_skills"])):
@@ -65,6 +70,48 @@ def satisfy_gate(gate_id: str, skill_name: str) -> dict | None:
             _sess._flush()
             return _sess._current
     return _sess._current
+
+
+def dismiss_gate(gate_id: str, rationale: str, evidence: str = "") -> dict | None:
+    """Close a PENDING skill-chain gate as NOT APPLICABLE, with a documented rationale.
+
+    For a gate that was triggered but whose required skill has no honest work to do on
+    THIS target — e.g. a ``post_exploit_rce`` gate opened by a FALSE 'RCE confirmed'
+    signal when no code-execution exists, so ``reverse-shell`` can never run. The only
+    alternatives were both bad: fire a meaningless tool under the skill just to flip
+    ``worked=True`` (the rubber-stamp the gate exists to prevent), or leave it pending —
+    which re-chains the agent onto an un-runnable skill forever (the second stall loop,
+    after the HTTP-only-skill one). This is the HONEST discharge the phases/gates design
+    already anticipated ("the operator can N/A a gate"): status becomes ``not_applicable``
+    with the rationale recorded, so it no longer blocks completion or the keep-working
+    directive, while staying fully auditable (logged + shown on the dashboard; the
+    operator can re-open it by re-triggering).
+
+    Guarded against a silent escape hatch: a non-empty rationale is required, and only a
+    gate that currently exists and is ``pending`` can be dismissed (returns None — a
+    no-op — otherwise, so the caller can explain why). ``evidence`` optionally references
+    a finding_id / artifact that supports 'not applicable'."""
+    _sess._reconcile_if_external_write()
+    if _sess._current is None or _sess._current.get("status") != "running":
+        return None
+    if not (rationale or "").strip():
+        return None
+    for gate in _sess._current.get("gates", []):
+        if gate["id"] == gate_id and gate.get("status") == "pending":
+            gate["status"] = "not_applicable"
+            gate["dismissal"] = {
+                "rationale":     rationale.strip(),
+                "evidence":      evidence or None,
+                "dismissed_at":  datetime.now(timezone.utc).isoformat(),
+            }
+            _sess._flush()
+            try:
+                from core import logger as _log
+                _log.note(f"GATE DISMISSED (not applicable) [{gate_id}]: {rationale.strip()[:240]}")
+            except Exception:
+                pass
+            return _sess._current
+    return None
 
 
 def pending_gates() -> list[dict]:
@@ -251,6 +298,8 @@ def reconcile_worked_gates() -> None:
     if _sess._current is None:
         return
     for gate in _sess._current.get("gates", []):
+        if gate.get("status") == "not_applicable":
+            continue  # a documented dead-end gate stays dismissed; don't re-satisfy it
         for skill in gate.get("required_skills", []):
             if skill_worked(skill) and skill not in gate.get("satisfied_skills", []):
                 satisfy_gate(gate["id"], skill)

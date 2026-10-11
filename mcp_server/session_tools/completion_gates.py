@@ -32,7 +32,12 @@ def _gate_blockers() -> list[str]:
         blockers.append(
             f"GATE [{gate['id']}]: {gate['trigger']} — "
             f"required skill(s) not yet invoked: {', '.join(missing)}. "
-            f"Chain into these skills before completing."
+            f"Chain into these skills and do their work (a tool firing under the skill clears it). "
+            f"If a required skill genuinely CANNOT run on this target — the trigger was a false "
+            f"positive or the precondition is absent (e.g. post_exploit_rce with no code-execution, "
+            f"so reverse-shell has nothing to launch) — record the dead-end instead of re-chaining "
+            f"it forever: session(action='dismiss_gate', options={{gate_id:'{gate['id']}', "
+            f"rationale:'<why {', '.join(missing)} is not applicable here>'}})."
         )
     return blockers
 

@@ -130,8 +130,8 @@ def _skills_exhausted(sess: dict) -> bool:
         return True
     worked = _worked_skills(sess)
     for g in (sess or {}).get("gates", []) or []:
-        if g.get("status") == "satisfied":
-            continue
+        if g.get("status") in ("satisfied", "not_applicable"):
+            continue  # not_applicable = an operator/agent-documented dead-end (dismiss_gate)
         req = set(g.get("required_skills", []) or [])
         if req and not req.issubset(worked):
             return False
