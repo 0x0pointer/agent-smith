@@ -612,6 +612,95 @@ def test_reconcile_worked_gates_only_satisfies_worked_skills():
                for g in core.session.get()["gates"] if g["id"] == "api_coverage")
 
 
+def test_add_tool_called_eagerly_reconciles_gate_without_complete():
+    """A skill's chain-gate clears the INSTANT it does real work — no complete() needed.
+
+    Regression for the HTTP-only-skill stall: the gate used to stay pending between
+    completion attempts even after the skill worked, so the thorough keep-working /
+    coverage directives kept naming the already-done skill and a local model looped
+    back onto it (re-chain + identical-note spam). add_tool_called now reconciles on
+    the worked False→True transition so the directive stops naming it immediately."""
+    core.session.start("example.com")
+    core.session.trigger_gate("financial_coverage", "transfer endpoint", ["business-logic"])
+    core.session.set_skill("business-logic")
+    assert any(g["id"] == "financial_coverage" and g["status"] == "pending"
+               for g in core.session.get()["gates"])
+    # One tool fires under the active skill — gate reconciles immediately, with NO
+    # explicit reconcile_worked_gates() / complete() call in between.
+    core.session.add_tool_called("http")
+    assert all(g["status"] == "satisfied"
+               for g in core.session.get()["gates"] if g["id"] == "financial_coverage")
+
+
+# ── dismiss_gate: honest discharge of a false-positive / inapplicable gate ────
+
+def test_dismiss_gate_marks_not_applicable_and_clears_pending():
+    """A pending gate whose skill cannot run (false trigger) can be dismissed with a
+    documented rationale — no fake skill-work. It then drops out of pending_gates so it
+    no longer blocks completion or the keep-working directive."""
+    core.session.start("example.com")
+    core.session.trigger_gate("post_exploit_rce", "RCE confirmed", ["post-exploit", "reverse-shell"])
+    assert any(g["id"] == "post_exploit_rce" for g in core.session.pending_gates())
+    out = core.session.dismiss_gate(
+        "post_exploit_rce",
+        "RCE-confirmed trigger is a false positive; only a debug info leak exists, no "
+        "command execution, so reverse-shell has nothing to launch.")
+    assert out is not None
+    g = next(x for x in core.session.get()["gates"] if x["id"] == "post_exploit_rce")
+    assert g["status"] == "not_applicable"
+    assert g["dismissal"]["rationale"]
+    assert all(x["id"] != "post_exploit_rce" for x in core.session.pending_gates())
+
+
+def test_dismiss_gate_requires_rationale_and_pending_gate():
+    core.session.start("example.com")
+    core.session.trigger_gate("post_exploit_rce", "RCE confirmed", ["reverse-shell"])
+    # empty rationale → rejected (no-op at the core layer)
+    assert core.session.dismiss_gate("post_exploit_rce", "   ") is None
+    assert next(g for g in core.session.get()["gates"]
+                if g["id"] == "post_exploit_rce")["status"] == "pending"
+    # unknown gate → no-op
+    assert core.session.dismiss_gate("no_such_gate", "x" * 40) is None
+    # a satisfied gate cannot be dismissed
+    core.session.trigger_gate("api_coverage", "api", ["api-security"])
+    core.session.satisfy_gate("api_coverage", "api-security")
+    assert core.session.dismiss_gate("api_coverage", "y" * 40) is None
+    assert next(g for g in core.session.get()["gates"]
+                if g["id"] == "api_coverage")["status"] == "satisfied"
+
+
+def test_reconcile_does_not_resurrect_dismissed_gate():
+    """Once dismissed, a later tool firing under the skill must not silently re-satisfy it."""
+    core.session.start("example.com")
+    core.session.trigger_gate("post_exploit_rce", "RCE confirmed", ["reverse-shell"])
+    core.session.dismiss_gate("post_exploit_rce", "no RCE on this target; reverse-shell N/A here")
+    core.session.set_skill("reverse-shell")
+    core.session.add_tool_called("kali")          # eager reconcile runs here
+    core.session.reconcile_worked_gates()
+    assert next(g for g in core.session.get()["gates"]
+                if g["id"] == "post_exploit_rce")["status"] == "not_applicable"
+
+
+def test_dismiss_gate_handler_rejects_thin_rationale():
+    """The session(action='dismiss_gate') handler enforces a substantive rationale so it
+    can't be used as a silent skip."""
+    from mcp_server.session_tools.skills import _do_dismiss_gate
+    core.session.start("example.com")
+    core.session.trigger_gate("post_exploit_rce", "RCE confirmed", ["reverse-shell"])
+    # too short → rejected with guidance, gate stays pending
+    msg = _do_dismiss_gate({"gate_id": "post_exploit_rce", "rationale": "n/a"})
+    assert "rationale" in msg.lower()
+    assert next(g for g in core.session.get()["gates"]
+                if g["id"] == "post_exploit_rce")["status"] == "pending"
+    # substantive → accepted
+    ok = _do_dismiss_gate({"gate_id": "post_exploit_rce",
+                           "rationale": "no code execution exists on this target; "
+                                        "reverse-shell has nothing to launch"})
+    assert "not applicable" in ok.lower()
+    assert next(g for g in core.session.get()["gates"]
+                if g["id"] == "post_exploit_rce")["status"] == "not_applicable"
+
+
 # ── context meter resets at the compaction/recovery boundary ──────────────────
 
 def test_reset_context_meter_drops_to_fixed_overhead():

@@ -8,7 +8,7 @@ from typing import Any
 
 from core import cost as cost_tracker
 from core import logger as log
-from mcp_server._app import mcp, _ensure_dict
+from mcp_server._app import mcp, _ensure_dict, _record
 
 # Inline response body shown in the result/cost/log (the envelope itself only
 # surfaces a 500-char preview of this). Kept small so big responses don't bloat
@@ -100,6 +100,16 @@ async def http_probe(url, method="GET", headers=None, body=None, timeout_s=20) -
 
 async def _do_request(url, method, headers, body, opts):
     import aiohttp
+
+    # Record this HTTP probe as WORK BY THE ACTIVE SKILL. Every other scanner tool
+    # (kali/scan/nuclei/redteam) calls _record → scan_session.add_tool_called, which
+    # sets the active skill's worked=True so its skill-chain gate can be satisfied. The
+    # http tool was the ONE missing this hook, so a skill whose assessment is carried
+    # out purely over raw HTTP — business-logic (financial/BOLA abuse via /transfer),
+    # much of web-exploit — could never clear its gate no matter how much it tested.
+    # The gate stayed pending, the thorough keep-working directive kept naming the
+    # already-done skill, and a local model wedged into a re-chain/identical-note loop.
+    _record("http", url)
 
     poc = opts.get("poc", False)
     burp_proxy = opts.get("burp_proxy", "http://127.0.0.1:8080")

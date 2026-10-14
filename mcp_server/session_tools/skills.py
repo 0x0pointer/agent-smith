@@ -106,6 +106,43 @@ def _manage_skill_gates(skill_name: str, result: dict) -> list[str]:
     return satisfied_gates
 
 
+# Minimum rationale length for an honest 'not applicable' dismissal — long enough to
+# force a real dead-end justification, short enough not to be busywork.
+_DISMISS_MIN_RATIONALE = 30
+
+
+def _do_dismiss_gate(opts):
+    """session(action='dismiss_gate') — close a pending skill-chain gate as a documented
+    dead-end when its required skill genuinely cannot run on this target (false-positive
+    trigger / absent precondition). The honest alternative to re-chaining an un-runnable
+    skill forever; NOT a way to skip real work (substantive rationale required, logged,
+    operator-reviewable)."""
+    gate_id = (opts.get("gate_id") or "").strip()
+    rationale = (opts.get("rationale") or "").strip()
+    evidence = (opts.get("evidence") or opts.get("evidence_finding_id") or "").strip()
+    if not gate_id:
+        return "dismiss_gate requires options.gate_id (the pending gate to dismiss)."
+    if len(rationale) < _DISMISS_MIN_RATIONALE:
+        return (
+            "dismiss_gate requires a substantive options.rationale (>=30 chars) documenting WHY the "
+            "required skill is not applicable on THIS target — e.g. 'post_exploit_rce was triggered "
+            "by a false RCE-confirmed signal; the only related finding is a debug info leak, no "
+            "command execution exists, so reverse-shell has nothing to launch'. This records an "
+            "honest dead-end; it is not a way to skip work the skill could actually do.")
+    gate = _st.scan_session.dismiss_gate(gate_id, rationale, evidence)
+    if gate is None:
+        existing = {g["id"]: g.get("status") for g in (_st.scan_session.get() or {}).get("gates", [])}
+        if gate_id not in existing:
+            return f"No gate '{gate_id}'. Current gates: {existing or '(none)'}."
+        return (f"Gate '{gate_id}' is '{existing[gate_id]}', not pending — nothing to dismiss "
+                "(only a pending gate can be marked not applicable).")
+    return (
+        f"Gate '{gate_id}' marked NOT APPLICABLE (documented dead-end): {rationale[:160]}. "
+        "It no longer blocks completion or appears in the keep-working directive. The operator "
+        "can re-open it from the dashboard if this target does warrant the skill. Continue with "
+        "the remaining pending coverage/gates.")
+
+
 def _do_set_skill(opts):
     skill_name = opts.get("skill", "")
     reason = opts.get("reason", "")

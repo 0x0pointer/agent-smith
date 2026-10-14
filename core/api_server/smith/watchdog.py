@@ -124,7 +124,22 @@ def _finalize_respawn(now: float, client, ok: bool, result) -> None:
         _api._watchdog_restart_count_window.append(now)
         _smith._watchdog_scan_restarts += 1   # count toward the cumulative per-scan cap
         _smith._last_spawn_failure = ""   # live respawn — clear any prior failure reason
-        _log.info("watchdog: spawned pid=%d", int(result) if isinstance(result, int) else 0)
+        pid = int(result) if isinstance(result, int) else 0
+        _log.info("watchdog: spawned pid=%d", pid)
+        # Operators MUST know a headless session was (re)started — a scan that looks
+        # "paused" (Claude stopped generating) is often the watchdog silently spawning
+        # fresh headless sessions, and without a signal nobody knows those are running.
+        # The pid + per-scan respawn count make each spawn a DISTINCT notification: the
+        # notifier dedups on (code, body) for 30 min, so a fixed body would collapse a
+        # burst of respawns into one alert and hide exactly what Ricco flagged.
+        _smith._watchdog_notify(
+            "Watchdog started a headless Smith session",
+            f"The watchdog auto-(re)started {client} (pid {pid}) to keep the running scan "
+            f"going — respawn #{_smith._watchdog_scan_restarts} this scan. This is HEADLESS and "
+            "AUTONOMOUS: the scan is progressing on its own, NOT paused/awaiting you. Use the "
+            "dashboard Complete Scan / Force-Stop controls to end it.",
+            "WATCHDOG_SESSION_STARTED",
+        )
         return
     # Record the child's own exit reason so the no-progress HIR can report the
     # REAL cause (out-of-usage / credit / auth) instead of the generic

@@ -195,7 +195,8 @@ def _compute(
     ]
 
     gates = session.get("gates", [])
-    unsatisfied_gates = sum(1 for g in gates if g.get("status") != "satisfied")
+    # not_applicable = a documented dead-end (dismiss_gate) — resolved, not outstanding.
+    unsatisfied_gates = sum(1 for g in gates if g.get("status") not in ("satisfied", "not_applicable"))
 
     # ── Time per skill (from quick_log SKILL events) ──────────────────────────
     time_per_skill = _compute_time_per_skill(quick_log_entries)

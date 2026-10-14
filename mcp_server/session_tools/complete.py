@@ -86,7 +86,11 @@ def _thorough_keep_working_response(current: dict) -> str:
     missing = sorted({s for g in gates
                       for s in (set(g.get("required_skills", [])) - set(g.get("satisfied_skills", [])))})
     if missing:
-        lines.append(f"  • Skills not yet run: {', '.join(missing)} — chain each applicable one.")
+        lines.append(
+            f"  • Skills not yet run: {', '.join(missing)} — chain each APPLICABLE one and do its "
+            "work. If one cannot run here (false-positive trigger / absent precondition, e.g. "
+            "reverse-shell with no RCE), dismiss its gate with a documented dead-end instead of "
+            "re-chaining it: session(action='dismiss_gate', options={gate_id, rationale}).")
     lines.append("  • Adjudicate each high/critical finding, then go DEEPER — chain confirmed findings "
                  "to maximum impact and re-test at escalating aggression.")
     lines.append("Keep going. The operator will complete the scan when satisfied.")

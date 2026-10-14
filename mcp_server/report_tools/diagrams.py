@@ -7,6 +7,7 @@ from ._common import (
     scan_session,
     _safe,
     _mermaid_label,
+    _sanitize_mermaid,
     _safe_port,
 )
 from .gates import _auto_trigger_note_gates
@@ -14,7 +15,10 @@ from .gates import _auto_trigger_note_gates
 
 async def _do_diagram(data):
     title = data.get("title", "")
-    mermaid = data.get("mermaid", "")
+    # Agent-authored Mermaid: sanitise edge-label interiors so an unescaped '(' in a
+    # MITRE/technique label can't throw a parser error on the dashboard (the recurring
+    # "broken mermaid" report). Chain diagrams are already escaped by _chain_mermaid.
+    mermaid = _sanitize_mermaid(data.get("mermaid", ""))
     await findings_store.add_diagram(title=title, mermaid=mermaid)
     log.diagram(title)
     return f"Diagram saved: {title}"

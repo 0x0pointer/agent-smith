@@ -1,8 +1,9 @@
 """
-Finding actions: create / update / delete, plus finding hygiene
+Finding actions: create / update / delete / list, plus finding hygiene
 (trace validation, cross-run dedup, coverage auto-linking, adjudication).
 """
 import asyncio
+import re
 
 from ._common import (
     findings_store,
@@ -65,10 +66,50 @@ def _dedup_message(existing: dict) -> str:
     return (
         f"DUPLICATE — a finding with the same target + title + severity is already on record "
         f"(id={eid}). Not filed again, to keep findings.json and the adjudication gate clean "
-        "across runs. If this is a GENUINELY DISTINCT issue (different endpoint/parameter/"
-        "component), re-file with a more specific title. To revise the existing finding, use "
-        f"report(action='update_finding', data={{'id': '{eid}', ...}})."
+        "across runs. You ALREADY HAVE WHAT YOU NEED: to CHAIN this finding, pass "
+        f"'{eid}' directly as from_finding_id / to_finding_id in report(action='chain') — do NOT "
+        "re-file just to obtain an id. To revise it, use "
+        f"report(action='update_finding', data={{'id': '{eid}', ...}}). If this is a GENUINELY "
+        "DISTINCT issue (different endpoint/parameter/component), re-file with a more specific "
+        "title. See every finding's id with report(action='list_findings')."
     )
+
+
+# Generic verbs/prepositions that distinguish wording but not the underlying issue — dropped
+# when comparing titles for NEAR-duplicate detection so "leaks X" and "exposes X" look alike.
+_TITLE_STOPWORDS = frozenset({
+    "the", "a", "an", "of", "in", "on", "to", "via", "and", "or", "with", "for", "is", "are",
+    "exposes", "leaks", "allows", "enables", "reveals", "discloses", "exposed", "leaking",
+    "that", "this", "full", "endpoint",
+})
+
+
+def _title_tokens(title) -> set:
+    """Significant word tokens of a title (lowercased, stopwords + <3-char noise removed)."""
+    return {t for t in re.findall(r"[a-z0-9]+", _norm_text(title))
+            if t not in _TITLE_STOPWORDS and len(t) > 2}
+
+
+def _near_duplicate(title: str, target: str, severity: str) -> dict | None:
+    """Best existing finding that LOOKS like a near-duplicate (same target + severity, high
+    title-token Jaccard) but is not an exact dup. Used ONLY for a NON-BLOCKING hint — we never
+    auto-suppress on a fuzzy match, because wrongly dropping a genuinely distinct vuln is far
+    worse than two similar findings the operator can merge."""
+    toks = _title_tokens(title)
+    if len(toks) < 3:
+        return None
+    ntg, nsev = _norm_target(target), _norm_text(severity)
+    best, best_j = None, 0.0
+    for f in findings_store._load().get("findings", []):
+        if _norm_target(f.get("target")) != ntg or _norm_text(f.get("severity")) != nsev:
+            continue
+        ft = _title_tokens(f.get("title"))
+        if not ft:
+            continue
+        j = len(toks & ft) / len(toks | ft)
+        if j > best_j:
+            best, best_j = f, j
+    return best if 0.5 <= best_j < 1.0 else None
 
 
 # Map a finding's title/description to the coverage injection_type it evidences.
@@ -164,6 +205,10 @@ async def _do_finding(data):
         log.note(f"finding deduplicated against {dup.get('id')} — {title}")
         return _dedup_message(dup)
 
+    # NON-BLOCKING near-duplicate check (computed BEFORE filing, against existing findings):
+    # surfaces a likely dup as a hint in the response, never suppresses.
+    near = _near_duplicate(title, target, severity)
+
     # Link the proof artifact: explicit artifact_id if the model passed one,
     # else the session's most-recent tool artifact (the call that produced this
     # finding). Adjudication reuses it so the attack never has to be re-run.
@@ -225,12 +270,65 @@ async def _do_finding(data):
 
     # ── Auto-trigger gates based on finding content ──────────────────────────
     gates_triggered = _auto_trigger_finding_gates(title, severity, data.get("description", ""), data.get("cve", ""))
-    msg = f"Finding logged: [{severity.upper()}] {title}"
+    return _finding_filed_message(entry, severity, title, linked_cell, gates_triggered, near)
+
+
+def _finding_filed_message(entry: dict, severity: str, title: str,
+                           linked_cell, gates_triggered, near) -> str:
+    """Assemble the response for a successfully filed finding (id echo + matrix/gate/near-dup
+    notes). Split out of _do_finding to keep that function's cognitive complexity bounded."""
+    msg = f"Finding logged: [{severity.upper()}] {title} (id={entry.get('id','?')})"
     if linked_cell:
         msg += f"\n\nMATRIX UPDATED: cell {linked_cell} auto-marked vulnerable (linked to this finding)."
     if gates_triggered:
         msg += f"\n\nGATE(S) TRIGGERED: {', '.join(gates_triggered)}. These skills are now mandatory before completion."
+    if near is not None:
+        msg += (
+            f"\n\n⚠ POSSIBLE DUPLICATE of id={near.get('id')} (\"{(near.get('title') or '')[:60]}\") — "
+            "same target + severity, very similar title. If it is the SAME issue, prefer "
+            f"report(action='update_finding', data={{'id': '{near.get('id')}', ...}}) or chain to it, "
+            "rather than keeping two. Filed anyway (never auto-suppressed — that could drop a real "
+            "distinct finding); review with report(action='list_findings')."
+        )
     return msg
+
+
+_SEV_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+
+
+def _finding_matches(f: dict, sev_filter: str, query: str) -> bool:
+    """True if finding f passes the list_findings filters (empty filters match all)."""
+    if sev_filter and _norm_text(f.get("severity")) != sev_filter:
+        return False
+    if query and query not in _norm_text(f.get("title")) and query not in _norm_text(f.get("description")):
+        return False
+    return True
+
+
+def _finding_list_row(f: dict) -> str:
+    sev = (f.get("severity") or "?")[:4]
+    status = f.get("status")
+    st = f" [{status}]" if status and _norm_text(status) != "open" else ""
+    return f"  {f.get('id','?')}  [{sev:<4}] {(f.get('title') or '')[:74]}{st}"
+
+
+def _do_list_findings(data):
+    """List findings on record WITH their IDs so the agent can retrieve the UUIDs it needs to
+    compose exploit chains (report(action='chain')) without re-filing — re-filing hits the dedup
+    guard and strands the agent, which is exactly how a chain-filing phase wedges. Optional
+    filters: severity (exact), query (substring of title/description)."""
+    sev_filter = _norm_text(data.get("severity", ""))
+    query = _norm_text(data.get("query", ""))
+    rows = [f for f in findings_store._load().get("findings", [])
+            if _finding_matches(f, sev_filter, query)]
+    if not rows:
+        suffix = " matching that filter" if (sev_filter or query) else ""
+        return f"No findings on record{suffix}."
+    rows.sort(key=lambda f: _SEV_ORDER.get(_norm_text(f.get("severity")), 5))
+    lines = [f"{len(rows)} finding(s) on record — use the id directly in "
+             "report(action='chain') / update_finding:"]
+    lines.extend(_finding_list_row(f) for f in rows)
+    return "\n".join(lines)
 
 
 async def _do_update_finding(data):

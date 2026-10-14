@@ -71,6 +71,44 @@ def _mermaid_label(text: str) -> str:
     return out
 
 
+# Edge-label region: `-->|text|`, `--|text|`, `-.->|text|`, etc. Pipes do NOT nest, so
+# this is unambiguous and safe to rewrite (unlike node shapes [(..)] / (( )) which DO
+# nest and can't be split by a flat regex without corrupting the shape).
+_MERMAID_EDGE_LABEL_RE = re.compile(r"\|([^|\n]*)\|")
+
+
+def _escape_edge_label_interior(interior: str) -> str:
+    """Entity-escape an edge-label interior so it renders literally in any Mermaid
+    version. Strips one layer of surrounding quotes first (agent diagrams quote
+    inconsistently)."""
+    s = interior.strip()
+    if len(s) >= 2 and s[0] == '"' and s[-1] == '"':
+        s = s[1:-1]
+    return _mermaid_label(s)
+
+
+def _sanitize_mermaid(src: str) -> str:
+    """Make AGENT-AUTHORED Mermaid (report(action='diagram')) robust to the single most
+    common breakage we see in practice: unescaped special chars inside EDGE labels —
+    e.g. `-->|T1078 - Valid Accounts (Privileged Account Creation)|`, where the raw `(`
+    makes Mermaid's parser read a node-shape and throw 'got PS'. Only edge-label interiors
+    (`|...|`) are rewritten — a flat transform there is unambiguous and cannot corrupt node
+    shapes. Node-label edge cases are left for the client-side per-diagram render fallback
+    to degrade gracefully, rather than risk mangling a valid [(cylinder)] / ((circle)).
+
+    Chain diagrams built by _chain_mermaid already escape their labels via _mermaid_label;
+    this covers the diagrams the model writes by hand. Idempotent on already-clean input
+    (a label with no special chars is returned unchanged). Fail-soft: returns src on any
+    error so a sanitiser bug can never drop a diagram."""
+    if not src:
+        return src
+    try:
+        return _MERMAID_EDGE_LABEL_RE.sub(
+            lambda m: "|" + _escape_edge_label_interior(m.group(1)) + "|", src)
+    except Exception:
+        return src
+
+
 def _safe_port(value, default: int) -> int:
     """Coerce a user-supplied port value to a valid int in the IANA range.
 
