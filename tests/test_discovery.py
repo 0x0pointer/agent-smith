@@ -438,6 +438,70 @@ async def test_discover_ai_descriptors_ignores_blanket_deny(monkeypatch, coverag
     assert out["by_source"].get("ai-descriptor", 0) == 1
 
 
+# ── AI response-shape detection (non-standard AI path the keyword list misses) ──
+
+def test_ai_shape_candidates_skips_ai_paths_and_ai_params():
+    inv = [
+        {"path": "/api/assistant", "method": "GET", "params": []},        # candidate
+        {"path": "/v1/chat/completions", "method": "POST", "params": []},  # path already AI → skip
+        {"path": "/users/{id}", "method": "GET", "params": []},            # templated → skip
+        {"path": "/mcp/tools/run", "method": "POST",
+         "params": [{"name": "q", "type": "mcp_tool_arg"}]},               # AI param already → skip
+        {"path": "/api/assistant", "method": "POST", "params": []},        # dup path → skip
+    ]
+    cands = disc._ai_shape_candidates(inv)
+    assert [c["path"] for c in cands] == ["/api/assistant"]
+
+
+@pytest.mark.asyncio
+async def test_discover_ai_shape_retags_nonstandard_chat_endpoint(monkeypatch):
+    import json as _j
+    chat = {"object": "chat.completion",
+            "choices": [{"message": {"role": "assistant", "content": "hi"}}]}
+
+    async def fake_fetch(url):
+        if url.endswith("/api/assistant"):
+            return 200, _j.dumps(chat)
+        return 200, '{"ok": true}'          # generic JSON → not AI
+    monkeypatch.setattr(disc, "_fetch", fake_fetch)
+
+    inventory = [
+        {"path": "/api/assistant", "method": "GET", "params": [], "discovered_by": "spider"},
+        {"path": "/api/health", "method": "GET", "params": [], "discovered_by": "spider"},
+    ]
+    n = await disc._discover_ai_shape("http://t", inventory)
+    assert n == 1
+    ai = next(e for e in inventory if e["path"] == "/api/assistant")
+    assert ai.get("ai_shape") is True
+    assert any(p["type"] == "llm_prompt" for p in ai["params"])
+    # the generic JSON endpoint is untouched
+    health = next(e for e in inventory if e["path"] == "/api/health")
+    assert not health.get("ai_shape") and all(p["type"] != "llm_prompt" for p in health["params"])
+
+
+@pytest.mark.asyncio
+async def test_discover_and_register_shape_detects_ai_and_fans_llm_cells(monkeypatch, coverage_file):
+    import json as _j
+    chat = {"object": "chat.completion",
+            "choices": [{"message": {"role": "assistant", "content": "hi"}}]}
+
+    async def fake_fetch(url):
+        if url.endswith("/api/assistant"):
+            return 200, _j.dumps(chat)
+        return 404, ""
+    monkeypatch.setattr(disc, "_fetch", fake_fetch)
+
+    out = await disc.discover_and_register("http://t", ["http://t/api/assistant"])
+    assert out.get("ai_shape_detected", 0) >= 1
+
+    data = _j.loads(coverage_file.read_text())
+    ep = next(e for e in data["endpoints"] if e["path"] == "/api/assistant")
+    assert any(p["type"] == "llm_prompt" for p in ep["params"])
+    # the llm_prompt param fanned out the LLM injection cells
+    cells = {c["injection_type"] for c in data["matrix"] if c["endpoint_id"] == ep["id"]}
+    assert {"prompt_injection", "jailbreak", "system_prompt_leak"} & cells
+
+
 @pytest.mark.asyncio
 async def test_discover_transports_registers_ws_and_grpc(monkeypatch, coverage_file):
     async def fake_fetch(url):
