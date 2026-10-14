@@ -82,7 +82,7 @@ async def kali(command: str, timeout: int = 600, background: bool = False) -> st
     if stop:
         return stop
 
-    _record("kali")
+    _record("kali", command)
 
     if background:
         from mcp_server import jobs

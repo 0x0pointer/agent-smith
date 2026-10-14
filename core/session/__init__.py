@@ -103,6 +103,12 @@ _current: dict | None = None
 _TRIGGER_MAP: dict[str, dict] = {
     "graphql":    {"gate_id": "graphql_coverage",   "required_skills": ["api-security"]},
     "auth":       {"gate_id": "auth_coverage",       "required_skills": ["credential-audit"]},
+    # OAuth/OIDC and SAML/SSO are auth surfaces that ALSO need their specialist skill —
+    # credential-audit alone never exercises the OAuth redirect_uri / PKCE / state or the
+    # SAML signature-wrapping / assertion attack surface. Specialist listed first so the
+    # QA missing-skill nudge (required_skills[0]) points at it.
+    "oauth":      {"gate_id": "oauth_coverage",      "required_skills": ["oauth-security", "credential-audit"]},
+    "saml":       {"gate_id": "saml_coverage",       "required_skills": ["saml-sso", "credential-audit"]},
     "admin":      {"gate_id": "admin_coverage",      "required_skills": ["web-exploit"]},
     "upload":     {"gate_id": "upload_coverage",     "required_skills": ["web-exploit"]},
     "api":        {"gate_id": "api_coverage",        "required_skills": ["api-security"]},
@@ -231,3 +237,7 @@ from .setup_gates import (  # noqa: E402
     record_probe_result,
     setup_gate_by_id,
 )
+# PR-C: advisory per-instance surface-coverage ledger (non-blocking). Imported as a
+# submodule so callers use ``core.session.surface_ledger.<fn>``; it reads/writes
+# ``_current`` at call time exactly like the other submodules (no import cycle).
+from . import surface_ledger  # noqa: E402,F401

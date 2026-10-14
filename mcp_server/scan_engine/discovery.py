@@ -504,6 +504,65 @@ async def _discover_ai_descriptors(base: str) -> list[dict]:
     return out
 
 
+def _ai_shape_candidates(inventory: list[dict]) -> list[dict]:
+    """Endpoints worth a response-shape AI probe: concrete (non-templated) paths whose
+    PATH does not already route to ai-redteam and that don't already carry an AI/MCP
+    param surface, deduped by path. (Pure — split out to keep _discover_ai_shape simple.)"""
+    from core.coverage.classify import classify_endpoint
+    seen: set[str] = set()
+    out: list[dict] = []
+    for ep in inventory:
+        p = ep.get("path", "")
+        if not p or "{" in p or "}" in p or p in seen:
+            continue
+        if classify_endpoint(p) == "ai-redteam":
+            continue  # path already routes to ai-redteam — nothing to add
+        if any(str(pm.get("type", "")).startswith(("llm_", "mcp_")) for pm in ep.get("params") or []):
+            continue  # already carries an AI/MCP param surface
+        seen.add(p)
+        out.append(ep)
+    return out
+
+
+def _apply_ai_shape(ep: dict) -> None:
+    """Mark ``ep`` as a shape-detected AI endpoint: inject an ``llm_prompt`` param (so the
+    LLM injection cells fan out) and flag ``ai_shape`` (so _register_inventory opens the
+    ai-redteam gate)."""
+    params = list(ep.get("params") or [])
+    if not any(str(pm.get("type", "")) == "llm_prompt" for pm in params):
+        params.append({"name": "input", "type": "llm_prompt", "value_hint": "string"})
+    ep["params"] = params
+    ep["ai_shape"] = True
+
+
+async def _discover_ai_shape(base: str, inventory: list[dict]) -> int:
+    """Re-tag discovered endpoints whose PATH gave no AI hint but whose RESPONSE looks
+    like an AI/LLM/MCP surface — the AI routes a keyword path list (``_AI_DESCRIPTOR_PATHS``
+    / the ai-redteam path patterns) can't name (``/api/assistant/ask``, ``/v2/query``, …).
+
+    GET-probes each concrete, not-already-AI endpoint once (bounded, concurrent, fail-soft)
+    and, on a shape hit (``core.taxonomy.classify_ai_response``), rewrites the inventory
+    entry in place via ``_apply_ai_shape``. Returns the number of endpoints re-tagged.
+
+    Conservative by construction — ``classify_ai_response`` requires specific AI response
+    markers, so a generic JSON API is not misread as an LLM endpoint.
+    """
+    import core.taxonomy as _tax
+    targets = _ai_shape_candidates(inventory)[:_MAX_VERIFY]
+    if not targets:
+        return 0
+    results = await asyncio.gather(
+        *(_fetch(urljoin(base, ep["path"])) for ep in targets), return_exceptions=True)
+    retagged = 0
+    for ep, res in zip(targets, results):
+        if not (isinstance(res, tuple) and res[0]):
+            continue
+        if _tax.classify_ai_response(res[0], "", res[1] or "") == "ai-redteam":
+            _apply_ai_shape(ep)
+            retagged += 1
+    return retagged
+
+
 async def _discover_js(spider_urls: list[str]) -> list[dict]:
     """Mine linked JS bundles for routes."""
     js_urls = [u for u in spider_urls if u.lower().split("?", 1)[0].endswith(".js")][:_MAX_JS_FILES]
@@ -736,6 +795,15 @@ async def _register_inventory(inventory: list[dict], auth_context: str) -> dict:
                                    candidate=bool(ep.get("candidate", False)))
         except Exception:
             continue
+        # Response-shape-detected AI endpoint (non-standard path): add_endpoint only
+        # opens a trigger gate from the PATH classification, which gave no AI hint here,
+        # so open the ai-redteam gate explicitly. Fail-soft / no-op without a running scan.
+        if ep.get("ai_shape"):
+            try:
+                from core.session import open_trigger_gate
+                open_trigger_gate("ai-redteam", ep["path"])
+            except Exception:
+                pass
         if not r.get("dedup"):
             registered += 1
             cells += r.get("new_cells", 0)
@@ -863,10 +931,15 @@ async def discover_and_register(target: str, spider_urls: list[str], auth_contex
         # Merge same-route entries so a param-rich form/spec isn't shadowed by a
         # param-less crawl URL at add_endpoint's (path, method) dedup.
         inventory = _merge_inventory(rest + fuzz)
+        # Response-shape AI detection: re-tag non-standard AI endpoints the path
+        # classifier missed (runs post-merge so the flag lands on the exact dict
+        # that gets registered). Mutates inventory in place; fail-soft.
+        ai_shape_detected = await _discover_ai_shape(base, inventory)
         result = await _register_inventory(inventory, auth_context)
     finally:
         _DISCOVERY_AUTH.reset(token)
     result["spec_found"] = spec_ops is not None
     result["inventory"] = len(inventory)
     result["unverified_dropped"] = dropped
+    result["ai_shape_detected"] = ai_shape_detected
     return result

@@ -24,6 +24,7 @@ def _do_status():
     cov = get_matrix()
     result = _build_status_base(current, summary, remaining, cov, data)
     _add_status_work_queue(result, cov)
+    _add_status_uncovered_surface(result)
     _add_status_qa_alerts(result)
     payload = json.dumps(result, indent=2)
     # Same envelope-bypass story as _build_blocker_response: session()
@@ -167,6 +168,26 @@ def _add_status_work_queue(result: dict, cov: dict) -> None:
         "pending_count": len(pending_cells),
         "cells": queue,
     }
+
+
+def _add_status_uncovered_surface(result: dict) -> None:
+    """PR-C: append the ADVISORY uncovered per-instance surface list (non-blocking).
+
+    Shows which re-triggerable skills still have discovered-but-uncovered instances
+    (a 2nd AI endpoint, a new host/CVE/auth surface). Advisory ONLY — never gates
+    completion and never blocks. Fail-soft."""
+    try:
+        from core.session import surface_ledger as _ledger
+        overview = _ledger.pending_overview()
+        if overview:
+            result["uncovered_surface"] = {
+                "advisory": _ledger.advisory_line(),
+                "by_skill": overview,
+                "note": ("ADVISORY only — cover in priority order; skipping is allowed, "
+                         "completion is never blocked by uncovered surface."),
+            }
+    except Exception:
+        pass
 
 
 def _add_status_qa_alerts(result: dict) -> None:
