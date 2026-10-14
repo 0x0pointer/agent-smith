@@ -179,6 +179,32 @@ async def add_endpoint(
         from core.session import open_trigger_gate
         open_trigger_gate(ep_type, path)
 
+    # PR-C: advisory per-instance surface ledger (NON-BLOCKING, fail-soft). Record this
+    # endpoint as a DISCOVERED instance for the re-triggerable skill that owns its
+    # surface, so the surfacer can flag a 2nd AI endpoint / new auth surface that the
+    # one-shot completion gate will not. Never raises into endpoint registration.
+    try:
+        from core.session import surface_ledger as _ledger
+        if ep_type == "ai-redteam":
+            _ledger.record_discovered("ai-redteam", norm_path, "ai_endpoint")
+        elif ep_type == "auth":
+            _pl = path.lower()
+            _is_fed = any(tok in _pl for tok in ("oauth", "openid", "oidc", "sso", "saml"))
+            _ledger.record_discovered(
+                "credential-audit",
+                f"{'oauth' if _is_fed else 'web'}:{norm_path}", "auth_surface")
+        elif ep_type == "financial":
+            _ledger.record_discovered(
+                "business-logic", f"workflow:{norm_path}", "workflow_or_identity")
+        # An LLM/MCP param can live on a non-AI path — mirror the matrix fan-out so the
+        # AI surface is still tracked.
+        for _p in params or []:
+            if _normalize_param_type(_p.get("type", "")) in ("llm_prompt", "mcp_tool_arg"):
+                _ledger.record_discovered("ai-redteam", norm_path, "ai_endpoint")
+                break
+    except Exception:
+        pass
+
     result = {"endpoint_id": ep_id, "new_cells": new_cells, "dedup": False}
     # An endpoint registered with NO params generates only the cross-cutting cells
     # (cors/csrf/headers/…) and ZERO per-parameter injection cells — the matrix shows

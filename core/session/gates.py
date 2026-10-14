@@ -349,12 +349,16 @@ def _mark_active_skill_worked(tool_name: str = "") -> bool:
     return False
 
 
-def add_tool_called(tool_name: str) -> None:
+def add_tool_called(tool_name: str, target: str = "") -> None:
     """Persist a tool name to the tools_called list in session.json.
 
     Also marks the ACTIVE skill as having done work (worked=True) — a tool call
     fired while it was current — which is what lets its skill-chain gate be satisfied
-    (skill_worked/reconcile_worked_gates), rather than a bare set_skill declaration."""
+    (skill_worked/reconcile_worked_gates), rather than a bare set_skill declaration.
+
+    ``target`` (PR-C, optional): the tool's target (host/URL/CVE arg). Used ONLY by
+    the advisory surface-coverage ledger to attribute per-instance coverage to the
+    active skill — it never affects the blocking gate flags above."""
     _sess._reconcile_if_external_write()
     if not (_sess._current and _sess._current["status"] == "running"):
         return
@@ -367,3 +371,12 @@ def add_tool_called(tool_name: str) -> None:
         changed = True
     if changed:
         _sess._flush()
+    # PR-C: advisory per-instance coverage attribution. add_tool_called already knows
+    # the active skill; the ledger maps the tool's target to a discovered instance of
+    # that skill's unit and marks it covered. NON-BLOCKING + fail-soft — a ledger error
+    # must never break a tool call, and this never touches the worked/gate state above.
+    try:
+        from core.session import surface_ledger as _ledger
+        _ledger.attribute_covered(tool_name, target)
+    except Exception:
+        pass

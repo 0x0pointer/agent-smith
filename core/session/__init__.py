@@ -231,3 +231,7 @@ from .setup_gates import (  # noqa: E402
     record_probe_result,
     setup_gate_by_id,
 )
+# PR-C: advisory per-instance surface-coverage ledger (non-blocking). Imported as a
+# submodule so callers use ``core.session.surface_ledger.<fn>``; it reads/writes
+# ``_current`` at call time exactly like the other submodules (no import cycle).
+from . import surface_ledger  # noqa: E402,F401
