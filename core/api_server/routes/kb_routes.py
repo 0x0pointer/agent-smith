@@ -195,5 +195,6 @@ async def api_kb_docs_delete(name: str) -> JSONResponse:
             except Exception:
                 pass
         return JSONResponse({"ok": True, "removed": safe})
-    except Exception as exc:
-        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+    except Exception:
+        _log.exception("Failed to delete engagement doc", extra={"session_id": sid, "name": safe})
+        return JSONResponse({"ok": False, "error": "internal error"}, status_code=500)
