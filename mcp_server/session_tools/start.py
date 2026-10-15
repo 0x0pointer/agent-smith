@@ -11,6 +11,34 @@ from .start_helpers import (
 )
 
 
+def _kb_norm_lines() -> list[str]:
+    """Presence-gated 'recall-first' norm for the scan-start message (plan 5.1e #3).
+    Returns [] when no static KB and no engagement docs exist — so a scan with no KB
+    set up shows nothing (zero noise for users who never built/attached one). Scope
+    lines are emitted per available tier only."""
+    try:
+        from core.kb import kb_status
+        kb = kb_status()
+    except Exception:
+        return []
+    if not kb.get("any"):
+        return []
+    out = [f"  ┌─ LOCAL KB AVAILABLE ({kb['summary']}) ─",
+           "  │  RECALL-FIRST — before any web-search or guess, look it up locally:",
+           "  │  report(action='recall', data={query:'…', scope:'…'}). Useful scopes here:"]
+    if kb.get("docs"):
+        out.append("  │   • docs — the target's OWN API / architecture / business docs you attached")
+    if kb.get("kb"):
+        out += ["  │   • cve+exploit+nuclei — version→CVE→exploit on a tech+version fingerprint",
+                "  │   • wstg+skill_ref — methodology / how-to-test for an endpoint class",
+                "  │   • gtfobins+lolbas — binary abuse once you have host access"]
+    if kb.get("engagements"):
+        out.append("  │   • engagements — have I seen this endpoint / tech / error before?")
+    out += ["  │  Web only on a KB miss; each skill will also remind you with its scope.",
+            "  └─────────────────────────────────────────────────────────────────────", ""]
+    return out
+
+
 def _start_response(cfg: dict, classification: dict, target: str, scan_mode: str,
                     depth: str, is_resume: bool) -> str:
     """Build the human-facing scan-start message (advisory routing + EXECUTE NOW)."""
@@ -56,6 +84,7 @@ def _start_response(cfg: dict, classification: dict, target: str, scan_mode: str
         "  ⚠ AI-generated content may be incorrect. It should always be validated by a person.",
         "",
     ]
+    lines += _kb_norm_lines()   # presence-gated recall-first norm (empty when no KB/docs)
     if scan_mode == "benchmark":
         lines += [
             "BENCHMARK MODE: On critical/high findings, do NOT pause — exploit the chain autonomously.",

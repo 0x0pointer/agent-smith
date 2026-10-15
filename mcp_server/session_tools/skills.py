@@ -143,6 +143,70 @@ def _do_dismiss_gate(opts):
         "the remaining pending coverage/gates.")
 
 
+# ── Recall reflex (plan 5.1e) — presence-gated per-skill KB nudge ──────────────
+# skill → (scope string, what recall pulls for it). Scope tokens are FILTERED against
+# kb_status() so the agent is only ever pointed at a tier that actually has content;
+# if nothing is set up, no hint is emitted at all (silent for no-KB users).
+_TIER_A_KINDS = {"cve", "exploit", "nuclei", "gtfobins", "lolbas", "wstg", "skill_ref", "kb"}
+_SCOPE_DOCS_WSTG = "docs+wstg+skill_ref"   # app docs + methodology + our playbooks
+_SKILL_RECALL_SCOPES = {
+    "pentester":        ("docs+engagements", "the target's own API/architecture/business-rule docs you attached + what prior engagements found"),
+    "web-exploit":      (_SCOPE_DOCS_WSTG, "the app's endpoint/API docs + the WSTG procedure and playbooks for this endpoint class"),
+    "param-fuzz":       ("wstg+skill_ref+docs", "parameter / mass-assignment testing procedure + any API spec you attached"),
+    "business-logic":   ("docs+engagements+skill_ref", "the app's business rules / workflows from attached docs + prior-engagement notes"),
+    "api-security":     (_SCOPE_DOCS_WSTG, "the OpenAPI/GraphQL spec you attached + API testing methodology"),
+    "ai-redteam":       ("docs+skill_ref", "the app's AI/LLM architecture docs + the LLM red-team playbooks"),
+    "analyze-cve":      ("cve+exploit+nuclei", "the NVD entry + ExploitDB/nuclei PoCs for the CVE"),
+    "metasploit":       ("cve+exploit", "the CVE detail + exploit modules"),
+    "post-exploit":     ("gtfobins+lolbas+skill_ref", "GTFOBins/LOLBAS abuse for any binary you find on the host"),
+    "credential-audit": (_SCOPE_DOCS_WSTG, "the app's auth-flow docs + auth / session testing methodology"),
+    "network-assess":   ("skill_ref+engagements", "network-recon playbooks + prior-engagement topology"),
+    "lateral-movement": ("gtfobins+lolbas+skill_ref", "living-off-the-land binaries + lateral-movement techniques"),
+    "cloud-security":   ("docs+skill_ref", "any cloud-account docs you attached + cloud IAM/storage playbooks"),
+}
+_DEFAULT_RECALL = ("all", "relevant references and any engagement docs you attached")
+
+
+def _filter_scope(scope: str, status: dict) -> str:
+    """Keep only scope tokens whose tier actually has content (per kb_status)."""
+    kb_ok, docs_ok, eng_ok = status.get("kb"), status.get("docs"), status.get("engagements")
+    available_all = [t for t, ok in (("kb", kb_ok), ("docs", docs_ok), ("engagements", eng_ok)) if ok]
+    out: list[str] = []
+    for raw in scope.split("+"):
+        tok = raw.strip().lower()
+        if tok == "all":
+            out += available_all
+        elif tok in _TIER_A_KINDS and kb_ok:
+            out.append(tok)
+        elif tok == "docs" and docs_ok:
+            out.append("docs")
+        elif tok == "engagements" and eng_ok:
+            out.append("engagements")
+    return "+".join(dict.fromkeys(out))   # de-dup, order-preserving
+
+
+def _recall_hint(skill_name: str) -> str:
+    """Presence-gated recall nudge appended to the set_skill response. Empty when no
+    KB/docs are configured (silent for no-KB users) or nothing relevant to this skill
+    is available. Fail-soft — never breaks set_skill."""
+    try:
+        from core.kb import kb_status
+        status = kb_status()
+        if not status.get("any"):
+            return ""
+        scope, intent = _SKILL_RECALL_SCOPES.get(skill_name, _DEFAULT_RECALL)
+        scope = _filter_scope(scope, status)
+        if not scope:
+            return ""
+        return (
+            f"\n\n📚 LOCAL KB AVAILABLE ({status['summary']}). Before web-searching or guessing "
+            f"for this skill, RECALL FIRST: report(action='recall', data={{query:'<what you need>', "
+            f"scope:'{scope}'}}) — pulls {intent}. Offline + instant; web only on a miss."
+        )
+    except Exception:
+        return ""
+
+
 def _do_set_skill(opts):
     skill_name = opts.get("skill", "")
     reason = opts.get("reason", "")
@@ -201,6 +265,10 @@ def _do_set_skill(opts):
     # regardless of whether the workflow later calls report(action='dashboard').
     dash_note = _autostart_dashboard() if skill_name == "ai-redteam" else ""
 
+    # Presence-gated recall nudge (plan 5.1e): point the agent at the local KB /
+    # engagement docs relevant to THIS skill — empty string when nothing is set up.
+    recall_note = _recall_hint(skill_name)
+
     # Detect post-compaction resume: skill was already in history before this call
     if is_resume:
         recovery_brief = _st._do_recovery()
@@ -210,12 +278,12 @@ def _do_set_skill(opts):
         )
         if satisfied_gates:
             msg += f"\n\n(satisfied gate(s): {', '.join(satisfied_gates)})"
-        return msg + setup_note + dash_note
+        return msg + setup_note + dash_note + recall_note
 
     msg = f"Skill '{skill_name}' logged"
     if satisfied_gates:
         msg += f" (satisfied gate(s): {', '.join(satisfied_gates)})"
-    return msg + setup_note + dash_note
+    return msg + setup_note + dash_note + recall_note
 
 
 def _autostart_dashboard() -> str:

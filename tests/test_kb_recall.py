@@ -153,6 +153,10 @@ async def test_all_scope_mixes_sections(kb_env, tmp_path):
 
 @pytest.mark.asyncio
 async def test_no_matches_message(kb_env):
+    # Corpus EXISTS (a source) but the query matches nothing → "no matches / new ground".
+    # (The empty-corpus case now returns a distinct "not configured, proceed" message,
+    # covered by TestRecallEmptyMessaging.)
+    _mk_source(kb_env, "gtfobins", {"sudo.md": "sudo suid shell"})
     out = await _do_recall({"query": "zzzqqqxxx nonexistent", "scope": "kb"})
     assert "no matches" in out
 
@@ -311,3 +315,74 @@ def test_lifecycle_complete_purges_session_docs(kb_env, monkeypatch):
     monkeypatch.setattr(lifecycle, "stop_pentest_containers", lambda: None, raising=False)
     lifecycle.complete()
     assert not (kb_env / "sessions" / "sess-99").exists()
+
+
+# ── plan 5.1e: presence-gated recall reflex (kb_status + hints + norm) ────────
+from mcp_server.session_tools.skills import _recall_hint, _filter_scope  # noqa: E402
+from mcp_server.session_tools.start import _kb_norm_lines  # noqa: E402
+
+
+class TestKbStatusPresenceGate:
+    def test_empty_when_nothing_configured(self, kb_env):
+        s = kb_mod.kb_status()
+        assert s["any"] is False
+        assert s["kb"] is False and s["docs"] == 0 and s["engagements"] == 0
+        assert "no KB" in s["summary"]
+
+    def test_static_sources_make_kb_present(self, kb_env):
+        _mk_source(kb_env, "gtfobins", {"sudo.md": "sudo suid shell"})
+        s = kb_mod.kb_status()
+        assert s["kb"] is True and s["any"] is True
+
+    def test_session_doc_makes_docs_present(self, kb_env):
+        _mk_session_doc(kb_env, "sid1", "api-notes.md", "POST /api/login auth flow")
+        s = kb_mod.kb_status()
+        assert s["docs"] >= 1 and s["any"] is True and s["kb"] is False
+
+
+class TestRecallEmptyMessaging:
+    @pytest.mark.asyncio
+    async def test_no_corpus_says_proceed_not_failed_search(self, kb_env):
+        out = await _do_recall({"query": "werkzeug debugger pin"})
+        assert "no local KB or engagement docs are configured" in out
+        assert "proceed without it" in out
+
+    @pytest.mark.asyncio
+    async def test_corpus_present_but_no_match_says_new_ground(self, kb_env):
+        _mk_source(kb_env, "gtfobins", {"sudo.md": "sudo suid shell"})
+        out = await _do_recall({"query": "zzz_nonexistent_term_qqq"})
+        assert "new ground" in out
+        assert "not configured" not in out
+
+
+class TestRecallHintGating:
+    def test_hint_empty_when_no_kb(self, kb_env):
+        assert _recall_hint("web-exploit") == ""
+
+    def test_hint_scoped_to_docs_only_when_only_docs(self, kb_env):
+        _mk_session_doc(kb_env, "sid1", "api.md", "endpoints")
+        hint = _recall_hint("web-exploit")   # scope docs+wstg+skill_ref
+        assert "scope:'docs'" in hint        # wstg/skill_ref dropped (no static KB)
+        assert "wstg" not in hint
+
+    def test_hint_keeps_kb_kinds_when_static_kb_present(self, kb_env):
+        _mk_source(kb_env, "cve", {"x.md": "CVE-2023-25577"})
+        hint = _recall_hint("analyze-cve")   # scope cve+exploit+nuclei
+        assert "cve+exploit+nuclei" in hint
+
+    def test_filter_scope_drops_absent_tiers(self):
+        st = {"kb": False, "docs": True, "engagements": False}
+        assert _filter_scope("docs+wstg+skill_ref", st) == "docs"
+        assert _filter_scope("cve+exploit", st) == ""
+
+
+class TestStartNormGating:
+    def test_norm_empty_when_no_kb(self, kb_env):
+        assert _kb_norm_lines() == []
+
+    def test_norm_docs_only_excludes_cve_line(self, kb_env):
+        _mk_session_doc(kb_env, "sid1", "api.md", "endpoints")
+        lines = "\n".join(_kb_norm_lines())
+        assert "LOCAL KB AVAILABLE" in lines
+        assert "docs —" in lines
+        assert "cve+exploit+nuclei" not in lines   # no static KB → no CVE scope line

@@ -181,6 +181,57 @@ def index_stats(con: sqlite3.Connection) -> dict:
         return {"kinds": {}, "meta": {}, "built_at": None}
 
 
+def kb_status() -> dict:
+    """Which corpus tiers are actually populated — the presence gate for the recall
+    reflex. Cheap + fail-soft. A user who never built the KB and never attached a doc
+    gets ``any=False``, so the recall nudges/norm stay dormant and the feature is
+    invisible + zero-cost (no empty-result noise, especially for small local models).
+
+    Returns {kb_index, kb_sources, docs, engagements, kb, any, summary}.
+    """
+    index_docs = 0
+    try:
+        con = open_index()
+        if con is not None:
+            try:
+                index_docs = sum(int(v) for v in index_stats(con).get("kinds", {}).values())
+            finally:
+                con.close()
+    except Exception:
+        index_docs = 0
+    try:
+        sources = KB_ROOT / "sources"
+        kb_sources = sources.is_dir() and any(p.is_dir() for p in sources.iterdir())
+    except Exception:
+        kb_sources = False
+    try:
+        docs = len(iter_session_docs())
+    except Exception:
+        docs = 0
+    try:
+        import glob as _glob
+        engagements = len(_glob.glob("engagements/*/resume.json"))
+    except Exception:
+        engagements = 0
+
+    kb_present = bool(index_docs) or bool(kb_sources)
+    bits: list[str] = []
+    if index_docs:
+        bits.append(f"{index_docs} static-KB docs")
+    elif kb_sources:
+        bits.append("static-KB sources (unindexed — run build_kb.py)")
+    if docs:
+        bits.append(f"{docs} engagement doc(s)")
+    if engagements:
+        bits.append(f"{engagements} prior-engagement store(s)")
+    return {
+        "kb_index": index_docs, "kb_sources": kb_sources, "docs": docs,
+        "engagements": engagements, "kb": kb_present,
+        "any": kb_present or bool(docs) or bool(engagements),
+        "summary": ", ".join(bits) if bits else "no KB or engagement docs configured",
+    }
+
+
 # ── Flat-scan providers (zero-index fallback + tier B) ────────────────────
 _FLAT_EXTS = {".md", ".txt", ".json", ".yaml", ".yml", ".csv", ".log", ".http", ".html"}
 

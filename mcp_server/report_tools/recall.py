@@ -403,6 +403,20 @@ def _format_hits(query: str, query_terms: set[str], stores: list[str],
     return "\n".join(lines)
 
 
+def _no_hits_message(query: str, tiers: set, kinds: list) -> str:
+    """Empty-result text — distinguishes 'nothing configured' (no-KB user: proceed) from
+    'corpus exists but no match' (new ground), so recall never reads like a failed search
+    to someone who simply never built a KB."""
+    if not kb_mod.kb_status().get("any"):
+        return ("recall: no local KB or engagement docs are configured yet — nothing to look up, "
+                "proceed without it. (Optional: build the static KB with scripts/build_kb.py, or "
+                "attach target/client docs with session(action='kb_add').)")
+    scope_txt = "+".join(sorted(tiers)) or "all"
+    kinds_txt = f", kinds: {','.join(kinds)}" if kinds else ""
+    return (f"recall: no matches for '{query}' (scope: {scope_txt}{kinds_txt}). "
+            "Nothing on this — treat it as new ground.")
+
+
 async def _do_recall(data) -> str:
     """Search the corpus tiers for `query`; return ranked snippets."""
     query = (data.get("query") or "").strip()
@@ -459,10 +473,7 @@ async def _do_recall(data) -> str:
                     "(scope:'all' also searches the local KB kb/index.db).")
 
     if not sections:
-        return (f"recall: no matches for '{query}' "
-                f"(scope: {'+'.join(sorted(tiers)) or 'all'}"
-                + (f", kinds: {','.join(kinds)}" if kinds else "") + "). "
-                "Nothing on this — treat it as new ground.")
+        return _no_hits_message(query, tiers, kinds)
 
     header = f"🔎 recall '{query}'" + (
         f" — scope {'+'.join(sorted(tiers))}" if tiers != {"kb", "docs", "engagements"} else "")
