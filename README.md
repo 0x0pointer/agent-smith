@@ -193,6 +193,115 @@ python3 scripts/build_engagement_digest.py     # → engagements/<name>/ : diges
   `/pentester scan target.com resume=engagements/<name>`  (or `resume=auto` to match the store by target)
 - **Recall** — `report(action="recall", data={query:"…"})` keyword-searches the prior corpus mid-scan: findings, saved PoCs, raw tool outputs, **and the agent's own prior notes and decisions** — *"have I reasoned about this endpoint / tech / error before?"* — each hit tagged with its source.
 
+## Local security-knowledge KB (offline lookup before any web search)
+
+```bash
+python3 scripts/build_kb.py --all               # → kb/index.db : GTFOBins + LOLBAS + WSTG + skill refs (+ ExploitDB CSV)
+python3 scripts/build_kb.py --source nvd        # bulk sources, explicit
+python3 scripts/build_kb.py --status            # manifest, doc counts, staleness
+```
+
+`report(action="recall", data={query:"sudo suid shell", scope:"kb"})` answers from the local KB
+(BM25 over SQLite FTS5) plus engagement docs and prior stores — `scope: all | kb | docs |
+engagements`, kind filters like `kb+nvd`. Details: `docs/plan-5.1-local-kb-retrieval.md`.
+
+**Ships with install, opt-in for the network corpus:** the installers always index the skill refs
+(local, zero network) and then *prompt* for the full KB (GTFOBins+LOLBAS+WSTG+ExploitDB, ~60 MB
+download) — force with `--with-kb` / `SMITH_INSTALL_KB=1`, skip silently with `--no-kb` /
+`SMITH_INSTALL_KB=0` (unattended installs). CVEs stay a printed opt-in. The corpus is never
+committed to git (~3.3 GB; ExploitDB no-redistribution) — each engagement's digest records which
+KB snapshot its `recall(scope:'kb')` queries ran against (source, upstream ref, doc count).
+
+### Adding content to the KB
+
+**A. Permanent — available to every engagement (static KB, tier A)**
+
+1. **No-code drop-in (this machine, instantly searchable):** put `.md`/`.txt`/`.json`/`.csv` files
+   in a new folder under `kb/sources/`:
+
+   ```bash
+   mkdir -p kb/sources/acme-playbooks && cp ~/engagement-notes/*.md kb/sources/acme-playbooks/
+   # immediately searchable — no build step, works with or without kb/index.db
+   ```
+
+   Recall labels these hits `[custom source — not indexed]` (deterministic flat scan, no BM25).
+   Note `kb/` is gitignored — a drop-in lives on this machine only.
+
+2. **Versioned source in the repo (shared, BM25-indexed):** add an entry to the registry in
+   `scripts/build_kb.py` — a fetcher (or `None` for local dirs) plus an ingester returning docs:
+
+   ```python
+   def ingest_acme(raw: Path, out: Path) -> list[dict]:
+       docs = []
+       for path in sorted(Path("docs/acme-playbooks").glob("*.md")):
+           docs.append(_doc(f"kb:acme/{path.name}", "acme", path.stem,
+                            path.read_text(encoding="utf-8")))
+       return docs
+
+   INGESTERS["acme"] = (None, ingest_acme)          # None → no fetch, local files
+   ```
+
+   Then `python3 scripts/build_kb.py --source acme` — the docs land in `kb/index.db`
+   (BM25-ranked, snippet-highlighted), get normalized flat files as zero-index fallback,
+   appear in `--status`, and become a recall kind filter (`scope:"acme"`). Sources fetched
+   from upstream (clone/download) follow the same pattern — copy an existing fetcher.
+
+**B. Per-engagement — docs for THIS pentest target only (tier B)**
+
+Attach client documentation, PDFs/API docs found on the target, or saved tool output at session
+start or mid-scan — they land in `kb/sessions/<sid>/`, are searchable immediately via
+`recall(scope:'docs')`, and `build_engagement_digest.py` copies them into the engagement store so
+future engagements on the same target find them too:
+
+```
+session(action="kb_add", options={path: "./client-docs"})               # dir or file (trusted)
+session(action="kb_add", options={url: "http://target/api-docs.json"})  # fetched → UNTRUSTED
+session(action="kb_add", options={artifact_id: "spider_1843_abc"})      # saved tool output
+session(action="kb_add", options={path: "manual.pdf", untrusted: true}) # override default
+
+report(action="recall", data={query: "admin console JWT", scope: "docs"})
+```
+
+`url:`/`artifact_id:` sources default **UNTRUSTED** (attacker-influenceable target content) and
+render with an injection warning in recall output — data, never instructions.
+### How added content is used at runtime
+
+All three paths are picked up on the **next query — no rebuild, no restart** (recall rescans disk on
+every call). What happens to each:
+
+| Path | Indexing | When Smith reaches it | Lifecycle |
+|---|---|---|---|
+| **A. `kb/sources/<name>/` drop-in** | flat keyword scan, hit labeled `[custom source — not indexed]`; folder name becomes a filterable kind (`scope:'acme-playbooks'`) | CLAUDE.md norm (*recall before web*); **not** the D1 tech-fingerprint hints (those require the FTS index with cve/exploit/nuclei kinds) | permanent, machine-local |
+| **B. Dashboard upload / `session kb_add`** | tier-B flat scan via `scope:'docs'` (always works, index or not); OpenAPI uploads parse to one block per operation | the **steering note fires immediately** — Smith's next tool call carries *"KB DOCS ATTACHED — recall(scope:'docs')"*, so it actively searches, typically mid-scan | ephemeral: purged on completion/new scan; names-only audit trail in the digest |
+| **C. Client docs pre-scan (`kb_add path:`)** | same as B, trusted by default | same as B | same as B |
+
+Worked examples: drop a runbook into `kb/sources/acme-playbooks/` and the next `recall('jump host
+credentials')` surfaces it; upload `swagger.json` from the dashboard mid-scan and Smith gets params,
+auth flows and hidden endpoints from *your* spec when it registers those endpoints; UNTRUSTED-flagged
+uploads render fenced — Smith uses the facts but never obeys text inside them.
+
+To promote a drop-in to BM25 + manifest + `--status` tracking, add the small ingester (above) and
+run `build_kb.py --source <name>`. Parsers: pdf
+(`pdftotext` → `pypdf` → salvage), docx (`textutil`/`pandoc`), html, json/yaml with an
+OpenAPI/GraphQL-aware pass (one block per operation), md/txt/csv raw — every skip is reported,
+nothing is fatal.
+
+**Dashboard upload (no CLI needed):** the **Operator Actions** tab has an "Engagement documents"
+section — pick file(s), optionally flag them target-sourced (UNTRUSTED), Upload. Files land in the
+same `kb/sessions/<sid>/` store, Smith gets a steering note to `recall(scope:'docs')` them, and the
+list stays visible (with remove buttons) for the rest of the engagement.
+
+**Persistence semantics — static vs per-engagement:**
+- **Static KB** (`kb/sources/` + `kb/index.db`): permanent, machine-local, survives every scan.
+  Preload a fresh install with `python3 scripts/build_kb.py --all` (+ `--source nvd` for CVEs —
+  ~241k CVEs via the official cvelistV5 repo, ~1.3 GB raw clone; `SMITH_CVELIST_START_YEAR`
+  controls the range). Nothing ever deletes it except `--refresh` rebuilds.
+- **Engagement docs** (`kb/sessions/<sid>/`): **ephemeral by design** — purged automatically when
+  the scan completes (or a new scan starts, sweeping crashed-session leftovers). Only the file
+  NAMES survive in `session.json`'s `known_assets.kb_docs` and in the engagement digest as an
+  audit trail; client/target content is never copied into prior-engagement stores. Data
+  minimization: a completed pentest leaves no client documents behind.
+
 Trust-and-skip assumes an unchanged target; use `mode=context` to load prior results as advisory context without skipping. Both build on the per-engagement event stream above, so the more you scan, the more prior context each new engagement can draw on.
 
 ---

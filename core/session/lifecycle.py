@@ -83,6 +83,15 @@ def start(
     # Reset cost/call counters from any previous session
     cost_tracker.reset()
 
+    # Ephemeral engagement docs (plan 5.1 §6.3): a new scan starting means any
+    # kb/sessions/* leftovers from a crashed/never-completed session are stale
+    # client data — sweep them all (one scan at a time; static KB untouched).
+    try:
+        from core import kb as _kb
+        _kb.purge_session_docs()
+    except Exception:
+        pass
+
     preset = _sess.PRESETS.get(depth, _sess.PRESETS["standard"])
     limits = {
         "max_cost_usd":     max_cost_usd     if max_cost_usd     is not None else preset["max_cost_usd"],
@@ -244,6 +253,17 @@ def complete(
         # the durable training bundle (self-contained), then tear down the RCE containers.
         snapshot_training_bundle()
         stop_pentest_containers()
+        # Engagement docs are ephemeral (plan 5.1 §6.3): purge this scan's
+        # client/target docs on the terminal transition — data minimization.
+        # Only the known_assets.kb_docs NAME audit trail survives in session.json.
+        try:
+            from core import kb as _kb
+            purged = _kb.purge_session_docs(_sess._current.get("id"))
+            if purged:
+                _sess._current["kb_docs_purged"] = purged
+                _sess._flush()
+        except Exception:
+            pass
     return _sess._current or {}
 
 

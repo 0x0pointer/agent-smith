@@ -790,6 +790,47 @@ fi
 # image, auto-pulled by tools/mobsf_runner.py on the first scan(tool='mobsf').
 
 # ── Done ──────────────────────────────────────────────────────────────────────
+
+
+# ── Local security-KB bootstrap (plan 5.1) — OPT-IN for network sources ────
+# Skill refs are always indexed (local files, zero network, instant) so
+# recall(scope:'kb') has a baseline. The network corpus (GTFOBins+LOLBAS+WSTG+
+# ExploitDB ≈ 60 MB; CVEs a further ~1.3 GB) is opt-in: prompt by default,
+# force with --with-kb / SMITH_INSTALL_KB=1, or skip silently with
+# --no-kb / SMITH_INSTALL_KB=0 (e.g. unattended installs).
+_kb_mode="ask"
+for _a in "$@"; do
+  case "$_a" in
+    --with-kb) _kb_mode="yes" ;;
+    --no-kb)   _kb_mode="no" ;;
+  esac
+done
+case "${SMITH_INSTALL_KB:-}" in
+  1|true|yes) _kb_mode="yes" ;;
+  0|false|no) _kb_mode="no" ;;
+esac
+if [ -f "$REPO_DIR/kb/index.db" ]; then
+  echo "  Local security KB present (kb/index.db) — skipping bootstrap."
+else
+  (cd "$REPO_DIR" && poetry run python scripts/build_kb.py --source skill_refs >/dev/null 2>&1) || true
+  if [ "$_kb_mode" = "ask" ]; then
+    printf "  Install the full local security KB now? (GTFOBins+LOLBAS+WSTG+ExploitDB ≈ 60 MB download) [y/N] "
+    IFS= read -r _kb_answer </dev/tty || true
+    case "${_kb_answer:-}" in y|Y|yes|YES) _kb_mode="yes" ;; *) _kb_mode="no" ;; esac
+  fi
+  if [ "$_kb_mode" = "yes" ]; then
+    if (cd "$REPO_DIR" && poetry run python scripts/build_kb.py --all); then
+      echo "  ✓ KB ready — report(action='recall', scope:'kb') is live."
+    else
+      echo "  ⚠ KB build failed (offline?) — run later: python3 scripts/build_kb.py --all"
+    fi
+    echo "  Optional CVE corpus (~1.3 GB, 241k CVEs): python3 scripts/build_kb.py --source nvd"
+  else
+    echo "  KB bootstrap skipped — build anytime: python3 scripts/build_kb.py --all"
+  fi
+fi
+unset _kb_mode _kb_answer _a
+
 echo ""
 echo "  Install complete!"
 echo ""

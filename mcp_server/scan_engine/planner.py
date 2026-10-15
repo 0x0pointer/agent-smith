@@ -4,12 +4,21 @@ Coverage-driven planner — computes next actions and detects behavioral drift.
 Called by the envelope wrapper on every tool response. Returns required actions
 (obligations the model must fulfill) and recommended actions (suggestions).
 Also detects drift: duplicate tests, phase-inappropriate tools, skipped coverage.
+
+KB hooks (plan 5.1 §7, meta-skills D1/D2): fingerprints become recall
+obligations — known technologies get a version→CVE/exploit lookup suggestion
+against the local KB (before any web search), and CVE-triggered gates point at
+`recall(scope:'kb')` first.
 """
 from __future__ import annotations
+
+import re
 
 from core import session as scan_session
 from core.coverage import get_matrix, select_next_batch
 from core.prompt_fence import fence as _fence
+
+_CVE_RE = re.compile(r"CVE-\d{4}-\d{4,8}", re.I)
 
 
 def _add_recon_actions(required: list[str], recommended: list[str], tools_run: set, target: str) -> None:
@@ -58,6 +67,13 @@ def _inject_pending_gates(required: list[str]) -> None:
                 s for s in gate.get("required_skills", [])
                 if s not in satisfied_skills
             ]
+            hint = ""
+            # D1 hook: a CVE-triggered gate points at the local KB first —
+            # recall (NVD + exploitdb + nuclei rows) BEFORE any web lookup.
+            cve = _CVE_RE.search(str(gate.get("trigger", "")))
+            if cve:
+                hint = (f"  Before any external lookup: report(action='recall', "
+                        f"data={{query:'{cve.group(0).lower()}', scope:'kb'}})")
             if not missing:
                 continue
             trigger = gate.get("trigger", "")
@@ -67,9 +83,68 @@ def _inject_pending_gates(required: list[str]) -> None:
                     f"Finish your current recon/mapping step first if you're mid-task, then chain it: "
                     f"session(action='set_skill', options={{skill: '{skill}', reason: 'gate {gate['id']}'}}) then Skill('{skill}'). "
                     "Don't leave it unaddressed — this gate blocks completion."
+                    + hint
                 ))
             # Inject at most one gate per response to avoid context flooding.
             break
+    except Exception:
+        pass
+
+
+# ── KB recall hints (plan 5.1 §7 / D1-D2) ───────────────────────────────
+_KB_HINT_CACHE: dict = {"checked_at": 0.0, "kinds": set()}
+_kb_hint_suggested: dict[str, set] = {}      # session_id → techs already hinted
+
+
+def _kb_exploit_kinds() -> set[str]:
+    """Kinds present in kb/index.db (60s-cached) — empty when no index."""
+    import time
+    try:
+        from core import kb as kb_mod
+        if not kb_mod.INDEX_DB.exists():
+            return set()
+        now = time.time()
+        if now - _KB_HINT_CACHE["checked_at"] > 60:
+            con = kb_mod.open_index()
+            kinds = set()
+            if con is not None:
+                try:
+                    kinds = {r[0] for r in con.execute(
+                        "SELECT DISTINCT kind FROM kb_docs").fetchall()}
+                except Exception:
+                    pass
+                finally:
+                    con.close()
+            _KB_HINT_CACHE["checked_at"] = now
+            _KB_HINT_CACHE["kinds"] = kinds
+        return _KB_HINT_CACHE["kinds"]
+    except Exception:
+        return set()
+
+
+def _add_kb_recall_hints(recommended: list[str]) -> None:
+    """D1/D2: version→CVE→exploit intelligence from the LOCAL KB, one recall
+    suggestion per technology, before the model reaches for a web search."""
+    try:
+        kinds = _kb_exploit_kinds()
+        if not kinds & {"cve", "exploit", "nuclei"}:
+            return                      # KB lacks exploit intelligence — stay quiet
+        sess = scan_session.get() or {}
+        sid = sess.get("id") or ""
+        suggested = _kb_hint_suggested.setdefault(sid, set())
+        techs = ((sess.get("known_assets") or {}).get("technologies") or [])[:8]
+        for tech in techs:
+            t = str(tech).strip()
+            if not t or t in suggested:
+                continue
+            suggested.add(t)
+            recommended.append(
+                f"Local-KB intelligence for '{t}' (before any web search): "
+                f"report(action='recall', data={{query:'{t}', scope:'kb+nvd+exploitdb+nuclei'}}) "
+                "— version→CVE→exploit/playbook rows, offline."
+            )
+            if len(suggested) >= 3:    # a few per scan, not every fingerprint
+                break
     except Exception:
         pass
 
@@ -138,6 +213,10 @@ def compute_next(tool: str, state: dict) -> dict:
     # world-model actively STEERS the loop instead of only informing recovery.
     if phase in ("testing", "validation"):
         _add_graph_steer(recommended)
+
+    # Local-KB intelligence hints (plan 5.1 §7): fingerprints → recall, not memorize
+    if phase in ("recon", "discovery", "testing"):
+        _add_kb_recall_hints(recommended)
 
     return {"required": required, "recommended": recommended, "warnings": warnings}
 

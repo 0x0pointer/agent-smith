@@ -30,6 +30,39 @@
     </div>
   </div>
 
+  <!-- ── Engagement documents (per-pentest KB uploads, plan 5.1 §6) ─────────── -->
+  <div class="activity-section">
+    <div class="activity-section-header">
+      <span class="activity-dot" style="background:#5bf29b;box-shadow:0 0 5px #5bf29b"></span>
+      <span class="activity-section-title">Engagement documents</span>
+      <span class="activity-section-meta" style="color:var(--text-dim);font-size:0.7rem">per-pentest KB · recall scope:'docs'</span>
+    </div>
+    <div style="font-size:0.78rem;color:var(--text-dim);margin-bottom:0.65rem;line-height:1.5;">
+      Client documentation, API specs, or files pulled from the target — attached to
+      <em>this pentest only</em>. Smith searches them with <code>report(action='recall',
+      data={query:'…', scope:'docs'})</code>. Mark uploads <strong>UNTRUSTED</strong> when the
+      content came from the target (it may contain injected instructions — recall renders it fenced,
+      as data). Supported: pdf, docx, md, txt, json/yaml (OpenAPI-aware), html, csv.
+      <strong>Ephemeral:</strong> these documents are purged when the scan completes (or a new scan
+      starts) — only filenames survive in the audit trail; the static KB is never touched.
+    </div>
+    <div style="display:flex;gap:0.4rem;align-items:center;flex-wrap:wrap;margin-bottom:0.7rem;">
+      <input type="file" id="kb-docs-input" multiple
+             accept=".pdf,.docx,.doc,.md,.txt,.json,.yaml,.yml,.html,.htm,.csv,.log,.http,.xml"
+             style="font-size:0.74rem;max-width:15rem;color:var(--text-dim);">
+      <label style="display:flex;align-items:center;gap:0.35rem;font-size:0.74rem;color:var(--text-dim);cursor:pointer;">
+        <input type="checkbox" id="kb-docs-untrusted" style="accent-color:#ff4d6d;">
+        target-sourced (UNTRUSTED)
+      </label>
+      <button id="kb-docs-upload-btn" onclick="_uploadKbDocs()"
+              style="padding:0.3rem 0.7rem;border:none;border-radius:4px;background:#16a34a;color:#fff;font-size:0.74rem;cursor:pointer;">Upload</button>
+      <span id="kb-docs-status" style="font-size:0.72rem;color:var(--text-dim);"></span>
+    </div>
+    <div id="kb-docs-wrap">
+      <div class="empty-placeholder">No engagement documents attached yet.</div>
+    </div>
+  </div>
+
   <!-- ── Manual setup gates (capabilities.yaml prerequisites) ───────────────── -->
   <div class="activity-section">
     <div class="activity-section-header">

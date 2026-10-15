@@ -186,6 +186,15 @@ async def session(action: str, options: dict | str | None = None, ctx: Context |
 
     wishlist_list: returns the open wishlist (what you've asked the operator for)
 
+    kb_add options (attach documents to THIS engagement — searchable via report(action='recall',
+      scope:'docs'); plan 5.1 tier B):
+      path= (local file or dir; client-supplied docs default TRUSTED), url= (fetched — target/
+      vendor content defaults UNTRUSTED), artifact_id= (saved tool output, UNTRUSTED),
+      untrusted= true|false to override the default, name= (label when ingesting one file).
+      Parses pdf (pdftotext→pypdf→salvage), docx (textutil/pandoc), html (tag-strip), json/yaml
+      (OpenAPI/GraphQL-aware), md/txt/csv raw. Fail-soft per file; every skip is reported.
+      Stored under kb/sessions/<sid>/ and registered in known_assets.kb_docs.
+
     start options:
       target, depth=standard (recon|standard|thorough), scope=[],
       out_of_scope=[], max_cost_usd=, max_time_minutes=, max_tool_calls=,
@@ -292,6 +301,9 @@ async def _dispatch_async_action(action: str, opts: dict) -> str | None:
         # (best-effort) before the completion gate evaluates coverage.
         await _autoclose_crosscutting_best_effort()
         return _do_complete()
+    if action == "kb_add":
+        from .kb_add import _do_kb_add
+        return await _do_kb_add(opts)
     return None
 
 
@@ -337,4 +349,4 @@ def _dispatch_sync_action_extra(action: str, opts: dict) -> str:
     if action == "job_list":
         from mcp_server import jobs
         return jobs.list_response(opts)
-    return f"Unknown action '{action}'. Use: start, complete, status, qa_reply, recovery, artifact, pre_chain, set_skill, set_step, resume, dismiss_gate, wishlist_add, wishlist_list, setup_gate, start_kali, stop_kali, start_metasploit, stop_metasploit, start_mobsf, stop_mobsf, pull_images, set_codebase, oob_start, oob_mint, oob_poll, job_poll, job_list"
+    return f"Unknown action '{action}'. Use: start, complete, status, qa_reply, recovery, artifact, pre_chain, set_skill, set_step, resume, dismiss_gate, wishlist_add, wishlist_list, setup_gate, start_kali, stop_kali, start_metasploit, stop_metasploit, start_mobsf, stop_mobsf, pull_images, set_codebase, oob_start, oob_mint, oob_poll, job_poll, job_list, kb_add"

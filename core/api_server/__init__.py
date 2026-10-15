@@ -159,6 +159,16 @@ async def _start_background_tasks() -> None:
     global _qa_task, _watchdog_task, _status_task, _refusal_task
     from mcp_server._app import _load_dotenv
     _load_dotenv()
+    # One-time KB bootstrap nudge (plan 5.1): the security KB ships empty
+    # (too large for git; built by the installers) — say so once, fail-soft.
+    try:
+        from core import kb as _kb
+        if not _kb.INDEX_DB.exists():
+            _log.info("local KB not built — recall(scope:'kb') answers from engagement "
+                      "stores only. Build it: python3 scripts/build_kb.py --all "
+                      "(installers do this automatically on a fresh install)")
+    except Exception:
+        pass
     from core.qa_agent import qa_daemon
     _qa_task = asyncio.create_task(qa_daemon.run(interval_s=120))
     # The watchdog auto-respawns a headless Smith whenever a scan is 'running' but Smith
