@@ -74,6 +74,32 @@ class SteeringQueue:
 
     # ── Write ──────────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _norm_msg(s) -> str:
+        """Whitespace/case-normalised message, for identical-directive matching."""
+        return " ".join((s or "").split()).lower()
+
+    def _resolve_identical(self, directives, *, code, skill, trigger, message,
+                           exclude_id, reason) -> int:
+        """Mark still-active directives identical to the given one (same code+skill+trigger
+        +normalised message) as auto_satisfied, so repeated/duplicate directives don't linger
+        as N 'active' copies flooding every tool response. Returns how many were resolved.
+        Mutates ``directives`` in place; the caller saves."""
+        nm = self._norm_msg(message)
+        n = 0
+        for d in directives:
+            if d.get("id") == exclude_id:
+                continue
+            if (d.get("code") == code and d.get("skill") == skill
+                    and d.get("trigger") == trigger
+                    and self._norm_msg(d.get("message")) == nm
+                    and d.get("status") in ("pending", "injected")):
+                d["status"] = "auto_satisfied"
+                d["acknowledged_at"] = self._now()
+                d["ack_message"] = reason
+                n += 1
+        return n
+
     def add_directive(
         self,
         code: str,
@@ -86,7 +112,10 @@ class SteeringQueue:
         """Add a directive. Returns id if created, None if deduped.
 
         Dedup rule: skip if same code+skill already has status pending or injected.
-        Pass force=True to bypass dedup (used for human steering instructions).
+        Pass force=True to bypass dedup (used for human steering instructions) — but an
+        identical force add still SUPERSEDES its older still-active copies, so an operator
+        re-emphasising the same instruction leaves ONE active directive (the newest), not a
+        growing pile that re-injects into every response.
         """
         directives = self._load()
         if not force:
@@ -97,6 +126,10 @@ class SteeringQueue:
                     and d.get("status") in ("pending", "injected")
                 ):
                     return None  # already active — don't duplicate
+        else:
+            self._resolve_identical(
+                directives, code=code, skill=skill, trigger=trigger, message=message,
+                exclude_id=None, reason="superseded by a newer identical directive")
 
         directive_id = f"steer-{uuid.uuid4().hex[:8]}"
         directive = {
@@ -128,13 +161,22 @@ class SteeringQueue:
         self._save(directives)
 
     def acknowledge(self, directive_id: str, message: str | None = None) -> bool:
-        """Mark a directive acknowledged. Returns True if found."""
+        """Mark a directive acknowledged. Returns True if found.
+
+        Also collapses any still-active identical copies (same code+skill+trigger+message):
+        once the agent acknowledges one instance of a repeated human steer, the redundant
+        duplicates resolve too instead of lingering as 'active' forever."""
         directives = self._load()
         for d in directives:
             if d["id"] == directive_id and d["status"] in ("pending", "injected"):
                 d["status"] = "acknowledged"
                 d["acknowledged_at"] = self._now()
                 d["ack_message"] = message
+                self._resolve_identical(
+                    directives, code=d.get("code"), skill=d.get("skill"),
+                    trigger=d.get("trigger"), message=d.get("message"),
+                    exclude_id=d["id"],
+                    reason="collapsed — duplicate of an acknowledged directive")
                 self._save(directives)
                 return True
         return False
