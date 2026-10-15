@@ -188,3 +188,53 @@ class TestQueryMethods:
         d = q._load()[0]
         assert d["status"] == "acknowledged"
         assert d["ack_message"] == "understood"
+
+
+class TestIdenticalDirectiveCollapse:
+    """Repeated identical directives (esp. human steers that bypass dedup with force=True)
+    must not pile up as N 'active' copies flooding every tool response."""
+
+    def test_identical_force_add_supersedes_older(self, q):
+        id1 = q.add_directive(code=RESUME_REQUIRED, message="HUMAN INSTRUCTION: focus on /api/login SQLi",
+                              trigger="HUMAN_STEER", force=True)
+        id2 = q.add_directive(code=RESUME_REQUIRED, message="HUMAN INSTRUCTION: focus on /api/login SQLi",
+                              trigger="HUMAN_STEER", force=True)
+        id3 = q.add_directive(code=RESUME_REQUIRED, message="HUMAN INSTRUCTION:  focus on /api/login SQLi ",
+                              trigger="HUMAN_STEER", force=True)  # whitespace variant → still identical
+        active = [d.message for d in q.get_active()]
+        assert len(active) == 1                      # only the newest identical copy stays active
+        statuses = {d["id"]: d["status"] for d in q._load()}
+        assert statuses[id1] == "auto_satisfied"
+        assert statuses[id2] == "auto_satisfied"
+        assert statuses[id3] == "injected" or statuses[id3] == "pending"
+
+    def test_distinct_human_steers_not_collapsed(self, q):
+        q.add_directive(code=RESUME_REQUIRED, message="HUMAN INSTRUCTION: focus on /api/login SQLi",
+                        trigger="HUMAN_STEER", force=True)
+        q.add_directive(code=RESUME_REQUIRED, message="HUMAN INSTRUCTION: test /transfer for IDOR",
+                        trigger="HUMAN_STEER", force=True)
+        assert len(q.get_active()) == 2              # different instructions both stay active
+
+    def test_acknowledge_collapses_preexisting_identical(self, q, tmp_path, monkeypatch):
+        import json, core.steering as st_mod
+        f = tmp_path / "steering_queue.json"
+        monkeypatch.setattr(st_mod, "_STEERING_FILE", f)
+        base = dict(code=RESUME_REQUIRED, skill=None, trigger="HUMAN_STEER",
+                    message="HUMAN INSTRUCTION: focus on /api/login SQLi", priority="high",
+                    ts="t", injected_at="t", acknowledged_at=None, ack_message=None)
+        dirs = [{**base, "id": f"steer-{i}", "status": "injected"} for i in range(3)]
+        f.write_text(json.dumps({"directives": dirs}))
+        q2 = SteeringQueue()
+        assert len(q2.get_active()) == 3
+        assert q2.acknowledge("steer-0", "ack") is True
+        active = q2.get_active()
+        assert len(active) == 0                      # the other 2 collapsed with the ack
+        statuses = {d["id"]: d["status"] for d in q2._load()}
+        assert statuses["steer-0"] == "acknowledged"
+        assert statuses["steer-1"] == "auto_satisfied"
+        assert statuses["steer-2"] == "auto_satisfied"
+
+    def test_nonforce_dedup_unchanged(self, q):
+        id1 = q.add_directive(code=CHAIN_REQUIRED, message="CHAIN: web-exploit", skill="web-exploit")
+        id2 = q.add_directive(code=CHAIN_REQUIRED, message="CHAIN: web-exploit", skill="web-exploit")
+        assert id1 is not None and id2 is None       # non-force identical still deduped to None
