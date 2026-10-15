@@ -450,3 +450,36 @@ def add_tool_called(tool_name: str, target: str = "") -> None:
         _ledger.attribute_covered(tool_name, target)
     except Exception:
         pass
+
+
+_RECALL_RECENT_CAP = 25
+
+
+def record_recall(query: str, tiers, hits: int, skill: str = "", phase: str = "") -> None:
+    """Record a recall() call for the dashboard's KB-usage metric (plan 5.1e #5) — so the
+    operator can SEE, live, whether/where the KB is actually being used. Keeps a live
+    aggregate in session.json under ``recall_usage``: total calls, total hits, by-tier,
+    by-skill, and a bounded ``recent`` list. NON-BLOCKING + fail-soft — never breaks recall,
+    and (like the rest of the recall reflex) stays empty when nobody ever calls recall."""
+    _sess._reconcile_if_external_write()
+    cur = _sess._current
+    if not (cur and cur.get("status") == "running"):
+        return
+    ru = cur.setdefault("recall_usage",
+                        {"total": 0, "total_hits": 0, "by_tier": {}, "by_skill": {}, "recent": []})
+    ru["total"] = ru.get("total", 0) + 1
+    ru["total_hits"] = ru.get("total_hits", 0) + int(hits or 0)
+    for t in (tiers or []):
+        ru["by_tier"][t] = ru["by_tier"].get(t, 0) + 1
+    sk = skill or cur.get("skill") or "(no skill)"
+    ru["by_skill"][sk] = ru["by_skill"].get(sk, 0) + 1
+    ru.setdefault("recent", []).append({
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "query": (query or "")[:80],
+        "tiers": sorted(tiers or []),
+        "hits": int(hits or 0),
+        "skill": sk,
+        "phase": phase or cur.get("scan_phase", ""),
+    })
+    ru["recent"] = ru["recent"][-_RECALL_RECENT_CAP:]
+    _sess._flush()

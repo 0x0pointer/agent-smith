@@ -1169,3 +1169,27 @@ def test_start_lhost_out_of_range_port_falls_back(monkeypatch):
     monkeypatch.setenv("SMITH_LHOST", "1.2.3.4:70000")
     sess = core.session.start("example.com")
     assert sess["known_assets"]["attacker_host"]["lport"] == 4444
+
+
+# ── plan 5.1e #5: recall-usage metric (record_recall) ────────────────────────
+
+def test_record_recall_aggregates_usage():
+    core.session.start("example.com")
+    core.session.set_skill("web-exploit")
+    core.session.record_recall("werkzeug cve", ["kb", "cve"], 3)        # active skill web-exploit
+    core.session.record_recall("api auth flow", ["docs"], 1, skill="api-security")
+    core.session.record_recall("no match here", ["kb"], 0)             # active skill web-exploit
+    ru = core.session.get()["recall_usage"]
+    assert ru["total"] == 3
+    assert ru["total_hits"] == 4
+    assert ru["by_tier"] == {"kb": 2, "cve": 1, "docs": 1}
+    assert ru["by_skill"]["web-exploit"] == 2
+    assert ru["by_skill"]["api-security"] == 1
+    assert len(ru["recent"]) == 3
+    assert ru["recent"][-1]["query"] == "no match here" and ru["recent"][-1]["hits"] == 0
+
+
+def test_record_recall_noop_without_running_scan():
+    # no active scan → fail-soft no-op, never raises
+    core.session.record_recall("q", ["kb"], 1)
+    assert (core.session.get() or {}).get("recall_usage") in (None, {})
