@@ -92,6 +92,16 @@ def start(
     except Exception:
         pass
 
+    # Steering is NOT session-scoped, and nothing else resets it on a new scan — so a
+    # prior scan's human steers, KB_DOCS_ATTACHED notes (which point at docs we just
+    # purged above) and resolved-HIR directives would leak into THIS scan and the agent
+    # would chase stale/ghost instructions. A new scan is a clean slate: wipe them too.
+    try:
+        from core.steering import steering_queue
+        steering_queue.clear()
+    except Exception:
+        pass
+
     preset = _sess.PRESETS.get(depth, _sess.PRESETS["standard"])
     limits = {
         "max_cost_usd":     max_cost_usd     if max_cost_usd     is not None else preset["max_cost_usd"],

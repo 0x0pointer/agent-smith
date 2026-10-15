@@ -69,6 +69,15 @@ class SteeringQueue:
         except Exception:
             pass
 
+    def clear(self) -> int:
+        """Drop ALL directives (a clean slate). Returns how many were removed. Used at
+        scan start so a prior scan's steers / KB-docs notes / HIR resolutions don't leak
+        into the new scan — steering is not session-scoped, so without this the agent
+        inherits stale, now-meaningless instructions from the previous run."""
+        n = len(self._load())
+        self._save([])
+        return n
+
     def _now(self) -> str:
         return datetime.now(timezone.utc).isoformat()
 

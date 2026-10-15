@@ -98,6 +98,16 @@ async def api_clear() -> JSONResponse:
     except Exception:
         pass
 
+    # kb/sessions/ — attached engagement docs (plan 5.1 tier B). "Clear All" means
+    # wipe scan data, so leftover client/target docs must not bleed into the next scan.
+    # (session.start() also sweeps these, but the button should be consistent with its
+    # "wipe all scan data" label.) Fail-soft: no-op if the KB feature isn't present.
+    try:
+        from core import kb as _kb
+        _kb.purge_session_docs()
+    except Exception:
+        pass
+
     # artifacts/ — raw scanner output files
     _api._clear_dir_files(_api._REPO_ROOT / "artifacts")
 

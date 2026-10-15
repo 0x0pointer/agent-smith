@@ -188,3 +188,29 @@ class TestQueryMethods:
         d = q._load()[0]
         assert d["status"] == "acknowledged"
         assert d["ack_message"] == "understood"
+
+
+class TestClearOnNewScan:
+    def test_clear_empties_queue_and_returns_count(self, q):
+        q.add_directive(code=RESUME_REQUIRED, message="HUMAN INSTRUCTION: a", trigger="HUMAN_STEER", force=True)
+        q.add_directive(code=RESUME_REQUIRED, message="HUMAN INSTRUCTION: b", trigger="HUMAN_STEER", force=True)
+        assert len(q.get_active()) == 2
+        assert q.clear() == 2
+        assert q.get_active() == []
+
+
+def test_session_start_clears_stale_steering(monkeypatch, tmp_path):
+    """A new scan is a clean slate — prior-scan steers (human steers, stale
+    KB_DOCS_ATTACHED notes, resolved HIRs) must NOT leak in. Regression for the
+    stale 'api-notes'/ghost-steer leakage."""
+    import core.steering as st
+    import core.session as scan_session
+    monkeypatch.setattr(st, "_STEERING_FILE", tmp_path / "steering_queue.json")
+    st.steering_queue.add_directive(
+        code=st.RESUME_REQUIRED, message="HUMAN INSTRUCTION: focus on /api/login SQLi",
+        trigger="HUMAN_STEER", force=True)
+    st.steering_queue.add_directive(
+        code="INFO", message="KB DOCS ATTACHED — uploaded api-notes.md", trigger="KB_DOCS_ATTACHED")
+    assert len(st.steering_queue.get_active()) == 2
+    scan_session.start("http://target.example")
+    assert st.steering_queue.get_active() == []   # scan start wiped the leftovers
