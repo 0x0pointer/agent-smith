@@ -106,8 +106,10 @@ async def api_kb_docs_upload(files: list[UploadFile] = File(...),
             continue
         try:
             blob = await up.read()
-        except Exception as exc:
-            skipped.append({"name": name, "reason": f"read error: {exc}"})
+        except Exception:
+            _log.exception("Failed to read uploaded engagement doc",
+                           extra={"session_id": sid, "name": name})
+            skipped.append({"name": name, "reason": "read error"})
             continue
         if len(blob) > _MAX_FILE_BYTES:
             skipped.append({"name": name, "reason": "file too large (>25 MB)"})
@@ -120,8 +122,10 @@ async def api_kb_docs_upload(files: list[UploadFile] = File(...),
         try:
             raw_path.write_bytes(blob)
             text, parser_note, status = kb_mod.parse_document(raw_path)
-        except Exception as exc:
-            skipped.append({"name": name, "reason": f"parse error: {exc}"})
+        except Exception:
+            _log.exception("Failed to parse uploaded engagement doc",
+                           extra={"session_id": sid, "name": name})
+            skipped.append({"name": name, "reason": "parse error"})
             continue
         finally:
             try:
