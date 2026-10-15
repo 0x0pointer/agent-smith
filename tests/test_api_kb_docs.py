@@ -114,3 +114,48 @@ async def test_kb_docs_uploaded_docs_recallable(kb_api_env):
     _upload("infra.md", b"the vault token expires hourly")
     out = await _do_recall({"query": "vault token", "scope": "docs"})
     assert "docs:sess-dash/infra.md" in out
+
+
+# ── skip / error branches ────────────────────────────────────────────────────
+
+def test_kb_docs_upload_too_many_files(kb_api_env):
+    files = [("files", (f"d{i}.md", io.BytesIO(b"x"), "text/markdown")) for i in range(21)]
+    r = client.post("/api/kb/docs", files=files, data={"untrusted": "false"})
+    assert r.status_code == 400 and "too many files" in r.json()["error"]
+
+
+def test_kb_docs_upload_empty_file_skipped(kb_api_env):
+    r = _upload("blank.md", b"")
+    body = r.json()
+    assert body["ok"] is True and not body["ingested"]
+    assert body["skipped"][0]["reason"] == "empty file"
+
+
+def test_kb_docs_upload_too_large_skipped(kb_api_env, monkeypatch):
+    import core.api_server.routes.kb_routes as kr
+    monkeypatch.setattr(kr, "_MAX_FILE_BYTES", 8)
+    r = _upload("big.md", b"0123456789 larger than eight bytes")
+    assert r.json()["skipped"][0]["reason"] == "file too large (>25 MB)"
+
+
+def test_kb_docs_upload_no_text_extracted_skipped(kb_api_env):
+    # HTML that strips to nothing → parse status 'empty' → skipped with the parser note
+    r = _upload("blank.html", b"<br><hr>", mime="text/html")
+    body = r.json()
+    assert body["ok"] is True and not body["ingested"]
+    assert "no text extracted" in body["skipped"][0]["reason"]
+
+
+def test_kb_docs_list_tolerates_corrupt_meta(kb_api_env):
+    _upload("doc.md", b"content")
+    (kb_api_env / "sessions" / "sess-dash" / "meta.json").write_text("{corrupt")
+    r = client.get("/api/kb/docs")
+    assert r.status_code == 200
+    assert [d["name"] for d in r.json()["docs"]] == ["doc.md"]   # corrupt meta → treated as none
+
+
+def test_kb_docs_delete_tolerates_corrupt_meta(kb_api_env):
+    _upload("doc.md", b"content", untrusted="true")
+    (kb_api_env / "sessions" / "sess-dash" / "meta.json").write_text("{corrupt")
+    r = client.delete("/api/kb/docs/doc.md")
+    assert r.status_code == 200 and r.json()["ok"] is True
