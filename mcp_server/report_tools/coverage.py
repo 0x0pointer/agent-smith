@@ -69,6 +69,7 @@ async def _do_coverage_endpoint(data: dict, cov: Any) -> str:
         params=clean_params,
         discovered_by=data.get("discovered_by", "spider"),
         auth_context=data.get("auth_context", "none"),
+        host=data.get("host"),
     )
     if result["dedup"]:
         return f"Endpoint already registered (dedup): {path} {data.get('method', 'GET')}"

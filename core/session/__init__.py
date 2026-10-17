@@ -19,6 +19,11 @@ Depth presets
              comprehensive but noisy — confirm authorisation first
              default limits: $100.00  |  8 hours  |  unlimited tool calls
 
+  danger   — thorough + autonomous internal-host pivot: when SSRF/RCE reveals
+             internal hosts, promote them to assets and port-scan + re-run
+             recon/web/api against each (no cap). Authorized labs only.
+             shares the deep-pivot behaviour with scan_mode="benchmark".
+
 Hard limit enforcement
 ----------------------
 Call check_limits(cost_summary) before running any tool.
@@ -84,7 +89,43 @@ PRESETS: dict[str, dict] = {
         "max_time_minutes": None,
         "max_tool_calls":   0,
     },
+    "danger": {
+        "label":       "Danger (thorough + deep pivot)",
+        "description": "Thorough + autonomous internal-host pivot after SSRF/RCE — promote "
+                       "discovered hosts, port-scan + re-run recon/web/api per host (no cost/time cap)",
+        "max_cost_usd":     None,
+        "max_time_minutes": None,
+        "max_tool_calls":   0,
+    },
 }
+
+# ── Depth / scan-mode behaviour predicates ────────────────────────────────────
+# Keep the branching logic in ONE place so new depth values don't require hunting
+# down scattered ``== "thorough"`` string literals across the codebase.
+
+#: Depth presets that get the full thorough treatment (3 analysis passes, no
+#: auto-complete, white-box pass enforcement, deeper checkpoint cadence, …).
+#: ``danger`` is ``thorough`` plus the deep-pivot behaviour gated below.
+THOROUGH_LIKE: frozenset[str] = frozenset({"thorough", "danger"})
+
+
+def is_thorough_like(depth: str | None) -> bool:
+    """True when `depth` should behave like ``thorough`` (incl. ``danger``)."""
+    return (depth or "") in THOROUGH_LIKE
+
+
+def deep_pivot_enabled(session: dict | None) -> bool:
+    """True when a session opts into deep post-exploit pivoting — i.e. auto-promote
+    SSRF/RCE-discovered internal hosts to assets and drive per-host scanning.
+
+    Enabled by the ``danger`` depth (pentest, human-in-the-loop) OR ``benchmark``
+    scan_mode (fully autonomous). The two session fields are independent; this is
+    the single gate every new deep-pivot behaviour keys off, so neither field has
+    to know about the other.
+    """
+    if not session:
+        return False
+    return session.get("depth") == "danger" or session.get("scan_mode") == "benchmark"
 
 _REPO_ROOT = _paths.REPO_ROOT
 _SESSION_FILE = _paths.SESSION_FILE

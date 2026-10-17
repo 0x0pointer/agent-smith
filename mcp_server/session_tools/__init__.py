@@ -187,7 +187,7 @@ async def session(action: str, options: dict | str | None = None, ctx: Context |
     wishlist_list: returns the open wishlist (what you've asked the operator for)
 
     start options:
-      target, depth=standard (recon|standard|thorough), scope=[],
+      target, depth=standard (recon|standard|thorough|danger), scope=[],
       out_of_scope=[], max_cost_usd=, max_time_minutes=, max_tool_calls=,
       model_profile=full (full|medium|small) — controls output verbosity
 

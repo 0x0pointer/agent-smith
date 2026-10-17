@@ -1,5 +1,6 @@
 """Recovery-brief assembly: result dict, auth-context, next-call helpers."""
 from core import logger as log
+from core import session as scan_session
 from core.prompt_fence import fence as _fence
 
 import mcp_server.session_tools as _st
@@ -7,7 +8,7 @@ import mcp_server.session_tools as _st
 
 def _recovery_iter_status(current: dict) -> str | None:
     """Thorough-scan analysis-pass progress line for the recovery brief, or None."""
-    if current.get("depth") != "thorough":
+    if not scan_session.is_thorough_like(current.get("depth")):
         return None
     analysis_iter = current.get("analysis_passes", _st._analysis_passes)
     mi = _st._min_iterations()
