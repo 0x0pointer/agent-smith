@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 import uuid
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 import core.coverage as _cov
 from .classify import (
@@ -47,6 +48,38 @@ def _sanitize_registered(value: str, maxlen: int = 256) -> str:
     return _CTRL_CHARS.sub("", value)[:maxlen]
 
 
+def _host_of(raw: str) -> str:
+    """Host[:port] of a URL/target, lowercased + defanged. Keeps the PORT — a service on
+    :5000 is a distinct coverage surface from :80 on the same IP. '' when indeterminable."""
+    raw = _sanitize_registered((raw or "").strip(), 256)
+    if not raw:
+        return ""
+    if "://" not in raw:
+        raw = "//" + raw          # let urlparse read a bare 'host:port/…' as a netloc
+    return urlparse(raw).netloc.lower()
+
+
+def _resolve_host_path(raw_path: str, host_arg: str | None, default_host: str) -> tuple[str, str]:
+    """Resolve a registration's (host, path).
+
+    An explicit ``host`` wins. Otherwise a scheme-qualified URL path
+    (``http://10.0.0.5:5000/admin``) splits into its authority + path so the same path
+    on a DIFFERENT host is a distinct endpoint; a relative path (``/admin``) keeps the
+    scan's default host (= the matrix target). This makes the matrix host-aware while
+    staying identical to the old path-only behaviour for ordinary single-host scans.
+    """
+    if host_arg:
+        return _host_of(host_arg) or _sanitize_registered(host_arg, 256), (raw_path or "").strip()
+    raw = (raw_path or "").strip()
+    if "://" in raw:
+        u = urlparse(raw)
+        path = u.path or "/"
+        if u.query:
+            path += "?" + u.query
+        return u.netloc.lower(), path
+    return default_host, raw
+
+
 def _tested_by_from_artifact(artifact_id: str) -> str:
     """Derive the tool name from a tool-prefixed artifact_id so artifact-backed
     closures aren't falsely flagged 'untooled' (artifact_id is the real evidence
@@ -58,6 +91,85 @@ def _tested_by_from_artifact(artifact_id: str) -> str:
     return parts[0] if len(parts) == 3 else artifact_id
 
 
+def _make_cell(ep_id: str, param: str, param_type: str, inj_type: str, candidate: bool) -> dict:
+    return {
+        "id": f"cell-{uuid.uuid4().hex[:12]}",
+        "endpoint_id": ep_id,
+        "param": param,
+        "param_type": param_type,
+        "injection_type": inj_type,
+        "status": "pending",
+        "notes": "",
+        "finding_id": None,
+        "tested_at": None,
+        "tested_by": "",
+        "candidate": bool(candidate),
+    }
+
+
+def _fan_out_cells(data: dict, ep_id: str, path: str, params: list[dict], candidate: bool) -> int:
+    """Append auto-generated matrix cells for a new endpoint: per-param injection cells
+    (type-canonicalized so the right injection set fans out) + endpoint-level cross-cutting
+    cells (CORS/CSRF/headers, plus LLM cells for an AI endpoint). Returns the count added."""
+    n = 0
+    for param in params:
+        p_name = _sanitize_registered(param.get("name", ""), 128)  # AS-08
+        p_type = _normalize_param_type(param.get("type", "query"))
+        p_hint = param.get("value_hint", "")
+        for inj_type in _applicable_types(p_type, p_hint, p_name):
+            data["matrix"].append(_make_cell(ep_id, p_name, p_type, inj_type, candidate))
+            n += 1
+    endpoint_level_types = list(_APPLICABILITY["endpoint/default"])
+    if classify_endpoint(path) == "ai-redteam":
+        endpoint_level_types += _APPLICABILITY.get("llm_endpoint/default", [])
+    for inj_type in endpoint_level_types:
+        data["matrix"].append(_make_cell(ep_id, "_endpoint", "endpoint", inj_type, candidate))
+        n += 1
+    return n
+
+
+def _upgrade_candidate_if_confirmed(data: dict, ep: dict, candidate: bool) -> bool:
+    """A confirmed re-registration of a candidate endpoint clears the candidate flag on it
+    and its cells, so a real discovery isn't gate-excluded behind a stale fuzz hit."""
+    if not (ep.get("candidate") and not candidate):
+        return False
+    ep["candidate"] = False
+    for cell in data["matrix"]:
+        if cell.get("endpoint_id") == ep["id"]:
+            cell["candidate"] = False
+    _cov._recount(data)
+    _cov._save(data)
+    return True
+
+
+def _register_side_effects(path: str, norm_path: str, params: list[dict]) -> None:
+    """Post-registration (outside the lock): open the high-value endpoint-type trigger gate
+    and record the endpoint on the advisory per-instance surface ledger so the surfacer can
+    flag a 2nd AI endpoint / new auth surface the one-shot gate won't. Ledger is fail-soft."""
+    ep_type = classify_endpoint(path)
+    if ep_type:
+        from core.session import open_trigger_gate
+        open_trigger_gate(ep_type, path)
+    try:
+        from core.session import surface_ledger as _ledger
+        if ep_type == "ai-redteam":
+            _ledger.record_discovered("ai-redteam", norm_path, "ai_endpoint")
+        elif ep_type == "auth":
+            _is_fed = any(tok in path.lower() for tok in ("oauth", "openid", "oidc", "sso", "saml"))
+            _ledger.record_discovered(
+                "credential-audit", f"{'oauth' if _is_fed else 'web'}:{norm_path}", "auth_surface")
+        elif ep_type == "financial":
+            _ledger.record_discovered(
+                "business-logic", f"workflow:{norm_path}", "workflow_or_identity")
+        # An LLM/MCP param can live on a non-AI path — mirror the matrix fan-out.
+        for _p in params or []:
+            if _normalize_param_type(_p.get("type", "")) in ("llm_prompt", "mcp_tool_arg"):
+                _ledger.record_discovered("ai-redteam", norm_path, "ai_endpoint")
+                break
+    except Exception:
+        pass
+
+
 async def add_endpoint(
     path: str,
     method: str,
@@ -65,10 +177,18 @@ async def add_endpoint(
     discovered_by: str = "spider",
     auth_context: str = "none",
     candidate: bool = False,
+    host: str | None = None,
 ) -> dict:
     """Register an endpoint and auto-generate matrix cells.
 
     params: [{"name": "id", "type": "path", "value_hint": "integer"}, ...]
+
+    ``host`` (Phase 3 — host-aware matrix): the endpoint's host[:port]. Pass it
+    explicitly, or encode it in ``path`` as a scheme-qualified URL
+    (``http://10.0.0.5:5000/admin``). A relative path defaults to the matrix target's
+    host, so single-host scans behave exactly as before. Endpoint identity is
+    (host, normalized_path, method) — the SAME path on a different internal host
+    (a pivot discovery) becomes its own endpoint with its own cells.
 
     ``candidate`` (issue #180): the endpoint's existence is NOT confirmed — a
     wordlist/fuzz hit that liveness-classification could not prove is real
@@ -80,34 +200,34 @@ async def add_endpoint(
 
     Returns {"endpoint_id": ..., "new_cells": N, "dedup": bool}.
     """
-    path = _sanitize_registered(path)  # AS-08: defang target-authored paths before storage
-    norm_path = _normalize_path(path)
     method_upper = method.upper()
 
     async with _cov._lock:
         data = _cov._load()
 
-        # Dedup on (normalized_path, method)
+        # Host-aware resolution (Phase 3). default_host = the matrix target's host, so a
+        # relative path keeps today's single-host behaviour; a URL/host-qualified path
+        # or explicit host= makes a pivot-discovered internal host its own endpoint.
+        default_host = _host_of((data.get("meta") or {}).get("target", ""))
+        ep_host, path = _resolve_host_path(path, host, default_host)
+        ep_host = _sanitize_registered(ep_host, 256)
+        path = _sanitize_registered(path)  # AS-08: defang target-authored paths before storage
+        norm_path = _normalize_path(path)
+
+        # Dedup on (host, normalized_path, method). A legacy endpoint with no stored host
+        # is treated as belonging to the default (target) host, so re-registering a
+        # relative path still dedups against it.
         for ep in data["endpoints"]:
-            if ep["_normalized"] == norm_path and ep["method"] == method_upper:
-                # Upgrade a previously-unconfirmed (candidate) endpoint if a
-                # confirmed source now re-registers the same route — a real
-                # discovery should not stay gate-excluded behind a stale fuzz hit.
-                upgraded = False
-                if ep.get("candidate") and not candidate:
-                    ep["candidate"] = False
-                    for cell in data["matrix"]:
-                        if cell.get("endpoint_id") == ep["id"]:
-                            cell["candidate"] = False
-                    upgraded = True
-                    _cov._recount(data)
-                    _cov._save(data)
+            if ((ep.get("host") or default_host) == ep_host
+                    and ep["_normalized"] == norm_path and ep["method"] == method_upper):
+                upgraded = _upgrade_candidate_if_confirmed(data, ep, candidate)
                 return {"endpoint_id": ep["id"], "new_cells": 0,
                         "dedup": True, "upgraded_confirmed": upgraded}
 
         ep_id = f"ep-{uuid.uuid4().hex[:12]}"
-        endpoint = {
+        data["endpoints"].append({
             "id": ep_id,
+            "host": ep_host,
             "path": path,
             "_normalized": norm_path,
             "method": method_upper,
@@ -116,94 +236,13 @@ async def add_endpoint(
             "discovered_at": datetime.now(timezone.utc).isoformat(),
             "auth_context": auth_context,
             "candidate": bool(candidate),
-        }
-        data["endpoints"].append(endpoint)
-
-        # Auto-generate matrix cells
-        new_cells = 0
-
-        # Per-parameter cells
-        for param in params:
-            p_name = _sanitize_registered(param.get("name", ""), 128)  # AS-08
-            # Canonicalize the param type so the fan-out generates the right injection
-            # set (form->body_form gains xxe; json/body->body_json gains prototype/
-            # mass_assignment) instead of silently degrading to query/default.
-            p_type = _normalize_param_type(param.get("type", "query"))
-            p_hint = param.get("value_hint", "")
-            for inj_type in _applicable_types(p_type, p_hint, p_name):
-                cell = {
-                    "id": f"cell-{uuid.uuid4().hex[:12]}",
-                    "endpoint_id": ep_id,
-                    "param": p_name,
-                    "param_type": p_type,
-                    "injection_type": inj_type,
-                    "status": "pending",
-                    "notes": "",
-                    "finding_id": None,
-                    "tested_at": None,
-                    "tested_by": "",
-                    "candidate": bool(candidate),
-                }
-                data["matrix"].append(cell)
-                new_cells += 1
-
-        # Endpoint-level cells (CORS, CSRF, headers, etc.). AI endpoints also
-        # get the endpoint-level LLM weakness cells (RAG poisoning, embedding
-        # manipulation) which apply per-endpoint rather than per-param.
-        endpoint_level_types = list(_APPLICABILITY["endpoint/default"])
-        if classify_endpoint(path) == "ai-redteam":
-            endpoint_level_types += _APPLICABILITY.get("llm_endpoint/default", [])
-        for inj_type in endpoint_level_types:
-            cell = {
-                "id": f"cell-{uuid.uuid4().hex[:12]}",
-                "endpoint_id": ep_id,
-                "param": "_endpoint",
-                "param_type": "endpoint",
-                "injection_type": inj_type,
-                "status": "pending",
-                "notes": "",
-                "finding_id": None,
-                "tested_at": None,
-                "tested_by": "",
-                "candidate": bool(candidate),
-            }
-            data["matrix"].append(cell)
-            new_cells += 1
-
+        })
+        new_cells = _fan_out_cells(data, ep_id, path, params, candidate)
         _cov._recount(data)
         _cov._save(data)
 
-    # Open a mandatory gate for high-value endpoint types (outside the lock — pure session state)
-    ep_type = classify_endpoint(path)
-    if ep_type:
-        from core.session import open_trigger_gate
-        open_trigger_gate(ep_type, path)
-
-    # PR-C: advisory per-instance surface ledger (NON-BLOCKING, fail-soft). Record this
-    # endpoint as a DISCOVERED instance for the re-triggerable skill that owns its
-    # surface, so the surfacer can flag a 2nd AI endpoint / new auth surface that the
-    # one-shot completion gate will not. Never raises into endpoint registration.
-    try:
-        from core.session import surface_ledger as _ledger
-        if ep_type == "ai-redteam":
-            _ledger.record_discovered("ai-redteam", norm_path, "ai_endpoint")
-        elif ep_type == "auth":
-            _pl = path.lower()
-            _is_fed = any(tok in _pl for tok in ("oauth", "openid", "oidc", "sso", "saml"))
-            _ledger.record_discovered(
-                "credential-audit",
-                f"{'oauth' if _is_fed else 'web'}:{norm_path}", "auth_surface")
-        elif ep_type == "financial":
-            _ledger.record_discovered(
-                "business-logic", f"workflow:{norm_path}", "workflow_or_identity")
-        # An LLM/MCP param can live on a non-AI path — mirror the matrix fan-out so the
-        # AI surface is still tracked.
-        for _p in params or []:
-            if _normalize_param_type(_p.get("type", "")) in ("llm_prompt", "mcp_tool_arg"):
-                _ledger.record_discovered("ai-redteam", norm_path, "ai_endpoint")
-                break
-    except Exception:
-        pass
+    # Side-effects outside the lock (pure session state): high-value gate + surface ledger.
+    _register_side_effects(path, norm_path, params)
 
     result = {"endpoint_id": ep_id, "new_cells": new_cells, "dedup": False}
     # An endpoint registered with NO params generates only the cross-cutting cells
@@ -494,6 +533,7 @@ def select_next_batch(data: dict, count: int = 10, endpoint_id: str | None = Non
     batch = [{
         "cell_id":        c.get("id"),
         "endpoint_id":    focus_id,
+        "host":           ep.get("host"),
         "endpoint_path":  ep.get("path"),
         "method":         ep.get("method"),
         "param":          c.get("param"),
@@ -549,6 +589,7 @@ def _project_cell_with_endpoint(cell: dict, ep: dict) -> dict:
     read-back shape — same keys for every cell, null for fields that aren't set."""
     return {
         "cell_id":         cell.get("id"),
+        "host":            ep.get("host"),
         "endpoint_path":   ep.get("path"),
         "method":          ep.get("method"),
         "param_name":      cell.get("param"),

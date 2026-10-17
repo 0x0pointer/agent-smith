@@ -139,14 +139,19 @@ in benchmark" comment is aspirational.
 
 ---
 
-## Phase 3 — deferred (not in this build)
+## Phase 3 — host-aware coverage matrix (BUILT — operator opted in after the initial defer)
 
-True host-aware coverage: extend `core/coverage/operations.py:108` endpoint model with a
-`host`/`base_url` field + dedup key + `_recount`, so internal web apps (e.g. the `10.150.0.158:5000`
-Flask pod) get real per-host matrix cells. Deferred — Phase 2's ledger-gate already gives
-"each host gets scanned and blocks completion" without this invasive change. Until then, per-host web
-endpoints are registered with host-qualified full-URL paths (which survive `_normalize_path` and so
-disambiguate).
+Endpoint identity is now **(host, normalized_path, method)** instead of (path, method), so the SAME
+path on a different internal host (e.g. the `10.150.0.158:5000` Flask pod) is its own endpoint with
+its own cells. `core/coverage/operations.py`: `add_endpoint` gains a `host` param + `_host_of` /
+`_resolve_host_path` helpers; host comes from an explicit `host=`, a scheme-qualified URL path
+(`http://10.0.0.5:5000/admin`), or defaults to the matrix target's host — so ordinary single-host
+scans are byte-for-byte unchanged, and a legacy endpoint with no stored host dedups against the
+default host. The **port is kept** in the host key (a service on :5000 is a distinct surface from
+:80). `host` is surfaced in the cell projections (`list`/`sweep`). The report handler accepts
+`data['host']`. `add_endpoint` was refactored (`_make_cell` / `_fan_out_cells` /
+`_upgrade_candidate_if_confirmed` / `_register_side_effects`) to stay within the complexity budget.
+Tests: `tests/test_coverage_host_aware.py` (7).
 
 ---
 
