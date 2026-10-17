@@ -190,6 +190,14 @@ def _blocker_response_or_none(data):
 
 def _do_complete():
     current0 = _st.scan_session.get() or {}
+    # Deep-pivot (danger/benchmark): HARD-block completion while promoted internal hosts
+    # are unscanned. Checked FIRST so it applies on every path — including the thorough
+    # gate below, which returns before the normal blocker collection. Operator
+    # force-complete (scan_session.complete via the dashboard) still bypasses this.
+    from .completion_gates import _deep_pivot_host_blocker
+    _dp = _deep_pivot_host_blocker()
+    if _dp:
+        return _build_blocker_response([_dp])
     # PR-C: record the still-uncovered per-instance surface, and (bounded, once per gap)
     # bounce the agent back to COVER it before completing — see _surface_cover_nudge().
     _nudge = _surface_cover_nudge()

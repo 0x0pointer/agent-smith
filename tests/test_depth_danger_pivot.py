@@ -123,3 +123,15 @@ def test_deep_pivot_blocker_fires_then_clears(danger_session):
 def test_deep_pivot_blocker_noop_for_normal_scan(normal_session):
     pivot.request_pivot_scope(SSRF_TEXT)
     assert _deep_pivot_host_blocker() is None
+
+
+def test_do_complete_blocks_danger_on_unscanned_hosts(danger_session):
+    """Integration: a danger scan routes through the thorough gate — verify the host
+    blocker is checked FIRST in _do_complete so it actually blocks completion there."""
+    from mcp_server.session_tools import _do_complete
+    pivot.promote_internal_hosts(SSRF_TEXT)
+    resp = _do_complete()
+    assert "DEEP-PIVOT" in resp and "not yet scanned" in resp     # blocked on the thorough path
+    for h in ("10.110.32.1", "10.150.0.158"):
+        ledger.record_covered("network-assess", h)                # scan each host
+    assert "not yet scanned" not in _do_complete()                # deep-pivot block cleared
