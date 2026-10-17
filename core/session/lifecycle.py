@@ -64,7 +64,11 @@ def start(
     scan_mode:        str        = "pentest",
 ) -> dict:
     """scan_mode: "pentest" (default) — HIR pauses for human decisions on ambiguous situations.
-                  "benchmark" — fully autonomous, no HIR triggers, aggressive exploitation.
+                  "benchmark" — fully autonomous + aggressive exploitation: the self-resolvable
+                  QA HIRs (auth/budget/endpoints/unreachable/tool-failure/stuck) auto-resolve to a
+                  steering nudge instead of pausing (core.qa_agent.hir); only the watchdog-level
+                  HIR_NO_PROGRESS / HIR_POLICY_REFUSAL still fire. Combine with depth=danger (or
+                  it implies deep-pivot on its own) for autonomous internal-host pivoting.
 
     model_profile: full|medium|small, or None to AUTO-DETECT from the environment
                    (model name in OPENCODE_MODEL/OLLAMA_MODEL/MODEL/…, or a
