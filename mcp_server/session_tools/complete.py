@@ -200,7 +200,7 @@ def _do_complete():
     # → scan_session.complete() does), but it MUST be driven through the 3 escalating
     # passes first (_thorough_gate). We handle thorough separately and do NOT touch
     # _complete_attempts, so this never trips HIR_FORCE_COMPLETE.
-    if str(current0.get("depth", "")).lower() == "thorough":
+    if scan_session.is_thorough_like(str(current0.get("depth", "")).lower()):
         return _thorough_gate(current0)
     _st._complete_attempts += 1
 
