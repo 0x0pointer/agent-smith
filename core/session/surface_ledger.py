@@ -45,6 +45,7 @@ import core.session as _sess
 # audits) is left to the existing gates.
 SKILL_UNITS: dict[str, str] = {
     "ai-redteam":             "ai_endpoint",
+    "network-assess":         "host",   # deep-pivot: per discovered internal host (port-scan/recon)
     "post-exploit":           "host",
     "reverse-shell":          "host",
     "lateral-movement":       "host",

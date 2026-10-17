@@ -273,6 +273,15 @@ def _extract_and_persist_assets(tool: str, result: Any, ctx: dict) -> None:
     elif tool == "http_request":
         _persist_http_auth_assets(scan_session, evidence, ctx)
         _trigger_body_signal_gates(scan_session, result, ctx)
+        # Deep-pivot: an SSRF response that reflects an internal host promotes it to a
+        # per-host scan surface (danger/benchmark) or raises a wishlist scope-ask
+        # (normal). Fail-soft, no-op unless internal hosts appear in the response.
+        try:
+            from core import pivot as _pivot
+            _pivot.handle_internal_host_discovery(
+                f"{getattr(result, 'summary', '')} {evidence}", source="ssrf-response")
+        except Exception:
+            pass
     elif tool == "kali_sqlmap":
         _persist_sqlmap_gate(scan_session, evidence, ctx)
     elif tool == "nuclei":
