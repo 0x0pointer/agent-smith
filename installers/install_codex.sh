@@ -36,6 +36,32 @@ _find_poetry() {
     return 1
 }
 
+_find_codex() {
+    if [[ -n "${CODEX_BIN:-}" && -x "$CODEX_BIN" ]]; then
+        printf '%s\n' "$CODEX_BIN"
+        return 0
+    fi
+    if command -v codex >/dev/null 2>&1; then
+        command -v codex
+        return 0
+    fi
+
+    # The Codex/ChatGPT desktop apps bundle the CLI without putting it on PATH.
+    local candidate
+    for candidate in \
+        "/Applications/Codex.app/Contents/Resources/codex" \
+        "$HOME/Applications/Codex.app/Contents/Resources/codex" \
+        "/Applications/ChatGPT.app/Contents/Resources/codex" \
+        "$HOME/Applications/ChatGPT.app/Contents/Resources/codex"; do
+        if [[ -x "$candidate" ]]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
 echo ""
 echo "  pentest-agent installer (Codex)"
 echo "  ==============================="
@@ -44,11 +70,12 @@ echo ""
 # Prerequisites
 command -v docker >/dev/null 2>&1 || die "docker not found - install Docker Desktop first."
 POETRY_BIN="$(_find_poetry)" || die "poetry not found - install with: curl -sSL https://install.python-poetry.org | python3 -"
-command -v codex  >/dev/null 2>&1 || die "codex not found - install Codex first: https://developers.openai.com/codex"
+CODEX_BIN="$(_find_codex)" || die "codex not found - install the Codex CLI (https://developers.openai.com/codex) or set CODEX_BIN=/path/to/codex"
 command -v node   >/dev/null 2>&1 || warn "node not found - Mermaid diagrams will render client-side (install Node.js v18+ for server-side pre-rendering)"
 
 ok "Prerequisites satisfied (docker, poetry, codex)"
 ok "Using Poetry at $POETRY_BIN"
+ok "Using Codex at $CODEX_BIN"
 
 mkdir -p "$CODEX_HOME"
 
@@ -75,8 +102,8 @@ ok "MCP launcher self-test passed"
 # the MCP server needs this checkout's .env, logs, tools, and session files.
 echo ""
 echo "Registering pentest-agent MCP server with Codex (stdio)..."
-codex mcp remove pentest-agent >/dev/null 2>&1 || true
-codex mcp add pentest-agent -- "$REPO_DIR/installers/run-mcp-server.sh"
+"$CODEX_BIN" mcp remove pentest-agent >/dev/null 2>&1 || true
+"$CODEX_BIN" mcp add pentest-agent -- "$REPO_DIR/installers/run-mcp-server.sh"
 ok "MCP server registered with Codex"
 
 # Project instructions and hooks live in the repo. AGENTS.md is read by Codex
