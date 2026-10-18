@@ -10,6 +10,32 @@ GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 ok()   { echo -e "${GREEN}[ok]${NC} $*"; }
 warn() { echo -e "${YELLOW}[warn]${NC} $*"; }
 
+_find_codex() {
+    if [[ -n "${CODEX_BIN:-}" && -x "$CODEX_BIN" ]]; then
+        printf '%s\n' "$CODEX_BIN"
+        return 0
+    fi
+    if command -v codex >/dev/null 2>&1; then
+        command -v codex
+        return 0
+    fi
+
+    # The Codex/ChatGPT desktop apps bundle the CLI without putting it on PATH.
+    local candidate
+    for candidate in \
+        "/Applications/Codex.app/Contents/Resources/codex" \
+        "$HOME/Applications/Codex.app/Contents/Resources/codex" \
+        "/Applications/ChatGPT.app/Contents/Resources/codex" \
+        "$HOME/Applications/ChatGPT.app/Contents/Resources/codex"; do
+        if [[ -x "$candidate" ]]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
 echo ""
 echo "  pentest-agent uninstaller (Codex)"
 echo "  ================================="
@@ -17,8 +43,8 @@ echo ""
 
 # Remove the Codex MCP registration. This only changes Codex's MCP config; it
 # does not remove the repo, .env, logs, Docker images, or Poetry virtualenv.
-if command -v codex >/dev/null 2>&1; then
-    codex mcp remove pentest-agent >/dev/null 2>&1 \
+if CODEX_BIN="$(_find_codex)"; then
+    "$CODEX_BIN" mcp remove pentest-agent >/dev/null 2>&1 \
         && ok "pentest-agent MCP server removed from Codex" \
         || warn "pentest-agent MCP server was not registered with Codex (skipping)"
 else
