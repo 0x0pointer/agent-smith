@@ -144,6 +144,46 @@ def test_deep_pivot_blocker_noop_for_normal_scan(normal_session):
     assert _deep_pivot_host_blocker() is None
 
 
+def test_host_scanned_reached_covers_all_host_skills(danger_session):
+    pivot.promote_internal_hosts("pod 10.1.1.1 and pod 10.2.2.2")
+    assert set(ledger.host_scan_pending()) == {"10.1.1.1", "10.2.2.2"}
+    ledger.record_host_scanned("10.1.1.1", reached=True)
+    for sk in ledger.HOST_UNIT_SKILLS:           # credited across ALL host-unit skills (mis-attribution fix)
+        assert "10.1.1.1" not in ledger.pending(sk)
+    assert ledger.host_scan_pending() == ["10.2.2.2"]
+
+
+def test_host_scanned_unreachable_is_dead_end_not_covered(danger_session):
+    pivot.promote_internal_hosts("pod 10.3.3.3")
+    ledger.record_host_scanned("10.3.3.3", reached=False)
+    na = scan_session.get()["surface_coverage"]["network-assess"]
+    assert ledger.host_scan_pending() == []                 # dead-end → no longer blocks
+    assert "10.3.3.3" not in na.get("covered", [])          # but NOT falsely "covered"
+    assert "10.3.3.3" in na.get("unreachable", [])          # recorded honestly as unreachable
+
+
+def test_blocker_clears_on_reached_or_unreachable(danger_session):
+    from mcp_server.session_tools.completion_gates import _deep_pivot_host_blocker
+    pivot.promote_internal_hosts("hosts 10.4.4.4 and 10.5.5.5")
+    assert _deep_pivot_host_blocker()                        # blocked (2 pending)
+    ledger.record_host_scanned("10.4.4.4", reached=True)     # reached
+    ledger.record_host_scanned("10.5.5.5", reached=False)    # documented unreachable
+    assert _deep_pivot_host_blocker() is None                # both resolved
+
+
+def test_envelope_promotes_and_covers_from_scan_output(danger_session):
+    import mcp_server.scan_engine.envelope as env
+
+    class R:
+        summary = "naabu Found 1 open port(s): 5000 on 10.7.7.7"
+        evidence = {"ports": [5000], "hosts": ["10.7.7.7"]}
+    # promotion now fires from a SCAN tool's output (not just a finding/http_request)...
+    env._deep_pivot_host_tracking("naabu", R(), {"host": "10.7.7.7", "command": "naabu -host 10.7.7.7"}, R.summary)
+    assert "10.7.7.7" in scan_session.get()["known_assets"]["ips"]
+    # ...and because the scan REACHED it (open port), it's credited as covered, not pending
+    assert "10.7.7.7" not in ledger.host_scan_pending()
+
+
 def test_do_complete_blocks_danger_on_unscanned_hosts(danger_session):
     """Integration: a danger scan routes through the thorough gate — verify the host
     blocker is checked FIRST in _do_complete so it actually blocks completion there."""

@@ -15,10 +15,6 @@ from __future__ import annotations
 import core.session as scan_session
 from core import netextract
 
-# Host-unit skills re-triggered per discovered internal host (surface ledger). The
-# first — network-assess — is the port-scan/recon whose pending set == unscanned hosts.
-_HOST_UNIT_SKILLS = ("network-assess", "post-exploit", "lateral-movement", "reverse-shell")
-
 
 def _known_hosts(cur: dict) -> set[str]:
     """Host keys already on record (target + known ips/domains) or out-of-scope — never
@@ -72,7 +68,7 @@ def promote_internal_hosts(text: str, source: str = "") -> list[str]:
             scan_session.update_known_assets("domains", names)
         from core.session import surface_ledger as _ledger
         for h in new:
-            for sk in _HOST_UNIT_SKILLS:
+            for sk in _ledger.HOST_UNIT_SKILLS:
                 _ledger.record_discovered(sk, h, "host")
         scan_session.trigger_gate(
             "internal_network",

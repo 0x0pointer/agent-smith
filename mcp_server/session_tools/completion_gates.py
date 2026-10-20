@@ -122,7 +122,7 @@ def _deep_pivot_host_blocker() -> str | None:
         from core.session import surface_ledger as _ledger
         if not scan_session.deep_pivot_enabled(scan_session.get()):
             return None
-        pend = _ledger.pending("network-assess")
+        pend = _ledger.host_scan_pending()   # discovered − covered − documented-unreachable
         if not pend:
             return None
         shown = ", ".join(pend[:8]) + (f" (+{len(pend) - 8} more)" if len(pend) > 8 else "")
@@ -130,8 +130,9 @@ def _deep_pivot_host_blocker() -> str | None:
             f"DEEP-PIVOT — {len(pend)} discovered internal host(s) not yet scanned: {shown}. "
             "Tunnel in (chisel / ssh -D + proxychains via kali) and run /network-assess against "
             "each: naabu/nmap top-ports -> httpx -> nuclei, then spider + register endpoints for "
-            "any web service found. Each host clears when a scan fires against it. "
-            "(Applies to depth=danger / scan_mode=benchmark only.)"
+            "any web service found. A host clears when a scan actually REACHES it; a host that is "
+            "genuinely unreachable (no route / no pivot foothold) is auto-recorded as a documented "
+            "dead-end and no longer blocks. (depth=danger / scan_mode=benchmark only.)"
         )
     except Exception:
         return None
