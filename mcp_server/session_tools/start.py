@@ -66,14 +66,19 @@ def _start_response(cfg: dict, classification: dict, target: str, scan_mode: str
     if depth == "danger" or scan_mode == "benchmark":
         lines += [
             "DEEP-PIVOT MODE: when SSRF/RCE/file-read reveals an INTERNAL host (RFC1918 10./172.16-31./",
-            "192.168., 127./169.254., *.cluster.local, IMDS, a pod IP), it is auto-promoted to",
-            "known_assets and becomes a per-host SCAN SURFACE — you CANNOT complete the scan while any",
-            "discovered internal host is unscanned. For EACH internal host:",
-            "  1. tunnel in — kali('chisel server …') or kali('ssh -D 1080 … -N -f') + proxychains4",
-            "  2. naabu/nmap top-ports → httpx → nuclei against the host",
-            "  3. if a web/API service is up: spider it and register its endpoints (host-qualified",
-            "     full-URL path), then run /web-exploit · /api-security against it as its own target",
-            "Treat each internal host like a fresh engagement target. Honor out_of_scope.",
+            "192.168., *.cluster.local, cloud IMDS, a pod IP), it is auto-promoted to known_assets and",
+            "becomes a per-host SCAN SURFACE — you CANNOT complete the scan while any discovered internal",
+            "host is unscanned. These hosts are NEW SURFACES WITHIN THIS SAME SCAN: do NOT call",
+            "session(action='start') for an internal host (that spawns a separate scan and drops the",
+            "depth) — register and test them here. For EACH internal host:",
+            "  1. tunnel in FIRST — a direct scan from Kali usually can't route to a cluster-internal IP.",
+            "     kali('chisel server …')+client, or kali('ssh -D 1080 user@PIVOT -N -f') + proxychains4.",
+            "  2. THROUGH the tunnel: naabu/nmap top-ports → httpx → nuclei against the host.",
+            "  3. if a web/API service is up: spider it + register endpoints host-qualified",
+            "     (report(action='coverage', data={path:'http://<host>:<port>/…', host:'<host>:<port>'})),",
+            "     then run /web-exploit · /api-security against them.",
+            "If a host is genuinely UNREACHABLE (no pivot foothold / network-isolated), document that as a",
+            "dead-end and move on — don't loop on it. Honor out_of_scope.",
             "",
         ]
     prior_brief = _prior_findings_brief(target)

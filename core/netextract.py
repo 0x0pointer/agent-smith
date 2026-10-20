@@ -47,6 +47,21 @@ def collapse_ports(hosts: set) -> set:
     return {h for h in hosts if ":" not in h or h.split(":")[0] not in bare}
 
 
+def scannable_internal_ip(ip: str) -> bool:
+    """`internal_ip()` minus loopback (127/8) and link-local (169.254/16) — the set that
+    is worth PROMOTING as a pivot scan target.
+
+    A reflected ``127.0.0.1`` is the target's (or, from the Kali container, the scanner's)
+    OWN localhost, not a pivotable host; generic link-local is not a pivot target either.
+    The two real cloud-metadata endpoints (169.254.169.254 / .170.2) are still caught by the
+    ``_META_HOSTS`` branch in ``extract_internal_hosts``, independent of this check. The
+    unrestricted ``internal_ip`` is kept for the knowledge-graph layer (visualization)."""
+    if not internal_ip(ip):
+        return False
+    a, b = (int(x) for x in ip.split(":", 1)[0].split(".")[:2])
+    return not (a == 127 or (a == 169 and b == 254))
+
+
 def extract_internal_hosts(text: str) -> set[str]:
     """Internal IPs (RFC1918/loopback/link-local/CGNAT), internal/cloud DNS names, and
     cloud-metadata endpoints named in `text`. Public dotted-quads are excluded
@@ -59,7 +74,7 @@ def extract_internal_hosts(text: str) -> set[str]:
     out: set = set()
     for mo in _IP_RE.finditer(text):
         tok = mo.group(0).lower().rstrip(".")
-        if internal_ip(tok):
+        if scannable_internal_ip(tok):             # excludes loopback/link-local (not pivot targets)
             out.add(tok.split(":", 1)[0])          # drop :port → bare IP
     out |= {mo.group(0).lower().rstrip(".") for mo in _INTERNAL_NAME_RE.finditer(text)}
     # Cloud/k8s metadata hosts nest as substrings (kubernetes.default ⊂ …svc ⊂ …cluster.local);

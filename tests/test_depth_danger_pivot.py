@@ -56,6 +56,25 @@ def test_looks_like_ip():
     assert not netextract.looks_like_ip("kubernetes.default.svc.cluster.local")
 
 
+def test_loopback_and_linklocal_not_promoted():
+    # 127.x (scanner/target localhost) and generic link-local are NOT pivot targets;
+    # the two real cloud-metadata IPs are still kept (via _META_HOSTS).
+    assert netextract.scannable_internal_ip("10.150.0.158")
+    assert not netextract.scannable_internal_ip("127.0.0.1")
+    assert not netextract.scannable_internal_ip("169.254.1.5")
+    hosts = netextract.extract_internal_hosts(
+        "SSRF hit 127.0.0.1:5000/internal and a pod 10.150.0.158:5000; IMDS 169.254.169.254")
+    assert "10.150.0.158" in hosts
+    assert "127.0.0.1" not in hosts
+    assert "169.254.169.254" in hosts        # IMDS kept via metadata-host branch
+
+
+def test_promote_excludes_loopback_under_danger(danger_session):
+    promoted = pivot.promote_internal_hosts("reached 127.0.0.1:5000 and pod 10.9.9.9", source="t")
+    assert promoted == ["10.9.9.9"]           # 127.0.0.1 not promoted
+    assert "127.0.0.1" not in scan_session.get()["known_assets"]["ips"]
+
+
 # ── promotion (deep-pivot) ────────────────────────────────────────────────────
 
 def test_promote_internal_hosts_danger(danger_session):

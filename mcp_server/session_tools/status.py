@@ -178,13 +178,23 @@ def _add_status_uncovered_surface(result: dict) -> None:
     completion and never blocks. Fail-soft."""
     try:
         from core.session import surface_ledger as _ledger
+        from core.session import deep_pivot_enabled, get as _get
         overview = _ledger.pending_overview()
         if overview:
+            # Under deep-pivot (danger/benchmark) the network-assess host instances are NOT
+            # advisory — they HARD-BLOCK completion (_deep_pivot_host_blocker). Label honestly.
+            host_blocks = bool(deep_pivot_enabled(_get()) and _ledger.pending("network-assess"))
+            note = ("ADVISORY only — cover in priority order; skipping is allowed, "
+                    "completion is never blocked by uncovered surface.")
+            if host_blocks:
+                note = ("ADVISORY for most surfaces, BUT under deep-pivot the pending "
+                        "network-assess host(s) HARD-BLOCK completion until each discovered "
+                        "internal host is scanned (or documented unreachable).")
             result["uncovered_surface"] = {
                 "advisory": _ledger.advisory_line(),
                 "by_skill": overview,
-                "note": ("ADVISORY only — cover in priority order; skipping is allowed, "
-                         "completion is never blocked by uncovered surface."),
+                "blocks_completion": host_blocks,
+                "note": note,
             }
     except Exception:
         pass
