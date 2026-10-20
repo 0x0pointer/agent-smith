@@ -312,6 +312,39 @@ def _merge_prior_assets(prior: dict, notes: list) -> int:
     return merged
 
 
+def _restore_prior_surface_coverage(prior: dict, notes: list) -> int:
+    """Restore the prior store's per-instance surface ledger (deep-pivot network-assess host
+    coverage, AI endpoints, etc.) into the live session, set-union per skill, so a resumed
+    scan CONTINUES the pivot obligation instead of silently dropping every prior-discovered
+    internal host (the blocker reads host_scan_pending() off this). Fail-soft."""
+    sc = prior.get("surface_coverage") or {}
+    if not sc:
+        return 0
+    try:
+        import core.session as _sess
+        if not _sess._current:
+            return 0
+        live = _sess._current.setdefault("surface_coverage", {})
+        restored = 0
+        for skill, e in sc.items():
+            if not isinstance(e, dict):
+                continue
+            le = live.setdefault(skill, {"unit": e.get("unit"), "discovered": [], "covered": []})
+            if e.get("unit") and not le.get("unit"):
+                le["unit"] = e["unit"]
+            for key in ("discovered", "covered", "unreachable"):
+                cur = le.setdefault(key, [])
+                for v in (e.get(key) or []):
+                    if v not in cur:
+                        cur.append(v)
+                        restored += 1
+        _sess._flush()
+        return restored
+    except Exception as ex:
+        notes.append(f"surface-coverage restore partial ({ex})")
+        return 0
+
+
 async def _reregister_prior_endpoints(prior: dict, cov: Any) -> tuple:
     """Re-register the prior store's endpoints (regenerating their cells). Returns
     (old_ep, registered): old_ep maps each prior endpoint id -> (path, method) for
@@ -332,6 +365,7 @@ async def _reregister_prior_endpoints(prior: dict, cov: Any) -> tuple:
                 params=_coerce_endpoint_params(ep.get("params", [])),
                 discovered_by="prior-import",
                 auth_context=ep.get("auth_context", "none"),
+                host=ep.get("host"),   # preserve the host dimension (pivoted endpoints stay distinct)
             )
             if not res.get("dedup"):
                 registered += 1
@@ -453,6 +487,10 @@ async def _do_coverage_import_prior(data, cov: Any) -> str:
 
     notes: list[str] = []
     merged = _merge_prior_assets(prior, notes)
+    restored_sc = _restore_prior_surface_coverage(prior, notes)
+    if restored_sc:
+        notes.append(f"restored {restored_sc} prior surface-coverage instance(s) — "
+                     "deep-pivot obligation carried forward (resumed scan continues the pivot)")
     old_ep, registered = await _reregister_prior_endpoints(prior, cov)
     skipped = await _trust_skip_prior_cells(prior, cov, old_ep, mode, notes)
     return _format_import_prior_result(

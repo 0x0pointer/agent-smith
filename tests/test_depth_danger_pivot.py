@@ -162,6 +162,18 @@ def test_recovery_next_call_steers_to_pending_host(danger_session):
     assert call and "DEEP-PIVOT resume" in call and "naabu" in call
 
 
+def test_resume_restores_surface_coverage(danger_session):
+    # a prior engagement's ledger (discovered internal hosts) is carried forward on resume,
+    # so the pivot obligation survives instead of being silently dropped.
+    from mcp_server.report_tools.coverage import _restore_prior_surface_coverage
+    prior = {"surface_coverage": {"network-assess": {
+        "unit": "host", "discovered": ["10.20.20.1", "10.20.20.2"],
+        "covered": ["10.20.20.1"], "unreachable": []}}}
+    n = _restore_prior_surface_coverage(prior, [])
+    assert n == 3                                               # 2 discovered + 1 covered merged
+    assert ledger.host_scan_pending() == ["10.20.20.2"]        # obligation restored (1 still owed)
+
+
 def test_host_scanned_reached_covers_all_host_skills(danger_session):
     pivot.promote_internal_hosts("pod 10.1.1.1 and pod 10.2.2.2")
     assert set(ledger.host_scan_pending()) == {"10.1.1.1", "10.2.2.2"}
