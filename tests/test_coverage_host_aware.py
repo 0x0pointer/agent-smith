@@ -76,3 +76,14 @@ def test_projection_includes_host():
     out = _project_cell_with_endpoint(
         {"id": "c1", "param": "q"}, {"host": "10.5.5.5:8080", "path": "/p", "method": "GET"})
     assert out["host"] == "10.5.5.5:8080"
+
+
+@pytest.mark.asyncio
+async def test_list_cells_host_filter(coverage_file):
+    await core.coverage.add_endpoint("/admin", "GET", [{"name": "id", "type": "query"}], host="10.0.0.1")
+    await core.coverage.add_endpoint("/admin", "GET", [{"name": "id", "type": "query"}], host="10.0.0.2")
+    res = await core.coverage.list_cells(host="10.0.0.2")
+    assert res["filtered"] > 0
+    assert all(c["host"] == "10.0.0.2" for c in res["cells"])     # scoped to the pivoted host
+    res_all = await core.coverage.list_cells()
+    assert {c["host"] for c in res_all["cells"]} == {"10.0.0.1", "10.0.0.2"}

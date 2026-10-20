@@ -565,21 +565,22 @@ def _cell_matches_filters(
     status: str | None,
     injection_type: str | None,
     param_name: str | None,
+    host: str | None = None,
 ) -> bool:
     """AND-combined filter predicate for list_cells.
 
-    Substring (case-insensitive) match on endpoint_path and param_name; exact
+    Substring (case-insensitive) match on host, endpoint_path and param_name; exact
     match on method, status, and injection_type. A falsy filter is ignored.
     """
-    if endpoint_path and endpoint_path.lower() not in (ep.get("path") or "").lower():
-        return False
+    for val, hay in ((host, ep.get("host")), (endpoint_path, ep.get("path")),
+                     (param_name, cell.get("param"))):          # substring, case-insensitive
+        if val and val.lower() not in (hay or "").lower():
+            return False
     if method and method.upper() != (ep.get("method") or "").upper():
         return False
     if status and status != cell.get("status"):
         return False
     if injection_type and injection_type != cell.get("injection_type"):
-        return False
-    if param_name and param_name.lower() not in (cell.get("param") or "").lower():
         return False
     return True
 
@@ -611,6 +612,7 @@ async def list_cells(
     injection_type:str | None = None,
     param_name:    str | None = None,
     limit:         int        = 200,
+    host:          str | None = None,
 ) -> dict:
     """Compaction-recovery primitive: return cells with joined endpoint
     context so Smith can rebuild its mental model after context reset.
@@ -642,7 +644,7 @@ async def list_cells(
         c for c in all_cells
         if _cell_matches_filters(
             c, endpoints_by_id.get(c.get("endpoint_id"), {}),
-            endpoint_path, method, status, injection_type, param_name,
+            endpoint_path, method, status, injection_type, param_name, host,
         )
     ]
 
