@@ -87,6 +87,14 @@ def start(
     # Reset cost/call counters from any previous session
     cost_tracker.reset()
 
+    # Wishlist ("Resource requests") is per-engagement agent→operator state — a NEW scan must
+    # not inherit a prior scan's open requests (stale scope/credential asks). Fail-soft.
+    try:
+        from core.wishlist import wishlist_queue as _wl
+        _wl.clear()
+    except Exception:
+        pass
+
     preset = _sess.PRESETS.get(depth, _sess.PRESETS["standard"])
     limits = {
         "max_cost_usd":     max_cost_usd     if max_cost_usd     is not None else preset["max_cost_usd"],

@@ -26,6 +26,24 @@ def test_add_and_list_open(wishlist_file):
     assert q.list_open()[0].blocking_cell_ids == ["c1", "c2"]
 
 
+def test_clear_wipes_backlog(wishlist_file):
+    q = WishlistQueue()
+    q.add("need creds", category="credentials")
+    q.add("expand scope", category="scope")
+    assert len(q.list_open()) == 2
+    assert q.clear() == 2            # returns count removed
+    assert q.list_open() == []
+
+
+def test_session_start_clears_wishlist(wishlist_file, monkeypatch, tmp_path):
+    # a NEW scan must not inherit a prior scan's open resource requests
+    monkeypatch.setattr(core.session, "_SESSION_FILE", tmp_path / "session.json")
+    WishlistQueue().add("stale request from prior scan", category="scope")
+    assert len(WishlistQueue().list_open()) == 1
+    core.session.start("http://fresh.target")
+    assert WishlistQueue().list_open() == []
+
+
 def test_open_dedup(wishlist_file):
     q = WishlistQueue()
     q.add("expand scope to staging")
