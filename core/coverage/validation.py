@@ -161,44 +161,81 @@ def cell_has_test_evidence(cell: dict) -> bool:
     return bool(cell.get("artifact_id") or cell.get("tested_by"))
 
 
-def _finding_norm_path(finding) -> str | None:
-    """Normalized URL path of a non-false-positive finding, or None to skip it."""
+def _bare_host(netloc: str) -> str:
+    """Lowercased host with a single :port stripped (keeps bare IPv6). '' when empty."""
+    netloc = (netloc or "").strip().lower()
+    if netloc.count(":") == 1:          # host:port (IPv4 / hostname)
+        netloc = netloc.split(":", 1)[0]
+    return netloc
+
+
+def _finding_host_norm_path(finding):
+    """(bare_host, normalized_path) of a non-false-positive finding. host is '' when the
+    target isn't a clean URL/host (e.g. 'megacorpone.com (DNS)') — the caller then falls back
+    to a host-agnostic match so messy targets don't produce false gaps. (None, None) to skip."""
     if not isinstance(finding, dict) or finding.get("status") == "false_positive":
-        return None
+        return None, None
     from urllib.parse import urlparse
 
     from core.coverage.classify import _normalize_path
     try:
-        path = urlparse(finding.get("target", "")).path or "/"
+        u = urlparse(finding.get("target", ""))
+        np = _normalize_path(u.path or "/") or None
+        return (_bare_host(u.netloc), np) if np else (None, None)
     except Exception:
-        return None
-    return _normalize_path(path) or None
+        return None, None
 
 
 def unregistered_finding_paths(findings_data, coverage_data) -> list[str]:
-    """Normalized endpoint paths that have findings but are NOT in the matrix.
+    """Endpoints that have findings but are NOT in the matrix — now HOST-AWARE.
 
     A non-empty result means testing outran discovery — the agent filed findings
     against endpoints it never registered, so the coverage matrix doesn't reflect
     the real attack surface (the recon-before-testing discipline was skipped).
     Drives the QA ``DISCOVERY_GAP`` check (early steer + completion block).
 
-    Returns ``[]`` when no endpoints are registered at all — that "zero endpoints"
-    state is a different signal handled by its own check, and treating every
-    finding as unregistered there would just be noise.
-    """
-    from core.coverage.classify import _normalize_path
+    Host-aware (Phase 3): a finding on a *pivoted* internal host (e.g. 10.x/admin) is no
+    longer masked by a same-path perimeter endpoint — if the path exists only on OTHER hosts
+    it's flagged as ``host/path``. Safe fallbacks: a brand-new path is flagged host-agnostically
+    (as before); a finding with no clean host, and a legacy/host-less matrix, fall back to the
+    old path-only match so messy targets never produce false gaps.
 
+    Returns ``[]`` when no endpoints are registered at all — that "zero endpoints"
+    state is a different signal handled by its own check.
+    """
     endpoints = (coverage_data or {}).get("endpoints", []) if isinstance(coverage_data, dict) else []
     if not endpoints:
         return []
-    registered = {
-        ep.get("_normalized") or _normalize_path(ep.get("path", ""))
-        for ep in endpoints if isinstance(ep, dict)
-    }
+    registered_paths, hostless_paths, registered_hp = _index_registered_endpoints(endpoints)
     findings = findings_data if isinstance(findings_data, list) else (findings_data or {}).get("findings", [])
-    unregistered = {p for f in findings if (p := _finding_norm_path(f)) and p not in registered}
+    unregistered: set = set()
+    for f in findings:
+        fhost, fpath = _finding_host_norm_path(f)
+        if not fpath:
+            continue
+        if fpath not in registered_paths:
+            unregistered.add(fpath)                                  # brand-new path
+        elif (fhost and registered_hp and fpath not in hostless_paths
+              and (fhost, fpath) not in registered_hp):
+            unregistered.add(f"{fhost}{fpath}")                      # path exists, but only on OTHER hosts
     return sorted(unregistered)
+
+
+def _index_registered_endpoints(endpoints):
+    """(registered_paths, hostless_paths, registered_hp) from the matrix endpoints —
+    path-agnostic set, paths on host-less (legacy) endpoints, and (bare_host, path) pairs."""
+    from core.coverage.classify import _normalize_path
+    registered_paths: set = set()
+    hostless_paths: set = set()
+    registered_hp: set = set()
+    for ep in endpoints:
+        if not isinstance(ep, dict):
+            continue
+        np = ep.get("_normalized") or _normalize_path(ep.get("path", ""))
+        registered_paths.add(np)
+        h = _bare_host(ep.get("host", ""))
+        (registered_hp.add((h, np)) if h else hostless_paths.add(np))
+    return registered_paths, hostless_paths, registered_hp
 
 
 # Injection cell types where 401/403 is meaningless evidence of cleanliness —

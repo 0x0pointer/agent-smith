@@ -113,6 +113,9 @@
       ></span></td>`;
     }
 
+    // Show the host per endpoint only when the matrix spans >1 host (a deep-pivot happened),
+    // so single-host scans stay uncluttered but pivoted endpoints are distinguishable.
+    const multiHost = new Set((_covData.endpoints || []).map(e => e.host).filter(Boolean)).size > 1;
     let bodyRows = '';
     Object.values(epGroups).forEach(({ ep, params }) => {
       const s = epSummary(ep.id);
@@ -127,7 +130,7 @@
       bodyRows += `<tr class="cov-ep-header" data-id="${esc(ep.id)}" onclick="toggleCovEndpoint(this.dataset.id)" style="cursor:pointer">
         <td style="font-weight:600;color:#f0f6fc">
           <span style="margin-right:.4rem;font-size:.7rem">${arrow}</span>
-          ${esc(ep.method)} ${esc(ep.path)}
+          ${esc(ep.method)} ${(multiHost && ep.host) ? `<span style="color:#58a6ff">${esc(ep.host)}</span> ` : ''}${esc(ep.path)}
           <span style="color:#6e7681;font-weight:400;margin-left:.5rem">${doneCells}/${totalCells}</span>
           ${vulnBadge}${progBadge}
         </td>

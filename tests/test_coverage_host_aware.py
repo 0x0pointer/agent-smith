@@ -78,6 +78,28 @@ def test_projection_includes_host():
     assert out["host"] == "10.5.5.5:8080"
 
 
+def test_discovery_gap_is_host_aware():
+    from core.coverage.validation import unregistered_finding_paths
+    cov = {"endpoints": [{"_normalized": "/admin", "path": "/admin", "method": "GET", "host": "t.test"}]}
+    finds = {"findings": [
+        {"target": "http://t.test/admin"},            # registered on this host → OK
+        {"target": "http://10.0.0.5:5000/admin"},      # same path, DIFFERENT host → gap
+        {"target": "http://t.test/newpath"},           # brand-new path → gap
+    ]}
+    out = unregistered_finding_paths(finds, cov)
+    assert "/newpath" in out
+    assert any(o.startswith("10.0.0.5") and o.endswith("/admin") for o in out)   # pivoted-host gap
+    assert "/admin" not in out                                                    # perimeter one is fine
+
+
+def test_discovery_gap_legacy_hostless_no_false_positive():
+    # a pre-Phase-3 (host-less) matrix falls back to path-only — no new false gaps
+    from core.coverage.validation import unregistered_finding_paths
+    cov = {"endpoints": [{"_normalized": "/admin", "path": "/admin", "method": "GET"}]}
+    finds = {"findings": [{"target": "http://10.0.0.5/admin"}]}
+    assert unregistered_finding_paths(finds, cov) == []
+
+
 @pytest.mark.asyncio
 async def test_list_cells_host_filter(coverage_file):
     await core.coverage.add_endpoint("/admin", "GET", [{"name": "id", "type": "query"}], host="10.0.0.1")
