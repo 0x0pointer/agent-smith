@@ -46,6 +46,21 @@ def test_hir_danger_still_pauses(steer_session):
     assert scan_session.get_intervention() is not None
 
 
+def test_agent_intervene_suppressed_in_benchmark(steer_session):
+    from mcp_server.session_tools.hir import _do_intervene
+    scan_session.start("http://x.test", depth="standard", scan_mode="benchmark")
+    out = _do_intervene({"situation": "stuck on target"})
+    assert "CONTINUE" in out
+    assert scan_session.get_intervention() is None          # autonomous → NOT paused
+
+
+def test_agent_intervene_pauses_in_danger(steer_session):
+    from mcp_server.session_tools.hir import _do_intervene
+    scan_session.start("http://x.test", depth="danger", scan_mode="pentest")
+    _do_intervene({"situation": "need a human decision"})
+    assert scan_session.get_intervention() is not None      # danger keeps human-in-the-loop
+
+
 # ── 2e: exploit-escalation fires under deep-pivot (danger + benchmark), not normal ──
 
 def _crit_findings():

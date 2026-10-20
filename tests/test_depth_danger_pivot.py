@@ -144,6 +144,24 @@ def test_deep_pivot_blocker_noop_for_normal_scan(normal_session):
     assert _deep_pivot_host_blocker() is None
 
 
+def test_dismiss_internal_network_refused_while_hosts_pending(danger_session):
+    from mcp_server.session_tools.skills import _internal_network_dismiss_refusal
+    pivot.promote_internal_hosts("pod 10.6.6.6")
+    msg = _internal_network_dismiss_refusal("internal_network")
+    assert msg and "REFUSED" in msg and "10.6.6.6" in msg
+    ledger.record_host_scanned("10.6.6.6", reached=True)        # scanned → dischargeable
+    assert _internal_network_dismiss_refusal("internal_network") is None
+    assert _internal_network_dismiss_refusal("some_other_gate") is None   # guard is scoped
+
+
+def test_recovery_next_call_steers_to_pending_host(danger_session):
+    from mcp_server.session_tools.recovery_build import _deep_pivot_next_call
+    assert _deep_pivot_next_call() is None                      # nothing pending yet
+    pivot.promote_internal_hosts("pod 10.8.8.8")
+    call = _deep_pivot_next_call()
+    assert call and "DEEP-PIVOT resume" in call and "naabu" in call
+
+
 def test_host_scanned_reached_covers_all_host_skills(danger_session):
     pivot.promote_internal_hosts("pod 10.1.1.1 and pod 10.2.2.2")
     assert set(ledger.host_scan_pending()) == {"10.1.1.1", "10.2.2.2"}
