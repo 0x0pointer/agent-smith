@@ -81,7 +81,7 @@ def _maybe_trigger_auth_gate(text: str, title: str, severity: str) -> str | None
         return None
     current = scan_session.get()
     depth = current.get("depth", "standard") if current else "standard"
-    if depth in ("standard", "thorough"):
+    if depth in ("standard", "thorough", "danger"):
         scan_session.trigger_gate("credential_audit", f"Auth service detected: {title}", ["credential-audit"])
         return "credential_audit"
     return None
@@ -159,7 +159,7 @@ def _auto_trigger_note_gates(message: str) -> list[str]:
     if any(kw in text for kw in _AUTH_KEYWORDS):
         current = scan_session.get()
         depth = current.get("depth", "standard") if current else "standard"
-        if depth in ("standard", "thorough"):
+        if depth in ("standard", "thorough", "danger"):
             scan_session.trigger_gate(
                 "credential_audit",
                 "Auth service detected in recon",

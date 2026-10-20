@@ -91,6 +91,21 @@ def _do_intervene(opts: dict) -> str:
     current = scan_session.get() or {}
     if not current or current.get("status") != "running":
         return f"No running scan to pause. Status: {current.get('status', 'none')}"
+    # Benchmark is fully autonomous — a self-triggered HIR would pause the run with no human
+    # to resume it (an indefinite hang). Don't pause; downgrade to a steering nudge and tell
+    # the agent to continue (mirrors core.qa_agent.hir._hir's benchmark handling).
+    if current.get("scan_mode") == "benchmark":
+        try:
+            from core.qa_agent.hir import _benchmark_autoresolve
+            _benchmark_autoresolve(code, situation, tried if isinstance(tried, list) else [])
+        except Exception:
+            pass
+        return json.dumps({
+            "status": "CONTINUE",
+            "note": ("benchmark mode is autonomous — a self-triggered intervention was NOT raised "
+                     "(no human to resume it). Pick the best next action and keep working. "
+                     + situation),
+        }, indent=2)
     scan_session.trigger_intervention(code, situation, tried, options)
     log.note(f"HIR manually triggered: {code} — {situation}")
     return json.dumps({

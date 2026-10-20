@@ -3,9 +3,11 @@ QA agent — scan-health checks that escalate to HIR.
 
 Conditions Smith cannot self-resolve: expired auth, exhausted budget with low
 coverage, an empty matrix after a 0-endpoint spider, an unreachable target,
-and repeated same-tool failures. Each pauses the scan via ``_hir``. The lone
-exception is ``_check_exploit_escalation`` — benchmark-mode only, which pushes
-exploitation via a steering directive instead of pausing.
+and repeated same-tool failures. Each pauses the scan via ``_hir`` (except in
+benchmark mode, where ``_hir`` auto-resolves the self-resolvable ones to a
+steering nudge). The lone always-non-pausing check is ``_check_exploit_escalation``
+— deep-pivot only (depth=danger / scan_mode=benchmark) — which pushes exploitation
+and internal-host pivoting via a steering directive instead of pausing.
 """
 from __future__ import annotations
 
@@ -13,6 +15,7 @@ import re
 from datetime import datetime, timezone
 
 import core.qa_agent as _qa
+from core.session import deep_pivot_enabled
 from ._util import _ts_age_secs
 from .hir import _hir
 
@@ -267,16 +270,17 @@ def _check_target_unreachable(entries: list[dict]) -> dict | None:
 
 
 def _check_exploit_escalation(entries: list[dict], findings_data: dict, session_data: dict) -> dict | None:
-    """Benchmark mode only: push Smith to exploit critical/high findings deeper.
+    """Deep-pivot (depth=danger / scan_mode=benchmark): push Smith to exploit critical/high
+    findings deeper AND pivot to the internal hosts they reach.
 
-    In pentest mode this is a human decision (HIR). In benchmark mode, Smith should
-    demonstrate full impact autonomously — this directive pushes it to do so instead of
-    logging and moving on.
+    In a normal pentest, driving a finding to full impact is a human decision (HIR). Under
+    deep-pivot, Smith should demonstrate full impact autonomously — this directive pushes it
+    to do so (and to pivot-scan discovered internal hosts) instead of logging and moving on.
 
     Fires when a critical/high finding was logged >10 min ago with no exploitation
     tool (metasploit, kali, sqlmap) run against the same target since.
     """
-    if session_data.get("scan_mode") != "benchmark":
+    if not deep_pivot_enabled(session_data):
         return None
     findings = [
         f for f in findings_data.get("findings", [])
@@ -306,18 +310,19 @@ def _check_exploit_escalation(entries: list[dict], findings_data: dict, session_
             steering_queue.add_directive(
                 code=RESUME_TESTING,
                 message=(
-                    f"[BENCHMARK] You found '{finding['title']}' ({finding['severity']}) "
+                    f"[DEEP-PIVOT] You found '{finding['title']}' ({finding['severity']}) "
                     f"{age_mins}min ago — demonstrate full impact. "
-                    "Do NOT stop at the finding. Chain exploitation: "
-                    "try privilege escalation, data extraction, lateral movement, or persistence. "
-                    "Use kali(), metasploit, or sqlmap to prove the real-world impact. "
-                    "Document every step as a finding before moving on."
+                    "Do NOT stop at the finding. Chain exploitation: privilege escalation, data "
+                    "extraction, lateral movement, persistence. If it reached an INTERNAL host "
+                    "(SSRF/RCE/file-read), promote + pivot-scan that host: tunnel via kali() then "
+                    "naabu/nmap → httpx → nuclei (+ spider/web-exploit if a service is up). "
+                    "Use kali(), metasploit, or sqlmap. Document every step as a finding."
                 ),
                 priority="high", skill=None, trigger="EXPLOIT_ESCALATION",
             )
         return {
             "code": "EXPLOIT_ESCALATION", "urgency": "high", "blocking": False,
-            "message": f"[BENCHMARK] '{finding['title']}' found {age_mins}min ago — no exploitation follow-up yet",
+            "message": f"[DEEP-PIVOT] '{finding['title']}' found {age_mins}min ago — no exploitation follow-up yet",
         }
     return None
 

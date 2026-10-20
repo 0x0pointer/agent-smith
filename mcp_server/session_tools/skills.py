@@ -111,6 +111,30 @@ def _manage_skill_gates(skill_name: str, result: dict) -> list[str]:
 _DISMISS_MIN_RATIONALE = 30
 
 
+def _internal_network_dismiss_refusal(gate_id: str) -> str | None:
+    """Deep-pivot integrity: refuse to dismiss the internal_network gate as "not applicable"
+    while promoted internal hosts are still owed a scan — otherwise the obligation is closed
+    administratively with a rationale the discovered hosts contradict. Scan each (it clears on
+    reach) or let it auto-record unreachable. None = no objection."""
+    if gate_id != "internal_network":
+        return None
+    try:
+        from core.session import surface_ledger as _ledger
+        pend = _ledger.host_scan_pending()
+        if not pend:
+            return None
+        shown = ", ".join(pend[:8]) + (f" (+{len(pend) - 8} more)" if len(pend) > 8 else "")
+        return (
+            f"REFUSED: cannot dismiss 'internal_network' — {len(pend)} discovered internal "
+            f"host(s) are still unscanned: {shown}. A scan that REACHES a host clears it; a host "
+            "you cannot reach (no route / no pivot foothold) is auto-recorded as a documented "
+            "unreachable dead-end once you actually attempt it (naabu/nmap/httpx against it). "
+            "Attempt each host, then this gate clears on its own — don't dismiss discovered hosts "
+            "as 'no internal network access'.")
+    except Exception:
+        return None
+
+
 def _do_dismiss_gate(opts):
     """session(action='dismiss_gate') — close a pending skill-chain gate as a documented
     dead-end when its required skill genuinely cannot run on this target (false-positive
@@ -129,6 +153,9 @@ def _do_dismiss_gate(opts):
             "by a false RCE-confirmed signal; the only related finding is a debug info leak, no "
             "command execution exists, so reverse-shell has nothing to launch'. This records an "
             "honest dead-end; it is not a way to skip work the skill could actually do.")
+    refusal = _internal_network_dismiss_refusal(gate_id)
+    if refusal:
+        return refusal
     gate = _st.scan_session.dismiss_gate(gate_id, rationale, evidence)
     if gate is None:
         existing = {g["id"]: g.get("status") for g in (_st.scan_session.get() or {}).get("gates", [])}

@@ -53,6 +53,19 @@ function ovRenderAttention(session, findings) {
   const gates = session.pending_gates || [];
   gates.forEach(g => items.push({ icon: '⛔', text: `Gate: ${ovEsc(g.id || g)} — ${ovEsc((g.required_skills || []).join(', '))}`, cls: 'ov-att-gate' }));
   if (session.intervention_required) items.push({ icon: '⏸', text: 'Human intervention required — see the banner above', cls: 'ov-att-hir' });
+  // Deep-pivot (danger/benchmark): promoted internal hosts + their scan status.
+  const na = session.surface_coverage?.['network-assess'] || {};
+  const disc = na.discovered || [], cov = na.covered || [], unr = na.unreachable || [];
+  if (disc.length) {
+    const pend = disc.filter(h => !cov.includes(h) && !unr.includes(h));
+    items.push({
+      icon: pend.length ? '🧭' : '✓',
+      text: `Deep-pivot: ${disc.length} internal host(s) — ${cov.length} scanned, `
+            + `${unr.length} unreachable, ${pend.length} to scan`
+            + (pend.length ? ` (BLOCKS completion): ${pend.slice(0, 6).map(ovEsc).join(', ')}` : ''),
+      cls: pend.length ? 'ov-att-gate' : 'ov-att-lead',
+    });
+  }
   const leads = findings.filter(f => (f.escalation_leads || []).some(l => l.status === 'pending')).length;
   if (leads) items.push({ icon: '↗', text: `${leads} finding(s) with unproven escalation leads`, cls: 'ov-att-lead' });
   el.innerHTML = items.length

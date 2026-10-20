@@ -60,7 +60,25 @@ def _start_response(cfg: dict, classification: dict, target: str, scan_mode: str
         lines += [
             "BENCHMARK MODE: On critical/high findings, do NOT pause — exploit the chain autonomously.",
             "Demonstrate full impact: RCE → execute commands, SQLi → dump data, SSRF → pivot internally.",
-            "Document every step as a finding. All other safety checks and HIR triggers remain active.",
+            "Document every step as a finding. Self-resolvable HIR pauses are auto-resolved in this mode.",
+            "",
+        ]
+    if depth == "danger" or scan_mode == "benchmark":
+        lines += [
+            "DEEP-PIVOT MODE: when SSRF/RCE/file-read reveals an INTERNAL host (RFC1918 10./172.16-31./",
+            "192.168., *.cluster.local, cloud IMDS, a pod IP), it is auto-promoted to known_assets and",
+            "becomes a per-host SCAN SURFACE — you CANNOT complete the scan while any discovered internal",
+            "host is unscanned. These hosts are NEW SURFACES WITHIN THIS SAME SCAN: do NOT call",
+            "session(action='start') for an internal host (that spawns a separate scan and drops the",
+            "depth) — register and test them here. For EACH internal host:",
+            "  1. tunnel in FIRST — a direct scan from Kali usually can't route to a cluster-internal IP.",
+            "     kali('chisel server …')+client, or kali('ssh -D 1080 user@PIVOT -N -f') + proxychains4.",
+            "  2. THROUGH the tunnel: naabu/nmap top-ports → httpx → nuclei against the host.",
+            "  3. if a web/API service is up: spider it + register endpoints host-qualified",
+            "     (report(action='coverage', data={path:'http://<host>:<port>/…', host:'<host>:<port>'})),",
+            "     then run /web-exploit · /api-security against them.",
+            "If a host is genuinely UNREACHABLE (no pivot foothold / network-isolated), document that as a",
+            "dead-end and move on — don't loop on it. Honor out_of_scope.",
             "",
         ]
     prior_brief = _prior_findings_brief(target)

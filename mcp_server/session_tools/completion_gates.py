@@ -109,6 +109,35 @@ def _phase_completion_blocker() -> str | None:
     )
 
 
+def _deep_pivot_host_blocker() -> str | None:
+    """Deep-pivot (depth=danger / scan_mode=benchmark): block completion while internal
+    hosts discovered via SSRF/RCE remain unscanned (network-assess not yet run on them).
+
+    Fires on EVERY profile and in EVERY phase (unlike the coverage-matrix gates) — the
+    whole point of danger/benchmark is to not finish leaving a discovered internal host
+    untouched. Dischargeable by scanning each host (the ledger marks it covered when a
+    tool fires against it while /network-assess is active); the operator force-complete
+    still bypasses it. No-op for normal scans."""
+    try:
+        from core.session import surface_ledger as _ledger
+        if not scan_session.deep_pivot_enabled(scan_session.get()):
+            return None
+        pend = _ledger.host_scan_pending()   # discovered − covered − documented-unreachable
+        if not pend:
+            return None
+        shown = ", ".join(pend[:8]) + (f" (+{len(pend) - 8} more)" if len(pend) > 8 else "")
+        return (
+            f"DEEP-PIVOT — {len(pend)} discovered internal host(s) not yet scanned: {shown}. "
+            "Tunnel in (chisel / ssh -D + proxychains via kali) and run /network-assess against "
+            "each: naabu/nmap top-ports -> httpx -> nuclei, then spider + register endpoints for "
+            "any web service found. A host clears when a scan actually REACHES it; a host that is "
+            "genuinely unreachable (no route / no pivot foothold) is auto-recorded as a documented "
+            "dead-end and no longer blocks. (depth=danger / scan_mode=benchmark only.)"
+        )
+    except Exception:
+        return None
+
+
 def _collect_completion_blockers(data: dict, effective: set) -> list[str]:
     """Run all completion gate checks and return the list of blocker strings."""
     blockers: list[str] = []
@@ -132,6 +161,12 @@ def _collect_completion_blockers(data: dict, effective: set) -> list[str]:
                 blockers.append(phase_blocker)
     blockers.extend(_st._qa_blockers())
     blockers.extend(_st._escalation_lead_blockers(data))
+
+    # Deep-pivot (danger/benchmark): unscanned internal hosts block completion on every
+    # profile/phase. No-op for normal scans.
+    dp_blocker = _deep_pivot_host_blocker()
+    if dp_blocker:
+        blockers.append(dp_blocker)
 
     # ── Existing checks ──────────────────────────────────────────────────────
 

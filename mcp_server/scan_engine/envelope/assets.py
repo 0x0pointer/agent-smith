@@ -273,6 +273,8 @@ def _extract_and_persist_assets(tool: str, result: Any, ctx: dict) -> None:
     elif tool == "http_request":
         _persist_http_auth_assets(scan_session, evidence, ctx)
         _trigger_body_signal_gates(scan_session, result, ctx)
+        # (Deep-pivot internal-host promotion is now handled centrally in wrap() via
+        # _deep_pivot_host_tracking, which runs for EVERY tool — including this one.)
     elif tool == "kali_sqlmap":
         _persist_sqlmap_gate(scan_session, evidence, ctx)
     elif tool == "nuclei":

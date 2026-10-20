@@ -45,6 +45,7 @@ import core.session as _sess
 # audits) is left to the existing gates.
 SKILL_UNITS: dict[str, str] = {
     "ai-redteam":             "ai_endpoint",
+    "network-assess":         "host",   # deep-pivot: per discovered internal host (port-scan/recon)
     "post-exploit":           "host",
     "reverse-shell":          "host",
     "lateral-movement":       "host",
@@ -183,6 +184,62 @@ def record_covered(skill: str, key: str) -> None:
         _sess._flush()
     except Exception:
         pass
+
+
+# Host-unit skills re-triggered per discovered internal host (deep-pivot). network-assess
+# is first — its scan-pending set is what ``_deep_pivot_host_blocker`` enforces.
+HOST_UNIT_SKILLS = ("network-assess", "post-exploit", "lateral-movement", "reverse-shell")
+
+
+def record_host_scanned(host: str, reached: bool) -> None:
+    """Credit a scan of a promoted internal host to the host-unit skills REGARDLESS of which
+    skill was active — fixes the mis-attribution where a per-host scan run under
+    /container-k8s-security or /cloud-security never credited network-assess's ``host`` unit
+    (so the skills looked under-run while the scans actually happened).
+
+    ``reached=True``  → mark the host COVERED for every host-unit skill that discovered it.
+    ``reached=False`` → record it as attempted-but-UNREACHABLE (a documented network dead-end)
+                        so it stops blocking completion WITHOUT a false 'covered' claim — this
+                        is what stops a hollow 0-ports/unreachable scan from counting as coverage.
+    Idempotent, fail-soft."""
+    try:
+        if not _sess._current:
+            return
+        host = host_key(host)
+        if not host:
+            return
+        sc = _sess._current.get("surface_coverage") or {}
+        if reached:
+            for sk in HOST_UNIT_SKILLS:
+                e = sc.get(sk)
+                if isinstance(e, dict) and host in e.get("discovered", []):
+                    record_covered(sk, host)
+            return
+        e = sc.get("network-assess")
+        if not isinstance(e, dict) or host not in e.get("discovered", []):
+            return
+        unreach = e.setdefault("unreachable", [])
+        if host not in unreach:
+            unreach.append(host)
+            _sess._flush()
+    except Exception:
+        pass
+
+
+def host_scan_pending() -> list:
+    """Promoted internal hosts still owed a scan = network-assess discovered − covered −
+    unreachable. What the deep-pivot completion blocker enforces (an unreachable host is a
+    documented dead-end, not a block)."""
+    try:
+        if not _sess._current:
+            return []
+        e = (_sess._current.get("surface_coverage") or {}).get("network-assess")
+        if not isinstance(e, dict):
+            return []
+        done = set(e.get("covered", [])) | set(e.get("unreachable", []))
+        return [k for k in e.get("discovered", []) if k not in done]
+    except Exception:
+        return []
 
 
 def pending(skill: str) -> list:
