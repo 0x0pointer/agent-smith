@@ -1,0 +1,519 @@
+#!/usr/bin/env bash
+# install_pi.sh - set up pentest-agent for the Pi coding agent (https://pi.dev)
+set -euo pipefail
+
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Pi's user-level agent directory. Overridable with PI_CODING_AGENT_DIR, which is
+# the same variable Pi itself honours, so the CLI and this installer stay in sync.
+PI_AGENT_DIR="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
+PI_SKILLS_DIR="$PI_AGENT_DIR/skills"
+PI_PROMPTS_DIR="$PI_AGENT_DIR/prompts"
+
+# GUI-launched shells can omit common macOS CLI locations. Keep installer
+# prerequisite checks aligned with the MCP launcher runtime.
+export PATH="$PATH:/usr/local/bin:/opt/homebrew/bin:/snap/bin:/Applications/Docker.app/Contents/Resources/bin"
+
+GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; NC='\033[0m'
+ok()   { echo -e "${GREEN}[ok]${NC} $*"; }
+warn() { echo -e "${YELLOW}[warn]${NC} $*"; }
+die()  { echo -e "${RED}[err]${NC} $*"; exit 1; }
+
+_find_poetry() {
+    if command -v poetry >/dev/null 2>&1; then
+        command -v poetry
+        return 0
+    fi
+
+    local macos_poetry="$HOME/Library/Application Support/pypoetry/venv/bin/poetry"
+    if [[ -x "$macos_poetry" ]]; then
+        printf '%s\n' "$macos_poetry"
+        return 0
+    fi
+
+    local local_poetry="$HOME/.local/bin/poetry"
+    if [[ -x "$local_poetry" ]]; then
+        printf '%s\n' "$local_poetry"
+        return 0
+    fi
+
+    return 1
+}
+
+_find_pi() {
+    if [[ -n "${PI_BIN:-}" && -x "$PI_BIN" ]]; then
+        printf '%s\n' "$PI_BIN"
+        return 0
+    fi
+    if command -v pi >/dev/null 2>&1; then
+        command -v pi
+        return 0
+    fi
+
+    # Pi's managed installer drops a launcher here but does not always add it to
+    # the shell PATH (it manages its own Node runtime under ~/.local/share).
+    local candidate
+    for candidate in \
+        "$HOME/.local/bin/pi" \
+        "$HOME/.pi/agent/bin/pi"; do
+        if [[ -x "$candidate" ]]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+echo ""
+echo "  pentest-agent installer (Pi)"
+echo "  ============================"
+echo ""
+
+# Prerequisites
+command -v docker >/dev/null 2>&1 || die "docker not found - install Docker Desktop first."
+POETRY_BIN="$(_find_poetry)" || die "poetry not found - install with: curl -sSL https://install.python-poetry.org | python3 -"
+PI_BIN="$(_find_pi)" || die "pi not found - install the Pi coding agent (https://pi.dev) or set PI_BIN=/path/to/pi"
+command -v node   >/dev/null 2>&1 || warn "node not found - Mermaid diagrams will render client-side (install Node.js v18+ for server-side pre-rendering)"
+
+ok "Prerequisites satisfied (docker, poetry, pi)"
+ok "Using Poetry at $POETRY_BIN"
+ok "Using Pi at $PI_BIN"
+
+mkdir -p "$PI_AGENT_DIR"
+
+echo ""
+echo "Updating skills submodule from upstream..."
+if git -C "$REPO_DIR" submodule update --init --recursive --remote skills; then
+    ok "Skills submodule updated to $(git -C "$REPO_DIR/skills" rev-parse --short HEAD)"
+else
+    warn "Could not update skills from upstream - falling back to the pinned submodule commit"
+    git -C "$REPO_DIR" submodule update --init --recursive skills
+    ok "Skills submodule checked out at pinned commit $(git -C "$REPO_DIR/skills" rev-parse --short HEAD)"
+fi
+
+echo ""
+echo "Installing Python dependencies..."
+"$POETRY_BIN" -C "$REPO_DIR" install --no-interaction
+ok "Poetry dependencies installed"
+
+chmod +x "$REPO_DIR/installers/run-mcp-server.sh"
+"$REPO_DIR/installers/run-mcp-server.sh" --self-test >/dev/null
+ok "MCP launcher self-test passed"
+
+# Pi launches this server over stdio. The absolute repo path is intentional: the
+# MCP server needs this checkout's .env, logs, tools, and session files.
+#
+# IMPORTANT: pass `--transport stdio`. The server entry point (mcp_server/__main__.py)
+# defaults to the persistent SSE daemon on 127.0.0.1:7778 — the mode install.sh /
+# install_opencode.sh use. Under a stdio client that default would try to bind an
+# already-occupied port and the connection would close immediately, so the stdio
+# transport must be selected explicitly. Pi rejects the legacy SSE transport, so
+# stdio (not the /sse daemon) is the supported path here.
+#
+# `--exposure direct` surfaces the 7 consolidated tools as individual tool calls
+# named mcp__pentest-agent__<tool> (the same convention as Claude Code), rather
+# than behind Pi's CodeMode namespace API. The low tool count makes direct ideal.
+echo ""
+echo "Registering pentest-agent MCP server with Pi (stdio, direct exposure)..."
+"$PI_BIN" mcp remove pentest-agent >/dev/null 2>&1 || true
+"$PI_BIN" mcp add pentest-agent \
+    --exposure direct \
+    --description "agent-smith offensive security toolkit: scan, kali, http, report, session, transform, redteam" \
+    -- "$REPO_DIR/installers/run-mcp-server.sh" --transport stdio
+ok "MCP server registered with Pi (~/.pi/agent/mcp.json)"
+
+# Project instructions are read automatically: Pi loads AGENTS.md (and CLAUDE.md)
+# from the working directory as a context file, which needs no project trust, so
+# running Pi inside this repo picks up the tool reference and workflow rules.
+ok "Pi reads this repo's AGENTS.md automatically when run here"
+
+echo ""
+_FORCE_SKILLS=false
+if find "$PI_SKILLS_DIR" -mindepth 2 -maxdepth 2 -name SKILL.md 2>/dev/null | grep -q .; then
+    printf "  Existing personal Pi skills found in %s.\n" "$PI_SKILLS_DIR"
+    printf "  Overwrite pentest-agent skill copies with fresh copies from the repo? [Y/n]: "
+    IFS= read -r _overwrite_answer </dev/tty || true
+    echo ""
+    if [[ "${_overwrite_answer:-Y}" =~ ^[Yy]$ ]]; then
+        _FORCE_SKILLS=true
+        ok "Will overwrite pentest-agent skill copies"
+    else
+        warn "Keeping existing Pi skill files - skipping skill installation"
+    fi
+else
+    _FORCE_SKILLS=true
+fi
+
+_SKILL_OK=0
+_SKILL_MISSING=()
+
+_install_skill_dir() {
+    local name="$1"
+    local src="$2"
+    local dst="$PI_SKILLS_DIR/$name"
+
+    if [ ! -f "$src/SKILL.md" ]; then
+        warn "Skill ${name} source not found: $src/SKILL.md (skipping)"
+        _SKILL_MISSING+=("$name")
+        return
+    fi
+
+    [[ "$_FORCE_SKILLS" == false ]] && return 0
+
+    rm -rf "$dst"
+    mkdir -p "$dst"
+    cp -R "$src"/. "$dst"/
+    _SKILL_OK=$((_SKILL_OK + 1))
+}
+
+_install_markdown_skill() {
+    local name="$1"
+    local src="$2"
+    local dst="$PI_SKILLS_DIR/$name"
+
+    if [ ! -f "$src" ]; then
+        warn "Skill ${name} source not found: $src (skipping)"
+        _SKILL_MISSING+=("$name")
+        return
+    fi
+
+    [[ "$_FORCE_SKILLS" == false ]] && return 0
+
+    rm -rf "$dst"
+    mkdir -p "$dst"
+    cp "$src" "$dst/SKILL.md"
+    _SKILL_OK=$((_SKILL_OK + 1))
+}
+
+echo ""
+echo "Installing Pi skills (discoverable as /skill:<name>)..."
+mkdir -p "$PI_SKILLS_DIR"
+
+_install_markdown_skill "pentester" "$REPO_DIR/skills/pentester.md"
+
+# Discover flat skills/<name>/SKILL.md AND nested skills/<domain>/<name>/SKILL.md
+# (one level of domain nesting, e.g. skills/mobile/android-security/). Install target
+# stays flat — nesting exists only in the repo.
+while IFS= read -r _skill_file; do
+    [ -e "$_skill_file" ] || continue
+    _skill_dir="$(dirname "$_skill_file")"
+    _skill_name="$(basename "$_skill_dir")"
+
+    # OpenCode has a client-specific variant; Pi uses skills/pentester.md.
+    [ "$_skill_name" = "pentester-opencode" ] && continue
+
+    _install_skill_dir "$_skill_name" "$_skill_dir"
+done < <(find "$REPO_DIR/skills" -mindepth 2 -maxdepth 3 -name SKILL.md 2>/dev/null)
+
+ok "$_SKILL_OK Pi skills installed"
+if [ ${#_SKILL_MISSING[@]} -gt 0 ]; then
+    warn "Missing skills (re-run the installer to fetch the latest skills submodule): ${_SKILL_MISSING[*]}"
+fi
+
+# Prompt template — gives a bare `/pentester` slash command for parity with the
+# other clients. Pi exposes `~/.pi/agent/prompts/<name>.md` as `/<name>`; the body
+# is expanded into a user message, so it just has to state the request and point
+# the model at the installed pentester skill.
+echo ""
+echo "Installing the /pentester prompt template..."
+mkdir -p "$PI_PROMPTS_DIR"
+cat > "$PI_PROMPTS_DIR/pentester.md" <<'PROMPT'
+---
+description: Full penetration test — recon, scanning, exploitation, reporting (agent-smith)
+argument-hint: "scan <target> [depth=recon|standard|thorough]"
+---
+Perform a full penetration test using the pentest-agent MCP tools (scan, kali, http,
+report, session, transform, redteam) — they execute real Docker-based security tools.
+Follow the agent-smith `pentester` skill methodology end to end: recon → scanning →
+exploitation → reporting. Load it with `/skill:pentester` and chain sub-skills with
+`/skill:<name>` (e.g. `/skill:web-exploit`, `/skill:api-security`, `/skill:ai-redteam`)
+as the workflow directs. Always call `session(action="start", ...)` first to set the
+target, scope, and hard limits.
+
+**Request:** $ARGUMENTS
+PROMPT
+ok "/pentester prompt template installed ($PI_PROMPTS_DIR/pentester.md)"
+
+echo ""
+echo "API keys are stored in $REPO_DIR/.env (mode 600) and loaded automatically."
+echo "Press Enter to skip any key you do not need right now."
+echo ""
+
+ENV_FILE="$REPO_DIR/.env"
+if [ ! -f "$ENV_FILE" ] && [ -f "$REPO_DIR/.env.example" ]; then
+    cp "$REPO_DIR/.env.example" "$ENV_FILE"
+else
+    touch "$ENV_FILE"
+fi
+chmod 600 "$ENV_FILE"
+
+_ask_key() {
+    local key="$1"
+    local desc="$2"
+    local value=""
+    local existing
+    existing=$(grep -E "^${key}=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2-) || true
+    if [[ -n "$existing" ]]; then
+        printf "  %s already set. New value (Enter to keep): " "$key"
+    else
+        printf "  %s - %s\n  Value (Enter to skip): " "$key" "$desc"
+    fi
+    IFS= read -r -s value </dev/tty || true
+    echo ""
+    if [[ -n "$value" ]]; then
+        python3 -c "
+import pathlib, sys
+p = pathlib.Path(sys.argv[1])
+lines = [l for l in p.read_text().splitlines() if not l.startswith(sys.argv[2] + '=')]
+lines.append(sys.argv[2] + '=' + sys.argv[3])
+p.write_text('\n'.join(lines) + '\n')
+" "$ENV_FILE" "$key" "$value"
+        ok "$key saved"
+    elif [[ -n "$existing" ]]; then
+        ok "$key unchanged"
+    else
+        warn "$key skipped"
+    fi
+}
+
+_ask_key "OPENAI_API_KEY"       "OpenAI key - Garak scorer"
+_ask_key "ANTHROPIC_API_KEY"    "Anthropic key - Garak anthropic provider"
+_ask_key "AZURE_OPENAI_API_KEY" "Azure OpenAI key - Garak azure provider"
+
+echo ""
+echo "  Telegram bridge (optional) - get HIR / scan-complete alerts on your phone."
+echo "  Press Enter twice to skip; the bridge is a no-op when either key is blank."
+echo ""
+echo "  PREREQUISITE: install the Telegram app (https://telegram.org/apps)."
+echo "  Once installed, inside Telegram:"
+echo "    1. Open a chat with @BotFather -> send /newbot -> follow prompts -> copy token"
+echo "    2. Search for your new bot -> open the chat -> send /start,"
+echo "       then send any text message (e.g. \"hi\") - getUpdates only returns"
+echo "       real messages, so /start alone may not surface the chat"
+echo "    3. In any browser, visit https://api.telegram.org/bot<TOKEN>/getUpdates"
+echo "       -> copy the \"chat\":{\"id\": ...} value (positive int for DMs, negative for groups/channels)"
+echo "       If you get {\"result\":[]}, send another message and refresh"
+echo ""
+
+_ask_key "TELEGRAM_BOT_TOKEN" "Bot token from @BotFather (format 123456:ABC-...)"
+_ask_key "TELEGRAM_CHAT_ID"   "Your Telegram chat ID - receives alerts; only this chat is allowlisted"
+
+# ── Slack bridge (optional) ───────────────────────────────────────────────────
+echo ""
+echo "  Slack bridge (optional) - same HIR / status alerts in a Slack channel."
+echo "  Press Enter to skip. Any combination of Telegram/Slack/Discord can run."
+echo ""
+echo "  Setup (inside Slack):"
+echo "    1. https://api.slack.com/apps -> Create New App -> From scratch"
+echo "    2. Activate Incoming Webhooks -> Add New Webhook to Workspace"
+echo "    3. Pick the channel; copy the webhook URL"
+echo "       (https://hooks.slack.com/services/T.../B.../...)"
+echo ""
+
+_ask_key "SLACK_WEBHOOK_URL"   "Slack incoming webhook URL - must start with https://hooks.slack.com/"
+
+# ── Discord bridge (optional) ─────────────────────────────────────────────────
+echo ""
+echo "  Discord bridge (optional) - same alerts in a Discord channel."
+echo "  Press Enter to skip."
+echo ""
+echo "  Setup (inside Discord):"
+echo "    1. Open the channel -> Settings -> Integrations -> Webhooks -> New Webhook"
+echo "    2. Name it (e.g. \"agent-smith\"), confirm the channel"
+echo "    3. Copy the webhook URL (https://discord.com/api/webhooks/<id>/<token>)"
+echo ""
+
+_ask_key "DISCORD_WEBHOOK_URL" "Discord webhook URL - must start with https://discord.com/api/webhooks/"
+
+# ── Periodic status updates ───────────────────────────────────────────────────
+echo ""
+echo "  Periodic status updates push a short scan-summary to every configured"
+echo "  notifier sink. Defaults to every 30 min. Set to 0 to disable. The"
+echo "  message contains NO target, NO finding titles - only counts."
+echo ""
+
+_ask_key "STATUS_UPDATE_INTERVAL_MINUTES" "Status update interval in minutes (default 30; 0 disables)"
+
+# OOB backend for blind-vuln (SSRF/RCE/XXE/OAST-SQLi, DNS exfil) confirmation.
+# OOB_MODE=interactsh (default, DNS+HTTP) or http (any logger URL, HTTP-only).
+# Blank everything = interactsh public servers (oast.fun).
+_ask_key "OOB_MODE"         "OOB backend: interactsh (default) or http (blank = interactsh)"
+_ask_key "OOB_SERVER_URL"   "interactsh server URL or http logger base URL (blank = public oast.fun)"
+_ask_key "OOB_SERVER_TOKEN" "Auth token for a protected self-hosted interactsh server (blank if none/public)"
+_ask_key "OOB_POLL_URL"     "http-mode log read-endpoint, supports {id} (blank = interactsh or manual)"
+
+echo ""
+echo "  Docker images"
+echo "  -------------"
+echo ""
+
+_SCANNER_IMAGES=(
+    "instrumentisto/nmap"
+    "projectdiscovery/naabu"
+    "projectdiscovery/httpx"
+    "projectdiscovery/nuclei"
+    "projectdiscovery/subfinder"
+    "semgrep/semgrep"
+    "trufflesecurity/trufflehog"
+)
+
+printf "  Pull lightweight scanner images? (~2 min) [Y/n]: "
+read -r _pull_answer || true
+if [[ "${_pull_answer:-Y}" =~ ^[Yy]$ ]]; then
+    for img in "${_SCANNER_IMAGES[@]}"; do
+        if docker pull "$img" >/dev/null 2>&1; then
+            ok "Pulled $img"
+        else
+            warn "Failed to pull $img (will auto-pull on first use)"
+        fi
+    done
+else
+    warn "Scanner image pull skipped - images will auto-pull on first use"
+fi
+
+echo ""
+
+# Kali image (build) - modular: choose which tool domains to bake in.
+# core is always installed; each other domain is a --build-arg toggle.
+# Build a docker image, keeping the FULL build log on disk.
+#
+# This used to be `docker build ... 2>&1 | tail -5`, which threw the actual error
+# away: when the then-pinned `pyrit==0.11.0` became uninstallable (Kali moved to
+# Python 3.14, and PyRIT <= 0.13.0 caps Requires-Python at <3.14), pip's
+# "No matching distribution found" scrolled past and the operator was left with 5
+# lines of Dockerfile context and no cause. Failure detection was never the
+# problem — `set -o pipefail` propagated it correctly — visibility was.
+#
+# Design notes:
+#   * FOREGROUND pipeline, not `docker build &`: no detached child to reason about
+#     for signal delivery or cleanup, and the exit status comes straight back
+#     through the pipeline.
+#   * `tee` keeps every line; on a terminal `awk` collapses that to a live
+#     one-line step counter, and off a terminal (CI, piped to a file) the full
+#     stream is passed through instead.
+#   * The awk/cat filter always exits 0, so with `set -o pipefail` the pipeline
+#     status is docker's own.
+#   * `mktemp` per build: a fixed shared path in /tmp could already be owned by
+#     another user, and the redirect failing would print THEIR stale log as this
+#     build's error.
+_build_progress() {
+    if [ -t 1 ]; then
+        awk '/^#[0-9]+ \[[ 0-9]*[0-9]+\/[0-9]+\]/ { printf "\r\033[K  %.100s", $0; fflush() }
+             END { printf "\r\033[K" }'
+    else
+        cat
+    fi
+}
+
+_build_image() {  # $1=label  $2=image tag  $3=context dir  $4..=extra docker build args
+    local _label="$1" _tag="$2" _ctx="$3"; shift 3
+    local _safe="${_tag//[^a-zA-Z0-9]/-}"
+    local _tmp="${TMPDIR:-/tmp}"; _tmp="${_tmp%/}"
+    local _log
+    # X's must be TRAILING for both BSD and GNU mktemp — a "-XXXXXX.log" template
+    # is not expanded and would hand every run the same path.
+    _log="$(mktemp "${_tmp}/agent-smith-build-${_safe}-XXXXXX" 2>/dev/null)" \
+        || _log="${_tmp}/agent-smith-build-${_safe}.$$.log"
+    echo "  Build log: $_log"
+    if docker build "$@" -t "$_tag" "$_ctx" 2>&1 | tee "$_log" | _build_progress; then
+        ok "$_label image built: $_tag"
+        return 0
+    fi
+    warn "$_label build FAILED. Full log: $_log"
+    # Off a terminal the full stream was already echoed above, so don't repeat it.
+    # 60 lines, not 30: BuildKit's failure epilogue (the ">>> RUN" frame, the
+    # Dockerfile frame, the "failed to solve" line) is ~15 lines on its own, so a
+    # short tail can crowd out the failing step's actual output. Guarded on -s so
+    # a missing/empty log can't turn this into a second failure.
+    if [ -t 1 ] && [ -s "$_log" ]; then
+        echo "  ---------------- last 60 log lines ----------------"
+        tail -60 "$_log" | sed "s/^/  /"
+        echo "  ---------------------------------------------------"
+    fi
+    # Quoted so the hint stays copy-pasteable when the repo path contains spaces.
+    if [ "$#" -gt 0 ]; then
+        warn "Retry: docker build $* -t \"$_tag\" \"$_ctx\""
+    else
+        warn "Retry: docker build -t \"$_tag\" \"$_ctx\""
+    fi
+    return 1
+}
+
+printf "  Build Kali image? (required for most skills) [Y/n]: "
+read -r _kali_answer || true
+if [[ "${_kali_answer:-Y}" =~ ^[Yy]$ ]]; then
+    echo ""
+    echo "  Choose Kali tool modules (core is always included). Build-time estimates"
+    echo "  are approximate and depend on your network speed:"
+    echo ""
+    echo "    core   (always)  MCP server, recon: nmap/nuclei/httpx/subfinder, wordlists  ~6 min"
+    echo "    web              web/API exploit, fuzzing, injection, JWT/OAuth, SSL, crawl  ~8 min"
+    echo "    infra            internal net, AD, credentials, service enum, pivoting       ~5 min"
+    echo "    mobile           Android/iOS reversing + Frida/objection dynamic analysis    ~4 min"
+    echo "    cloud            AWS/GCP CLIs, Prowler, ScoutSuite, trivy, kube-bench        ~7 min"
+    echo "  (LLM red-team 'ai' is no longer a Kali module — Garak is its own image, built below.)"
+    echo ""
+    _kali_build_args=()
+    _ask_kali_module() {  # args: name  build-arg  default(Y|N)
+        local _def="$3" _ans _hint
+        [ "$_def" = "Y" ] && _hint="Y/n" || _hint="y/N"
+        printf "    Include %-7s module? [%s]: " "$1" "$_hint"
+        read -r _ans || true
+        _ans="${_ans:-$_def}"
+        if [[ "$_ans" =~ ^[Yy]$ ]]; then
+            _kali_build_args+=(--build-arg "$2=1")
+        else
+            _kali_build_args+=(--build-arg "$2=0")
+        fi
+        # Explicit success so a non-zero from the branch test can't trip `set -e`.
+        return 0
+    }
+    _ask_kali_module web    INSTALL_WEB    Y
+    _ask_kali_module infra  INSTALL_INFRA  Y
+    _ask_kali_module mobile INSTALL_MOBILE N
+    _ask_kali_module cloud  INSTALL_CLOUD  N
+    echo ""
+    echo "  Building pentest-agent/kali-mcp (this may take a while)..."
+    _build_image Kali pentest-agent/kali-mcp "$REPO_DIR/tools/kali/" "${_kali_build_args[@]}" || true
+else
+    warn "Kali build skipped - run later: docker build -t pentest-agent/kali-mcp $REPO_DIR/tools/kali/"
+fi
+
+echo ""
+
+printf "  Build Metasploit image? (~5 min - required for /metasploit skill) [Y/n]: "
+read -r _msf_answer || true
+if [[ "${_msf_answer:-Y}" =~ ^[Yy]$ ]]; then
+    echo "  Building pentest-agent/metasploit..."
+    _build_image Metasploit pentest-agent/metasploit "$REPO_DIR/tools/metasploit/" || true
+else
+    warn "Metasploit build skipped - run later: docker build -t pentest-agent/metasploit $REPO_DIR/tools/metasploit/"
+fi
+
+echo ""
+
+# Garak image (build) — standalone LLM red-team scanner used by /ai-redteam.
+# Heavy (torch, ~6-7 GB). Optional here because it ALSO auto-builds on first
+# scan(tool="garak"); pre-build to avoid a ~5-min wait on first use.
+printf "  Build Garak image now? (~5 min - LLM red-team; else auto-builds on first use) [y/N]: "
+read -r _garak_answer || true
+if [[ "${_garak_answer:-N}" =~ ^[Yy]$ ]]; then
+    echo "  Building pentest-agent/garak..."
+    _build_image Garak pentest-agent/garak "$REPO_DIR/tools/garak/" || true
+else
+    warn "Garak build skipped - auto-builds on first scan(tool='garak'), or run: docker build -t pentest-agent/garak $REPO_DIR/tools/garak/"
+fi
+
+echo ""
+echo "  Install complete!"
+echo ""
+echo "  Start Pi in this repo and run a skill, for example:"
+echo "    /pentester scan https://target.com        # prompt-template command"
+echo "    /skill:pentester scan https://target.com  # the skill directly"
+echo "    /skill:codebase path=./src"
+echo ""
+echo "  Verify the MCP connection any time with:  pi mcp list"
+echo "  (expected: 'pentest-agent: connected, 7 tools')"
+echo ""
+warn "Pi reads mcp.json and skills at startup - if Pi was already running, run /reload or restart it."
+echo ""
