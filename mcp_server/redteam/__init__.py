@@ -26,11 +26,21 @@ Capabilities:
 """
 from __future__ import annotations
 
-from . import calibration, filter_probe, indirect, jsonpath, oracles, taxonomy, techniques
+from . import (
+    calibration,
+    carriers,
+    filter_probe,
+    indirect,
+    jsonpath,
+    oracles,
+    taxonomy,
+    techniques,
+)
 from .attack_loop import feedback_attack, reproduce
 from .indirect import embed, indirect_attack, make_oracle
 from .oracles import (
     Verdict,
+    diff_structured,
     find_secrets,
     heuristic_judge,
     leak_verdict,
@@ -43,10 +53,11 @@ from .techniques import TECHNIQUES, list_techniques, render
 
 __all__ = [
     "oracles", "techniques", "filter_probe", "calibration", "taxonomy",
-    "indirect", "jsonpath",
+    "indirect", "jsonpath", "carriers",
     "feedback_attack", "reproduce",
     "indirect_attack", "embed", "make_oracle",
     "Verdict", "heuristic_judge", "llm_judge", "refusal_score",
     "structured_verdict", "leak_verdict", "find_secrets", "transport_status",
+    "diff_structured",
     "TECHNIQUES", "list_techniques", "render",
 ]

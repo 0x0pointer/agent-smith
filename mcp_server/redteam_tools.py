@@ -143,7 +143,7 @@ def _http_send_fn(target: str, opts: dict):
 async def redteam(action: str, target: str = "", options: dict | str | None = None) -> str:
     """Manual-layer red-team engine (technique library, filter-probe, feedback loop, judge, calibration).
 
-    action : techniques | filter_probe | feedback_attack | indirect_attack | reproduce | judge | calibrate | taxonomy
+    action : techniques | filter_probe | feedback_attack | indirect_attack | probe_turn | reproduce | judge | calibrate | taxonomy
     target : the LLM endpoint URL (POST JSON); for calibrate, the labs base URL
     options:
       techniques      — category=single_turn|multi_turn|structural
@@ -160,6 +160,12 @@ async def redteam(action: str, target: str = "", options: dict | str | None = No
                         framings=[plain,delimiter,system_note,end_of_doc,data_field,authority],
                         transforms=[...] (depth bypass encodings), max_attempts=24, seed=0,
                         reproduce_n=0, body_key=, reply_key=, headers={}
+      probe_turn      — ONE agent-driven probe (you are the judge + attacker): carrier=json|svg|html|
+                        docx|xlsx|pdf|png, payload=<injected instruction>, carrier_text=<visible doc>,
+                        baseline=<prior structured reply to diff>, upload_field=file, form_fields={},
+                        success_jsonpath/success_markers (advisory). Returns raw target output + a
+                        structured diff (added/removed/changed fields) — does NOT auto-decide. Non-json
+                        carriers are delivered as multipart/form-data file uploads.
       reproduce       — k/N for a FIXED payload set: payloads={name: text, ...} (required), n=10,
                         success_markers=[...] OR success_jsonpath/objective, rps= (throttle). Per-variant
                         k/N, transport-aware (a 4xx/5xx is not a miss), + per-variant confidence, stored
@@ -355,6 +361,98 @@ def _reproduce_variant(send, judge, text, n, delay):
             "confidence": conf, "codes": codes}
 
 
+def _multipart_send(target, opts, carrier_bytes, filename, content_type):
+    """POST a built carrier file as multipart/form-data to a file-upload endpoint
+    (issues #258/#260). Returns the reply text (same parsing/transport rules as the
+    JSON sender). Extra text fields come from options.form_fields."""
+    import uuid as _uuid
+    field = opts.get("upload_field", "file")
+    reply_key = opts.get("reply_key", "reply")
+    boundary = "----smith" + _uuid.uuid4().hex
+    parts: list[bytes] = []
+    for k, v in (opts.get("form_fields") or {}).items():
+        parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode())
+    parts.append(
+        f'--{boundary}\r\nContent-Disposition: form-data; name="{field}"; '
+        f'filename="{filename}"\r\nContent-Type: {content_type}\r\n\r\n'.encode()
+        + carrier_bytes + b"\r\n")
+    parts.append(f'--{boundary}--\r\n'.encode())
+    body = b"".join(parts)
+    hdrs = _auth.resolve_headers(opts, {})
+    hdrs["Content-Type"] = f"multipart/form-data; boundary={boundary}"
+    req = urllib.request.Request(target, body, hdrs)
+    try:
+        with urllib.request.urlopen(req, timeout=45) as r:
+            raw = r.read()
+            try:
+                data = json.loads(raw)
+            except ValueError:
+                return raw.decode("utf-8", "replace")
+            if isinstance(data, dict):
+                val = data.get(reply_key, data)
+                return val if isinstance(val, str) else json.dumps(val)
+            return json.dumps(data)
+    except urllib.error.HTTPError as e:
+        try:
+            eb = e.read().decode("utf-8", "replace")[:200]
+        except Exception:
+            eb = ""
+        return f"[send error: HTTP {e.code} {eb}]".rstrip()
+    except Exception as e:
+        return f"[send error: {e}]"
+
+
+def _do_probe_turn(target, opts):
+    """ONE agent-driven probe (issues #258/#260): deliver a single payload — as JSON
+    text OR a crafted document carrier (svg/html/docx/xlsx/pdf/png with the injected
+    instruction hidden inside) — and return the RAW target output + a structured diff
+    vs a known baseline. It does NOT auto-decide: Smith reads the output, reasons, and
+    chooses the next payload (file report(action='decision', ...) between turns)."""
+    if not target:
+        return json.dumps({"error": "probe_turn requires target=<URL>"})
+    carrier = (opts.get("carrier") or "json").lower()
+    instruction = opts.get("payload") or opts.get("instruction") or ""
+    visible = opts.get("carrier_text", "")
+    if carrier == "json":
+        send = _http_send_fn(target, opts)
+        message = opts.get("message")
+        if message is None:
+            message = (f"{visible}\n\n{instruction}" if visible else instruction)
+        raw = send(message)
+        delivered = {"carrier": "json"}
+    else:
+        try:
+            cbytes, fname, ctype = _rt.carriers.build(carrier, visible, instruction)
+        except ValueError as e:
+            return json.dumps({"error": str(e)})
+        raw = _multipart_send(target, opts, cbytes, fname, ctype)
+        delivered = {"carrier": carrier, "filename": fname, "content_type": ctype,
+                     "bytes": len(cbytes)}
+    diff = _rt.diff_structured(opts.get("baseline"), raw) if opts.get("baseline") is not None else None
+    # Optional oracle READING (advisory) — never a decision; Smith adjudicates.
+    success = _structured_opts(opts)
+    markers = opts.get("success_markers")
+    verdict = None
+    if success:
+        verdict = _or.structured_verdict(raw, success["expr"], success["mode"]).__dict__
+    elif markers:
+        verdict = _or.heuristic_judge(raw, instruction, markers).__dict__
+    r = {"delivered": delivered, "instruction": instruction[:300],
+         "raw": raw[:4000], "diff": diff, "oracle_reading": verdict,
+         "next_step": ("Read `raw` + `diff` yourself: did the objective move (a record "
+                       "dropped/added/falsified, markup smuggled, a leak)? File "
+                       "report(action='decision', ...) with what the model did and your next "
+                       "payload, then call probe_turn again. This tool does NOT auto-decide; "
+                       "YOU are the judge and attacker.")}
+    _store_artifact(r, "redteam")
+    _record_ai(lambda ar: ar.record_attack(
+        {"jailbroken": bool(verdict and verdict.get("complied")) or bool(diff and diff.get("integrity_violation")),
+         "attempts": 1, "best": {"technique": f"probe_turn:{carrier}"},
+         "transcript": [{"technique": f"probe_turn:{carrier}", "resp": raw[:220]}]},
+        f"probe_turn: {instruction[:60]}", target))
+    return json.dumps(r, indent=2)
+
+
 def _do_reproduce(target, opts):
     payloads = opts.get("payloads")
     if not target or not isinstance(payloads, dict) or not payloads:
@@ -400,7 +498,7 @@ def _do_reproduce(target, opts):
 _DISPATCH = {"techniques": _do_techniques, "taxonomy": _do_taxonomy, "judge": _do_judge,
              "calibrate": _do_calibrate, "filter_probe": _do_filter_probe,
              "feedback_attack": _do_feedback_attack, "indirect_attack": _do_indirect_attack,
-             "reproduce": _do_reproduce}
+             "reproduce": _do_reproduce, "probe_turn": _do_probe_turn}
 
 
 def _dispatch(action: str, target: str, opts: dict) -> str:
