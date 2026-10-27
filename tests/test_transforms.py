@@ -197,3 +197,38 @@ async def test_transform_tool_unknown_action():
     from mcp_server.transform_tools import transform
     out = json.loads(await transform("frobnicate", "x", {}))
     assert "error" in out
+
+
+# ── big-payload summaries, not inline dumps (issue #252) ────────────────────────
+
+@pytest.mark.asyncio
+async def test_tokenbomb_returns_summary_not_full_payload():
+    from mcp_server.transform_tools import transform
+    out = json.loads(await transform("tokenbomb", "", {"size": 200, "seed": 1}))
+    assert out["artifact_id"] and "payload" not in out      # saved, not inlined
+    assert out["char_count"] > 0 and out["est_tokens"] >= out["char_count"] // 4
+    assert len(out["preview"]) <= 80
+
+
+@pytest.mark.asyncio
+async def test_tokenbomb_inlines_only_when_not_saved():
+    from mcp_server.transform_tools import transform
+    out = json.loads(await transform("tokenbomb", "", {"size": 20, "save_artifact": False}))
+    assert out["artifact_id"] is None and "payload" in out
+
+
+@pytest.mark.asyncio
+async def test_steg_saves_artifact_and_omits_blob():
+    from mcp_server.transform_tools import transform
+    out = json.loads(await transform("steg", "INJECT PAYLOAD", {"method": "unicode_tags"}))
+    assert out["artifact_id"] and "output" not in out       # default-saved now
+    assert out["method"] == "unicode_tags" and out["char_count"] == len("INJECT PAYLOAD")
+
+
+def test_http_load_artifact_payload(tmp_path, monkeypatch):
+    import mcp_server.scan_engine.artifacts as arts
+    import mcp_server.http_tools as ht
+    monkeypatch.setattr(arts, "_ARTIFACTS_DIR", tmp_path, raising=False)
+    (tmp_path / "steg_1_a.txt").write_text("HIDDEN-PAYLOAD", encoding="utf-8")
+    assert ht._load_artifact_payload("steg_1_a") == "HIDDEN-PAYLOAD"
+    assert ht._load_artifact_payload("nope_1_a") is None
