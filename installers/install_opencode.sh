@@ -493,7 +493,7 @@ while IFS= read -r _skill_file; do
     _skill_name="$(basename "$(dirname "$_skill_file")")"
     [ "$_skill_name" = "pentester-opencode" ] && continue
     _install_agent_skill "$_skill_name" "$_skill_file"
-done < <(find "$REPO_DIR/skills" -mindepth 2 -maxdepth 3 -name SKILL.md 2>/dev/null)
+done < <(find "$REPO_DIR/skills" -mindepth 2 -maxdepth 3 -name SKILL.md -not -path '*/skills/construct/*' 2>/dev/null)
 ok "$_AGENT_SKILL_OK agent-callable skills installed in $OPENCODE_SKILLS_DIR"
 
 # ── Install skill reference files (lazy-loaded support material) ─────────────

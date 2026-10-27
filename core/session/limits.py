@@ -109,10 +109,10 @@ def charge_skill_context(skill_name: str) -> None:
     if not (_sess._current and _sess._current.get("status") == "running" and skill_name):
         return
     try:
-        from core.capabilities import _SKILLS_DIR  # flat OR domain-nested layout
+        from core.capabilities import _SKILLS_DIR, SEPARATE_SKILL_SETS  # flat OR domain-nested layout
         for cand in list(_SKILLS_DIR.glob(f"{skill_name}/SKILL.md")) + \
                     list(_SKILLS_DIR.glob(f"*/{skill_name}/SKILL.md")):
-            if cand.is_file():
+            if cand.is_file() and cand.parent.parent.name not in SEPARATE_SKILL_SETS:
                 charge_context(cand.stat().st_size)
                 return
     except Exception:
