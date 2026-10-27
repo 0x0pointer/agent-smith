@@ -20,6 +20,7 @@ import asyncio
 import json
 import urllib.request
 
+from core import auth_headers as _auth
 from core import logger as log
 from mcp_server._app import mcp, _ensure_dict, _record
 from mcp_server import redteam as _rt
@@ -37,16 +38,27 @@ def _record_ai(fn) -> None:
         pass
 
 
-def _http_send_fn(target: str, body_key: str, reply_key: str, headers: dict | None):
-    hdrs = {"Content-Type": "application/json", **(headers or {})}
+def _http_send_fn(target: str, opts: dict):
+    """Build a send(message, conversation_id=None)->reply for the attack loops.
+
+    Auth headers are sourced from known_assets when options ask (headers_from /
+    auth_profile) so a token/cookie-session target needn't be re-pasted every
+    call, and a live cookie jar refreshes a rotating session cookie from each
+    response's Set-Cookie (issue #247).
+    """
+    body_key = opts.get("body_key", "message")
+    reply_key = opts.get("reply_key", "reply")
+    hdrs = _auth.resolve_headers(opts, {"Content-Type": "application/json"})
+    jar = _auth.CookieJar.from_headers(hdrs, source_url=target)
 
     def send(message: str, conversation_id: str | None = None) -> str:
         body = {body_key: message}
         if conversation_id:
             body["conversation_id"] = conversation_id
-        req = urllib.request.Request(target, json.dumps(body).encode(), hdrs)
+        req = urllib.request.Request(target, json.dumps(body).encode(), jar.apply(dict(hdrs)))
         try:
             with urllib.request.urlopen(req, timeout=30) as r:
+                jar.update_from_response(r.headers.get_all("Set-Cookie"))   # track rotation
                 data = json.loads(r.read())
                 return data.get(reply_key, json.dumps(data)) if isinstance(data, dict) else str(data)
         except Exception as e:
@@ -80,6 +92,12 @@ async def redteam(action: str, target: str = "", options: dict | str | None = No
       calibrate       — (target = labs base URL, default http://127.0.0.1:9000)
       taxonomy        — Arcanum PITAX reference. pillar=intents|techniques|evasions|inputs,
                         code=PIT-x-NN (full node), query=<text> (search). No args = overview.
+
+    AUTH (filter_probe / feedback_attack / indirect_attack) — instead of pasting a
+    full headers={} every call: headers_from="known_assets" sources Authorization
+    (newest JWT) + Cookie (session cookies) from known_assets; auth_profile="<name>"
+    uses a stored profile; explicit headers={} still override per-field. A rotating
+    session cookie is refreshed automatically from each response's Set-Cookie.
     """
     opts = _ensure_dict(options) or {}
     _record("redteam", target)   # count as AI red-team work for coverage/skill gates
@@ -140,8 +158,7 @@ def _do_calibrate(target, opts):
 def _do_filter_probe(target, opts):
     if not target:
         return json.dumps({"error": "filter_probe requires target=<URL>"})
-    send = _http_send_fn(target, opts.get("body_key", "message"),
-                         opts.get("reply_key", "reply"), opts.get("headers"))
+    send = _http_send_fn(target, opts)
     res = _fp.probe_filter(send)
     _record_ai(lambda ar: ar.record_filter_probe(res, target))
     return json.dumps(res, indent=2)
@@ -162,8 +179,7 @@ def _do_feedback_attack(target, opts):
     if not target or not goal:
         return json.dumps({"error": "feedback_attack requires target=<URL> and options.goal "
                                      "(goal is optional only for objective=system_prompt_leak)"})
-    send = _http_send_fn(target, opts.get("body_key", "message"),
-                         opts.get("reply_key", "reply"), opts.get("headers"))
+    send = _http_send_fn(target, opts)
     markers = opts.get("success_markers")
     # Objective selects the oracle that replaces the default jailbreak/refusal gradient:
     #   system_prompt_leak → leak_verdict (shape + secret detection)
@@ -206,8 +222,7 @@ def _do_indirect_attack(target, opts):
     if not success and not markers:
         return json.dumps({"error": "indirect_attack needs a success oracle: "
                                      "options.success_jsonpath (+success_mode) or options.success_markers"})
-    send = _http_send_fn(target, opts.get("body_key", "message"),
-                         opts.get("reply_key", "reply"), opts.get("headers"))
+    send = _http_send_fn(target, opts)
     r = _rt.indirect_attack(carrier, instruction, send,
                             success=success, success_markers=markers,
                             positions=opts.get("positions"), framings=opts.get("framings"),
