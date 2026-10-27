@@ -714,3 +714,13 @@ def test_do_reproduce_requires_payloads():
     import mcp_server.redteam_tools as rt
     out = json.loads(rt._do_reproduce("http://x", {}))
     assert "error" in out and "payloads" in out["error"]
+
+
+def test_reproduce_variant_confidence_from_reached():
+    import mcp_server.redteam_tools as rt
+    from mcp_server.redteam.oracles import heuristic_judge
+    judge = lambda t: heuristic_judge(t, "x", ["Y"])
+    ok = rt._reproduce_variant(lambda t, cid=None: "neutral reply", judge, "p", 10, 0)
+    assert ok["confidence"] == "high"                     # all 10 reached
+    thin = rt._reproduce_variant(lambda t, cid=None: "[send error: HTTP 500 x]", judge, "p", 10, 0)
+    assert thin["confidence"] == "insufficient_matched_samples"

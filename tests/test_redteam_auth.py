@@ -117,6 +117,53 @@ class _RotatingHandler(BaseHTTPRequestHandler):
         self.wfile.write(json.dumps({"reply": f"saw={seen}"}).encode())
 
 
+def test_retry_after_delay_honours_header_and_caps():
+    import mcp_server.redteam_tools as rt
+
+    class H:
+        def __init__(self, v):
+            self._v = v
+        def get(self, k):
+            return self._v
+    assert rt._retry_after_delay(H("2"), 1) == 2.0
+    assert rt._retry_after_delay(H(None), 2) == 4.0            # exponential fallback
+    assert rt._retry_after_delay(H("9999"), 1) == rt._BACKOFF_CAP   # capped
+    assert rt._retry_after_delay(H("Wed, 21 Oct 2099 07:28:00 GMT"), 1) == 2.0  # date → expo
+
+
+class _RateLimitHandler(BaseHTTPRequestHandler):
+    seen = 0
+
+    def log_message(self, *a):
+        pass
+
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        type(self).seen += 1
+        if type(self).seen == 1:                 # first call: rate-limit, then recover
+            self.send_response(429)
+            self.send_header("Retry-After", "0")
+            self.end_headers()
+            self.wfile.write(b"{}")
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps({"reply": "recovered"}).encode())
+
+
+def test_http_send_fn_backs_off_and_retries_on_429(monkeypatch):
+    monkeypatch.setattr("core.session.get", lambda: None, raising=False)
+    srv = HTTPServer(("127.0.0.1", 0), _RateLimitHandler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        import mcp_server.redteam_tools as rt
+        send = rt._http_send_fn(f"http://127.0.0.1:{srv.server_address[1]}/chat", {})
+        assert send("hello") == "recovered"      # retried past the 429 instead of failing
+    finally:
+        srv.shutdown()
+
+
 def test_http_send_fn_follows_cookie_rotation(monkeypatch):
     monkeypatch.setattr("core.session.update_known_assets", lambda *a, **k: None, raising=False)
     monkeypatch.setattr("core.session.get",

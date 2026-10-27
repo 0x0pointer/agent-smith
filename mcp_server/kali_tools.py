@@ -20,6 +20,21 @@ def _kali_timed_out(output: str) -> bool:
     return any(mk in low for mk in _KALI_TIMEOUT_MARKERS)
 
 
+# A timeout is only a *time-based-blind* lead when the command was an injection /
+# timing PROBE. A long batch job (hydra spray, gobuster, a crafted-payload loop)
+# that hits its bound is just slow — labelling it "time-based SQLi?" is misleading
+# (issue #254). Emit the lead only for probe-shaped commands; otherwise a neutral note.
+_TIMEBLIND_PROBE_MARKERS = (
+    "sqlmap", "commix", "sleep(", "pg_sleep", "waitfor delay", "benchmark(",
+    "--technique=t", "or sleep", "dbms_pipe.receive_message",
+)
+
+
+def _is_timeblind_probe(command: str) -> bool:
+    c = (command or "").lower()
+    return any(m in c for m in _TIMEBLIND_PROBE_MARKERS)
+
+
 async def _kali_run_and_wrap(command: str, timeout: int) -> str:
     """Execute a command in the Kali container and return the canonical envelope.
 
@@ -38,13 +53,23 @@ async def _kali_run_and_wrap(command: str, timeout: int) -> str:
     # Layer 3 — timeout-as-signal: surface a hung request as a LEAD instead of letting
     # the agent silently burn minutes waiting (and re-waiting) on it.
     timed_out = _kali_timed_out(raw_output)
-    if timed_out:
+    if timed_out and _is_timeblind_probe(command):
         raw_output = (
             "⏱ TIMEOUT SIGNAL — a request/command here hit its time bound. This is a LEAD, not just a "
             "slow call: it can indicate time-based-blind SQLi/cmdi, an SSRF connecting outbound, or a "
             "genuinely slow endpoint. Do NOT just re-run and wait — confirm with a CONTROLLED time-based "
             "probe (a known sleep delta) or bound the request with --max-time (curl is already capped at "
             "30s by default in the container).\n\n" + raw_output
+        )
+    elif timed_out:
+        # A non-probe batch job that simply ran long — not a time-based lead.
+        raw_output = (
+            f"⏱ Command exceeded its {timeout}s timeout and was killed (partial output below). This is "
+            f"NOT a time-based-blind lead — it's a long-running job. Raise the bound (timeout=<larger>) "
+            f"or, better, re-run with background=true and collect it via session(action='job_poll') so "
+            f"you can keep testing while it runs. (Note: the Kali container's command server may enforce "
+            f"its own upper cap below very large timeouts; background mode avoids blocking on it.)\n\n"
+            + raw_output
         )
 
     result = _clip(raw_output, 8_000)

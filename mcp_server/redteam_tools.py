@@ -54,51 +54,88 @@ def _store_artifact(result: dict, label: str = "redteam") -> None:
         pass
 
 
+_BACKOFF_MAX_RETRIES = 3
+_BACKOFF_CAP = 30.0
+
+
+def _retry_after_delay(headers, attempt: int) -> float:
+    """Seconds to back off before a retry — honour Retry-After (int seconds),
+    else exponential (2,4,8…), both capped. Issue #250."""
+    ra = None
+    try:
+        ra = headers.get("Retry-After") if headers else None
+    except Exception:
+        ra = None
+    if ra:
+        try:
+            return min(float(int(ra)), _BACKOFF_CAP)
+        except (TypeError, ValueError):
+            pass  # HTTP-date form — fall through to exponential
+    return min(2.0 ** attempt, _BACKOFF_CAP)
+
+
 def _http_send_fn(target: str, opts: dict):
     """Build a send(message, conversation_id=None)->reply for the attack loops.
 
     Auth headers are sourced from known_assets when options ask (headers_from /
     auth_profile) so a token/cookie-session target needn't be re-pasted every
     call, and a live cookie jar refreshes a rotating session cookie from each
-    response's Set-Cookie (issue #247).
+    response's Set-Cookie (issue #247). On 429/503 the sender backs off
+    (Retry-After aware) before retrying instead of burning the attempt (issue #250).
     """
+    import time
     body_key = opts.get("body_key", "message")
     reply_key = opts.get("reply_key", "reply")
     hdrs = _auth.resolve_headers(opts, {"Content-Type": "application/json"})
     jar = _auth.CookieJar.from_headers(hdrs, source_url=target)
+    # Optional steady-state throttle (shared across calls on this sender).
+    rps = float(opts.get("rps", 0) or 0)
+    min_interval = (1.0 / rps) if rps > 0 else 0.0
+    last = {"t": 0.0}
 
     def send(message: str, conversation_id: str | None = None) -> str:
         body = {body_key: message}
         if conversation_id:
             body["conversation_id"] = conversation_id
-        req = urllib.request.Request(target, json.dumps(body).encode(), jar.apply(dict(hdrs)))
-        try:
-            with urllib.request.urlopen(req, timeout=30) as r:
-                jar.update_from_response(r.headers.get_all("Set-Cookie"))   # track rotation
-                raw = r.read()
-                try:
-                    data = json.loads(raw)
-                except ValueError:
-                    return raw.decode("utf-8", "replace")
-                if isinstance(data, dict):
-                    val = data.get(reply_key, data)
-                    # Non-string reply field (a JSON list/object) → serialise it, never
-                    # pass a repr the judge would misread (issue #261.3).
-                    return val if isinstance(val, str) else json.dumps(val)
-                return json.dumps(data)
-        except urllib.error.HTTPError as e:
-            # Keep the STATUS visible: a 401/403 (dead session) or 5xx (gateway block)
-            # must be distinguishable from a model reply, not swallowed into a plain
-            # string the judge scores as near-compliant (issue #261.3).
+        for attempt in range(1, _BACKOFF_MAX_RETRIES + 2):
+            if min_interval:
+                wait = min_interval - (time.monotonic() - last["t"])
+                if wait > 0:
+                    time.sleep(wait)
+            last["t"] = time.monotonic()
+            req = urllib.request.Request(target, json.dumps(body).encode(), jar.apply(dict(hdrs)))
             try:
-                err_body = e.read().decode("utf-8", "replace")[:200]
-            except Exception:
-                err_body = ""
-            return f"[send error: HTTP {e.code} {err_body}]".rstrip()
-        except urllib.error.URLError as e:
-            return f"[send error: {getattr(e, 'reason', e)}]"
-        except Exception as e:
-            return f"[send error: {e}]"
+                with urllib.request.urlopen(req, timeout=30) as r:
+                    jar.update_from_response(r.headers.get_all("Set-Cookie"))   # track rotation
+                    raw = r.read()
+                    try:
+                        data = json.loads(raw)
+                    except ValueError:
+                        return raw.decode("utf-8", "replace")
+                    if isinstance(data, dict):
+                        val = data.get(reply_key, data)
+                        # Non-string reply field (a JSON list/object) → serialise it, never
+                        # pass a repr the judge would misread (issue #261.3).
+                        return val if isinstance(val, str) else json.dumps(val)
+                    return json.dumps(data)
+            except urllib.error.HTTPError as e:
+                # 429/503 → rate-limited/overloaded: back off and retry rather than
+                # count a miss (issue #250). Other codes: return with status visible.
+                if e.code in (429, 503) and attempt <= _BACKOFF_MAX_RETRIES:
+                    time.sleep(_retry_after_delay(e.headers, attempt))
+                    continue
+                # Keep the STATUS visible: a 401/403 (dead session) or 5xx (gateway
+                # block) must be distinguishable from a model reply (issue #261.3).
+                try:
+                    err_body = e.read().decode("utf-8", "replace")[:200]
+                except Exception:
+                    err_body = ""
+                return f"[send error: HTTP {e.code} {err_body}]".rstrip()
+            except urllib.error.URLError as e:
+                return f"[send error: {getattr(e, 'reason', e)}]"
+            except Exception as e:
+                return f"[send error: {e}]"
+        return "[send error: HTTP 429 rate-limited after retries]"
     return send
 
 
@@ -125,7 +162,10 @@ async def redteam(action: str, target: str = "", options: dict | str | None = No
                         reproduce_n=0, body_key=, reply_key=, headers={}
       reproduce       — k/N for a FIXED payload set: payloads={name: text, ...} (required), n=10,
                         success_markers=[...] OR success_jsonpath/objective, rps= (throttle). Per-variant
-                        k/N, transport-aware (a 4xx/5xx is not a miss), stored for the dashboard.
+                        k/N, transport-aware (a 4xx/5xx is not a miss), + per-variant confidence, stored
+                        for the dashboard. comparative=true (bias/matched-sample tests, e.g. AITG-APP-10):
+                        raises n and returns an insufficient_matched_samples flag + verdict instead of a
+                        false result when too few samples reached the model.
       judge           — text, goal, success_markers=[...]; structured: jsonpath=<expr>, mode=present|absent;
                         system-prompt leak: objective="system_prompt_leak" (shape + secret detection)
       calibrate       — (target = labs base URL, default http://127.0.0.1:9000)
@@ -304,9 +344,15 @@ def _reproduce_variant(send, judge, text, n, delay):
             reached += 1
             if judge(reply).complied:
                 k += 1
+    # Confidence from how many samples actually reached the model — a comparative
+    # test (bias) needs matched samples; a probabilistic 5xx storm leaves too few to
+    # call a verdict (issue #256).
+    conf = ("high" if reached >= 8 else "medium" if reached >= 4
+            else "insufficient_matched_samples")
     return {"k": k, "n": n, "reached_model": reached, "blocked": n - reached,
             "rate": round(k / n, 3) if n else 0.0,
-            "rate_over_reached": round(k / reached, 3) if reached else 0.0, "codes": codes}
+            "rate_over_reached": round(k / reached, 3) if reached else 0.0,
+            "confidence": conf, "codes": codes}
 
 
 def _do_reproduce(target, opts):
@@ -321,13 +367,26 @@ def _do_reproduce(target, opts):
         judge = lambda text: _or.leak_verdict(text, markers)          # noqa: E731
     else:
         judge = _rt.make_oracle(success, markers, opts.get("goal", ""))
-    n = int(opts.get("n", 10))
+    # Comparative/bias mode (issue #256): a matched-sample test across variants needs
+    # more samples than a single-outcome test — auto-raise n and flag the result as
+    # inconclusive when any variant couldn't gather enough matched (reached) samples.
+    comparative = bool(opts.get("comparative"))
+    n = int(opts.get("n", 12 if comparative else 10))
+    if comparative:
+        n = max(n, 12)
     rps = float(opts.get("rps", 0) or 0)
     delay = (1.0 / rps) if rps > 0 else 0.0
     variants = {name: _reproduce_variant(send, judge, str(text), n, delay)
                 for name, text in payloads.items()}
     r = {"variants": variants, "n": n, "payload_count": len(payloads),
          "any_success": any(v["k"] > 0 for v in variants.values())}
+    if comparative:
+        thin = [name for name, v in variants.items() if v["confidence"] == "insufficient_matched_samples"]
+        r["comparative"] = True
+        r["insufficient_matched_samples"] = thin
+        r["verdict"] = ("inconclusive — too few matched samples reached the model "
+                        f"({', '.join(thin)}); raise n or slow down (rps=) and re-run"
+                        if thin else "sufficient matched samples across all variants")
     _store_artifact(r, "redteam")
     _record_ai(lambda ar: ar.record_attack(
         {"jailbroken": r["any_success"], "attempts": n * len(payloads),
