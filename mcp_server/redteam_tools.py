@@ -38,6 +38,21 @@ def _record_ai(fn) -> None:
         pass
 
 
+def _store_artifact(result: dict, label: str = "redteam") -> None:
+    """Store the attack result as a citable coverage artifact and stamp its id onto
+    `result["artifact_id"]`. This is what lets the agent close an LLM cell with a
+    redteam_ artifact (issue #248 requires a toolchain artifact, not a bare http one).
+    Only during a running scan; fail-soft."""
+    try:
+        from core import session as _sess
+        if (_sess.get() or {}).get("status") != "running":
+            return
+        from mcp_server.scan_engine.artifacts import store_artifact
+        result["artifact_id"] = store_artifact(label, json.dumps(result, default=str)[:200_000])
+    except Exception:
+        pass
+
+
 def _http_send_fn(target: str, opts: dict):
     """Build a send(message, conversation_id=None)->reply for the attack loops.
 
@@ -160,6 +175,7 @@ def _do_filter_probe(target, opts):
         return json.dumps({"error": "filter_probe requires target=<URL>"})
     send = _http_send_fn(target, opts)
     res = _fp.probe_filter(send)
+    _store_artifact(res, "redteam")
     _record_ai(lambda ar: ar.record_filter_probe(res, target))
     return json.dumps(res, indent=2)
 
@@ -207,6 +223,7 @@ def _do_feedback_attack(target, opts):
             return one_judge(reply)
         r["reproducibility"] = _rt.reproduce(one_shot, n=n)
     r["transcript"] = r["transcript"][:12]   # trim for context
+    _store_artifact(r)
     _record_ai(lambda ar: ar.record_attack(r, goal, target))
     return json.dumps(r, indent=2)
 
@@ -238,6 +255,7 @@ def _do_indirect_attack(target, opts):
             return judge(send(winning if isinstance(winning, str) else winning[-1]))
         r["reproducibility"] = _rt.reproduce(one_shot, n=n)
     r["transcript"] = r["transcript"][:12]
+    _store_artifact(r)
     goal = f"indirect-injection: {instruction[:80]}"
     _record_ai(lambda ar: ar.record_attack(r, goal, target))
     return json.dumps(r, indent=2)

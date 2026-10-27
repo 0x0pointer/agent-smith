@@ -228,18 +228,29 @@ def _skill_did_tool(skill_name: str, tool_name: str) -> bool:
 
 
 def _coverage_types_tested(types) -> bool:
-    """True if at least one matrix cell of these injection types was actually TESTED
-    (tested_clean/vulnerable — not merely deferred/NA). Deferred import + fail-soft so
-    a coverage read never breaks gate evaluation."""
+    """True if at least one matrix cell of these injection types was TESTED **with the
+    attack toolchain** (closed with a redteam/transform/garak artifact, not a bare
+    http() probe). Closing an LLM cell off one http() request is the first-try fallacy
+    (issue #248) — it must not satisfy the ai-redteam deep requirement. Deferred import
+    + fail-soft so a coverage read never breaks gate evaluation."""
     if not types:
         return False
     try:
         import core.coverage as _cov
+        from core import taxonomy as _tax
         cells = _cov._load().get("matrix", [])
     except Exception:
         return False
     tset = set(types)
-    return any(c.get("injection_type") in tset and c.get("status") in ("tested_clean", "vulnerable")
+
+    def _toolchain_closed(c: dict) -> bool:
+        aid = c.get("artifact_id", "") or ""
+        tool = aid.rsplit("_", 2)[0] if aid.count("_") >= 2 else aid
+        return tool in _tax.LLM_TOOLCHAIN_ARTIFACT_PREFIXES
+
+    return any(c.get("injection_type") in tset
+               and c.get("status") in ("tested_clean", "vulnerable")
+               and _toolchain_closed(c)
                for c in cells)
 
 

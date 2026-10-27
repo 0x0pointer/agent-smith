@@ -248,6 +248,27 @@ def _write_cell_fields(
     if finding_id:
         cell["finding_id"] = finding_id
     cell["tested_at"] = datetime.now(timezone.utc).isoformat()
+    # AI first-try-fallacy (issue #248): a vulnerable LLM closure with no k/N
+    # reproducibility record is non-deterministic evidence — tag it so the
+    # dashboard/report flags it instead of presenting n=1 as confirmed.
+    from core.coverage.validation import llm_needs_reproduction
+    if llm_needs_reproduction(artifact_id, status, cell):
+        cell["needs_reproduction"] = True
+    elif cell.get("needs_reproduction"):
+        cell.pop("needs_reproduction", None)
+
+
+def _reproduction_warning(cell: dict, status: str) -> str:
+    """Warning string when a vulnerable LLM cell was tagged needs_reproduction."""
+    if status == "vulnerable" and cell.get("needs_reproduction"):
+        return (
+            f"NEEDS REPRODUCTION: cell {cell.get('id','?')} "
+            f"({cell.get('injection_type','')}) is marked vulnerable off a single attempt "
+            f"(n=1). LLM output is non-deterministic — re-run with reproduce_n>=5 "
+            f"(redteam feedback_attack/indirect_attack) and attach the k/N artifact to "
+            f"confirm the rate, or downgrade. Tagged needs_reproduction."
+        )
+    return ""
 
 
 def _reject_single_cell_update(
@@ -260,6 +281,15 @@ def _reject_single_cell_update(
     auth_reject = _validate_auth_response(artifact_id, status, cell)
     if auth_reject:
         return auth_reject
+    # AI first-try-fallacy blocks: an LLM cell can't close off a bare http() probe,
+    # and a `tested_clean` redteam run must meet a real attempt budget (issue #248).
+    from core.coverage.validation import _validate_llm_attempt_budget, _validate_llm_toolchain
+    tool_reject = _validate_llm_toolchain(artifact_id, status, cell)
+    if tool_reject:
+        return tool_reject
+    budget_reject = _validate_llm_attempt_budget(artifact_id, status, cell)
+    if budget_reject:
+        return budget_reject
     # Artifact-reuse block: a single request can't legitimately test
     # multiple distinct injection types — see _validate_artifact_reuse.
     from core.coverage.validation import _validate_artifact_reuse
@@ -314,9 +344,11 @@ async def update_cell(
             cell.get("injection_type", ""), notes,
         )
         _write_cell_fields(cell, status, notes, tested_by, artifact_id, finding_id)
+        repro_warn = _reproduction_warning(cell, status)
         _cov._recount(data)
         _cov._save(data)
-        return warning if warning else True
+        combined = "; ".join(w for w in (warning, repro_warn) if w)
+        return combined if combined else True
 
 
 def _apply_bulk_cell(cell: dict, upd: dict, warnings: list[str]) -> None:
@@ -337,6 +369,9 @@ def _apply_bulk_cell(cell: dict, upd: dict, warnings: list[str]) -> None:
         cell, st, notes_text,
         upd.get("tested_by", ""), upd.get("artifact_id", ""), upd.get("finding_id", ""),
     )
+    repro_warn = _reproduction_warning(cell, st)
+    if repro_warn:
+        warnings.append(repro_warn)
 
 
 def _reject_bulk_final_update(
@@ -355,6 +390,14 @@ def _reject_bulk_final_update(
     auth_reject = _validate_auth_response(artifact_id, st, cell)
     if auth_reject:
         return auth_reject
+    # AI first-try-fallacy blocks (issue #248): toolchain artifact + attempt budget.
+    from core.coverage.validation import _validate_llm_attempt_budget, _validate_llm_toolchain
+    tool_reject = _validate_llm_toolchain(artifact_id, st, cell)
+    if tool_reject:
+        return tool_reject
+    budget_reject = _validate_llm_attempt_budget(artifact_id, st, cell)
+    if budget_reject:
+        return budget_reject
     # Vulnerable cells must already have a finding_id — force Smith
     # to call report(action='finding') first instead of auto-filing.
     link_reject = _validate_finding_link(st, upd.get("finding_id", ""))

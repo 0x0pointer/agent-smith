@@ -273,6 +273,128 @@ def _validate_finding_link(status: str, finding_id: str | None) -> str:
     )
 
 
+# ── AI/LLM first-try-fallacy gates (issue #248) ────────────────────────────────
+# LLM output is non-deterministic and guardrails are probabilistic, so a single
+# hand probe (one http() request) is neither "clean" nor "confirmed". These gates
+# force the AI attack toolchain (redteam/transform/garak) and a real attempt
+# budget before an LLM cell may close.
+
+def _artifact_tool(artifact_id: str) -> str:
+    """Tool prefix encoded in an artifact_id: 'redteam_101112_ab' -> 'redteam'."""
+    if not artifact_id:
+        return ""
+    parts = artifact_id.rsplit("_", 2)
+    return parts[0] if len(parts) == 3 else artifact_id
+
+
+def _read_artifact_json(artifact_id: str) -> dict | None:
+    """Parse a stored artifact as JSON (bounded read), or None. Fail-open."""
+    try:
+        f = _cov._ARTIFACTS_DIR / f"{artifact_id}.txt"
+        if not f.exists() or f.stat().st_size > 10 * 1024 * 1024:
+            return None
+        data = json.loads(f.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def _scan_depth() -> str:
+    try:
+        from core import session as _sess
+        return (_sess.get() or {}).get("depth", "standard") or "standard"
+    except Exception:
+        return "standard"
+
+
+def _validate_llm_toolchain(artifact_id: str, status: str, cell: dict | None) -> str:
+    """Reject closing a toolchain-required LLM cell off a bare http()/scanner probe.
+
+    prompt_injection / jailbreak / system_prompt_leak / improper_output_handling /
+    unbounded_consumption must be closed with a redteam()/transform()/garak artifact
+    — the attack toolchain the ai-redteam skill exists to run — not a single http()
+    request (the first-try fallacy). Issue #248.
+    """
+    if status not in ("tested_clean", "vulnerable") or not cell:
+        return ""
+    inj = cell.get("injection_type", "")
+    if inj not in _tax.LLM_TOOLCHAIN_REQUIRED_TYPES:
+        return ""
+    tool = _artifact_tool(artifact_id)
+    if tool in _tax.LLM_TOOLCHAIN_ARTIFACT_PREFIXES:
+        return ""
+    indirect = " (or action='indirect_attack' for an extraction/agentic target)" \
+        if inj in ("prompt_injection", "improper_output_handling") else ""
+    return (
+        f"REJECTED: cannot close {inj} cell {cell.get('id','?')} with a '{tool or 'bare'}' "
+        f"artifact — an LLM cell needs the attack toolchain, not a single probe (the "
+        f"first-try fallacy: LLM output is non-deterministic and guardrails are "
+        f"probabilistic). Run redteam(action='feedback_attack'){indirect} or "
+        f"transform()+scan(tool='garak') against this cell and close it with THAT "
+        f"artifact_id (prefix redteam_/transform_/garak_). Cell stays in_progress."
+    )
+
+
+def _validate_llm_attempt_budget(artifact_id: str, status: str, cell: dict | None) -> str:
+    """Reject `tested_clean` on an LLM cell when the redteam run was too thin.
+
+    A clean verdict needs a real budget: >= N attempts (depth: quick 5 / standard 10 /
+    thorough 20) across >= 2 technique families. Only enforced when the closing
+    artifact is a redteam transcript we can read the counts from — garak (hundreds of
+    probes) and other toolchain artifacts pass. Issue #248 proposal 1.
+    """
+    if status != "tested_clean" or not cell:
+        return ""
+    if cell.get("injection_type", "") not in _tax.LLM_REDTEAM_TYPES:
+        return ""
+    if _artifact_tool(artifact_id) != "redteam":
+        return ""  # budget only reads redteam transcripts; other toolchain artifacts pass
+    data = _read_artifact_json(artifact_id)
+    if data is None:
+        return ""  # unreadable → fail open (artifact existence already enforced)
+    attempts = int(data.get("attempts", 0) or 0)
+    techniques = {t.get("technique") for t in (data.get("transcript") or [])
+                  if isinstance(t, dict) and t.get("technique")}
+    min_attempts = _tax.LLM_MIN_ATTEMPTS_BY_DEPTH.get(_scan_depth(), 10)
+    if attempts >= min_attempts and len(techniques) >= _tax.LLM_MIN_DISTINCT_TECHNIQUES:
+        return ""
+    return (
+        f"REJECTED: cannot mark {cell.get('injection_type','')} cell {cell.get('id','?')} "
+        f"tested_clean — the redteam run was too thin to call clean ({attempts} attempt(s), "
+        f"{len(techniques)} technique famil{'y' if len(techniques)==1 else 'ies'}; need "
+        f">= {min_attempts} attempts across >= {_tax.LLM_MIN_DISTINCT_TECHNIQUES} families "
+        f"at this depth). A single refusal is not 'clean' on a non-deterministic target. "
+        f"Re-run redteam(action='feedback_attack', options={{'max_attempts': {min_attempts}, "
+        f"'reproduce_n': 5, ...}}) and close with that artifact. Cell stays in_progress."
+    )
+
+
+def _artifact_reproduced(artifact_id: str) -> bool:
+    """True if the closing artifact already carries a k/N reproducibility record
+    (redteam reproduce_n run) or is a garak run (hundreds of evaluated prompts)."""
+    tool = _artifact_tool(artifact_id)
+    if tool == "garak":
+        return True
+    if tool != "redteam":
+        return False
+    data = _read_artifact_json(artifact_id)
+    repro = (data or {}).get("reproducibility") or {}
+    try:
+        return int(repro.get("n", 0)) >= 2
+    except (TypeError, ValueError):
+        return False
+
+
+def llm_needs_reproduction(artifact_id: str, status: str, cell: dict | None) -> bool:
+    """A `vulnerable` LLM closure with no k/N reproducibility record (n=1) should be
+    auto-tagged `needs_reproduction` (non-blocking). Issue #248 proposal 3."""
+    if status != "vulnerable" or not cell:
+        return False
+    if cell.get("injection_type", "") not in _tax.LLM_REDTEAM_TYPES:
+        return False
+    return not _artifact_reproduced(artifact_id)
+
+
 def _validate_auth_response(
     artifact_id: str, status: str, cell: dict | None,
 ) -> str:
