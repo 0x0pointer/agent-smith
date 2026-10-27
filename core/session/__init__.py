@@ -221,6 +221,7 @@ from .lifecycle import (  # noqa: E402
     get,
     load_from_disk,
     note_triage_progress,
+    resume_if_running,
     set_triage_requested,
     start,
 )
@@ -248,6 +249,7 @@ from .gates import (  # noqa: E402
     open_trigger_gate,
     pending_gates,
     reconcile_worked_gates,
+    reopen_gate_on_evidence,
     restore_gates,
     satisfy_gate,
     set_skill,

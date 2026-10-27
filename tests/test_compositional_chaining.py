@@ -88,6 +88,49 @@ def _bridge_graph():
     return g
 
 
+def _novelty_graph():
+    """A credential-leak finding + a same-host finding → _chains_from_cred_leaks yields a
+    proposal with finding_ids ['leak', 'admin']."""
+    g = m.Graph()
+    g.add_node("host:H", m.HOST, "H")
+    g.add_node("finding:leak", m.FINDING, "Leaked DB credentials", severity="high")
+    g.add_edge("finding:leak", "host:H", m.FOUND_ON)
+    g.add_node("cred:db", m.CREDENTIAL, "db:pw")
+    g.add_edge("finding:leak", "cred:db", m.LEAKS)
+    g.add_node("finding:admin", m.FINDING, "Admin panel BOLA", severity="critical")
+    g.add_edge("finding:admin", "host:H", m.FOUND_ON)
+    return g
+
+
+class TestNoveltyAndDismissal:
+    """IMPROVEMENT-PLAN 1.5: novelty-ranked proposer + adversarial dismissal check."""
+
+    def test_novel_when_unchained(self):
+        props = chains.candidate_chains(_novelty_graph())
+        assert props and all(p.get("novel") for p in props)
+
+    def test_all_proven_proposal_is_dropped(self):
+        # both findings already worked into a filed chain → no new work → dropped
+        props = chains.candidate_chains(_novelty_graph(), proven_fids={"leak", "admin"})
+        assert not any(set(p.get("finding_ids", [])) <= {"leak", "admin"} and
+                       set(p.get("finding_ids", [])) == {"leak", "admin"} for p in props)
+
+    def test_novelty_boost_ranks_new_ground_first(self):
+        g = _novelty_graph()
+        # add a second unchained finding on the host so one proposal reaches more new ground
+        g.add_node("finding:rce", m.FINDING, "RCE candidate", severity="critical")
+        g.add_edge("finding:rce", "host:H", m.FOUND_ON)
+        props = chains.candidate_chains(g, proven_fids={"admin"})
+        # the top proposal must reach an unproven finding (admin is already chained)
+        assert props and any(fid != "admin" for fid in props[0].get("finding_ids", []))
+
+    def test_verify_dismissal_blocks_unsound_dismissal(self):
+        novel = {"finding_ids": ["leak", "admin"]}
+        assert chains.verify_dismissal(novel, proven_fids={"admin"}) is False   # still reaches 'leak'
+        assert chains.verify_dismissal(novel, proven_fids={"leak", "admin"}) is True   # all chained
+        assert chains.is_novel({"finding_ids": []}) is True                     # no anchor → keep
+
+
 class TestBridgeRule:
     def test_same_host_bridge_fires(self):
         cc = chains.candidate_chains(_bridge_graph())

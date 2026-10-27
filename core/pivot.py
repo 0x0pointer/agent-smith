@@ -34,18 +34,54 @@ def _known_hosts(cur: dict) -> set[str]:
     return {h for h in out if h}
 
 
+# K8s service DNS collapses: a short name and its FQDN are the SAME service, so promoting both
+# (across separate SSRF leaks) double-counts one host. Normalize to a base identity for dedup.
+_CLUSTER_SUFFIXES = (".svc.cluster.local", ".cluster.local", ".svc")
+
+
+def _cluster_base(host: str) -> str | None:
+    """Base identity of a K8s service DNS name (short name == FQDN); None if not cluster-family."""
+    hl = (host or "").lower()
+    for suf in _CLUSTER_SUFFIXES:
+        if hl.endswith(suf):
+            return hl[: -len(suf)]
+    return "kubernetes.default" if hl.startswith("kubernetes.default") else None
+
+
 def _new_internal_hosts(text: str, cur: dict) -> list[str]:
-    """Internal host keys named in `text` that aren't already known/out-of-scope."""
+    """Internal host keys named in `text` that aren't already known/out-of-scope. Collapses K8s
+    service short-name/FQDN variants so one service isn't promoted as several hosts."""
     from core.session import surface_ledger as _ledger
     known = _known_hosts(cur)
+    known_bases = {b for b in (_cluster_base(k) for k in known) if b}
     new: list[str] = []
     seen: set[str] = set()
+    seen_bases: set[str] = set()
     for h in netextract.extract_internal_hosts(text or ""):
         hk = _ledger.host_key(h)
-        if hk and hk not in known and hk not in seen:
-            seen.add(hk)
-            new.append(hk)
+        if not hk or hk in known or hk in seen:
+            continue
+        base = _cluster_base(hk)
+        if base and (base in known_bases or base in seen_bases):
+            continue          # a K8s short-name/FQDN variant of an already-known service
+        seen.add(hk)
+        if base:
+            seen_bases.add(base)
+        new.append(hk)
     return new
+
+
+def pivot_reachable(cur: dict) -> bool:
+    """True once ANY promoted internal host has actually been REACHED — i.e. a working pivot path
+    (a tunnel through the foothold, or a direct route) exists. Until then, cluster-internal hosts
+    are reachable ONLY from the compromised pod and a direct scan from Kali just times out — so the
+    blocker/recovery steer must be TUNNEL-FIRST rather than 'scan each host' (which caused the
+    multi-hour unreachable-retry churn). Fail-soft → False."""
+    try:
+        na = ((cur or {}).get("surface_coverage") or {}).get("network-assess") or {}
+        return bool(na.get("covered"))
+    except Exception:
+        return False
 
 
 def promote_internal_hosts(text: str, source: str = "") -> list[str]:
@@ -70,19 +106,72 @@ def promote_internal_hosts(text: str, source: str = "") -> list[str]:
         for h in new:
             for sk in _ledger.HOST_UNIT_SKILLS:
                 _ledger.record_discovered(sk, h, "host")
+        _register_pivot_matrix_stubs(new)
         scan_session.trigger_gate(
             "internal_network",
             f"Deep-pivot: {len(new)} internal host(s) discovered via {source or 'pivot'} "
             f"({', '.join(new[:5])}) — port-scan + recon each",
             ["network-assess"])
+        # A genuine (non-metadata) internal host reached AFTER an 'no internal network' dismissal
+        # CONTRADICTS it — trigger_gate alone won't re-open a not_applicable gate (same skills), so
+        # re-open it once with a clear directive instead of silently skipping the pivot.
+        if any(h not in netextract._META_HOSTS for h in new):
+            scan_session.reopen_gate_on_evidence(
+                "internal_network",
+                reason=f"internal host(s) reached post-dismissal: {', '.join(new[:5])}",
+                new_trigger=(f"RE-OPENED: internal host(s) reached after a 'no internal network' "
+                             f"dismissal ({', '.join(new[:5])}) — the target DOES expose an internal "
+                             "network from the foothold. Port-scan + recon each via /network-assess "
+                             "(tunnel through the foothold first if a direct scan can't route)."))
         try:
             from core import logger as log
             log.note(f"deep-pivot promoted {len(new)} internal host(s): {', '.join(new[:8])}")
         except Exception:
             pass
+        _notify_operator_pivot(new, source)
         return new
     except Exception:
         return []
+
+
+def _register_pivot_matrix_stubs(hosts: list[str]) -> None:
+    """Give each promoted internal host a thin ATTRIBUTION STUB in the coverage matrix
+    (IMPROVEMENT-PLAN 1.4): a host-tagged endpoint row with NO cells, so the matrix can
+    answer "which endpoint belongs to which host" the moment a pivot host is promoted —
+    without fanning out injection/cross-cutting cells (no NA bloat, nothing to stall
+    completion while the host is unreachable). Real testable cells are added later, when the
+    agent re-registers host-qualified endpoints WITH params through add_endpoint once a route
+    exists (the dedup path upgrades the stub). Fail-soft."""
+    try:
+        from core import coverage
+        for h in hosts:
+            coverage.register_pivot_stub(h, path="/", method="GET", discovered_by="deep-pivot")
+    except Exception:
+        pass
+
+
+def _notify_operator_pivot(hosts: list[str], source: str = "") -> None:
+    """DANGER auto-pivots WITHOUT the normal-scan per-host approval — but the operator must still
+    SEE it happening and be able to stop it. Raise ONE non-blocking wishlist FYI (deduped by the
+    fixed need text, so it appears once no matter how many hosts stream in over the run) the first
+    time the pivot opens. Fixes the 'no operator touchpoint in danger' gap without blocking the
+    autonomous pivot. Fail-soft."""
+    try:
+        if not hosts:
+            return
+        from core.wishlist import wishlist_queue
+        wishlist_queue.add(
+            need=("Deep-pivot ACTIVE (depth=danger): auto-scanning internal host(s) discovered "
+                  "behind the perimeter — review / de-scope"),
+            category="scope",
+            rationale=(f"depth=danger pivots autonomously (no per-host yes/no). Hosts reached via "
+                       f"{source or 'the foothold'}; latest: {', '.join(hosts[:8])}"
+                       f"{' …' if len(hosts) > 8 else ''}. To STOP pivoting a host, add it to "
+                       "out_of_scope (it is then never re-promoted); the live host list is on the "
+                       "dashboard network-assess panel."),
+        )
+    except Exception:
+        pass
 
 
 def request_pivot_scope(text: str, source: str = "") -> list[str]:

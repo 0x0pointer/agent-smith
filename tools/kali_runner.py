@@ -200,6 +200,7 @@ async def ensure_running() -> tuple[bool, str]:
                 ) as r:
                     if r.status == 200:
                         await _seed_curl_defaults()
+                        await _register_scanner_ips()
                         return True, "started"
         except Exception:
             pass
@@ -220,6 +221,27 @@ async def _seed_curl_defaults() -> None:
             stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
         )
         await proc.wait()
+    except Exception:
+        pass
+
+
+async def _register_scanner_ips() -> None:
+    """Resolve the Kali container's OWN interface addresses at start and register them as
+    scanner-own so the deep-pivot promoter never treats the container's own bridge IP as an
+    internal target (IMPROVEMENT-PLAN 1.2). The field bug: the container's eth0 lives inside
+    10.0.0.0/8 (e.g. 10.110.0.3), which a static CIDR can't exclude without blinding genuine
+    10.x pivot targets — so exclude exactly this container's resolved addresses instead.
+    Best-effort; a failure here never affects Kali startup or promotion correctness."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            docker_executable(), "exec", KALI_CONTAINER, "hostname", "-I",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        )
+        out, _ = await proc.communicate()
+        ips = (out.decode(errors="replace") if out else "").split()
+        if ips:
+            from core import netextract
+            netextract.register_scanner_own_ips(ips)
     except Exception:
         pass
 
@@ -247,6 +269,44 @@ def _host_rewrite(command: str) -> str:
     return command
 
 
+def _parse_proxy(proxy: str) -> tuple[str, str, int]:
+    """Parse a SOCKS endpoint — 'socks5://host:port' | 'socks4://host:port' | 'host:port' —
+    into (type, host, port). Defaults: type socks5, host 127.0.0.1, port 1080."""
+    p = (proxy or "").strip()
+    ptype = "socks5"
+    if "://" in p:
+        scheme, _, rest = p.partition("://")
+        s = scheme.strip().lower()
+        if s in ("socks5", "socks4", "http"):
+            ptype = s
+        p = rest
+    host, _, port = p.partition(":")
+    host = host.strip() or "127.0.0.1"
+    try:
+        pport = int(port.strip()) if port.strip() else 1080
+    except ValueError:
+        pport = 1080
+    if not (1 <= pport <= 65535):
+        pport = 1080
+    return ptype, host, pport
+
+
+def _wrap_proxychains(command: str, proxy: str) -> str:
+    """Route a Kali command through a SOCKS proxy via proxychains4 (IMPROVEMENT-PLAN 1.3 — lean
+    tunnel v1). The agent stands the SOCKS endpoint up itself (chisel / ligolo-ng / ssh -D /
+    msf socks_proxy) through a foothold, then passes proxy=... so scanners reach cluster-internal
+    hosts Kali cannot route to directly. A throwaway proxychains config is written per call and
+    removed afterwards; the command's exit status is preserved.
+
+    NOTE (surfaced in the skill prose): nmap over SOCKS must use a TCP connect scan (``-sT``) —
+    a raw SYN scan (``-sS``) builds packets below the socket layer and cannot traverse a proxy."""
+    ptype, host, port = _parse_proxy(proxy)
+    conf = (f"strict_chain\\nquiet_mode\\nproxy_dns\\nremote_dns_subnet 224\\n"
+            f"tcp_read_time_out 15000\\ntcp_connect_time_out 8000\\n[ProxyList]\\n{ptype} {host} {port}\\n")
+    return (f'_pc=$(mktemp); printf %b {shlex.quote(conf)} > "$_pc"; '
+            f'proxychains4 -f "$_pc" {command}; _rc=$?; rm -f "$_pc"; exit $_rc')
+
+
 def _force_bash(command: str) -> str:
     """Wrap the command in `bash -c` so bash-only syntax works.
 
@@ -266,7 +326,7 @@ def _force_bash(command: str) -> str:
     return f"bash -c {shlex.quote(command)}"
 
 
-async def exec_command(command: str, timeout: int = 600) -> str:
+async def exec_command(command: str, timeout: int = 600, proxy: str | None = None) -> str:
     """
     Run a shell command via the kali-server-mcp HTTP API.
     Auto-starts the container if it isn't already running.
@@ -274,8 +334,17 @@ async def exec_command(command: str, timeout: int = 600) -> str:
     Commands are wrapped in `bash -c` so bashisms like `[[`, arrays, and
     process substitution work (the upstream /bin/sh is dash, which does not
     support any of these).
+
+    ``proxy`` (IMPROVEMENT-PLAN 1.3): a SOCKS endpoint (e.g. 'socks5://127.0.0.1:1080') the
+    agent stood up through a foothold — the command is routed through it with proxychains4 so
+    a scanner can reach cluster-internal hosts Kali can't route to directly. When set, the
+    localhost→host.docker.internal rewrite is SKIPPED: through a tunnel a loopback reference is
+    the proxy's own listener and must not be rewritten.
     """
-    command = _host_rewrite(command)
+    if proxy:
+        command = _wrap_proxychains(command, proxy)
+    else:
+        command = _host_rewrite(command)
     command = _force_bash(command)
     import aiohttp
 

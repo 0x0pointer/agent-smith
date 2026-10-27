@@ -8,6 +8,7 @@ from .start_helpers import (
     _reset_coverage_matrix,
     _prior_findings_brief,
     _start_first_move,
+    _norm_target,
 )
 
 
@@ -248,7 +249,62 @@ def _clear_adjunction_log() -> None:
         pass
 
 
+def _dashboard_url() -> str:
+    """Existing dashboard link (read the token, don't mint — a resume must not invalidate
+    the operator's already-open tab)."""
+    try:
+        from core import dashboard_auth
+        _tok = dashboard_auth.read_token()
+    except Exception:
+        _tok = None
+    return f"http://localhost:7777/#k={_tok}" if _tok else "http://localhost:7777/"
+
+
+def _resume_in_place_response(live: dict) -> str:
+    """A re-issued start() landed on a scan that is still RUNNING (respawned MCP process,
+    or the model re-calling start). Resume it in place — DO NOT re-initialise (that reset
+    target/depth and wiped known_assets + the wishlist mid-run; IMPROVEMENT-PLAN 1.1) —
+    and hand back the recovery brief so the agent picks up exactly where it left off."""
+    return "\n".join([
+        "RESUME — a scan on this target is already RUNNING; state preserved (NOT reset).",
+        f"  Target: {live.get('target')} | Depth: {live.get('depth')} | "
+        f"Mode: {live.get('scan_mode', 'pentest')} | Phase: {live.get('scan_phase', '?')}",
+        f"  Dashboard: {_dashboard_url()}",
+        "",
+        "Recovery state follows — read it, then continue from EXECUTE_NOW (do not re-run "
+        "finished steps, do not re-register endpoints; the matrix is on disk):",
+        "",
+        _st._do_recovery(),
+    ])
+
+
+def _running_scan_refusal(live: dict, requested: str) -> str:
+    """A start() for a DIFFERENT target arrived while a scan is still running. Don't
+    silently switch targets (that is the mid-run clobber). Tell the operator how to
+    proceed instead (IMPROVEMENT-PLAN 1.1)."""
+    return "\n".join([
+        f"REFUSED: a scan on {live.get('target')!r} (depth={live.get('depth')}, "
+        f"phase={live.get('scan_phase', '?')}) is still RUNNING.",
+        f"Starting a new scan on {requested!r} would discard that live scan's state "
+        "(coverage matrix, known_assets, findings linkage, gates, wishlist).",
+        "",
+        "If this is an internal host reached via the foothold, do NOT start a new scan — "
+        "it is a NEW SURFACE WITHIN THE RUNNING SCAN (register + test it host-qualified "
+        "here; see the deep-pivot guidance in the running scan's start output).",
+        "",
+        "Otherwise finish the current scan first (session(action='complete')), or, to "
+        "replace it deliberately, re-issue start with options={..., 'force_restart': true}.",
+    ])
+
+
 def _do_start(opts):
+    # Reconcile with disk FIRST (IMPROVEMENT-PLAN 1.1): a RESPAWNED MCP process has an
+    # empty in-memory cache, so without this a re-issued start would see no session and
+    # re-initialise over the scan that is still running on disk.
+    if scan_session.get() is None:
+        scan_session.load_from_disk()
+    else:
+        scan_session._reconcile_if_external_write()
     existing = scan_session.get() or {}
     if existing.get("status") == "intervention_required":
         return (
@@ -256,6 +312,18 @@ def _do_start(opts):
             "Respond via session(action='resume', options={choice: '...', message: '...'}) "
             "before starting a new scan."
         )
+    target = opts.get("target", "")
+    force_restart = bool(opts.get("force_restart"))
+    # Live-scan guard: never silently re-initialise over a running scan. Resume it in
+    # place when the same target is re-issued (the respawn case); refuse a different
+    # target so the operator can't accidentally switch targets mid-run. force_restart
+    # bypasses both to replace the scan deliberately.
+    if existing.get("status") == "running" and not force_restart:
+        live = scan_session.resume_if_running()
+        if live is not None:
+            if target and _norm_target(live.get("target")) != _norm_target(target):
+                return _running_scan_refusal(live, target)
+            return _resume_in_place_response(live)
     _prev_complete_attempts, _prev_analysis_passes, _prev_scan_phase = _prior_progress(existing)
     _st._complete_attempts = 0
     _st._analysis_passes = 0

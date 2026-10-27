@@ -86,8 +86,14 @@ def test_exploit_escalation_deep_pivot_gating(steer_session, session_data, fires
 # ── 2f: deep-pivot start norm shows for danger + benchmark, not a normal scan ──
 
 def test_start_norm_deep_pivot_block(coverage_file):
+    # Three INDEPENDENT start scenarios on one target. Complete each before the next:
+    # a re-issued start over a still-running scan now resumes in place rather than
+    # re-initialising (IMPROVEMENT-PLAN 1.1), so the scenarios must not overlap.
+    import core.session as scan_session
     from mcp_server.session_tools import _do_start
     assert "DEEP-PIVOT MODE" in _do_start({"target": "example.com", "depth": "danger"})
+    scan_session.complete()
     assert "DEEP-PIVOT MODE" in _do_start(
         {"target": "example.com", "depth": "standard", "scan_mode": "benchmark"})
+    scan_session.complete()
     assert "DEEP-PIVOT MODE" not in _do_start({"target": "example.com", "depth": "standard"})

@@ -59,6 +59,21 @@ def _host_of(raw: str) -> str:
     return urlparse(raw).netloc.lower()
 
 
+def _default_matrix_host(data: dict) -> str:
+    """Host a RELATIVE endpoint path belongs to = the matrix target's host. Falls back to the
+    LIVE scan target when ``meta.target`` was never populated (the bug that left every endpoint
+    with host='' so the whole matrix looked single-host and pivot hosts could never be told apart).
+    Fail-soft → '' (legacy path-only behaviour) if neither is resolvable."""
+    h = _host_of((data.get("meta") or {}).get("target", ""))
+    if h:
+        return h
+    try:
+        from core import session as _sess
+        return _host_of((_sess.get() or {}).get("target", "") or "")
+    except Exception:
+        return ""
+
+
 def _resolve_host_path(raw_path: str, host_arg: str | None, default_host: str) -> tuple[str, str]:
     """Resolve a registration's (host, path).
 
@@ -170,6 +185,55 @@ def _register_side_effects(path: str, norm_path: str, params: list[dict]) -> Non
         pass
 
 
+def register_pivot_stub(host: str, path: str = "/", method: str = "GET",
+                        discovered_by: str = "deep-pivot") -> dict:
+    """Register an ATTRIBUTION-ONLY endpoint stub for a pivot-discovered internal host
+    (IMPROVEMENT-PLAN 1.4).
+
+    The host becomes a distinct, host-tagged block in the coverage matrix the moment it is
+    promoted, so "which endpoint belongs to which host" is answerable immediately — WITHOUT
+    fanning out any cells. No injection/cross-cutting cells means no NA bloat and nothing to
+    stall completion while the host is still unreachable (its scan obligation is tracked by the
+    surface ledger, not the matrix). Real, testable cells are fanned out LATER, when the agent
+    re-registers the endpoint WITH params through add_endpoint once a route (tunnel) exists —
+    the dedup path upgrades this stub in place.
+
+    Sync + fail-soft (it runs in the promotion hot path, which must never raise). Dedups on
+    (host, normalized_path, method). Returns {"endpoint_id", "dedup"} or {} on failure."""
+    try:
+        ep_host = _sanitize_registered(_host_of(host) or host, 256)
+        if not ep_host:
+            return {}
+        path = _sanitize_registered((path or "/").strip() or "/")
+        norm_path = _normalize_path(path)
+        method_upper = (method or "GET").upper()
+        data = _cov._load()
+        default_host = _default_matrix_host(data)
+        for ep in data["endpoints"]:
+            if ((ep.get("host") or default_host) == ep_host
+                    and ep["_normalized"] == norm_path and ep["method"] == method_upper):
+                return {"endpoint_id": ep["id"], "dedup": True}
+        ep_id = f"ep-{uuid.uuid4().hex[:12]}"
+        data["endpoints"].append({
+            "id": ep_id,
+            "host": ep_host,
+            "path": path,
+            "_normalized": norm_path,
+            "method": method_upper,
+            "params": [],
+            "discovered_by": discovered_by,
+            "discovered_at": datetime.now(timezone.utc).isoformat(),
+            "auth_context": "unknown",
+            "candidate": False,
+            "stub": True,     # attribution-only: no cells; upgraded by add_endpoint dedup
+        })
+        _cov._recount(data)
+        _cov._save(data)
+        return {"endpoint_id": ep_id, "dedup": False}
+    except Exception:
+        return {}
+
+
 async def add_endpoint(
     path: str,
     method: str,
@@ -208,7 +272,7 @@ async def add_endpoint(
         # Host-aware resolution (Phase 3). default_host = the matrix target's host, so a
         # relative path keeps today's single-host behaviour; a URL/host-qualified path
         # or explicit host= makes a pivot-discovered internal host its own endpoint.
-        default_host = _host_of((data.get("meta") or {}).get("target", ""))
+        default_host = _default_matrix_host(data)
         ep_host, path = _resolve_host_path(path, host, default_host)
         ep_host = _sanitize_registered(ep_host, 256)
         path = _sanitize_registered(path)  # AS-08: defang target-authored paths before storage
@@ -220,8 +284,21 @@ async def add_endpoint(
         for ep in data["endpoints"]:
             if ((ep.get("host") or default_host) == ep_host
                     and ep["_normalized"] == norm_path and ep["method"] == method_upper):
+                # A prior pivot-host ATTRIBUTION STUB (registered with no cells; IMPROVEMENT-PLAN
+                # 1.4) now registered FOR REAL with params: fan its cells out now and drop the
+                # stub flag, so the thin attribution record doesn't suppress real coverage once a
+                # route to the host exists.
+                stub_cells = 0
+                if ep.get("stub") and params:
+                    ep["stub"] = False
+                    ep["params"] = params
+                    ep["discovered_by"] = discovered_by
+                    ep["auth_context"] = auth_context
+                    stub_cells = _fan_out_cells(data, ep["id"], path, params, candidate)
+                    _cov._recount(data)
+                    _cov._save(data)
                 upgraded = _upgrade_candidate_if_confirmed(data, ep, candidate)
-                return {"endpoint_id": ep["id"], "new_cells": 0,
+                return {"endpoint_id": ep["id"], "new_cells": stub_cells,
                         "dedup": True, "upgraded_confirmed": upgraded}
 
         ep_id = f"ep-{uuid.uuid4().hex[:12]}"

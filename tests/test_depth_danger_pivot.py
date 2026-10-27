@@ -133,10 +133,115 @@ def test_deep_pivot_blocker_fires_then_clears(danger_session):
     assert _deep_pivot_host_blocker() is None                  # nothing discovered yet
     pivot.promote_internal_hosts(SSRF_TEXT)
     b = _deep_pivot_host_blocker()
-    assert b and "not yet scanned" in b and "10.150.0.158" in b
+    # No host reached yet → TUNNEL-FIRST message (not the per-host 'scan each' churn).
+    assert b and "DEEP-PIVOT" in b and "10.150.0.158" in b and "reached yet" in b and "chisel" in b
     for h in ("10.110.32.1", "10.150.0.158"):
         ledger.record_covered("network-assess", h)            # scanned each
     assert _deep_pivot_host_blocker() is None                  # discharged
+
+
+def test_blocker_is_tunnel_first_until_a_host_is_reached(danger_session):
+    """Fix 1: while NO internal host has been reached, the blocker must steer to a single tunnel
+    (not per-host retries from Kali); once a host IS reached, it switches to 'scan each through it'."""
+    pivot.promote_internal_hosts("hosts 10.30.30.1 and 10.30.30.2 and 10.30.30.3")
+    b1 = _deep_pivot_host_blocker()
+    assert b1 and "reached yet" in b1 and ("chisel" in b1 or "ssh -D" in b1)   # tunnel-first
+    assert "A pivot path EXISTS" not in b1
+    ledger.record_host_scanned("10.30.30.1", reached=True)     # a route now exists
+    b2 = _deep_pivot_host_blocker()
+    assert b2 and "A pivot path EXISTS" in b2 and "not yet scanned" in b2       # scan-each wording
+    assert "reached yet" not in b2
+
+
+def test_unreachable_hosts_reopen_when_a_new_vuln_reaches_one(danger_session):
+    """User scenario: hosts unreachable via the FIRST vuln (e.g. blind SSRF) must be RE-OPENED for
+    a re-probe once a LATER, better primitive proves reachability changed — not left permanently
+    dead-ended. The reached host flips to covered; the others return to pending."""
+    from mcp_server.session_tools.completion_gates import _deep_pivot_host_blocker
+    pivot.promote_internal_hosts("hosts 10.9.9.1 and 10.9.9.2 and 10.9.9.3")
+    for h in ("10.9.9.1", "10.9.9.2", "10.9.9.3"):
+        ledger.record_host_scanned(h, reached=False)        # vuln A reaches none of them
+    assert ledger.host_scan_pending() == []                 # all discharged (scan could finish here)
+
+    ledger.record_host_scanned("10.9.9.1", reached=True)     # vuln B (new primitive) reaches one
+    na = scan_session.get()["surface_coverage"]["network-assess"]
+    assert "10.9.9.1" in na["covered"] and "10.9.9.1" not in na["unreachable"]
+    assert set(ledger.host_scan_pending()) == {"10.9.9.2", "10.9.9.3"}   # others re-opened to re-probe
+    b = _deep_pivot_host_blocker()
+    assert b and "A pivot path EXISTS" in b                  # steers to scan-each-through-the-pivot
+
+
+def test_reopen_is_bounded_no_improvement_no_reopen(danger_session):
+    """The re-open fires only on a PROVEN reachability improvement — a plain unreachable mark does
+    not resurrect already-dead-ended hosts (so it can't loop on genuinely dead hosts)."""
+    pivot.promote_internal_hosts("hosts 10.8.8.1 and 10.8.8.2")
+    ledger.record_host_scanned("10.8.8.1", reached=True)     # first route (improvement → reopen, nothing to reopen yet)
+    ledger.record_host_scanned("10.8.8.2", reached=False)    # 10.8.8.2 dead-ends
+    assert ledger.host_scan_pending() == []
+    # a SECOND reach on the already-covered host is NOT an improvement → 10.8.8.2 stays dead-ended
+    ledger.record_host_scanned("10.8.8.1", reached=True)
+    assert ledger.host_scan_pending() == []
+
+
+def test_scanner_infra_never_promoted(danger_session):
+    """Fix 2: the scanner's own Docker fabric (Kali container IP, Docker Desktop gateway,
+    *.docker.internal) is never promoted as a pivot target; real internal + corp-LAN hosts are."""
+    promoted = pivot.promote_internal_hosts(
+        "SSRF saw 172.17.0.2 (kali self), 192.168.65.7 gw, host.docker.internal, "
+        "real pod 10.44.0.9 and corp host 192.168.1.50")
+    assert "10.44.0.9" in promoted and "192.168.1.50" in promoted
+    assert not any(x in promoted for x in ("172.17.0.2", "192.168.65.7", "host.docker.internal"))
+    ips = scan_session.get()["known_assets"]["ips"]
+    assert "172.17.0.2" not in ips and "192.168.65.7" not in ips
+
+
+def test_registered_scanner_own_ip_excluded_but_real_10x_promoted(danger_session):
+    """IMPROVEMENT-PLAN 1.2: the Kali container's OWN bridge IP (resolved at runtime, lives in
+    10.0.0.0/8) is excluded as an exact /32 — WITHOUT a CIDR that would blind genuine 10.x /
+    172.16 pivot targets."""
+    try:
+        netextract.register_scanner_own_ips(["10.110.0.3"])   # what the Kali runner registers
+        assert "10.110.0.3" in netextract.scanner_own_ips()
+        assert not netextract.scannable_internal_ip("10.110.0.3")   # own IP → not a target
+        promoted = pivot.promote_internal_hosts(
+            "SSRF saw the scanner 10.110.0.3, a real pod 10.44.0.9, and corp host 172.16.5.9")
+        assert "10.110.0.3" not in promoted                   # exact scanner IP excluded
+        assert "10.44.0.9" in promoted and "172.16.5.9" in promoted   # real 10.x/172.16 still promoted
+    finally:
+        netextract.clear_scanner_own_ips()
+
+
+def test_k8s_dns_variants_collapse_across_calls(danger_session):
+    """Fix 2: a K8s service short-name and its FQDN are ONE host, not several."""
+    first = pivot.promote_internal_hosts("reached kubernetes.default")
+    again = pivot.promote_internal_hosts("later kubernetes.default.svc.cluster.local")
+    assert first == ["kubernetes.default"]
+    assert again == []                      # FQDN variant of an already-promoted service
+    domains = scan_session.get()["known_assets"].get("domains", [])
+    assert sum("kubernetes.default" in d for d in domains) == 1
+
+
+def test_danger_pivot_raises_single_operator_notice(danger_session, monkeypatch, tmp_path):
+    """Fix 5: danger auto-pivots, but surfaces ONE non-blocking operator FYI (deduped by stable
+    text → one notice no matter how many hosts stream in), so the operator can see/de-scope it."""
+    import core.wishlist as wl
+    monkeypatch.setattr(wl, "_WISHLIST_FILE", tmp_path / "wl.json")
+    pivot.promote_internal_hosts("pod 10.55.0.1")
+    pivot.promote_internal_hosts("pod 10.55.0.2")       # a second batch later
+    open_items = wl.WishlistQueue().list_open()
+    assert len(open_items) == 1                          # ONE notice regardless of host count
+    assert "Deep-pivot ACTIVE" in open_items[0].need and open_items[0].category == "scope"
+
+
+def test_normal_scan_has_no_pivot_notice_but_asks_approval(normal_session, monkeypatch, tmp_path):
+    """Fix 5 boundary: a NORMAL scan keeps the approval wishlist (request_pivot_scope), NOT the
+    danger auto-pivot FYI — the two paths stay distinct."""
+    import core.wishlist as wl
+    monkeypatch.setattr(wl, "_WISHLIST_FILE", tmp_path / "wl.json")
+    pivot.handle_internal_host_discovery("pod 10.66.0.1", source="ssrf")
+    needs = [i.need for i in wl.WishlistQueue().list_open()]
+    assert any("Approve internal pivot" in n for n in needs)
+    assert not any("Deep-pivot ACTIVE" in n for n in needs)
 
 
 def test_deep_pivot_blocker_noop_for_normal_scan(normal_session):
@@ -220,7 +325,7 @@ def test_do_complete_blocks_danger_on_unscanned_hosts(danger_session):
     from mcp_server.session_tools import _do_complete
     pivot.promote_internal_hosts(SSRF_TEXT)
     resp = _do_complete()
-    assert "DEEP-PIVOT" in resp and "not yet scanned" in resp     # blocked on the thorough path
+    assert "DEEP-PIVOT" in resp and "reached yet" in resp         # blocked (tunnel-first, no reach)
     for h in ("10.110.32.1", "10.150.0.158"):
         ledger.record_covered("network-assess", h)                # scan each host
-    assert "not yet scanned" not in _do_complete()                # deep-pivot block cleared
+    assert "DEEP-PIVOT" not in _do_complete()                     # deep-pivot block cleared

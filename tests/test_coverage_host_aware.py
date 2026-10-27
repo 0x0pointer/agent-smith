@@ -11,6 +11,18 @@ import pytest
 import core.coverage
 
 
+@pytest.fixture
+def danger_pivot_env(coverage_file, tmp_path, monkeypatch):
+    """A live danger session (deep-pivot enabled) + redirected coverage matrix, so a
+    promotion can register pivot-host attribution stubs into the isolated matrix."""
+    import core.session as scan_session
+    monkeypatch.setattr(scan_session, "_SESSION_FILE", tmp_path / "session.json")
+    scan_session._current = None
+    scan_session.start("http://perimeter.test:30081", depth="danger")
+    yield
+    scan_session._current = None
+
+
 @pytest.mark.asyncio
 async def test_same_path_different_hosts_are_distinct(coverage_file):
     r1 = await core.coverage.add_endpoint("/admin", "GET", [{"name": "id", "type": "query"}], host="10.0.0.1")
@@ -109,3 +121,71 @@ async def test_list_cells_host_filter(coverage_file):
     assert all(c["host"] == "10.0.0.2" for c in res["cells"])     # scoped to the pivoted host
     res_all = await core.coverage.list_cells()
     assert {c["host"] for c in res_all["cells"]} == {"10.0.0.1", "10.0.0.2"}
+
+
+@pytest.mark.asyncio
+async def test_empty_meta_target_falls_back_to_live_scan_target(coverage_file, monkeypatch):
+    """Fix 4: a matrix auto-created with meta.target='' (a coverage op ran before the reset
+    populated it) must still host-stamp endpoints from the LIVE scan target — instead of leaving
+    every endpoint host='' (the inert-host bug that made all 993 cells look single-host)."""
+    import core.session as _sess
+    monkeypatch.setattr(_sess, "_current", {"status": "running", "target": "http://10.9.9.9:30081"})
+    r = await core.coverage.add_endpoint("/login", "POST", [{"name": "u", "type": "query"}])
+    assert not r["dedup"]
+    eps = json.loads(coverage_file.read_text())["endpoints"]
+    assert eps[0]["host"] == "10.9.9.9:30081"      # from the live session target, not ''
+
+
+@pytest.mark.asyncio
+async def test_explicit_host_still_wins_over_live_target(coverage_file, monkeypatch):
+    """Fix 4: the live-target fallback must not override an explicit pivot host= on the call."""
+    import core.session as _sess
+    monkeypatch.setattr(_sess, "_current", {"status": "running", "target": "http://10.9.9.9:30081"})
+    await core.coverage.add_endpoint("/x", "GET", [{"name": "id", "type": "query"}], host="10.44.0.9")
+    eps = json.loads(coverage_file.read_text())["endpoints"]
+    assert eps[0]["host"] == "10.44.0.9"           # pivot host, not the fallback target
+
+
+# ── IMPROVEMENT-PLAN 1.4: pivot hosts enter the matrix as thin attribution stubs ──
+
+def test_pivot_stub_registers_host_without_cells(coverage_file):
+    """A promoted internal host gets a host-tagged endpoint row so the matrix is
+    host-attributable — but NO cells (no NA/injection bloat, nothing to stall completion)."""
+    r = core.coverage.register_pivot_stub("10.150.0.158:5000")
+    assert r and not r["dedup"]
+    data = json.loads(coverage_file.read_text())
+    ep = data["endpoints"][0]
+    assert ep["host"] == "10.150.0.158:5000" and ep["stub"] is True
+    assert data["meta"]["total_cells"] == 0        # attribution only — zero cells
+
+
+def test_pivot_stub_dedups(coverage_file):
+    core.coverage.register_pivot_stub("10.1.1.1:443")
+    r2 = core.coverage.register_pivot_stub("10.1.1.1:443")
+    assert r2["dedup"]
+    assert len(json.loads(coverage_file.read_text())["endpoints"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_stub_upgraded_in_place_when_registered_with_params(coverage_file):
+    """Once a route exists and the agent registers the host-qualified endpoint WITH params,
+    the stub is upgraded in place: cells fan out and the stub flag clears (the attribution
+    record must not suppress real coverage)."""
+    stub = core.coverage.register_pivot_stub("10.2.2.2:5000", path="/api/v1", method="GET")
+    r = await core.coverage.add_endpoint(
+        "/api/v1", "GET", [{"name": "ns", "type": "query"}], host="10.2.2.2:5000")
+    assert r["dedup"] and r["endpoint_id"] == stub["endpoint_id"]   # same row, upgraded
+    assert r["new_cells"] > 0                                        # cells now fanned out
+    ep = next(e for e in json.loads(coverage_file.read_text())["endpoints"]
+              if e["id"] == stub["endpoint_id"])
+    assert ep.get("stub") is False and ep["params"]
+
+
+def test_promote_registers_matrix_stub(danger_pivot_env):
+    """End-to-end: deep-pivot promotion tags the promoted host into the matrix as a stub."""
+    import core.pivot as pivot
+    pivot.promote_internal_hosts("SSRF reached internal pod 10.77.0.9:5000", source="ssrf")
+    hosts = {e["host"] for e in core.coverage._load()["endpoints"]}
+    # the promoter collapses :port on an IP (10.x:5000 and 10.x are one host), so the stub
+    # is tagged with the bare IP
+    assert "10.77.0.9" in hosts

@@ -120,19 +120,36 @@ def _deep_pivot_host_blocker() -> str | None:
     still bypasses it. No-op for normal scans."""
     try:
         from core.session import surface_ledger as _ledger
-        if not scan_session.deep_pivot_enabled(scan_session.get()):
+        from core import pivot as _pivot
+        cur = scan_session.get()
+        if not scan_session.deep_pivot_enabled(cur):
             return None
         pend = _ledger.host_scan_pending()   # discovered − covered − documented-unreachable
         if not pend:
             return None
         shown = ", ".join(pend[:8]) + (f" (+{len(pend) - 8} more)" if len(pend) > 8 else "")
+        if not _pivot.pivot_reachable(cur):
+            # No internal host reached yet → there is no working route from the scanner's position.
+            # Probing them one-by-one from Kali just times out, host after host, for hours (the
+            # observed churn). TUNNEL FIRST, or document the whole set unreachable in a SINGLE probe.
+            return (
+                f"DEEP-PIVOT — {len(pend)} internal host(s) discovered but NONE reached yet: {shown}. "
+                "They sit on the pod/cluster network, reachable only through the foothold — a direct "
+                "scan from Kali WILL time out, so do NOT retry them individually. Do ONE of: "
+                "(a) stand up a SINGLE pivot — kali: `chisel server` + a client launched via your "
+                "RCE/SSRF foothold, or `ssh -D 1080 user@PIVOT` + proxychains4 — then scan THROUGH it; "
+                "or (b) if no foothold supports a tunnel (no shell / NAT-blocked), probe them all in "
+                "ONE kali command (a shell loop: `for h in <hosts>; do nc -zv -w2 $h <port>; done`) — "
+                "the timeouts auto-record every host as a documented dead-end in a single artifact, "
+                "clearing this blocker without a per-host retry loop. (depth=danger / benchmark only.)"
+            )
         return (
             f"DEEP-PIVOT — {len(pend)} discovered internal host(s) not yet scanned: {shown}. "
-            "Tunnel in (chisel / ssh -D + proxychains via kali) and run /network-assess against "
-            "each: naabu/nmap top-ports -> httpx -> nuclei, then spider + register endpoints for "
-            "any web service found. A host clears when a scan actually REACHES it; a host that is "
-            "genuinely unreachable (no route / no pivot foothold) is auto-recorded as a documented "
-            "dead-end and no longer blocks. (depth=danger / scan_mode=benchmark only.)"
+            "A pivot path EXISTS (a host was reached), so scan each THROUGH it with /network-assess: "
+            "naabu/nmap top-ports -> httpx -> nuclei, then spider + register endpoints (pass host=) for "
+            "any web service found. A host clears when a scan actually REACHES it; a genuinely "
+            "unreachable host is auto-recorded a documented dead-end and no longer blocks. "
+            "(depth=danger / scan_mode=benchmark only.)"
         )
     except Exception:
         return None

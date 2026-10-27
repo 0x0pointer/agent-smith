@@ -312,6 +312,42 @@ def note_triage_progress(pending_count: int) -> None:
         _sess._flush()
 
 
+def _norm_target(s) -> str:
+    """Normalise a target so http://x/ and HTTP://X compare equal (mirrors
+    start_helpers._norm_target; kept local so lifecycle has no mcp_server dep)."""
+    return " ".join(str(s or "").strip().lower().split()).rstrip("/")
+
+
+def resume_if_running() -> dict | None:
+    """Return the live (``status == "running"``) scan after reconciling with disk, or None.
+
+    This is the guard behind the mid-run-clobber fix (IMPROVEMENT-PLAN 1.1). Two paths
+    call ``start()`` when this process's in-memory cache looks empty/not-running — a
+    re-issued ``session(action='start')`` from a RESPAWNED MCP process (its ``_current``
+    is still ``None``) and the scan-tools auto-start (which passes the TOOL's target —
+    often a promoted pivot host — and ``depth='thorough'``). Either one silently
+    re-initialised over a scan that was still running, resetting ``target``/``depth`` and
+    wiping ``known_assets`` + the wishlist.
+
+    This pulls the authoritative on-disk session into ``_current`` (loading it in a fresh
+    process, reconciling a stale cache otherwise) and hands it back so the caller RESUMES
+    in place instead of re-initialising. Returns None when no running scan exists on disk
+    (the caller then proceeds with a genuine fresh start). Fail-soft → None; it never
+    starts, mutates, or wipes a session itself.
+    """
+    try:
+        if _sess._current is None:
+            load_from_disk()
+        else:
+            _sess._reconcile_if_external_write()
+        cur = _sess._current
+        if cur and cur.get("status") == "running" and cur.get("target"):
+            return cur
+    except Exception:
+        pass
+    return None
+
+
 def get() -> dict | None:
     return _sess._current
 

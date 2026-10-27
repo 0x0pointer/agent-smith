@@ -68,6 +68,29 @@ _DISPATCH = {
 }
 
 
+def _ensure_session_for_tool(target: str) -> None:
+    """Auto-start a session when the model skipped session(action='start'), WITHOUT
+    clobbering a scan that is still running on disk (IMPROVEMENT-PLAN 1.1).
+
+    In a RESPAWNED MCP process this process's in-memory cache is empty, so a bare
+    auto-start would re-initialise over the live scan — resetting depth to 'thorough'
+    and the target to THIS tool's target (often a promoted pivot host) and wiping
+    known_assets + the wishlist. resume_if_running() reconciles with disk and hands
+    back the live scan so we resume it instead of clobbering."""
+    current = scan_session.get()
+    if current and current.get("status") == "running":
+        return
+    resumed = scan_session.resume_if_running()
+    if resumed is not None:
+        log.note(
+            f"Auto-start skipped — resumed live scan on {resumed.get('target')!r} "
+            f"(depth={resumed.get('depth')}); tool target={target!r} not clobbering it"
+        )
+        return
+    scan_session.start(target=target, depth="thorough")
+    log.note(f"Auto-started session for target={target} (model skipped session start)")
+
+
 @mcp.tool()
 async def scan(tool: str, target: str, flags: str = "", options: dict | str | None = None,
                background: bool = False) -> str:
@@ -107,11 +130,9 @@ async def scan(tool: str, target: str, flags: str = "", options: dict | str | No
     """
     options = _ensure_dict(options) or {}
 
-    # Auto-start session if model skipped session(action="start")
-    current = scan_session.get()
-    if not current or current.get("status") != "running":
-        scan_session.start(target=target, depth="thorough")
-        log.note(f"Auto-started session for target={target} (model skipped session start)")
+    # Auto-start session if model skipped session(action="start") — guarded so a
+    # respawned process doesn't re-initialise over a live scan (IMPROVEMENT-PLAN 1.1).
+    _ensure_session_for_tool(target)
 
     handler = _DISPATCH.get(tool)
     if not handler:

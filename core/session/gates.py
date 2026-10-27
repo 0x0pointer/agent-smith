@@ -114,6 +114,53 @@ def dismiss_gate(gate_id: str, rationale: str, evidence: str = "") -> dict | Non
     return None
 
 
+def reopen_gate_on_evidence(gate_id: str, reason: str, new_trigger: str | None = None) -> dict | None:
+    """Re-open a gate dismissed as NOT APPLICABLE when LATER evidence CONTRADICTS the dismissal.
+
+    The gap this closes: ``dismiss_gate`` makes a gate ``not_applicable`` permanently, and
+    ``trigger_gate`` re-opens it ONLY if new required_skills are added — so a gate dismissed
+    "primitive X absent" (e.g. ``post_exploit_rce`` dismissed 'no code execution', or
+    ``internal_network`` dismissed 'no internal network') stays closed even when X is later
+    confirmed (a SQLi lands hours after the 'injection clean' dismissal; a real internal host is
+    reached). That silently drops the deep-exploitation chain.
+
+    Flips ``not_applicable`` → ``pending`` EXACTLY ONCE per gate (an ``evidence_reopened`` flag
+    bounds it, so a later INFORMED re-dismissal is respected and this can't loop), clears the stale
+    dismissal, records why, and optionally replaces the gate ``trigger`` text with an escalation
+    directive the completion blocker will surface. Returns the session on re-open, else None.
+    Fail-soft — never raises into the finding/HTTP hot path."""
+    try:
+        _sess._reconcile_if_external_write()
+        if _sess._current is None or _sess._current.get("status") != "running":
+            return None
+        for gate in _sess._current.get("gates", []):
+            if gate.get("id") != gate_id:
+                continue
+            if gate.get("status") != "not_applicable" or gate.get("evidence_reopened"):
+                return None   # only auto-reopen a dismissal once; respect an informed re-dismissal
+            prior = (gate.get("dismissal") or {}).get("rationale", "")
+            gate["status"] = "pending"
+            gate["evidence_reopened"] = True
+            gate["dismissal"] = None
+            gate["reopened"] = {
+                "reason":          reason[:300],
+                "prior_rationale": prior[:240],
+                "reopened_at":     datetime.now(timezone.utc).isoformat(),
+            }
+            if new_trigger:
+                gate["trigger"] = new_trigger
+            _sess._flush()
+            try:
+                from core import logger as _log
+                _log.note(f"GATE RE-OPENED (evidence contradicts dismissal) [{gate_id}]: {reason[:240]}")
+            except Exception:
+                pass
+            return _sess._current
+        return None
+    except Exception:
+        return None
+
+
 def pending_gates() -> list[dict]:
     """Return unsatisfied, non-deferred gates. A gate whose required skill still owes
     its MANUAL layer is annotated with ``deep_requirement_hint`` so the model sees WHY

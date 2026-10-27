@@ -158,34 +158,66 @@ def _chains_from_primitive_bridge(g: m.Graph) -> list[dict]:
     return props[:20]  # cap the rule's own output
 
 
+def _unproven_count(proposal: dict, proven: set) -> int:
+    """How many of a proposal's findings are NOT yet worked into a proven/filed chain — i.e.
+    how much NEW ground it reaches. 0 means it only re-pairs already-chained findings."""
+    fids = frozenset(proposal.get("finding_ids") or [])
+    return len(fids - (proven or set())) if fids else 0
+
+
+def is_novel(proposal: dict, proven_fids: set | None = None) -> bool:
+    """True when a proposal reaches at least one finding NO filed chain reaches — the
+    deterministic 'is this genuinely new work?' check (IMPROVEMENT-PLAN 1.5). A proposal with no
+    finding anchor can't be proven redundant, so it is kept (novel)."""
+    fids = frozenset(proposal.get("finding_ids") or [])
+    if not fids:
+        return True
+    return bool(fids - (proven_fids or set()))
+
+
+def verify_dismissal(proposal: dict, proven_fids: set | None = None) -> bool:
+    """Adversarial dismissal check (IMPROVEMENT-PLAN 1.5): return True only when it is SOUND to
+    dismiss this candidate as redundant — i.e. it reaches no finding a filed chain hasn't already
+    reached. False → RE-SURFACE it instead of trusting a prose 'redundant / no new bridges'."""
+    return not is_novel(proposal, proven_fids)
+
+
 def candidate_chains(g: m.Graph, proven_fids: set | None = None) -> list[dict]:
     """Propose multi-step chains from the graph. Each proposal:
     ``{steps: [str], terminal: str, combined_severity: str, rationale: str,
-    finding_ids: [str]}``. Ranked most-promising first. Heuristic and conservative —
-    a proposal is a lead to prove, not a claim.
+    finding_ids: [str], novel: bool}``. Ranked most-promising first, with genuinely-new
+    bridges floated to the top (IMPROVEMENT-PLAN 1.5). Heuristic and conservative — a proposal
+    is a lead to prove, not a claim.
 
     ``proven_fids`` (optional): the set of finding-ids ALREADY worked into a proven/filed
-    ``report(action='chain')``. A proposal every one of whose findings is already chained
-    is DROPPED (the re-pairing of two done findings is not new work) — so this panel is a
-    live worklist that drains toward empty as chains get proven, instead of re-suggesting
-    compositions already realized. A proposal that reaches a NOT-yet-chained finding stays."""
+    ``report(action='chain')``. A proposal every one of whose findings is already chained is
+    DROPPED (the re-pairing of two done findings is not new work) — so this panel is a live
+    worklist that drains toward empty as chains get proven, instead of re-suggesting
+    compositions already realized. A proposal that reaches a NOT-yet-chained finding stays, and
+    the MORE unproven ground it reaches the higher it ranks (the novelty boost below) — so a
+    wholesale 'no new bridges remain' dismissal is contradicted by anything still ranked novel."""
     findings = g.of_kind(m.FINDING)
     props = (_chains_from_escalation_leads(g, findings)
              + _chains_from_cred_leaks(g, findings)
              + _chains_from_creds_plus_finding(g, findings)
              + _chains_from_primitive_bridge(g))
 
-    props.sort(key=lambda p: p.pop("_score", 0), reverse=True)
     proven = proven_fids or set()
-    # de-dup identical step sequences; drop proposals whose findings are all already chained
+    # Novelty boost: rank proposals that reach findings no filed chain reaches ABOVE re-pairings
+    # of already-chained work, so the genuinely-new bridges surface first instead of drowning a
+    # long low-signal list (the 93-candidate wholesale-dismissal failure mode).
+    for p in props:
+        p["_score"] = p.get("_score", 0) + 3 * _unproven_count(p, proven)
+    props.sort(key=lambda p: p.pop("_score", 0), reverse=True)
+    # de-dup identical step sequences; drop proposals whose findings are ALL already chained
     seen, out = set(), []
     for p in props:
         key = tuple(p["steps"])
         if key in seen:
             continue
-        fids = frozenset(p.get("finding_ids") or [])
-        if proven and fids and fids <= proven:
+        if not is_novel(p, proven):
             continue
+        p["novel"] = True
         seen.add(key)
         out.append(p)
     return out

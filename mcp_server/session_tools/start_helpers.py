@@ -7,9 +7,26 @@ from core import logger as log
 import mcp_server.session_tools as _st
 
 
+def _backfill_matrix_target(target: str) -> None:
+    """Set meta.target when a prior path auto-created the matrix with target='' (core.coverage
+    ._load() does, if a coverage op ran before the reset). An empty meta.target leaves host-aware
+    resolution inert (every endpoint resolves to host=''); belt-and-braces with the live-target
+    fallback in operations._default_matrix_host. Fail-soft."""
+    try:
+        from core.coverage import COVERAGE_FILE, _save as _cov_save, get_matrix
+        if not COVERAGE_FILE.exists():
+            return
+        m = get_matrix()
+        if isinstance(m, dict) and not (m.get("meta") or {}).get("target"):
+            m.setdefault("meta", {})["target"] = target
+            _cov_save(m)
+    except Exception:
+        pass
+
+
 def _reset_coverage_matrix(target: str, prev_target: str, has_data: bool) -> bool:
     """Reset/init coverage matrix. Returns True if this is a resume of the same target."""
-    from core.coverage import COVERAGE_FILE, _save as _cov_save, get_matrix
+    from core.coverage import COVERAGE_FILE, _save as _cov_save
     from datetime import datetime, timezone
     import shutil
 
@@ -49,7 +66,9 @@ def _reset_coverage_matrix(target: str, prev_target: str, has_data: bool) -> boo
             "endpoints": [],
             "matrix": [],
         })
-    # Same target with existing data — keep matrix as-is (resume or view results)
+    # Same target with existing data — keep matrix as-is (resume or view results), but backfill
+    # meta.target if a prior path left it empty (see _backfill_matrix_target).
+    _backfill_matrix_target(target)
     return bool(prev_target and prev_target == target and has_data)
 
 

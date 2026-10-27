@@ -28,6 +28,90 @@ _META_HOSTS = ("metadata.google.internal", "169.254.169.254", "169.254.170.2",
                "kubernetes.default.svc.cluster.local", "kubernetes.default.svc",
                "kubernetes.default")
 
+# SCANNER-OWN infrastructure — reachable only because the scanner itself is containerized,
+# and NEVER a pentest target. Promoting these wastes the pivot on the Kali container's own
+# Docker bridge + the Docker Desktop gateway (the exact over-promotion seen in the field:
+# 172.17.0.2 = Kali's own eth0, 192.168.65.x / host.docker.internal = Docker Desktop vpnkit).
+# Names: anything under the Docker Desktop internal domains.
+_SCANNER_INFRA_NAME_SUFFIXES = (".docker.internal",)
+_SCANNER_INFRA_NAMES = frozenset({
+    "host.docker.internal", "gateway.docker.internal", "kubernetes.docker.internal",
+    "vpnkit.controller.internal", "docker.for.mac.host.internal", "docker.for.mac.localhost",
+    "docker.for.win.host.internal", "docker.for.win.localhost",
+})
+
+# Scanner-OWN interface addresses resolved at RUNTIME and excluded as EXACT /32s, never a CIDR
+# (IMPROVEMENT-PLAN 1.2). The Kali container's own bridge IP lands inside 10.0.0.0/8 (field:
+# 10.110.0.3), so a static range can't carve it out without also blinding genuine 10.x / 172.16/12
+# pivot targets (K8s pod CIDRs, a corp LAN — see scannable_internal_ip + the 10.44.0.x test hosts).
+# The Kali runner resolves the container's real addresses at start and registers them here; a
+# containerized MCP process can register its own via resolve_and_register_local_ips().
+_SCANNER_OWN_IPS: set[str] = set()
+
+
+def register_scanner_own_ips(ips) -> None:
+    """Record exact scanner-own addresses (bare dotted-quads) to exclude from promotion.
+    Idempotent, fail-soft; only well-formed dotted-quads are stored (never a range)."""
+    try:
+        for ip in ips or ():
+            bare = str(ip).split(":", 1)[0].strip().rstrip(".")
+            if looks_like_ip(bare):
+                _SCANNER_OWN_IPS.add(bare)
+    except Exception:
+        pass
+
+
+def scanner_own_ips() -> frozenset[str]:
+    """The exact scanner-own addresses currently excluded from promotion (diagnostics/tests)."""
+    return frozenset(_SCANNER_OWN_IPS)
+
+
+def clear_scanner_own_ips() -> None:
+    """Drop every registered scanner-own address (test isolation)."""
+    _SCANNER_OWN_IPS.clear()
+
+
+def resolve_and_register_local_ips() -> frozenset[str]:
+    """Resolve THIS process's own IPv4 interface addresses (stdlib, fail-soft) and register
+    them as scanner-own. Opt-in — call from a containerized-MCP bootstrap; NOT run implicitly,
+    so promotion stays deterministic for callers (and tests) that rely only on what the Kali
+    runner explicitly registers."""
+    found: set[str] = set()
+    try:
+        import socket
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            found.add(info[4][0])
+    except Exception:
+        pass
+    register_scanner_own_ips(found)
+    return frozenset(found)
+
+
+def _scanner_infra_ip(ip: str) -> bool:
+    """Docker-local fabric the scanner sits on — the default bridge (172.17/16), the first
+    user-defined bridge (172.18/16), and the Docker Desktop vpnkit subnet (192.168.65/24) —
+    PLUS the scanner's own runtime-resolved interface addresses (exact /32s; see
+    register_scanner_own_ips). These are the scanner's own plumbing, not pivotable target
+    networks, so they are excluded from promotion. (A real corp 172.16/12 LAN stays scannable —
+    only Docker's own two default /16s, the one Docker Desktop /24, and exact scanner-own
+    addresses are carved out.)"""
+    bare = ip.split(":", 1)[0]
+    if bare in _SCANNER_OWN_IPS:
+        return True
+    o = bare.split(".")
+    if len(o) != 4 or not all(p.isdigit() for p in o):
+        return False
+    a, b, c = int(o[0]), int(o[1]), int(o[2])
+    return (a == 172 and b in (17, 18)) or (a == 192 and b == 168 and c == 65)
+
+
+def _scanner_infra_host(host: str) -> bool:
+    """True for a scanner-own-infra host (Docker Desktop name or Docker-local-fabric IP)."""
+    h = (host or "").split(":", 1)[0].lower().rstrip(".")
+    if h in _SCANNER_INFRA_NAMES or h.endswith(_SCANNER_INFRA_NAME_SUFFIXES):
+        return True
+    return _scanner_infra_ip(h)
+
 
 def internal_ip(ip: str) -> bool:
     """True for an RFC1918 / loopback / link-local / CGNAT address with valid octets —
@@ -58,6 +142,8 @@ def scannable_internal_ip(ip: str) -> bool:
     unrestricted ``internal_ip`` is kept for the knowledge-graph layer (visualization)."""
     if not internal_ip(ip):
         return False
+    if _scanner_infra_ip(ip):          # the scanner's own Docker bridge / Desktop gateway
+        return False
     a, b = (int(x) for x in ip.split(":", 1)[0].split(".")[:2])
     return not (a == 127 or (a == 169 and b == 254))
 
@@ -81,7 +167,9 @@ def extract_internal_hosts(text: str) -> set[str]:
     # keep only the maximal match so one host doesn't explode into several.
     metas = [meta for meta in _META_HOSTS if meta in low]
     out |= {mh for mh in metas if not any(mh != o and mh in o for o in metas)}
-    return out
+    # Drop the scanner's own container/gateway infra (Docker bridge + Desktop vpnkit) — it's
+    # reachable only because the scanner is containerized, never a pivot target.
+    return {h for h in out if not _scanner_infra_host(h)}
 
 
 def looks_like_ip(host: str) -> bool:
