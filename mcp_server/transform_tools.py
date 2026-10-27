@@ -36,6 +36,26 @@ def _maybe_artifact(tool_label: str, raw: str, save: bool) -> str | None:
     return store_artifact(tool_label, raw)
 
 
+def _est_tokens(s: str) -> int:
+    """Rough token estimate. Invisible-Unicode / non-ASCII payloads cost ~1 token
+    per code point (surrogate escapes), ASCII ~4 chars/token — so a 2.8k-char steg
+    blob is ~10k tokens, which is exactly why it must NOT be returned inline (#252)."""
+    sample = s[:4000]
+    if sample and sum(1 for c in sample if ord(c) > 0x7F) > len(sample) * 0.2:
+        return len(s)
+    return max(1, len(s) // 4)
+
+
+def _payload_summary(out: str, artifact_id: str | None, extra: dict | None = None) -> dict:
+    """Compact descriptor for a big generated payload — never the full bytes inline.
+    The agent delivers it via payload_artifact_id instead of round-tripping it (#252)."""
+    d = {"artifact_id": artifact_id, "char_count": len(out),
+         "est_tokens": _est_tokens(out), "preview": out[:80]}
+    if extra:
+        d.update(extra)
+    return d
+
+
 @mcp.tool()
 async def transform(action: str, text: str = "", options: dict | str | None = None) -> str:
     """Craft, mutate, or decode obfuscated LLM payloads (P4RS3LT0NGV3-style).
@@ -121,11 +141,16 @@ def _do_bijection(text, opts):
 
 
 def _do_tokenbomb(text, opts):
+    save = opts.get("save_artifact", True)
     tb = generators.tokenbomb(size=int(opts.get("size", 200)), seed=opts.get("seed"))
-    art = _maybe_artifact("transform", tb["payload"], opts.get("save_artifact", True))
-    return json.dumps({"char_count": tb["char_count"], "note": tb["note"],
-                       "payload": tb["payload"][:_INLINE_CAP],
-                       "truncated": tb["char_count"] > _INLINE_CAP, "artifact_id": art})
+    art = _maybe_artifact("tokenbomb", tb["payload"], save)
+    # When saved (the default) return ONLY the descriptor — the ~10k-token payload
+    # stays on disk and is delivered via http(payload_artifact_id=...) (#252).
+    summ = _payload_summary(tb["payload"], art, {"note": tb["note"]})
+    if not save:
+        summ["payload"] = tb["payload"][:_INLINE_CAP]
+        summ["truncated"] = tb["char_count"] > _INLINE_CAP
+    return json.dumps(summ)
 
 
 def _do_steg(text, opts):
@@ -141,9 +166,15 @@ def _do_steg(text, opts):
         out = _invisible.tags_encode(text)
     else:
         return json.dumps({"error": f"unknown steg method '{method}'"})
-    art = _maybe_artifact("transform", out, opts.get("save_artifact", False))
-    return json.dumps({"mode": "hide", "method": method, "output": out,
-                       "renders_visibly": method == "variation_selector", "artifact_id": art})
+    # steg output is invisible-Unicode (surrogate-heavy) — default-save it and return
+    # a descriptor, not the raw blob that previously flooded context (#252).
+    save = opts.get("save_artifact", True)
+    art = _maybe_artifact("steg", out, save)
+    summ = _payload_summary(out, art, {"mode": "hide", "method": method,
+                                       "renders_visibly": method == "variation_selector"})
+    if not save:
+        summ["output"] = out
+    return json.dumps(summ)
 
 
 _DISPATCH = {"list": _do_list, "encode": _do_encode, "decode": _do_decode, "mutate": _do_mutate,

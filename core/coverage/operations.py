@@ -228,6 +228,13 @@ def _find_cell(matrix: list[dict], cell_id: str) -> dict | None:
     return None
 
 
+# Canonical `skipped` reasons — a skipped cell is an explicit GAP, not clean/untested.
+# agent_policy_block: the orchestrating agent's own safety classifier stopped the
+# payload client-side, so nothing reached the target (issue #249).
+SKIP_REASONS = {"agent_policy_block", "operator_declined", "out_of_scope",
+                "needs_tooling", "needs_credentials", "rate_limited"}
+
+
 def _write_cell_fields(
     cell: dict,
     status: str,
@@ -235,6 +242,7 @@ def _write_cell_fields(
     tested_by: str,
     artifact_id: str,
     finding_id: str | None,
+    reason: str = "",
 ) -> None:
     """Write a closure's fields onto a cell in-place (shared by single + bulk update).
 
@@ -248,6 +256,15 @@ def _write_cell_fields(
     if finding_id:
         cell["finding_id"] = finding_id
     cell["tested_at"] = datetime.now(timezone.utc).isoformat()
+    # A `skipped` cell records WHY it's a gap (issue #249) — an agent-policy block,
+    # declined setup, missing tooling, etc. — so the matrix/report shows it as an
+    # explicit gap, not as untested or clean. Reason falls back to a token in notes.
+    if status == "skipped":
+        r = (reason or "").strip() or _skip_reason_from_notes(notes)
+        if r:
+            cell["skip_reason"] = r
+    elif cell.get("skip_reason"):
+        cell.pop("skip_reason", None)
     # AI first-try-fallacy (issue #248): a vulnerable LLM closure with no k/N
     # reproducibility record is non-deterministic evidence — tag it so the
     # dashboard/report flags it instead of presenting n=1 as confirmed.
@@ -256,6 +273,16 @@ def _write_cell_fields(
         cell["needs_reproduction"] = True
     elif cell.get("needs_reproduction"):
         cell.pop("needs_reproduction", None)
+
+
+def _skip_reason_from_notes(notes: str) -> str:
+    """Pull a canonical skip reason out of free-text notes (e.g. notes that start
+    'agent_policy_block: …'), else ''."""
+    low = (notes or "").lower()
+    for r in SKIP_REASONS:
+        if r in low:
+            return r
+    return ""
 
 
 def _reproduction_warning(cell: dict, status: str) -> str:
@@ -306,6 +333,7 @@ async def update_cell(
     finding_id: str | None = None,
     tested_by: str = "",
     artifact_id: str = "",
+    reason: str = "",
 ) -> bool | str:
     """Update a single matrix cell.
 
@@ -343,7 +371,7 @@ async def update_cell(
             cell_id, cell["status"], status,
             cell.get("injection_type", ""), notes,
         )
-        _write_cell_fields(cell, status, notes, tested_by, artifact_id, finding_id)
+        _write_cell_fields(cell, status, notes, tested_by, artifact_id, finding_id, reason)
         repro_warn = _reproduction_warning(cell, status)
         _cov._recount(data)
         _cov._save(data)
@@ -368,6 +396,7 @@ def _apply_bulk_cell(cell: dict, upd: dict, warnings: list[str]) -> None:
     _write_cell_fields(
         cell, st, notes_text,
         upd.get("tested_by", ""), upd.get("artifact_id", ""), upd.get("finding_id", ""),
+        upd.get("reason", ""),
     )
     repro_warn = _reproduction_warning(cell, st)
     if repro_warn:

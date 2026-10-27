@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import urllib.error
 import urllib.request
 
 from core import auth_headers as _auth
@@ -74,8 +75,28 @@ def _http_send_fn(target: str, opts: dict):
         try:
             with urllib.request.urlopen(req, timeout=30) as r:
                 jar.update_from_response(r.headers.get_all("Set-Cookie"))   # track rotation
-                data = json.loads(r.read())
-                return data.get(reply_key, json.dumps(data)) if isinstance(data, dict) else str(data)
+                raw = r.read()
+                try:
+                    data = json.loads(raw)
+                except ValueError:
+                    return raw.decode("utf-8", "replace")
+                if isinstance(data, dict):
+                    val = data.get(reply_key, data)
+                    # Non-string reply field (a JSON list/object) → serialise it, never
+                    # pass a repr the judge would misread (issue #261.3).
+                    return val if isinstance(val, str) else json.dumps(val)
+                return json.dumps(data)
+        except urllib.error.HTTPError as e:
+            # Keep the STATUS visible: a 401/403 (dead session) or 5xx (gateway block)
+            # must be distinguishable from a model reply, not swallowed into a plain
+            # string the judge scores as near-compliant (issue #261.3).
+            try:
+                err_body = e.read().decode("utf-8", "replace")[:200]
+            except Exception:
+                err_body = ""
+            return f"[send error: HTTP {e.code} {err_body}]".rstrip()
+        except urllib.error.URLError as e:
+            return f"[send error: {getattr(e, 'reason', e)}]"
         except Exception as e:
             return f"[send error: {e}]"
     return send
@@ -85,7 +106,7 @@ def _http_send_fn(target: str, opts: dict):
 async def redteam(action: str, target: str = "", options: dict | str | None = None) -> str:
     """Manual-layer red-team engine (technique library, filter-probe, feedback loop, judge, calibration).
 
-    action : techniques | filter_probe | feedback_attack | indirect_attack | judge | calibrate | taxonomy
+    action : techniques | filter_probe | feedback_attack | indirect_attack | reproduce | judge | calibrate | taxonomy
     target : the LLM endpoint URL (POST JSON); for calibrate, the labs base URL
     options:
       techniques      — category=single_turn|multi_turn|structural
@@ -102,6 +123,9 @@ async def redteam(action: str, target: str = "", options: dict | str | None = No
                         framings=[plain,delimiter,system_note,end_of_doc,data_field,authority],
                         transforms=[...] (depth bypass encodings), max_attempts=24, seed=0,
                         reproduce_n=0, body_key=, reply_key=, headers={}
+      reproduce       — k/N for a FIXED payload set: payloads={name: text, ...} (required), n=10,
+                        success_markers=[...] OR success_jsonpath/objective, rps= (throttle). Per-variant
+                        k/N, transport-aware (a 4xx/5xx is not a miss), stored for the dashboard.
       judge           — text, goal, success_markers=[...]; structured: jsonpath=<expr>, mode=present|absent;
                         system-prompt leak: objective="system_prompt_leak" (shape + secret detection)
       calibrate       — (target = labs base URL, default http://127.0.0.1:9000)
@@ -174,7 +198,9 @@ def _do_filter_probe(target, opts):
     if not target:
         return json.dumps({"error": "filter_probe requires target=<URL>"})
     send = _http_send_fn(target, opts)
-    res = _fp.probe_filter(send)
+    res = _fp.probe_filter(send, candidates=opts.get("candidates"),
+                           canary=opts.get("canary"), control=opts.get("control"),
+                           n=int(opts.get("n", 1)))
     _store_artifact(res, "redteam")
     _record_ai(lambda ar: ar.record_filter_probe(res, target))
     return json.dumps(res, indent=2)
@@ -261,9 +287,61 @@ def _do_indirect_attack(target, opts):
     return json.dumps(r, indent=2)
 
 
+def _reproduce_variant(send, judge, text, n, delay):
+    """k/N for one payload, transport-aware: a 4xx/5xx that never reached the model
+    is NOT counted as a miss (issue #251/#250). Reports rate over reached_model."""
+    import time
+    k = reached = 0
+    codes: dict[str, int] = {}
+    for _ in range(max(1, n)):
+        if delay:
+            time.sleep(delay)
+        reply = send(text)
+        tkind, tcode = _or.transport_status(reply)
+        key = str(tcode) if tcode else ("error" if tkind else "200")
+        codes[key] = codes.get(key, 0) + 1
+        if not tkind:
+            reached += 1
+            if judge(reply).complied:
+                k += 1
+    return {"k": k, "n": n, "reached_model": reached, "blocked": n - reached,
+            "rate": round(k / n, 3) if n else 0.0,
+            "rate_over_reached": round(k / reached, 3) if reached else 0.0, "codes": codes}
+
+
+def _do_reproduce(target, opts):
+    payloads = opts.get("payloads")
+    if not target or not isinstance(payloads, dict) or not payloads:
+        return json.dumps({"error": "reproduce requires target=<URL> and "
+                                     "options.payloads={name: text, ...}"})
+    send = _http_send_fn(target, opts)
+    markers = opts.get("success_markers")
+    success = _structured_opts(opts)
+    if _is_leak_objective(opts):
+        judge = lambda text: _or.leak_verdict(text, markers)          # noqa: E731
+    else:
+        judge = _rt.make_oracle(success, markers, opts.get("goal", ""))
+    n = int(opts.get("n", 10))
+    rps = float(opts.get("rps", 0) or 0)
+    delay = (1.0 / rps) if rps > 0 else 0.0
+    variants = {name: _reproduce_variant(send, judge, str(text), n, delay)
+                for name, text in payloads.items()}
+    r = {"variants": variants, "n": n, "payload_count": len(payloads),
+         "any_success": any(v["k"] > 0 for v in variants.values())}
+    _store_artifact(r, "redteam")
+    _record_ai(lambda ar: ar.record_attack(
+        {"jailbroken": r["any_success"], "attempts": n * len(payloads),
+         "best": {"technique": "reproduce", "score": max((v["rate_over_reached"]
+                  for v in variants.values()), default=0.0)},
+         "reproducibility": {"per_variant": variants}, "transcript": []},
+        "reproduce (fixed payload set)", target))
+    return json.dumps(r, indent=2)
+
+
 _DISPATCH = {"techniques": _do_techniques, "taxonomy": _do_taxonomy, "judge": _do_judge,
              "calibrate": _do_calibrate, "filter_probe": _do_filter_probe,
-             "feedback_attack": _do_feedback_attack, "indirect_attack": _do_indirect_attack}
+             "feedback_attack": _do_feedback_attack, "indirect_attack": _do_indirect_attack,
+             "reproduce": _do_reproduce}
 
 
 def _dispatch(action: str, target: str, opts: dict) -> str:

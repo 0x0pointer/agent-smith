@@ -131,6 +131,35 @@ def test_write_cell_fields_clears_tag_when_reproduced(monkeypatch, tmp_path):
 
 # ── end-to-end through update_cell ──────────────────────────────────────────────
 
+# ── skipped-cell reason (issue #249) ────────────────────────────────────────────
+
+def test_skipped_cell_records_explicit_reason():
+    from core.coverage import operations as ops
+    cell = {"id": "c1", "injection_type": "jailbreak", "status": "in_progress"}
+    ops._write_cell_fields(cell, "skipped", "model safety classifier stopped it", "", "", None,
+                           reason="agent_policy_block")
+    assert cell["status"] == "skipped"
+    assert cell["skip_reason"] == "agent_policy_block"
+
+
+def test_skip_reason_derived_from_notes():
+    from core.coverage import operations as ops
+    cell = {"id": "c1", "injection_type": "jailbreak", "status": "in_progress"}
+    ops._write_cell_fields(cell, "skipped", "agent_policy_block: refused to send the payload",
+                           "", "", None)
+    assert cell["skip_reason"] == "agent_policy_block"
+
+
+def test_skip_reason_cleared_when_cell_reclosed(monkeypatch, tmp_path):
+    from core.coverage import operations as ops
+    monkeypatch.setattr(cov, "_ARTIFACTS_DIR", tmp_path, raising=False)
+    (tmp_path / "redteam_1_a.txt").write_text(json.dumps({"attempts": 1}), encoding="utf-8")
+    cell = {"id": "c1", "injection_type": "jailbreak", "status": "skipped",
+            "skip_reason": "agent_policy_block"}
+    ops._write_cell_fields(cell, "tested_clean", "", "", "redteam_1_a", None)
+    assert "skip_reason" not in cell
+
+
 @pytest.mark.asyncio
 async def test_update_cell_rejects_http_close_on_jailbreak(monkeypatch, tmp_path):
     monkeypatch.setattr(cov, "COVERAGE_FILE", tmp_path / "coverage.json", raising=False)

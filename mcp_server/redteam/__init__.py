@@ -37,6 +37,7 @@ from .oracles import (
     llm_judge,
     refusal_score,
     structured_verdict,
+    transport_status,
 )
 from .techniques import TECHNIQUES, list_techniques, render
 
@@ -46,6 +47,6 @@ __all__ = [
     "feedback_attack", "reproduce",
     "indirect_attack", "embed", "make_oracle",
     "Verdict", "heuristic_judge", "llm_judge", "refusal_score",
-    "structured_verdict", "leak_verdict", "find_secrets",
+    "structured_verdict", "leak_verdict", "find_secrets", "transport_status",
     "TECHNIQUES", "list_techniques", "render",
 ]
