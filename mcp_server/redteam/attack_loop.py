@@ -149,10 +149,15 @@ def feedback_attack(goal: str,
                     transforms: list[str] | None = None,
                     techniques_order: list[str] | None = None,
                     max_attempts: int = 24,
-                    seed: int = 0) -> dict:
+                    seed: int = 0,
+                    judge: Callable[[str], Verdict] | None = None) -> dict:
     """Drive the target toward `goal`. `send_fn(message, conversation_id=None) -> str`.
     `success_markers` (e.g. a secret) make the oracle decisive; `model` (callable)
-    enables the semantic LLM-judge, else a heuristic gradient is used."""
+    enables the semantic LLM-judge, else a heuristic gradient is used.
+
+    `judge` (optional) overrides the oracle entirely with a caller-supplied
+    `judge(reply)->Verdict` — used to pursue an *integrity* objective (e.g. a
+    structured JSONPath oracle) instead of the jailbreak/refusal gradient."""
     techs = techniques_order or technique_pool(seed=seed, creative=True)
     tfs = transforms if transforms is not None else _DEFAULT_TFS
     rng = random.Random(seed)
@@ -162,8 +167,9 @@ def feedback_attack(goal: str,
     depth_reserve = max(8, max_attempts // 3)
     breadth_cap = max(len(TECHNIQUES), max_attempts - depth_reserve)
 
-    def judge(text: str) -> Verdict:
-        return llm_judge(text, goal, model=model, success_markers=success_markers)
+    if judge is None:
+        def judge(text: str) -> Verdict:          # noqa: F811 — default oracle
+            return llm_judge(text, goal, model=model, success_markers=success_markers)
 
     run = _Run(judge, _make_deliver(send_fn, rng), max_attempts, goal)
 
