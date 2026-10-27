@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     pentest-agent installer for opencode (Windows / PowerShell port of install_opencode.sh)
 
@@ -28,15 +28,33 @@ function Write-Warn  { param([string]$m) Write-Host "WARN $m" -ForegroundColor Y
 function Write-Fail  { param([string]$m) Write-Host "FAIL $m" -ForegroundColor Red; exit 1 }
 function Test-Cmd    { param([string]$name) [bool](Get-Command $name -ErrorAction SilentlyContinue) }
 
+# Windows PowerShell 5.1's Out-File/Set-Content -Encoding utf8 writes a BOM,
+# which opencode's JSON parser rejects as a leading-BOM. Write UTF-8 without one.
+function Write-TextNoBom {
+    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][AllowEmptyString()][string]$Content)
+    $enc = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($Path, $Content, $enc)
+}
+
+# Tolerant JSON read: a missing/empty/whitespace config is a fresh object rather
+# than a ConvertFrom-Json exception that would abort the install.
+function Read-JsonFile {
+    param([string]$Path)
+    if (-not (Test-Path $Path)) { return [pscustomobject]@{} }
+    $raw = Get-Content $Path -Raw -ErrorAction SilentlyContinue
+    if (-not $raw -or -not $raw.Trim()) { return [pscustomobject]@{} }
+    try { return ($raw | ConvertFrom-Json) }
+    catch { Write-Warn "Existing JSON at $Path is invalid — starting fresh"; return [pscustomobject]@{} }
+}
+
 Write-Host ''
 Write-Host '  pentest-agent installer (opencode / Windows)'
 Write-Host '  ============================================'
 Write-Host ''
 
-if (-not (Test-Cmd docker))    { Write-Fail 'docker not found — install Docker Desktop with WSL2 backend.' }
-if (-not (Test-Cmd poetry))    { Write-Fail 'poetry not found — install via: pipx install poetry' }
-if (-not (Test-Cmd opencode))  { Write-Fail 'opencode not found — install from https://opencode.ai' }
-Write-Ok 'Prerequisites satisfied (docker, poetry, opencode)'
+# Detect-and-offer-to-install instead of hard-failing (shared helper).
+. (Join-Path $RepoDir 'installers\_prereqs.ps1')
+Invoke-PrereqBootstrap -Need @('docker', 'poetry', 'opencode')
 
 Write-Host ''
 Write-Host 'Updating skills submodule...'
@@ -69,9 +87,7 @@ Write-Ok 'MCP SSE server running on localhost:7778'
 
 # ── Register MCP in opencode.json ────────────────────────────────────────────
 New-Item -ItemType Directory -Path $OpencodeConfigDir -Force | Out-Null
-$cfg = if (Test-Path $OpencodeConfig) {
-    Get-Content $OpencodeConfig -Raw | ConvertFrom-Json
-} else { [pscustomobject]@{} }
+$cfg = Read-JsonFile $OpencodeConfig
 if (-not $cfg.mcp)         { $cfg | Add-Member -NotePropertyName mcp -NotePropertyValue ([pscustomobject]@{}) -Force }
 if (-not $cfg.permission)  { $cfg | Add-Member -NotePropertyName permission -NotePropertyValue ([pscustomobject]@{}) -Force }
 if (-not $cfg.instructions){ $cfg | Add-Member -NotePropertyName instructions -NotePropertyValue @() -Force }
@@ -108,7 +124,7 @@ if (-not $cfg.agent.build.PSObject.Properties['steps']) {
 $claudeMd = Join-Path $RepoDir 'CLAUDE.md'
 if ($cfg.instructions -notcontains $claudeMd) { $cfg.instructions += $claudeMd }
 
-$cfg | ConvertTo-Json -Depth 100 | Out-File -FilePath $OpencodeConfig -Encoding utf8
+Write-TextNoBom -Path $OpencodeConfig -Content ($cfg | ConvertTo-Json -Depth 100)
 Write-Ok 'opencode config updated (MCP + CLAUDE.md + doom_loop=allow)'
 
 # ── Task Scheduler entry for MCP auto-start ──────────────────────────────────
@@ -143,12 +159,11 @@ Copy-Item -Path $pentesterSrc -Destination (Join-Path $OpencodeCommandsDir 'pent
 Write-Ok 'pentester command installed'
 
 $installed = 0
-Get-ChildItem -Path (Join-Path $RepoDir 'skills') -Directory | ForEach-Object {
-    $name = $_.Name
+# Recurse so domain-nested skills (skills\<domain>\<name>\SKILL.md) also install.
+Get-ChildItem -Path (Join-Path $RepoDir 'skills') -Recurse -File -Filter 'SKILL.md' | ForEach-Object {
+    $name = $_.Directory.Name
     if ($name -eq 'pentester-opencode') { return }
-    $src = Join-Path $_.FullName 'SKILL.md'
-    if (-not (Test-Path $src)) { return }
-    Copy-Item -Path $src -Destination (Join-Path $OpencodeCommandsDir "$name.md") -Force
+    Copy-Item -Path $_.FullName -Destination (Join-Path $OpencodeCommandsDir "$name.md") -Force
     $installed++
 }
 Write-Ok "$installed slash commands installed"
@@ -193,10 +208,11 @@ if (-not (Test-Path $pentesterSrc)) {
 }
 Install-AgentSkill -Name 'pentester' -Src $pentesterSrc
 
-Get-ChildItem -Path (Join-Path $RepoDir 'skills') -Directory | ForEach-Object {
-    $name = $_.Name
+# Recurse so domain-nested skills (skills\<domain>\<name>\SKILL.md) also install.
+Get-ChildItem -Path (Join-Path $RepoDir 'skills') -Recurse -File -Filter 'SKILL.md' | ForEach-Object {
+    $name = $_.Directory.Name
     if ($name -eq 'pentester-opencode') { return }
-    Install-AgentSkill -Name $name -Src (Join-Path $_.FullName 'SKILL.md')
+    Install-AgentSkill -Name $name -Src $_.FullName
 }
 Write-Ok "$agentSkillCount agent-callable skills installed in $OpencodeSkillsDir"
 
@@ -225,6 +241,46 @@ function Confirm-Default {
     return ($ans -match '^[Yy]')
 }
 
+# The Docker daemon must be running to pull/build. Docker Desktop is frequently
+# freshly installed (or simply not launched) at this point, so probe the engine
+# and, if it is down, offer to start Docker Desktop and wait. If it never comes
+# up we SKIP the image steps (everything auto-pulls/builds on first use) rather
+# than crashing the installer. `docker info` writes its failure to stderr, which
+# under $ErrorActionPreference='Stop' would raise NativeCommandError if merged
+# into the pipeline — so drop EAP locally and discard both streams.
+function Test-DockerUp {
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try   { docker info 2>$null 1>$null; return ($LASTEXITCODE -eq 0) }
+    catch { return $false }
+    finally { $ErrorActionPreference = $prev }
+}
+
+$DockerUp = Test-DockerUp
+if (-not $DockerUp) {
+    Write-Warn 'Docker daemon is not responding (Docker Desktop may not be running yet).'
+    $dockerDesktop = Join-Path $env:ProgramFiles 'Docker\Docker\Docker Desktop.exe'
+    if (Test-Path $dockerDesktop) {
+        if (Confirm-Yes '  Start Docker Desktop and wait for it now?') {
+            Write-Host '  Launching Docker Desktop...'
+            Start-Process -FilePath $dockerDesktop | Out-Null
+            Write-Host '  Waiting for the Docker engine (up to 180s)...'
+            for ($i = 0; $i -lt 60; $i++) {
+                Start-Sleep -Seconds 3
+                if (Test-DockerUp) { $DockerUp = $true; break }
+            }
+        }
+    } else {
+        Write-Warn '  Docker Desktop executable not found at the default path — start it manually.'
+    }
+    if ($DockerUp) {
+        Write-Ok 'Docker engine is up'
+    } else {
+        Write-Warn 'Docker still not reachable — skipping image pulls/builds.'
+        Write-Warn 'They auto-pull/build on first use; or start Docker Desktop and re-run this installer to pre-fetch them.'
+    }
+}
+
 $ScannerImages = @(
     'instrumentisto/nmap'
     'projectdiscovery/naabu'
@@ -235,22 +291,29 @@ $ScannerImages = @(
     'trufflesecurity/trufflehog'
 )
 
-if (Confirm-Yes '  Pull lightweight scanner images? (~2 min)') {
+if ($DockerUp -and (Confirm-Yes '  Pull lightweight scanner images? (~2 min)')) {
+    # Discard both streams (2>$null 1>$null) rather than merging stderr with 2>&1:
+    # a native command's stderr piped into the success stream raises a terminating
+    # NativeCommandError under $ErrorActionPreference='Stop'. Drop EAP too, belt
+    # and suspenders, so a single failed pull only warns instead of aborting.
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
     foreach ($img in $ScannerImages) {
-        docker pull $img 2>&1 | Out-Null
+        docker pull $img 2>$null 1>$null
         if ($LASTEXITCODE -eq 0) {
             Write-Ok "Pulled $img"
         } else {
             Write-Warn "Failed to pull $img (will auto-pull on first use)"
         }
     }
+    $ErrorActionPreference = $prevEAP
 } else {
     Write-Warn 'Scanner image pull skipped — images will auto-pull on first use'
 }
 
 Write-Host ''
 $KaliCtx = Join-Path $RepoDir 'tools\kali\'
-if (Confirm-Yes '  Build Kali image? (required for most skills)') {
+if ($DockerUp -and (Confirm-Yes '  Build Kali image? (required for most skills)')) {
     Write-Host ''
     Write-Host '  Choose Kali tool modules (core is always included). Build-time'
     Write-Host '  estimates are approximate and depend on your network speed:'
@@ -285,7 +348,7 @@ if (Confirm-Yes '  Build Kali image? (required for most skills)') {
 
 Write-Host ''
 $MsfCtx = Join-Path $RepoDir 'tools\metasploit\'
-if (Confirm-Yes '  Build Metasploit image? (~5 min — required for /metasploit skill)') {
+if ($DockerUp -and (Confirm-Yes '  Build Metasploit image? (~5 min — required for /metasploit skill)')) {
     Write-Host '  Building pentest-agent/metasploit...'
     docker build -t pentest-agent/metasploit $MsfCtx
     if ($LASTEXITCODE -eq 0) {
@@ -299,7 +362,7 @@ if (Confirm-Yes '  Build Metasploit image? (~5 min — required for /metasploit 
 
 Write-Host ''
 $GarakCtx = Join-Path $RepoDir 'tools\garak\'
-if (Confirm-Default '  Build Garak image now? (~5 min - LLM red-team; else auto-builds on first use)' $false) {
+if ($DockerUp -and (Confirm-Default '  Build Garak image now? (~5 min - LLM red-team; else auto-builds on first use)' $false)) {
     Write-Host '  Building pentest-agent/garak...'
     docker build -t pentest-agent/garak $GarakCtx
     if ($LASTEXITCODE -eq 0) {

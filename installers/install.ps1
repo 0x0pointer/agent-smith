@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     pentest-agent installer (Windows / PowerShell port of install.sh)
 
@@ -30,17 +30,39 @@ function Write-Fail  { param([string]$m) Write-Host "FAIL $m" -ForegroundColor R
 
 function Test-Cmd { param([string]$name) [bool](Get-Command $name -ErrorAction SilentlyContinue) }
 
+# Windows PowerShell 5.1's Out-File/Set-Content -Encoding utf8 writes a BOM,
+# which a leading-BOM-intolerant JSON parser (opencode / Claude settings) rejects
+# and which turns the first .env key into "﻿KEY" (silently ignored). Write
+# UTF-8 without a BOM everywhere we touch a config or .env file.
+function Write-TextNoBom {
+    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][AllowEmptyString()][string]$Content)
+    $enc = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($Path, $Content, $enc)
+}
+
+# Tolerant JSON read: a missing, empty, or whitespace-only config is a fresh
+# object rather than a ConvertFrom-Json exception that would abort the install.
+function Read-JsonFile {
+    param([string]$Path)
+    if (-not (Test-Path $Path)) { return [pscustomobject]@{} }
+    $raw = Get-Content $Path -Raw -ErrorAction SilentlyContinue
+    if (-not $raw -or -not $raw.Trim()) { return [pscustomobject]@{} }
+    try { return ($raw | ConvertFrom-Json) }
+    catch { Write-Warn "Existing JSON at $Path is invalid — starting fresh"; return [pscustomobject]@{} }
+}
+
 Write-Host ''
 Write-Host '  pentest-agent installer (Windows)'
 Write-Host '  ================================='
 Write-Host ''
 
 # ── Prerequisites ────────────────────────────────────────────────────────────
-if (-not (Test-Cmd docker))  { Write-Fail 'docker not found — install Docker Desktop with WSL2 backend.' }
-if (-not (Test-Cmd poetry))  { Write-Fail 'poetry not found — install via: pipx install poetry' }
-if (-not (Test-Cmd claude))  { Write-Fail 'claude not found — install Claude Code: https://docs.anthropic.com/en/docs/claude-code' }
-if (-not (Test-Cmd node))    { Write-Warn 'node not found — Mermaid diagrams render client-side only' }
-Write-Ok 'Prerequisites satisfied (docker, poetry, claude)'
+# Detect-and-offer-to-install instead of hard-failing (shared with the other
+# Windows installers). Handles the Microsoft Store "python" stub, Poetry, the
+# Claude Code client, and Docker Desktop.
+. (Join-Path $RepoDir 'installers\_prereqs.ps1')
+Invoke-PrereqBootstrap -Need @('docker', 'poetry', 'claude')
+if (-not (Test-Cmd node)) { Write-Warn 'node not found — Mermaid diagrams render client-side only (optional)' }
 
 # ── Skills submodule ─────────────────────────────────────────────────────────
 Write-Host ''
@@ -96,7 +118,7 @@ if (Test-Path $OpencodeConfig) {
     Write-Host ''
     Write-Host 'Registering pentest-agent MCP server with opencode...'
     try {
-        $cfg = Get-Content $OpencodeConfig -Raw | ConvertFrom-Json
+        $cfg = Read-JsonFile $OpencodeConfig
         if (-not $cfg.mcp) { $cfg | Add-Member -NotePropertyName mcp -NotePropertyValue ([pscustomobject]@{}) -Force }
         $entry = [pscustomobject]@{
             type    = 'remote'
@@ -105,7 +127,7 @@ if (Test-Path $OpencodeConfig) {
             timeout = 9000000
         }
         $cfg.mcp | Add-Member -NotePropertyName 'pentest-agent' -NotePropertyValue $entry -Force
-        $cfg | ConvertTo-Json -Depth 100 | Out-File -FilePath $OpencodeConfig -Encoding utf8
+        Write-TextNoBom -Path $OpencodeConfig -Content ($cfg | ConvertTo-Json -Depth 100)
         Write-Ok 'MCP server registered with opencode'
     } catch { Write-Warn "opencode registration failed: $($_.Exception.Message)" }
 }
@@ -144,21 +166,19 @@ Write-Ok 'pentester command installed'
 
 Write-Host 'Installing security analysis skills...'
 $installed = 0
-$missing   = @()
-Get-ChildItem -Path (Join-Path $RepoDir 'skills') -Directory | ForEach-Object {
-    $name = $_.Name
+# Discover skills at BOTH skills\<name>\SKILL.md (flat) and
+# skills\<domain>\<name>\SKILL.md (one level of domain nesting, e.g.
+# skills\mobile\android-security\). Install target stays flat at the leaf name.
+Get-ChildItem -Path (Join-Path $RepoDir 'skills') -Recurse -File -Filter 'SKILL.md' | ForEach-Object {
+    $skillDir = $_.Directory
+    $name = $skillDir.Name
     if ($name -eq 'pentester-opencode') { return }    # client-specific variant
-    $src = Join-Path $_.FullName 'SKILL.md'
-    if (-not (Test-Path $src)) {
-        $missing += $name; return
-    }
     $dst = Join-Path $ClaudeSkillsDir $name
     if (Test-Path $dst) { Remove-Item -Path $dst -Recurse -Force }
-    Copy-Item -Path $_.FullName -Destination $dst -Recurse -Force
+    Copy-Item -Path $skillDir.FullName -Destination $dst -Recurse -Force
     $installed++
 }
 Write-Ok "$installed security analysis skills installed"
-if ($missing.Count -gt 0) { Write-Warn ("Missing skills: " + ($missing -join ', ')) }
 
 # ── API keys ─────────────────────────────────────────────────────────────────
 $EnvFile = Join-Path $RepoDir '.env'
@@ -185,9 +205,9 @@ function Set-EnvKey {
     $val  = [Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
     [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) | Out-Null
     if ($val) {
-        $lines = (Get-Content $EnvFile) | Where-Object { $_ -notmatch "^$Key=" }
+        $lines = @(Get-Content $EnvFile -ErrorAction SilentlyContinue | Where-Object { $_ -notmatch "^$Key=" })
         $lines += "$Key=$val"
-        $lines | Set-Content -Path $EnvFile -Encoding utf8
+        Write-TextNoBom -Path $EnvFile -Content (($lines -join "`r`n") + "`r`n")
         Write-Ok "$Key saved"
     } elseif ($existing) {
         Write-Ok "$Key unchanged"
@@ -199,9 +219,12 @@ function Set-EnvKey {
 Write-Host ''
 Write-Host '  API keys for AI red-teaming tools. Press Enter to skip any.'
 Write-Host ''
-Set-EnvKey 'OPENAI_API_KEY'        'OpenAI key — Garak scoring'
-Set-EnvKey 'ANTHROPIC_API_KEY'     'Anthropic key — Garak anthropic provider'
-Set-EnvKey 'AZURE_OPENAI_API_KEY'  'Azure OpenAI key — Garak azure provider'
+Set-EnvKey 'OPENAI_API_KEY'            'OpenAI key — Garak scoring'
+# NOTE: the Garak anthropic key is stored as AITEST_ANTHROPIC_API_KEY (not
+# ANTHROPIC_API_KEY) so it never bills the Smith agent's own model calls — the
+# server re-exposes it as ANTHROPIC_API_KEY internally (mcp_server/_app.py:_load_dotenv).
+Set-EnvKey 'AITEST_ANTHROPIC_API_KEY'  'Anthropic API key (sk-ant-...) — Garak anthropic provider; stored separately from your Smith agent key'
+Set-EnvKey 'AZURE_OPENAI_API_KEY'      'Azure OpenAI key — Garak azure provider'
 
 Write-Host ''
 Write-Host '  Telegram bridge (optional) — HIR / status alerts on your phone.'
@@ -219,15 +242,22 @@ Set-EnvKey 'DISCORD_WEBHOOK_URL' 'Discord webhook URL — https://discord.com/ap
 Write-Host ''
 Set-EnvKey 'STATUS_UPDATE_INTERVAL_MINUTES' 'Status update interval (default 30; 0 disables)'
 
+Write-Host ''
+Write-Host '  Out-of-band (OOB) interaction backend (optional) — blind SSRF/RCE/XXE confirmation.'
+Write-Host '    OOB_MODE=interactsh (default, blank) — DNS+HTTP via the bundled interactsh-client.'
+Write-Host '    OOB_MODE=http — any HTTP request logger (webhook.site etc.); zero infra.'
+Set-EnvKey 'OOB_MODE'         'OOB backend: interactsh (default) or http (blank = interactsh)'
+Set-EnvKey 'OOB_SERVER_URL'   'interactsh server URL (blank = public oast.fun) OR your http logger base URL'
+Set-EnvKey 'OOB_SERVER_TOKEN' 'Auth token for a self-hosted interactsh server (blank if none)'
+Set-EnvKey 'OOB_POLL_URL'     'http mode only: optional poll URL (supports {id}); blank otherwise'
+
 # ── Claude Code permissions (auto-approve pentest-agent tools) ───────────────
 Write-Host ''
 Write-Host 'Configuring tool permissions (auto-approve pentest-agent tools)...'
 $ClaudeSettingsDir = Join-Path $env:USERPROFILE '.claude'
 $ClaudeSettings    = Join-Path $ClaudeSettingsDir 'settings.json'
 New-Item -ItemType Directory -Path $ClaudeSettingsDir -Force | Out-Null
-$settings = if (Test-Path $ClaudeSettings) {
-    Get-Content $ClaudeSettings -Raw | ConvertFrom-Json
-} else { [pscustomobject]@{} }
+$settings = Read-JsonFile $ClaudeSettings
 if (-not $settings.permissions) {
     $settings | Add-Member -NotePropertyName permissions -NotePropertyValue ([pscustomobject]@{ allow = @() }) -Force
 }
@@ -238,7 +268,7 @@ $entry = 'mcp__pentest-agent__*'
 if ($settings.permissions.allow -notcontains $entry) {
     $settings.permissions.allow += $entry
 }
-$settings | ConvertTo-Json -Depth 100 | Out-File -FilePath $ClaudeSettings -Encoding utf8
+Write-TextNoBom -Path $ClaudeSettings -Content ($settings | ConvertTo-Json -Depth 100)
 Write-Ok 'pentest-agent tools auto-approved'
 
 # ── Docker images ────────────────────────────────────────────────────────────
@@ -266,6 +296,46 @@ function Confirm-Default {
     return ($ans -match '^[Yy]')
 }
 
+# The Docker daemon must be running to pull/build. Docker Desktop is frequently
+# freshly installed (or simply not launched) at this point, so probe the engine
+# and, if it is down, offer to start Docker Desktop and wait. If it never comes
+# up we SKIP the image steps (everything auto-pulls/builds on first use) rather
+# than crashing the installer. `docker info` writes its failure to stderr, which
+# under $ErrorActionPreference='Stop' would raise NativeCommandError if merged
+# into the pipeline — so drop EAP locally and discard both streams.
+function Test-DockerUp {
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try   { docker info 2>$null 1>$null; return ($LASTEXITCODE -eq 0) }
+    catch { return $false }
+    finally { $ErrorActionPreference = $prev }
+}
+
+$DockerUp = Test-DockerUp
+if (-not $DockerUp) {
+    Write-Warn 'Docker daemon is not responding (Docker Desktop may not be running yet).'
+    $dockerDesktop = Join-Path $env:ProgramFiles 'Docker\Docker\Docker Desktop.exe'
+    if (Test-Path $dockerDesktop) {
+        if (Confirm-Yes '  Start Docker Desktop and wait for it now?') {
+            Write-Host '  Launching Docker Desktop...'
+            Start-Process -FilePath $dockerDesktop | Out-Null
+            Write-Host '  Waiting for the Docker engine (up to 180s)...'
+            for ($i = 0; $i -lt 60; $i++) {
+                Start-Sleep -Seconds 3
+                if (Test-DockerUp) { $DockerUp = $true; break }
+            }
+        }
+    } else {
+        Write-Warn '  Docker Desktop executable not found at the default path — start it manually.'
+    }
+    if ($DockerUp) {
+        Write-Ok 'Docker engine is up'
+    } else {
+        Write-Warn 'Docker still not reachable — skipping image pulls/builds.'
+        Write-Warn 'They auto-pull/build on first use; or start Docker Desktop and re-run this installer to pre-fetch them.'
+    }
+}
+
 # Lightweight scanner images — pulled, not built
 $ScannerImages = @(
     'instrumentisto/nmap'
@@ -277,22 +347,29 @@ $ScannerImages = @(
     'trufflesecurity/trufflehog'
 )
 
-if (Confirm-Yes '  Pull lightweight scanner images? (~2 min)') {
+if ($DockerUp -and (Confirm-Yes '  Pull lightweight scanner images? (~2 min)')) {
+    # Discard both streams (2>$null 1>$null) rather than merging stderr with 2>&1:
+    # a native command's stderr piped into the success stream raises a terminating
+    # NativeCommandError under $ErrorActionPreference='Stop'. Drop EAP too, belt
+    # and suspenders, so a single failed pull only warns instead of aborting.
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
     foreach ($img in $ScannerImages) {
-        docker pull $img 2>&1 | Out-Null
+        docker pull $img 2>$null 1>$null
         if ($LASTEXITCODE -eq 0) {
             Write-Ok "Pulled $img"
         } else {
             Write-Warn "Failed to pull $img (will auto-pull on first use)"
         }
     }
+    $ErrorActionPreference = $prevEAP
 } else {
     Write-Warn 'Scanner image pull skipped — images will auto-pull on first use'
 }
 
 Write-Host ''
 $KaliCtx = Join-Path $RepoDir 'tools\kali\'
-if (Confirm-Yes '  Build Kali image? (required for most skills)') {
+if ($DockerUp -and (Confirm-Yes '  Build Kali image? (required for most skills)')) {
     Write-Host ''
     Write-Host '  Choose Kali tool modules (core is always included). Build-time'
     Write-Host '  estimates are approximate and depend on your network speed:'
@@ -327,7 +404,7 @@ if (Confirm-Yes '  Build Kali image? (required for most skills)') {
 
 Write-Host ''
 $MsfCtx = Join-Path $RepoDir 'tools\metasploit\'
-if (Confirm-Yes '  Build Metasploit image? (~5 min — required for /metasploit skill)') {
+if ($DockerUp -and (Confirm-Yes '  Build Metasploit image? (~5 min — required for /metasploit skill)')) {
     Write-Host '  Building pentest-agent/metasploit...'
     docker build -t pentest-agent/metasploit $MsfCtx
     if ($LASTEXITCODE -eq 0) {
@@ -341,7 +418,7 @@ if (Confirm-Yes '  Build Metasploit image? (~5 min — required for /metasploit 
 
 Write-Host ''
 $GarakCtx = Join-Path $RepoDir 'tools\garak\'
-if (Confirm-Default '  Build Garak image now? (~5 min - LLM red-team; else auto-builds on first use)' $false) {
+if ($DockerUp -and (Confirm-Default '  Build Garak image now? (~5 min - LLM red-team; else auto-builds on first use)' $false)) {
     Write-Host '  Building pentest-agent/garak...'
     docker build -t pentest-agent/garak $GarakCtx
     if ($LASTEXITCODE -eq 0) {

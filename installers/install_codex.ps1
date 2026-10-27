@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     pentest-agent installer for Codex (Windows / PowerShell port of install_codex.sh)
 
@@ -21,15 +21,23 @@ function Write-Warn  { param([string]$m) Write-Host "WARN $m" -ForegroundColor Y
 function Write-Fail  { param([string]$m) Write-Host "FAIL $m" -ForegroundColor Red; exit 1 }
 function Test-Cmd    { param([string]$name) [bool](Get-Command $name -ErrorAction SilentlyContinue) }
 
+# Windows PowerShell 5.1 writes a BOM with -Encoding utf8; a BOM on the first
+# .env line turns the first key into "﻿KEY" (silently ignored). Write
+# UTF-8 without a BOM.
+function Write-TextNoBom {
+    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][AllowEmptyString()][string]$Content)
+    $enc = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($Path, $Content, $enc)
+}
+
 Write-Host ''
 Write-Host '  pentest-agent installer (Codex / Windows)'
 Write-Host '  ========================================='
 Write-Host ''
 
-if (-not (Test-Cmd docker)) { Write-Fail 'docker not found — install Docker Desktop.' }
-if (-not (Test-Cmd poetry)) { Write-Fail 'poetry not found — install via: pipx install poetry' }
-if (-not (Test-Cmd codex))  { Write-Fail 'codex not found — install Codex first: https://developers.openai.com/codex' }
-Write-Ok 'Prerequisites satisfied (docker, poetry, codex)'
+# Detect-and-offer-to-install instead of hard-failing (shared helper).
+. (Join-Path $RepoDir 'installers\_prereqs.ps1')
+Invoke-PrereqBootstrap -Need @('docker', 'poetry', 'codex')
 
 New-Item -ItemType Directory -Path $CodexHome -Force | Out-Null
 
@@ -54,8 +62,13 @@ Write-Ok 'Poetry dependencies installed'
 # ── Register MCP with Codex (stdio) ──────────────────────────────────────────
 Write-Host ''
 Write-Host 'Registering pentest-agent MCP server with Codex (stdio)...'
+# Register through run-mcp-server.ps1, NOT a bare `poetry run python -m mcp_server`.
+# pyproject has package-mode=false, so mcp_server is not installed into the venv
+# and `-m mcp_server` only resolves with the repo on PYTHONPATH — the wrapper sets
+# that (and resolves the venv Python) regardless of the cwd/PATH Codex spawns with.
+$runScript = Join-Path $RepoDir 'installers\run-mcp-server.ps1'
 codex mcp remove pentest-agent 2>$null | Out-Null
-codex mcp add pentest-agent -- poetry -C $RepoDir run python -m mcp_server
+codex mcp add pentest-agent -- powershell -NoProfile -ExecutionPolicy Bypass -File $runScript
 Write-Ok 'MCP server registered with Codex'
 
 # ── Skills ───────────────────────────────────────────────────────────────────
@@ -66,17 +79,81 @@ Copy-Item -Path (Join-Path $RepoDir 'skills\pentester.md') `
           -Destination (Join-Path $pentesterDst 'SKILL.md') -Force
 
 $installed = 0
-Get-ChildItem -Path (Join-Path $RepoDir 'skills') -Directory | ForEach-Object {
-    $name = $_.Name
+# Recurse so domain-nested skills (skills\<domain>\<name>\SKILL.md) also install.
+Get-ChildItem -Path (Join-Path $RepoDir 'skills') -Recurse -File -Filter 'SKILL.md' | ForEach-Object {
+    $skillDir = $_.Directory
+    $name = $skillDir.Name
     if ($name -eq 'pentester-opencode') { return }
-    $src = Join-Path $_.FullName 'SKILL.md'
-    if (-not (Test-Path $src)) { return }
     $dst = Join-Path $CodexSkills $name
     if (Test-Path $dst) { Remove-Item -Path $dst -Recurse -Force }
-    Copy-Item -Path $_.FullName -Destination $dst -Recurse -Force
+    Copy-Item -Path $skillDir.FullName -Destination $dst -Recurse -Force
     $installed++
 }
 Write-Ok "$installed Codex skills installed"
+
+# ── API keys ─────────────────────────────────────────────────────────────────
+# The MCP server loads this checkout's .env (mcp_server/_app.py:_load_dotenv),
+# so the keys below power Garak scoring and the optional alert bridges under
+# Codex exactly as they do under Claude Code.
+$EnvFile = Join-Path $RepoDir '.env'
+if (-not (Test-Path $EnvFile) -and (Test-Path (Join-Path $RepoDir '.env.example'))) {
+    Copy-Item -Path (Join-Path $RepoDir '.env.example') -Destination $EnvFile
+} elseif (-not (Test-Path $EnvFile)) {
+    New-Item -Path $EnvFile -ItemType File | Out-Null
+}
+
+function Set-EnvKey {
+    param([string]$Key, [string]$Description)
+    $existing = $null
+    Get-Content $EnvFile -ErrorAction SilentlyContinue | Where-Object { $_ -match "^$Key=(.*)$" } | Select-Object -First 1 | ForEach-Object {
+        $existing = $Matches[1]
+    }
+    if ($existing) {
+        Write-Host "  $Key already set. New value (Enter to keep):" -NoNewline
+    } else {
+        Write-Host "  $Key — $Description"
+        Write-Host "  Value (Enter to skip):" -NoNewline
+    }
+    $sec = Read-Host -AsSecureString
+    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec)
+    $val  = [Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
+    [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) | Out-Null
+    if ($val) {
+        $lines = @(Get-Content $EnvFile -ErrorAction SilentlyContinue | Where-Object { $_ -notmatch "^$Key=" })
+        $lines += "$Key=$val"
+        Write-TextNoBom -Path $EnvFile -Content (($lines -join "`r`n") + "`r`n")
+        Write-Ok "$Key saved"
+    } elseif ($existing) {
+        Write-Ok "$Key unchanged"
+    } else {
+        Write-Warn "$Key skipped"
+    }
+}
+
+Write-Host ''
+Write-Host '  API keys for AI red-teaming tools. Press Enter to skip any.'
+Write-Host ''
+Set-EnvKey 'OPENAI_API_KEY'            'OpenAI key — Garak scoring'
+# Stored as AITEST_ANTHROPIC_API_KEY (not ANTHROPIC_API_KEY) so it never bills
+# the Smith agent's own model calls; the server re-exposes it internally.
+Set-EnvKey 'AITEST_ANTHROPIC_API_KEY'  'Anthropic API key (sk-ant-...) — Garak anthropic provider'
+Set-EnvKey 'AZURE_OPENAI_API_KEY'      'Azure OpenAI key — Garak azure provider'
+
+Write-Host ''
+Write-Host '  Telegram bridge (optional) — HIR / status alerts on your phone.'
+Set-EnvKey 'TELEGRAM_BOT_TOKEN' 'Bot token from @BotFather (format 123456:ABC-...)'
+Set-EnvKey 'TELEGRAM_CHAT_ID'   'Your Telegram chat ID — only this chat is allowlisted'
+
+Write-Host ''
+Write-Host '  Slack bridge (optional)'
+Set-EnvKey 'SLACK_WEBHOOK_URL' 'Slack incoming webhook URL — https://hooks.slack.com/...'
+
+Write-Host ''
+Write-Host '  Discord bridge (optional)'
+Set-EnvKey 'DISCORD_WEBHOOK_URL' 'Discord webhook URL — https://discord.com/api/webhooks/...'
+
+Write-Host ''
+Set-EnvKey 'STATUS_UPDATE_INTERVAL_MINUTES' 'Status update interval (default 30; 0 disables)'
 
 # ── Docker images ────────────────────────────────────────────────────────────
 #
@@ -103,6 +180,46 @@ function Confirm-Default {
     return ($ans -match '^[Yy]')
 }
 
+# The Docker daemon must be running to pull/build. Docker Desktop is frequently
+# freshly installed (or simply not launched) at this point, so probe the engine
+# and, if it is down, offer to start Docker Desktop and wait. If it never comes
+# up we SKIP the image steps (everything auto-pulls/builds on first use) rather
+# than crashing the installer. `docker info` writes its failure to stderr, which
+# under $ErrorActionPreference='Stop' would raise NativeCommandError if merged
+# into the pipeline - so drop EAP locally and discard both streams.
+function Test-DockerUp {
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try   { docker info 2>$null 1>$null; return ($LASTEXITCODE -eq 0) }
+    catch { return $false }
+    finally { $ErrorActionPreference = $prev }
+}
+
+$DockerUp = Test-DockerUp
+if (-not $DockerUp) {
+    Write-Warn 'Docker daemon is not responding (Docker Desktop may not be running yet).'
+    $dockerDesktop = Join-Path $env:ProgramFiles 'Docker\Docker\Docker Desktop.exe'
+    if (Test-Path $dockerDesktop) {
+        if (Confirm-Yes '  Start Docker Desktop and wait for it now?') {
+            Write-Host '  Launching Docker Desktop...'
+            Start-Process -FilePath $dockerDesktop | Out-Null
+            Write-Host '  Waiting for the Docker engine (up to 180s)...'
+            for ($i = 0; $i -lt 60; $i++) {
+                Start-Sleep -Seconds 3
+                if (Test-DockerUp) { $DockerUp = $true; break }
+            }
+        }
+    } else {
+        Write-Warn '  Docker Desktop executable not found at the default path - start it manually.'
+    }
+    if ($DockerUp) {
+        Write-Ok 'Docker engine is up'
+    } else {
+        Write-Warn 'Docker still not reachable - skipping image pulls/builds.'
+        Write-Warn 'They auto-pull/build on first use; or start Docker Desktop and re-run this installer to pre-fetch them.'
+    }
+}
+
 $ScannerImages = @(
     'instrumentisto/nmap'
     'projectdiscovery/naabu'
@@ -113,22 +230,29 @@ $ScannerImages = @(
     'trufflesecurity/trufflehog'
 )
 
-if (Confirm-Yes '  Pull lightweight scanner images? (~2 min)') {
+if ($DockerUp -and (Confirm-Yes '  Pull lightweight scanner images? (~2 min)')) {
+    # Discard both streams (2>$null 1>$null) rather than merging stderr with 2>&1:
+    # a native command's stderr piped into the success stream raises a terminating
+    # NativeCommandError under $ErrorActionPreference='Stop'. Drop EAP too, belt
+    # and suspenders, so a single failed pull only warns instead of aborting.
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
     foreach ($img in $ScannerImages) {
-        docker pull $img 2>&1 | Out-Null
+        docker pull $img 2>$null 1>$null
         if ($LASTEXITCODE -eq 0) {
             Write-Ok "Pulled $img"
         } else {
             Write-Warn "Failed to pull $img (will auto-pull on first use)"
         }
     }
+    $ErrorActionPreference = $prevEAP
 } else {
     Write-Warn 'Scanner image pull skipped - images will auto-pull on first use'
 }
 
 Write-Host ''
 $KaliCtx = Join-Path $RepoDir 'tools\kali\'
-if (Confirm-Yes '  Build Kali image? (required for most skills)') {
+if ($DockerUp -and (Confirm-Yes '  Build Kali image? (required for most skills)')) {
     Write-Host ''
     Write-Host '  Choose Kali tool modules (core is always included). Build-time'
     Write-Host '  estimates are approximate and depend on your network speed:'
@@ -163,7 +287,7 @@ if (Confirm-Yes '  Build Kali image? (required for most skills)') {
 
 Write-Host ''
 $MsfCtx = Join-Path $RepoDir 'tools\metasploit\'
-if (Confirm-Yes '  Build Metasploit image? (~5 min - required for /metasploit skill)') {
+if ($DockerUp -and (Confirm-Yes '  Build Metasploit image? (~5 min - required for /metasploit skill)')) {
     Write-Host '  Building pentest-agent/metasploit...'
     docker build -t pentest-agent/metasploit $MsfCtx
     if ($LASTEXITCODE -eq 0) {
@@ -177,7 +301,7 @@ if (Confirm-Yes '  Build Metasploit image? (~5 min - required for /metasploit sk
 
 Write-Host ''
 $GarakCtx = Join-Path $RepoDir 'tools\garak\'
-if (Confirm-Default '  Build Garak image now? (~5 min - LLM red-team; else auto-builds on first use)' $false) {
+if ($DockerUp -and (Confirm-Default '  Build Garak image now? (~5 min - LLM red-team; else auto-builds on first use)' $false)) {
     Write-Host '  Building pentest-agent/garak...'
     docker build -t pentest-agent/garak $GarakCtx
     if ($LASTEXITCODE -eq 0) {
