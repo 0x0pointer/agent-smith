@@ -100,7 +100,7 @@ while IFS= read -r _skill_file; do
   rm -rf "$OPENCODE_CONFIG_DIR/skills/$_skill_name"
   mkdir -p "$OPENCODE_CONFIG_DIR/skills/$_skill_name"
   cp -R "$_skill_dir"/. "$OPENCODE_CONFIG_DIR/skills/$_skill_name"/ 2>/dev/null && _oc_skill=$((_oc_skill + 1))
-done < <(find "$REPO_ROOT/skills" -mindepth 2 -maxdepth 3 -name SKILL.md 2>/dev/null)
+done < <(find "$REPO_ROOT/skills" -mindepth 2 -maxdepth 3 -name SKILL.md -not -path '*/skills/construct/*' 2>/dev/null)
 echo "  opencode: $_oc_cmd slash commands + $_oc_skill agent skills installed"
 
 # MCP server + permissions + CLAUDE.md instruction in opencode.json (created if
@@ -157,7 +157,7 @@ while IFS= read -r _skill_file; do
   else
     echo "  WARN: failed to install skill /$_skill_name"
   fi
-done < <(find "$REPO_ROOT/skills" -mindepth 2 -maxdepth 3 -name SKILL.md 2>/dev/null)
+done < <(find "$REPO_ROOT/skills" -mindepth 2 -maxdepth 3 -name SKILL.md -not -path '*/skills/construct/*' 2>/dev/null)
 echo "  installed $_skill_count skills + /pentester command"
 
 # ── Docker daemon (for the hacking-tools container only) ─────────────────────
