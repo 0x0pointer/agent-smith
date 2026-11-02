@@ -91,6 +91,8 @@ def _artifact_docs(store_dir: str, name: str, existing: int) -> list[tuple[str, 
         if existing + len(docs) >= _MAX_DOCS:
             break
         docs.append((f"{name} · artifact: {os.path.basename(art)}", _read(art)))
+    return docs
+
 
 _REASONING_TYPES = ("note", "decision", "result")     # the redacted reasoning/summary events (PR #194)
 _MAX_STREAM_LINES = 40_000                             # cap events scanned per session log

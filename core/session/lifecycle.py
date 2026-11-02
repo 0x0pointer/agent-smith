@@ -64,7 +64,11 @@ def start(
     scan_mode:        str        = "pentest",
 ) -> dict:
     """scan_mode: "pentest" (default) — HIR pauses for human decisions on ambiguous situations.
-                  "benchmark" — fully autonomous, no HIR triggers, aggressive exploitation.
+                  "benchmark" — fully autonomous + aggressive exploitation: the self-resolvable
+                  QA HIRs (auth/budget/endpoints/unreachable/tool-failure/stuck) auto-resolve to a
+                  steering nudge instead of pausing (core.qa_agent.hir); only the watchdog-level
+                  HIR_NO_PROGRESS / HIR_POLICY_REFUSAL still fire. Combine with depth=danger (or
+                  it implies deep-pivot on its own) for autonomous internal-host pivoting.
 
     model_profile: full|medium|small, or None to AUTO-DETECT from the environment
                    (model name in OPENCODE_MODEL/OLLAMA_MODEL/MODEL/…, or a
@@ -82,6 +86,14 @@ def start(
 
     # Reset cost/call counters from any previous session
     cost_tracker.reset()
+
+    # Wishlist ("Resource requests") is per-engagement agent→operator state — a NEW scan must
+    # not inherit a prior scan's open requests (stale scope/credential asks). Fail-soft.
+    try:
+        from core.wishlist import wishlist_queue as _wl
+        _wl.clear()
+    except Exception:
+        pass
 
     preset = _sess.PRESETS.get(depth, _sess.PRESETS["standard"])
     limits = {
@@ -298,6 +310,42 @@ def note_triage_progress(pending_count: int) -> None:
         _sess._current["triage_pending_last"] = pending_count
         _sess._current["triage_progress_at"] = time.time()
         _sess._flush()
+
+
+def _norm_target(s) -> str:
+    """Normalise a target so http://x/ and HTTP://X compare equal (mirrors
+    start_helpers._norm_target; kept local so lifecycle has no mcp_server dep)."""
+    return " ".join(str(s or "").strip().lower().split()).rstrip("/")
+
+
+def resume_if_running() -> dict | None:
+    """Return the live (``status == "running"``) scan after reconciling with disk, or None.
+
+    This is the guard behind the mid-run-clobber fix (IMPROVEMENT-PLAN 1.1). Two paths
+    call ``start()`` when this process's in-memory cache looks empty/not-running — a
+    re-issued ``session(action='start')`` from a RESPAWNED MCP process (its ``_current``
+    is still ``None``) and the scan-tools auto-start (which passes the TOOL's target —
+    often a promoted pivot host — and ``depth='thorough'``). Either one silently
+    re-initialised over a scan that was still running, resetting ``target``/``depth`` and
+    wiping ``known_assets`` + the wishlist.
+
+    This pulls the authoritative on-disk session into ``_current`` (loading it in a fresh
+    process, reconciling a stale cache otherwise) and hands it back so the caller RESUMES
+    in place instead of re-initialising. Returns None when no running scan exists on disk
+    (the caller then proceeds with a genuine fresh start). Fail-soft → None; it never
+    starts, mutates, or wipes a session itself.
+    """
+    try:
+        if _sess._current is None:
+            load_from_disk()
+        else:
+            _sess._reconcile_if_external_write()
+        cur = _sess._current
+        if cur and cur.get("status") == "running" and cur.get("target"):
+            return cur
+    except Exception:
+        pass
+    return None
 
 
 def get() -> dict | None:

@@ -246,7 +246,7 @@ async def _handle_spider(target, flags, options):
     cookies = options.get("cookies", {})
     max_pages = str(options.get("max_pages", 200))
 
-    is_thorough = scan_session.get() and scan_session.get().get("depth") == "thorough"
+    is_thorough = bool(scan_session.get()) and scan_session.is_thorough_like(scan_session.get().get("depth"))
 
     if is_thorough:
         # Thorough: run katana + playwright + ZAP AJAX spider, merge all results.

@@ -66,6 +66,17 @@ class WishlistQueue:
         except Exception:
             pass
 
+    def clear(self) -> int:
+        """Wipe the whole backlog — per-engagement state that must not bleed across scans
+        (a new scan / Clear All starts with no stale resource requests). Returns the count
+        removed. Fail-soft."""
+        try:
+            n = len(self._load())
+            self._save([])
+            return n
+        except Exception:
+            return 0
+
     def _now(self) -> str:
         return datetime.now(timezone.utc).isoformat()
 

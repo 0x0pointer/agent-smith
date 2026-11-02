@@ -47,12 +47,27 @@ def _chain_mermaid(steps: list, titles: dict) -> str:
     return "\n".join(lines)
 
 
+def _proven_chain_fids() -> set:
+    """The finding-ids already worked into a FILED chain (bare, as candidate_chains emits them).
+    Fed to candidate_chains as `proven_fids` so the suggest panel DRAINS — a candidate whose
+    findings are all already chained is dropped, instead of every proposal coming back 'novel'
+    (the 467/467-novel no-op: candidate_chains was being called with no proven set)."""
+    out: set = set()
+    for ch in (findings_store._load().get("chains", []) or []):
+        for s in (ch.get("steps") or []):
+            if isinstance(s, dict):
+                for fid in (s.get("from_finding_id"), s.get("to_finding_id")):
+                    if fid:
+                        out.add(fid)
+    return out
+
+
 def _suggest_chains() -> str:
     """Surface graph-derived candidate kill-chains (AR-B3). Fenced target text."""
     from core.graph import build_graph, candidate_chains
     from core.prompt_fence import fence as _fence
     try:
-        props = candidate_chains(build_graph())
+        props = candidate_chains(build_graph(), _proven_chain_fids())
     except Exception as exc:  # fail-soft — never break on a graph error
         return f"Chain suggestion unavailable: {exc}"
     if not props:
@@ -79,6 +94,24 @@ async def _do_chain(data):
     if not isinstance(steps, list) or not steps:
         return "Missing/empty 'steps'. Provide steps=[{from_finding_id, to_finding_id, transition_artifact_id, mitre_technique}]."
 
+    # Reject a DEGENERATE "chain" that doesn't actually compose distinct findings. A 1-step
+    # chain IS valid — one from_finding_id → to_finding_id hand-off links TWO findings — but a
+    # step from a finding to itself, or a submission referencing only one finding across all its
+    # steps, is a single finding restated as a chain (the Phase-C spam pattern). Redirect it to a
+    # finding instead of polluting the kill-chain set.
+    fids = {fid for s in steps if isinstance(s, dict)
+            for fid in (s.get("from_finding_id"), s.get("to_finding_id")) if fid}
+    selfloop = any(isinstance(s, dict) and s.get("from_finding_id")
+                   and s.get("from_finding_id") == s.get("to_finding_id") for s in steps)
+    if len(fids) < 2 or selfloop:
+        return (
+            "REJECTED: a chain must COMPOSE at least two DISTINCT findings — every step is a "
+            "from_finding_id → to_finding_id hand-off and the two ids must differ. This submission "
+            "references a single finding (or a self-loop), i.e. a finding restated as a chain. File "
+            "it with report(action='finding', ...), or add the finding whose primitive it actually "
+            "unblocks. See report(action='chain', data={type:'suggest'}) for provable bridges."
+        )
+
     from mcp_server.scan_engine.artifacts import artifact_exists
     # Enforce PROVEN hand-offs: every transition must be backed by an artifact
     # that exists on disk. A chain is only as valid as its weakest edge, so any
@@ -102,13 +135,24 @@ async def _do_chain(data):
     titles = {f.get("id"): f.get("title", "") for f in all_findings}
     mermaid = _chain_mermaid(steps, titles)
 
-    await findings_store.add_chain(
+    result = await findings_store.add_chain(
         name=name,
         steps=steps,
         terminal_impact=data.get("terminal_impact", ""),
         combined_severity=str(data.get("combined_severity", "")).lower(),
         mermaid=mermaid,
     )
+    # Dedup: add_chain returns the EXISTING entry tagged duplicate=True when a chain with the
+    # identical finding-path is already on record. Don't re-file it or add a second diagram —
+    # 37% of a recent scan's chains were exact path-duplicates. Point the model at new ground.
+    if isinstance(result, dict) and result.get("duplicate"):
+        log.note(f"report(chain) duplicate suppressed: '{name}' — identical finding path already "
+                 f"recorded as {result.get('id')}")
+        return (
+            f"Exploit chain NOT duplicated — the identical finding path is already recorded as "
+            f"'{result.get('name')}' (id {result.get('id')}). Compose a DIFFERENT path, or prove a "
+            "new bridge from report(action='chain', data={type:'suggest'})."
+        )
     # Also surface it as a diagram so it renders on the dashboard immediately.
     await findings_store.add_diagram(title=f"Exploit chain: {name}", mermaid=mermaid)
     log.note(f"Exploit chain recorded: {name} ({len(steps)} proven step(s))")

@@ -309,3 +309,26 @@ def test_api_skill_usage_shape(tmp_path, monkeypatch):
     assert data["pentester"]["invocations"] == 1
     assert data["pentester"]["discovered"] == []
     assert data["pentester"]["pending"] == []
+
+
+def test_host_covered_and_unreachable_are_mutually_exclusive(monkeypatch):
+    """Fix 3: a host is NEVER both covered and unreachable. A later reach flips unreachable→covered
+    across every host-unit skill that discovered it; a confirmed reach is not downgraded by a later
+    timeout (the forensic bug: network-assess had the same 24 hosts in BOTH lists)."""
+    monkeypatch.setattr(session, "_current", _running())
+    for sk in ("network-assess", "post-exploit"):
+        ledger.record_discovered(sk, "10.1.1.1", "host")
+    sc = session._current["surface_coverage"]
+
+    ledger.record_host_scanned("10.1.1.1", reached=False)          # unreachable first…
+    for sk in ("network-assess", "post-exploit"):
+        assert "10.1.1.1" in sc[sk]["unreachable"] and "10.1.1.1" not in sc[sk].get("covered", [])
+
+    ledger.record_host_scanned("10.1.1.1", reached=True)           # …then a route appears → covered
+    for sk in ("network-assess", "post-exploit"):
+        assert "10.1.1.1" in sc[sk]["covered"] and "10.1.1.1" not in sc[sk]["unreachable"]
+
+    ledger.record_host_scanned("10.1.1.1", reached=False)          # a later timeout must NOT downgrade
+    assert "10.1.1.1" in sc["network-assess"]["covered"]
+    assert "10.1.1.1" not in sc["network-assess"]["unreachable"]
+    assert ledger.host_scan_pending() == []                        # stays discharged

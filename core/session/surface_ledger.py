@@ -45,6 +45,7 @@ import core.session as _sess
 # audits) is left to the existing gates.
 SKILL_UNITS: dict[str, str] = {
     "ai-redteam":             "ai_endpoint",
+    "network-assess":         "host",   # deep-pivot: per discovered internal host (port-scan/recon)
     "post-exploit":           "host",
     "reverse-shell":          "host",
     "lateral-movement":       "host",
@@ -169,7 +170,9 @@ def record_discovered(skill: str, key: str, unit: str | None = None) -> None:
 
 
 def record_covered(skill: str, key: str) -> None:
-    """Record that ``skill`` COVERED a surface instance (idempotent, fail-soft)."""
+    """Record that ``skill`` COVERED a surface instance (idempotent, fail-soft). Covering a host
+    also clears any prior ``unreachable`` mark for it, so ``covered`` and ``unreachable`` stay
+    MUTUALLY EXCLUSIVE — a confirmed reach is the truth, not a stale dead-end."""
     try:
         if skill not in SKILL_UNITS or not _sess._current:
             return
@@ -177,12 +180,127 @@ def record_covered(skill: str, key: str) -> None:
         if not key:
             return
         e = _entry(skill)
-        if e is None or key in e["covered"]:
+        if e is None:
             return
-        e["covered"].append(key)
-        _sess._flush()
+        changed = False
+        if key not in e["covered"]:
+            e["covered"].append(key)
+            changed = True
+        unreach = e.get("unreachable")
+        if unreach and key in unreach:          # covered wins — keep the two sets disjoint
+            unreach.remove(key)
+            changed = True
+        if changed:
+            _sess._flush()
     except Exception:
         pass
+
+
+# Host-unit skills re-triggered per discovered internal host (deep-pivot). network-assess
+# is first — its scan-pending set is what ``_deep_pivot_host_blocker`` enforces.
+HOST_UNIT_SKILLS = ("network-assess", "post-exploit", "lateral-movement", "reverse-shell")
+
+
+def _credit_host_reached(sc: dict, host: str) -> None:
+    """Mark `host` covered for every host-unit skill that discovered it (clears any unreachable)."""
+    for sk in HOST_UNIT_SKILLS:
+        e = sc.get(sk)
+        if isinstance(e, dict) and host in e.get("discovered", []):
+            record_covered(sk, host)      # also clears unreachable (mutual exclusivity)
+
+
+def _mark_host_unreachable(sc: dict, host: str) -> bool:
+    """Document `host` unreachable for every host-unit skill that discovered it (unless already
+    covered — a confirmed reach is never downgraded). Returns True if anything changed."""
+    changed = False
+    for sk in HOST_UNIT_SKILLS:
+        e = sc.get(sk)
+        if not isinstance(e, dict) or host not in e.get("discovered", []) or host in e.get("covered", []):
+            continue
+        unreach = e.setdefault("unreachable", [])
+        if host not in unreach:
+            unreach.append(host)
+            changed = True
+    return changed
+
+
+def _any_host_covered(sc: dict) -> bool:
+    """True if ANY promoted internal host has been reached — i.e. a pivot route already exists."""
+    return any(isinstance(sc.get(sk), dict) and sc[sk].get("covered") for sk in HOST_UNIT_SKILLS)
+
+
+def _host_was_unreachable(sc: dict, host: str) -> bool:
+    """True if `host` is currently documented unreachable for any host-unit skill."""
+    return any(isinstance(sc.get(sk), dict) and host in sc[sk].get("unreachable", [])
+               for sk in HOST_UNIT_SKILLS)
+
+
+def _reopen_unreachable_hosts(sc: dict) -> bool:
+    """Reachability PROVABLY improved (a first route appeared, or a host believed unreachable just
+    became reachable — i.e. a new/better primitive than the one that first failed). Move every host
+    still documented unreachable back to PENDING so the agent re-probes it through the NEW
+    capability instead of leaving it dead-ended on the old one. Bounded: only invoked on a proven
+    reachability change, so it can't loop on a genuinely dead host. Returns True if anything changed."""
+    changed = False
+    for sk in HOST_UNIT_SKILLS:
+        e = sc.get(sk)
+        if isinstance(e, dict) and e.get("unreachable"):
+            e["unreachable"] = []
+            changed = True
+    return changed
+
+
+def record_host_scanned(host: str, reached: bool) -> None:
+    """Credit a scan of a promoted internal host to the host-unit skills REGARDLESS of which
+    skill was active — fixes the mis-attribution where a per-host scan run under
+    /container-k8s-security or /cloud-security never credited network-assess's ``host`` unit
+    (so the skills looked under-run while the scans actually happened).
+
+    ``reached=True``  → mark the host COVERED for every host-unit skill that discovered it
+                        (and clear any prior unreachable mark — a confirmed reach wins).
+    ``reached=False`` → record it attempted-but-UNREACHABLE for every host-unit skill that
+                        discovered it (a documented network dead-end for ALL of them — you can't
+                        post-exploit / pivot / shell a host you can't reach), so it stops blocking
+                        completion WITHOUT a false 'covered' claim. Never downgrades a host already
+                        confirmed reachable. ``covered`` and ``unreachable`` stay mutually exclusive.
+    Idempotent, fail-soft."""
+    try:
+        if not _sess._current:
+            return
+        host = host_key(host)
+        if not host:
+            return
+        sc = _sess._current.get("surface_coverage") or {}
+        if reached:
+            # Did reachability just PROVABLY improve? Either this is the first route to open at all,
+            # or a host we had written off as unreachable just answered (a new/better primitive than
+            # the vuln that first failed). Capture BEFORE crediting flips the state.
+            improved = (not _any_host_covered(sc)) or _host_was_unreachable(sc, host)
+            _credit_host_reached(sc, host)
+            # On a proven improvement, re-open the OTHER still-unreachable hosts so the agent
+            # re-probes them through the new capability instead of leaving them dead-ended.
+            if improved and _reopen_unreachable_hosts(sc):
+                _sess._flush()
+        elif _mark_host_unreachable(sc, host):
+            _sess._flush()
+    except Exception:
+        pass
+
+
+def host_scan_pending() -> list:
+    """Promoted internal hosts still owed a scan = network-assess discovered − covered −
+    unreachable. What the deep-pivot completion blocker enforces (an unreachable host is a
+    documented dead-end, not a block)."""
+    try:
+        if not _sess._current:
+            return []
+        e = (_sess._current.get("surface_coverage") or {}).get("network-assess")
+        if not isinstance(e, dict):
+            return []
+        done = set(e.get("covered", [])) | set(e.get("unreachable", []))
+        return [k for k in e.get("discovered", []) if k not in done]
+    except Exception:
+        return []
 
 
 def pending(skill: str) -> list:

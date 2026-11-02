@@ -11,6 +11,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 import core.qa_agent as _qa
+from core.session import is_thorough_like
 from ._util import _ts_age_secs
 
 
@@ -94,7 +95,7 @@ def _maybe_inject_business_logic_directive(
 ) -> None:
     """Append MISSING_BUSINESS_LOGIC alert and inject a directive when applicable."""
     if not (
-        depth == "thorough"
+        is_thorough_like(depth)
         and "web-exploit" in skills_run
         and "param-fuzz" in skills_run
         and "business-logic" not in skills_run

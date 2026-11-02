@@ -79,6 +79,43 @@ from .coverage import (
 )
 
 
+def _loads_lenient(s: str):
+    """Parse a `data` JSON string, tolerating the malformations a local LLM commonly emits.
+
+    Returns ``(obj, repaired, err)``: strict success → ``(obj, False, None)``; a salvaged
+    parse → ``(obj, True, None)``; total failure → ``(None, False, "<error>")``. The repairs are
+    conservative and high-precision — strip markdown fences, slice off prose around the object,
+    drop a trailing comma, and insert a MISSING comma between adjacent objects (the "Expecting ','
+    delimiter" failure that was silently dropping proven multi-step chains). Every candidate is
+    re-validated by ``json.loads`` before it is accepted, so a repair can only ever yield valid
+    JSON — never a lossy guess."""
+    import re as _re
+    try:
+        return json.loads(s), False, None
+    except (json.JSONDecodeError, TypeError) as first:
+        err = str(first)
+    if not isinstance(s, str):
+        return None, False, err
+    cand = s.strip()
+    if cand.startswith("```"):
+        cand = _re.sub(r"^```[a-zA-Z0-9_-]*\s*", "", cand)
+        cand = _re.sub(r"\s*```\s*$", "", cand).strip()
+    # Slice to the outermost {...} / [...] so leading/trailing prose can't break the parse.
+    spans = [(cand.find(o), cand.rfind(c)) for o, c in (("{", "}"), ("[", "]"))]
+    valid = [sp for sp in spans if sp[0] != -1 and sp[0] < sp[1]]
+    i, j = min(valid, key=lambda sp: sp[0]) if valid else (-1, -1)
+    core = cand[i:j + 1] if 0 <= i < j else cand
+    no_trailing = _re.sub(r",\s*([}\]])", r"\1", core)        # kill trailing commas
+    missing_comma = _re.sub(r"}\s*{", "},{", core)            # missing comma between objects
+    both = _re.sub(r",\s*([}\]])", r"\1", _re.sub(r"}\s*{", "},{", core))
+    for variant in (core, no_trailing, missing_comma, both):
+        try:
+            return json.loads(variant), True, None
+        except (json.JSONDecodeError, TypeError):
+            continue
+    return None, False, err
+
+
 def _do_decision(data: Any) -> str:
     """Record the structured decision BEHIND the next action(s) — the training-data 'why' (§3).
     Best-effort: emits a `decision` smith-event and links the following tool calls caused_by it.
@@ -183,12 +220,21 @@ async def report(action: str, data: Any) -> str:
 
       reset — clear the entire matrix (no additional fields)
     """
-    try:
-        if isinstance(data, str):
-            data = json.loads(data)
-    except (json.JSONDecodeError, TypeError) as exc:
-        log.note(f"report({action}) data parse error: {exc} — raw: {str(data)[:200]}")
-        return f"Error: could not parse data as JSON: {exc}"
+    if isinstance(data, str):
+        parsed, repaired, err = _loads_lenient(data)
+        if err is not None:
+            log.note(f"report({action}) data parse error: {err} — raw: {str(data)[:200]}")
+            return (
+                f"Error: could not parse data as JSON ({err}). Re-send `data` as ONE valid JSON "
+                "object — no prose/markdown around it, balanced quotes and brackets, a comma "
+                "between every key and every array element. For a chain, keep each step object on "
+                "a single line: "
+                '{"from_finding_id":"…","to_finding_id":"…","transition_artifact_id":"…"}.'
+            )
+        if repaired:
+            log.note(f"report({action}) data JSON auto-repaired — lenient parse salvaged a "
+                     "malformed payload (was being dropped with a parse error)")
+        data = parsed
     if not isinstance(data, dict):
         log.note(f"report({action}) data is not a dict: {type(data).__name__}")
         return f"Error: data must be a JSON object/dict, got {type(data).__name__}"

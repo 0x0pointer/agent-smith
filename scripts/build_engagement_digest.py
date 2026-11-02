@@ -77,59 +77,31 @@ def _asset_counts(ka: dict) -> dict:
     return {k: (len(v) if isinstance(v, list) else v) for k, v in (ka or {}).items()}
 
 
-def build(session_path: str, coverage_path: str | None, findings_path: str | None,
-          name: str | None, out_dir: str | None) -> str:
-    session = _load_json(session_path) if os.path.exists(session_path) else {}
-    target = session.get("target") or "unknown-target"
-    session_id = session.get("id")
-    known_assets = session.get("known_assets", {}) or {}
-
-    cov_path = _pick_coverage(coverage_path, target)
-    coverage = _load_json(cov_path) if cov_path and os.path.exists(cov_path) else {"meta": {}, "endpoints": [], "matrix": []}
-
-    fpath = findings_path or "findings.json"
-    findings_doc = _load_json(fpath) if os.path.exists(fpath) else {"findings": []}
-    all_findings = findings_doc.get("findings", findings_doc) if isinstance(findings_doc, dict) else findings_doc
-
-    # Keep findings whose target relates to this engagement (substring either way);
-    # fall back to ALL when nothing matches so a mismatched target label loses nothing.
-    tnorm = (target or "").strip().lower()
-    def _rel(ft: str) -> bool:
-        ft = (ft or "").strip().lower()
-        return bool(ft) and (ft in tnorm or tnorm in ft or ft.split("/")[0] in tnorm)
-    findings = [f for f in all_findings if _rel(f.get("target", ""))] or all_findings
-
+def _resume_payload(session: dict, session_path: str, cov_path: str | None,
+                    known_assets: dict, coverage: dict, findings: list) -> dict:
+    """The Phase-1 ingest contract (resume.json). Split out of build() to keep it readable
+    and within the complexity budget."""
     matrix = coverage.get("matrix", [])
     endpoints = coverage.get("endpoints", [])
     tested_clean = [c for c in matrix if c.get("status") == "tested_clean"]
     vulnerable = [c for c in matrix if c.get("status") == "vulnerable"]
     not_applicable = [c for c in matrix if c.get("status") == "not_applicable"]
     pending = [c for c in matrix if c.get("status") in ("pending", "in_progress", "")]
-
-    name = name or _slug(target)
-    out = out_dir or os.path.join("engagements", name)
-    os.makedirs(out, exist_ok=True)
-
-    # ── copies (self-contained store) ────────────────────────────────────────
-    with open(os.path.join(out, "known_assets.json"), "w") as fh:
-        json.dump(known_assets, fh, indent=2)
-    with open(os.path.join(out, "coverage.json"), "w") as fh:
-        json.dump(coverage, fh, indent=2)
-    with open(os.path.join(out, "findings.json"), "w") as fh:
-        json.dump({"findings": findings}, fh, indent=2)
-
-    # ── resume.json — the Phase-1 ingest contract ────────────────────────────
-    resume = {
-        "target": target,
+    return {
+        "target": session.get("target") or "unknown-target",
         "generated_from": {
             "session_json": os.path.abspath(session_path),
-            "session_id": session_id,
+            "session_id": session.get("id"),
             "coverage_snapshot": os.path.abspath(cov_path) if cov_path else None,
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "source_status": session.get("status"),
             "stop_reason": session.get("stop_reason"),
         },
         "known_assets": known_assets,
+        # Per-instance surface ledger (deep-pivot network-assess host coverage etc.) — carried
+        # so a mode=resume ingest can restore the pivot obligation instead of silently dropping
+        # every prior-discovered internal host.
+        "surface_coverage": session.get("surface_coverage", {}) or {},
         "endpoints": endpoints,
         "tested_clean_cells": [
             {"endpoint_id": c.get("endpoint_id"), "param": c.get("param"),
@@ -156,6 +128,44 @@ def build(session_path: str, coverage_path: str | None, findings_path: str | Non
             "findings": len(findings),
         },
     }
+
+
+def build(session_path: str, coverage_path: str | None, findings_path: str | None,
+          name: str | None, out_dir: str | None) -> str:
+    session = _load_json(session_path) if os.path.exists(session_path) else {}
+    target = session.get("target") or "unknown-target"
+    session_id = session.get("id")
+    known_assets = session.get("known_assets", {}) or {}
+
+    cov_path = _pick_coverage(coverage_path, target)
+    coverage = _load_json(cov_path) if cov_path and os.path.exists(cov_path) else {"meta": {}, "endpoints": [], "matrix": []}
+
+    fpath = findings_path or "findings.json"
+    findings_doc = _load_json(fpath) if os.path.exists(fpath) else {"findings": []}
+    all_findings = findings_doc.get("findings", findings_doc) if isinstance(findings_doc, dict) else findings_doc
+
+    # Keep findings whose target relates to this engagement (substring either way);
+    # fall back to ALL when nothing matches so a mismatched target label loses nothing.
+    tnorm = (target or "").strip().lower()
+    def _rel(ft: str) -> bool:
+        ft = (ft or "").strip().lower()
+        return bool(ft) and (ft in tnorm or tnorm in ft or ft.split("/")[0] in tnorm)
+    findings = [f for f in all_findings if _rel(f.get("target", ""))] or all_findings
+
+    name = name or _slug(target)
+    out = out_dir or os.path.join("engagements", name)
+    os.makedirs(out, exist_ok=True)
+
+    # ── copies (self-contained store) ────────────────────────────────────────
+    with open(os.path.join(out, "known_assets.json"), "w") as fh:
+        json.dump(known_assets, fh, indent=2)
+    with open(os.path.join(out, "coverage.json"), "w") as fh:
+        json.dump(coverage, fh, indent=2)
+    with open(os.path.join(out, "findings.json"), "w") as fh:
+        json.dump({"findings": findings}, fh, indent=2)
+
+    # ── resume.json — the Phase-1 ingest contract ────────────────────────────
+    resume = _resume_payload(session, session_path, cov_path, known_assets, coverage, findings)
     with open(os.path.join(out, "resume.json"), "w") as fh:
         json.dump(resume, fh, indent=2)
 

@@ -290,6 +290,109 @@ async def test_chain_accepts_proven_transition_and_persists(findings_file, tmp_p
     assert any("Exploit chain" in d.get("title", "") for d in data["diagrams"])
 
 
+# ── P1.1: reject a degenerate "chain" (single finding / self-loop) ────────────
+
+@pytest.mark.asyncio
+async def test_chain_rejects_self_loop(findings_file):
+    res = await _do_chain({
+        "name": "self",
+        "steps": [{"from_finding_id": "a", "to_finding_id": "a", "transition_artifact_id": "x"}],
+    })
+    assert "REJECTED" in res and "two DISTINCT findings" in res
+
+
+@pytest.mark.asyncio
+async def test_chain_rejects_single_finding(findings_file):
+    # Only one distinct finding-id across the steps → a finding restated, not a composition.
+    res = await _do_chain({"name": "one", "steps": [{"from_finding_id": "a"}]})
+    assert "REJECTED" in res and "two DISTINCT findings" in res
+
+
+# ── P1.2: dedup identical finding-path chains ────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_chain_dedups_identical_path(findings_file, tmp_path, monkeypatch):
+    import core.findings
+    import mcp_server.scan_engine.artifacts as artifacts
+    adir = tmp_path / "artifacts"
+    adir.mkdir()
+    monkeypatch.setattr(artifacts, "_ARTIFACTS_DIR", adir)
+    (adir / "http_request_1_a.txt").write_text("proof", encoding="utf-8")
+
+    f1 = await core.findings.add_finding(title="A", severity="high", target="t", description="d", evidence="e")
+    f2 = await core.findings.add_finding(title="B", severity="high", target="t", description="d", evidence="e")
+    step = {"from_finding_id": f1["id"], "to_finding_id": f2["id"],
+            "transition_artifact_id": "http_request_1_a", "mitre_technique": "T1"}
+
+    first = await _do_chain({"name": "A to B", "steps": [step]})
+    assert "Exploit chain saved" in first
+    # Same finding path, DIFFERENT name → still a duplicate (path is the identity).
+    second = await _do_chain({"name": "totally different label", "steps": [step]})
+    assert "NOT duplicated" in second
+    assert len(core.findings._load()["chains"]) == 1
+
+
+# ── P0: lenient JSON parse salvages malformed `data` payloads ─────────────────
+
+def test_loads_lenient_strict_ok():
+    from mcp_server.report_tools import _loads_lenient
+    assert _loads_lenient('{"a": 1}') == ({"a": 1}, False, None)
+
+
+def test_loads_lenient_trailing_comma():
+    from mcp_server.report_tools import _loads_lenient
+    obj, repaired, err = _loads_lenient('{"a": 1,}')
+    assert obj == {"a": 1} and repaired and err is None
+
+
+def test_loads_lenient_missing_comma_between_objects():
+    # The exact "Expecting ',' delimiter" failure that was dropping proven multi-step chains.
+    from mcp_server.report_tools import _loads_lenient
+    obj, repaired, err = _loads_lenient('{"steps": [{"a": 1}{"b": 2}]}')
+    assert obj == {"steps": [{"a": 1}, {"b": 2}]} and repaired
+
+
+def test_loads_lenient_code_fence_and_prose():
+    from mcp_server.report_tools import _loads_lenient
+    assert _loads_lenient('```json\n{"a": 1}\n```')[0] == {"a": 1}
+    assert _loads_lenient('here you go: {"a": 1} thanks')[0] == {"a": 1}
+
+
+def test_loads_lenient_total_garbage_reports_error():
+    from mcp_server.report_tools import _loads_lenient
+    obj, repaired, err = _loads_lenient("not json at all")
+    assert obj is None and not repaired and err
+
+
+# ── P1.3a: the chain-suggest panel is fed the proven set so it DRAINS ─────────
+
+def test_proven_chain_fids_reads_filed_chains(monkeypatch):
+    import mcp_server.report_tools.diagrams as dg
+    monkeypatch.setattr(dg.findings_store, "_load", lambda: {"chains": [
+        {"steps": [{"from_finding_id": "A", "to_finding_id": "B"}]},
+        {"steps": [{"from_finding_id": "B", "to_finding_id": "C"}]},
+    ]})
+    assert dg._proven_chain_fids() == {"A", "B", "C"}
+
+
+def test_suggest_chains_feeds_proven_set(monkeypatch):
+    import mcp_server.report_tools.diagrams as dg
+    import core.graph as cg
+    monkeypatch.setattr(dg.findings_store, "_load", lambda: {"chains": [
+        {"steps": [{"from_finding_id": "A", "to_finding_id": "B"}]},
+    ]})
+    monkeypatch.setattr(cg, "build_graph", lambda: "G")
+    seen = {}
+
+    def fake_candidates(g, proven=None):
+        seen["proven"] = proven
+        return []
+
+    monkeypatch.setattr(cg, "candidate_chains", fake_candidates)
+    dg._suggest_chains()
+    assert seen["proven"] == {"A", "B"}
+
+
 # ── _do_delete_finding ───────────────────────────────────────────────────────
 
 @pytest.mark.asyncio

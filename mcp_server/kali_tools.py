@@ -35,19 +35,21 @@ def _is_timeblind_probe(command: str) -> bool:
     return any(m in c for m in _TIMEBLIND_PROBE_MARKERS)
 
 
-async def _kali_run_and_wrap(command: str, timeout: int) -> str:
+async def _kali_run_and_wrap(command: str, timeout: int, proxy: str | None = None) -> str:
     """Execute a command in the Kali container and return the canonical envelope.
 
     This is the shared core of the synchronous and the background paths: it runs
     the command, applies the timeout-as-signal lead, tracks cost, stores the raw
     output as an artifact and returns the wrapped envelope JSON. The background
     path simply awaits this inside a tracked task instead of inline.
+
+    ``proxy`` routes the command through a SOCKS tunnel via proxychains4 (1.3).
     """
     from tools import kali_runner
 
-    log.tool_call("kali", {"command": command, "timeout": timeout})
+    log.tool_call("kali", {"command": command, "timeout": timeout, "proxy": proxy})
     call_id = cost_tracker.start("kali")
-    raw_output = await kali_runner.exec_command(command, timeout=timeout)
+    raw_output = await kali_runner.exec_command(command, timeout=timeout, proxy=proxy)
     log.tool_result_verbose("kali", raw_output, "")
 
     # Layer 3 — timeout-as-signal: surface a hung request as a LEAD instead of letting
@@ -79,11 +81,13 @@ async def _kali_run_and_wrap(command: str, timeout: int) -> str:
     from mcp_server.scan_engine import wrap
     tool_key = "kali_sqlmap" if command.strip().startswith("sqlmap") else "kali"
     return _inject_qa_alerts(wrap(
-        tool_key, raw_output, {"command": command, "_tool": tool_key, "timed_out": timed_out}))
+        tool_key, raw_output,
+        {"command": command, "_tool": tool_key, "timed_out": timed_out, "proxy": proxy}))
 
 
 @mcp.tool()
-async def kali(command: str, timeout: int = 600, background: bool = False) -> str:
+async def kali(command: str, timeout: int = 600, background: bool = False,
+               proxy: str | None = None) -> str:
     """Run any command in the Kali container (auto-starts if needed).
     Hundreds of tools available: nikto, sqlmap, gobuster, hydra, testssl,
     enum4linux-ng, wapiti, sslscan, ssh-audit, theHarvester, dnsrecon, etc.
@@ -91,6 +95,14 @@ async def kali(command: str, timeout: int = 600, background: bool = False) -> st
     timeout: seconds to wait for the command (default 600 = 10 min).
     Increase for long-running tools — e.g. timeout=1200 for deep sqlmap/hydra runs.
     The command is killed and partial output returned if the timeout is exceeded.
+
+    proxy: a SOCKS endpoint you stood up THROUGH a foothold (deep-pivot tunnel v1) —
+      e.g. "socks5://127.0.0.1:1080" (or just "127.0.0.1:1080"). The command is routed
+      through it with proxychains4 so scanners reach cluster-internal hosts Kali can't
+      route to directly. Set up the tunnel first — chisel server+client, `ssh -D 1080`,
+      ligolo-ng, or msf autoroute+socks_proxy — then pass proxy=. IMPORTANT: nmap over
+      SOCKS needs a TCP connect scan (`nmap -sT -Pn`); a raw SYN scan (`-sS`) can't
+      traverse a proxy. See /lateral-movement and /post-exploit for the full recipe.
 
     background: when True, DO NOT block this turn. The command is launched as a
       tracked background job and the call returns IMMEDIATELY with
@@ -113,8 +125,8 @@ async def kali(command: str, timeout: int = 600, background: bool = False) -> st
         from mcp_server import jobs
         return jobs.submit(
             "kali",
-            {"command": command, "timeout": timeout},
-            lambda: _kali_run_and_wrap(command, timeout),
+            {"command": command, "timeout": timeout, "proxy": proxy},
+            lambda: _kali_run_and_wrap(command, timeout, proxy),
         )
 
-    return await _kali_run_and_wrap(command, timeout)
+    return await _kali_run_and_wrap(command, timeout, proxy)

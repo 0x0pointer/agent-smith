@@ -12,6 +12,7 @@ import os
 from datetime import datetime, timezone
 
 import core.qa_agent as _qa
+from core.session import is_thorough_like
 from ._util import _ts_age_secs
 from .hir import _hir
 
@@ -230,7 +231,7 @@ def _check_oob_unpolled(session_data: dict) -> dict | None:
 
 def _check_whitebox_passes(entries: list[dict], session_data: dict) -> dict | None:
     """Enforce 3 semgrep passes on thorough WHITE-BOX scans (needs a codebase)."""
-    if session_data.get("depth") != "thorough":
+    if not is_thorough_like(session_data.get("depth")):
         return None
     if not _is_whitebox_scan(entries, session_data):
         return None  # black-box remote scan: no codebase for semgrep to scan
@@ -262,7 +263,7 @@ def _check_whitebox_passes(entries: list[dict], session_data: dict) -> dict | No
 
 def _check_premature_complete(entries: list[dict], session_data: dict) -> dict | None:
     """Block completion before the 3 semgrep passes on thorough WHITE-BOX scans."""
-    if session_data.get("depth") != "thorough":
+    if not is_thorough_like(session_data.get("depth")):
         return None
     if not _is_whitebox_scan(entries, session_data):
         return None  # black-box remote scan: the semgrep-pass gate can't apply

@@ -231,7 +231,7 @@ async def test_job_list_and_status_filter():
 async def test_kali_background_returns_immediately(monkeypatch):
     gate = asyncio.Event()
 
-    async def fake_core(command, timeout):
+    async def fake_core(command, timeout, proxy=None):
         await gate.wait()
         return _envelope(summary="kali bg done", artifact="kali_9_9")
 
@@ -261,7 +261,7 @@ async def test_kali_background_returns_immediately(monkeypatch):
 @pytest.mark.asyncio
 async def test_kali_sync_path_unchanged(monkeypatch):
     """background omitted → the synchronous core is awaited inline (no job created)."""
-    async def fake_core(command, timeout):
+    async def fake_core(command, timeout, proxy=None):
         return _envelope(summary="sync")
 
     monkeypatch.setattr(kali_tools, "_kali_run_and_wrap", fake_core)

@@ -87,8 +87,30 @@ CORE_SKILLS = {
 }
 
 
+# skills/construct/ holds another project's (Construct's) scan-stage skills, pulled in as a
+# submodule. They are NOT agent-smith skills: the installers' find, the capabilities lookup and
+# the skill-size meter all skip that top-level folder (core.capabilities.SEPARATE_SKILL_SETS), so
+# a leaf like business-logic under construct/ never installs and can't clobber ours. Mirror that
+# skip here so these contract tests reflect what actually installs.
+try:
+    from core.capabilities import SEPARATE_SKILL_SETS as _SEPARATE_SKILL_SETS
+except Exception:  # pragma: no cover - keep the contract test runnable standalone
+    _SEPARATE_SKILL_SETS = frozenset({"construct"})
+
+
+def _installable_skill_md() -> list[Path]:
+    """SKILL.md files that actually install as agent-smith skills (excludes separate skill sets)."""
+    out = []
+    for p in _SKILLS_DIR.rglob("SKILL.md"):
+        rel = p.relative_to(_SKILLS_DIR).parts
+        if rel and rel[0] in _SEPARATE_SKILL_SETS:
+            continue
+        out.append(p)
+    return out
+
+
 def _skill_leaves() -> set[str]:
-    return {p.parent.name for p in _SKILLS_DIR.rglob("SKILL.md")}
+    return {p.parent.name for p in _installable_skill_md()}
 
 
 def _skills_populated() -> bool:
@@ -110,6 +132,6 @@ def test_core_skills_present_in_submodule():
 def test_skill_leaf_names_are_unique():
     """Skills install to a flat per-client dir (~/.claude/skills/<leaf>/), so two
     skills sharing a leaf name would clobber each other on install."""
-    leaves = [p.parent.name for p in _SKILLS_DIR.rglob("SKILL.md")]
+    leaves = [p.parent.name for p in _installable_skill_md()]
     dupes = {n for n in leaves if leaves.count(n) > 1}
     assert not dupes, f"duplicate skill leaf names would collide on install: {sorted(dupes)}"

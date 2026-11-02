@@ -238,6 +238,29 @@ async def _do_finding(data):
     )
     log.finding(severity, title, target)
 
+    # Deep-pivot (depth=danger / benchmark): a finding that names an internal host
+    # reached via SSRF/RCE promotes that host to an asset + per-host scan surface
+    # (so the scan can't finish leaving it unscanned). Normal scans instead raise a
+    # wishlist scope-approval. Fail-soft — never blocks filing.
+    try:
+        from core import pivot as _pivot
+        _pivot.handle_internal_host_discovery(
+            " ".join(str(x) for x in (title, target, data.get("description", ""),
+                                      data.get("evidence", ""))),
+            source=f"finding:{entry.get('id', '')}")
+    except Exception:
+        pass
+
+    # A confirmed server-side-injection / code-exec / SSRF finding CONTRADICTS a premature
+    # "no code execution" / "no internal network" gate dismissal — re-open the gate (once) with a
+    # concrete escalation directive so the deep SQLi->RCE->pivot chain isn't silently dropped when
+    # the primitive is confirmed AFTER the dismissal. Fail-soft, NON-BLOCKING.
+    try:
+        from core import escalation as _esc
+        _esc.reopen_gates_on_finding(title, data.get("description", ""), severity)
+    except Exception:
+        pass
+
     # Structural: reflect the exploit in the coverage matrix NOW — mark the
     # finding's matching cell vulnerable instead of relying on the model to
     # remember a separate report(action='coverage') call (which it skips).

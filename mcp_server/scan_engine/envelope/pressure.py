@@ -78,7 +78,7 @@ def _maybe_write_recovery_snapshot(scan_session: Any) -> None:
         seq = len(current.get("tool_invocations", []))
         if seq == 0:
             return
-        interval = 20 if current.get("depth") == "thorough" else 10
+        interval = 20 if scan_session.is_thorough_like(current.get("depth")) else 10
         if seq % interval != 0:
             return
         from mcp_server.session_tools import _do_recovery

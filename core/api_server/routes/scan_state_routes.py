@@ -107,6 +107,15 @@ async def api_clear() -> JSONResponse:
     # gh-issues.md — exported GitHub issue blocks
     _api._safe_unlink(_api._REPO_ROOT / "gh-issues.md")
 
+    # wishlist_queue.json — agent→operator "Resource requests" are per-engagement state; "Clear
+    # All" must wipe them so stale requests don't bleed into the next scan. (It lives at the repo
+    # root, not under logs/, so the log-clear above misses it.)
+    try:
+        from core.wishlist import wishlist_queue as _wl
+        _wl.clear()
+    except Exception:
+        pass
+
     await _api._cleanup_tunnels()
     return JSONResponse({"ok": True})
 

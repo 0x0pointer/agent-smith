@@ -219,6 +219,7 @@ async def _do_coverage_list(data, cov):
         status         = (data.get("status") or "").strip() or None,
         injection_type = (data.get("injection_type") or "").strip() or None,
         param_name     = (data.get("param_name") or "").strip() or None,
+        host           = (data.get("host") or "").strip() or None,
         limit          = limit,
     )
     return json.dumps(result, indent=2)

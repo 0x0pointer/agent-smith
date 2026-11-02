@@ -140,7 +140,7 @@ def _build_blocker_response(blockers: list) -> str:
             f"fits your context. Fix THIS one, then call session(action='complete') again for "
             f"the next:\n\n"
         )
-    elif depth == "thorough" and _st._analysis_passes < _st._min_iterations():
+    elif scan_session.is_thorough_like(depth) and _st._analysis_passes < _st._min_iterations():
         shown = blockers
         _mi = _st._min_iterations()
         header = (

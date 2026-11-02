@@ -109,6 +109,52 @@ def _phase_completion_blocker() -> str | None:
     )
 
 
+def _deep_pivot_host_blocker() -> str | None:
+    """Deep-pivot (depth=danger / scan_mode=benchmark): block completion while internal
+    hosts discovered via SSRF/RCE remain unscanned (network-assess not yet run on them).
+
+    Fires on EVERY profile and in EVERY phase (unlike the coverage-matrix gates) — the
+    whole point of danger/benchmark is to not finish leaving a discovered internal host
+    untouched. Dischargeable by scanning each host (the ledger marks it covered when a
+    tool fires against it while /network-assess is active); the operator force-complete
+    still bypasses it. No-op for normal scans."""
+    try:
+        from core.session import surface_ledger as _ledger
+        from core import pivot as _pivot
+        cur = scan_session.get()
+        if not scan_session.deep_pivot_enabled(cur):
+            return None
+        pend = _ledger.host_scan_pending()   # discovered − covered − documented-unreachable
+        if not pend:
+            return None
+        shown = ", ".join(pend[:8]) + (f" (+{len(pend) - 8} more)" if len(pend) > 8 else "")
+        if not _pivot.pivot_reachable(cur):
+            # No internal host reached yet → there is no working route from the scanner's position.
+            # Probing them one-by-one from Kali just times out, host after host, for hours (the
+            # observed churn). TUNNEL FIRST, or document the whole set unreachable in a SINGLE probe.
+            return (
+                f"DEEP-PIVOT — {len(pend)} internal host(s) discovered but NONE reached yet: {shown}. "
+                "They sit on the pod/cluster network, reachable only through the foothold — a direct "
+                "scan from Kali WILL time out, so do NOT retry them individually. Do ONE of: "
+                "(a) stand up a SINGLE pivot — kali: `chisel server` + a client launched via your "
+                "RCE/SSRF foothold, or `ssh -D 1080 user@PIVOT` + proxychains4 — then scan THROUGH it; "
+                "or (b) if no foothold supports a tunnel (no shell / NAT-blocked), probe them all in "
+                "ONE kali command (a shell loop: `for h in <hosts>; do nc -zv -w2 $h <port>; done`) — "
+                "the timeouts auto-record every host as a documented dead-end in a single artifact, "
+                "clearing this blocker without a per-host retry loop. (depth=danger / benchmark only.)"
+            )
+        return (
+            f"DEEP-PIVOT — {len(pend)} discovered internal host(s) not yet scanned: {shown}. "
+            "A pivot path EXISTS (a host was reached), so scan each THROUGH it with /network-assess: "
+            "naabu/nmap top-ports -> httpx -> nuclei, then spider + register endpoints (pass host=) for "
+            "any web service found. A host clears when a scan actually REACHES it; a genuinely "
+            "unreachable host is auto-recorded a documented dead-end and no longer blocks. "
+            "(depth=danger / scan_mode=benchmark only.)"
+        )
+    except Exception:
+        return None
+
+
 def _collect_completion_blockers(data: dict, effective: set) -> list[str]:
     """Run all completion gate checks and return the list of blocker strings."""
     blockers: list[str] = []
@@ -132,6 +178,12 @@ def _collect_completion_blockers(data: dict, effective: set) -> list[str]:
                 blockers.append(phase_blocker)
     blockers.extend(_st._qa_blockers())
     blockers.extend(_st._escalation_lead_blockers(data))
+
+    # Deep-pivot (danger/benchmark): unscanned internal hosts block completion on every
+    # profile/phase. No-op for normal scans.
+    dp_blocker = _deep_pivot_host_blocker()
+    if dp_blocker:
+        blockers.append(dp_blocker)
 
     # ── Existing checks ──────────────────────────────────────────────────────
 

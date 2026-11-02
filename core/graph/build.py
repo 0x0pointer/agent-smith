@@ -10,6 +10,10 @@ from __future__ import annotations
 import re
 from urllib.parse import urlparse
 
+from core.netextract import (
+    _IP_RE, _INTERNAL_NAME_RE, _META_HOSTS,
+    collapse_ports as _collapse_ports, internal_ip as _internal_ip,
+)
 from . import model as m
 
 
@@ -307,17 +311,8 @@ def _add_primitive_edges(g, fid: str, f: dict) -> None:
 # finding --reaches[via=…]--> B. Hosts already modelled as real targets (root / scope
 # / endpoint hosts) are left untouched, so genuinely separate machines with no chain
 # between them stay as separate circles.
-_IP_RE = re.compile(r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?::\d{1,5})?\.?(?![\w.])")
-# Internal / cloud / orchestration host names trusted as pivot targets on sight —
-# require a <label>. prefix AND a specific internal suffix. Bare 'local'/'svc' are
-# deliberately EXCLUDED: they collide with ordinary filenames (config.local, app.svc)
-# that appear in exactly the file-read/traversal findings this model keys on.
-_INTERNAL_NAME_RE = re.compile(
-    r"(?<![\w.-])[a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)*"
-    r"\.(?:svc\.cluster\.local|cluster\.local|internal|consul)\.?(?![\w.-])", re.I)
-_META_HOSTS = ("metadata.google.internal", "169.254.169.254", "169.254.170.2",
-               "kubernetes.default.svc.cluster.local", "kubernetes.default.svc",
-               "kubernetes.default")
+# _IP_RE / _INTERNAL_NAME_RE / _META_HOSTS / _internal_ip / _collapse_ports now live in
+# core.netextract (shared with the deep-pivot asset promoter) and are imported above.
 # How a host was reached — cosmetic label on the REACHES edge, best-effort from text.
 _MECHANISMS = (
     (("ssrf", "server-side request forgery", "server side request"), "ssrf"),
@@ -352,32 +347,12 @@ def _asset_host_values(ka) -> set:
     return out
 
 
-def _internal_ip(ip: str) -> bool:
-    """True for an RFC1918 / loopback / link-local / CGNAT address with valid octets —
-    the only IPs trusted from finding prose WITHOUT an asset record. A public dotted-quad
-    is indistinguishable from a 4-part software version ('sqlmap 1.7.2.1'), so public IPs
-    qualify only via the asset branch, not on sight."""
-    parts = ip.split(":", 1)[0].split(".")
-    if len(parts) != 4 or not all(p.isdigit() and 0 <= int(p) <= 255 for p in parts):
-        return False
-    a, b = int(parts[0]), int(parts[1])
-    return (a in (10, 127) or (a == 169 and b == 254) or (a == 172 and 16 <= b <= 31)
-            or (a == 192 and b == 168) or (a == 100 and 64 <= b <= 127))
-
-
 def _asset_hits(low: str, asset_hosts: set) -> set:
     """Recorded asset hostnames named in the text — matched on a word boundary with a
     length floor. A raw substring test links short names ('api') into unrelated prose
     ('rapid'), mirroring the same defect _leaked_cred_nodes guards against."""
     return {a for a in asset_hosts
             if a and len(a) >= 4 and re.search(rf"(?<![\w.-]){re.escape(a)}(?![\w.-])", low)}
-
-
-def _collapse_ports(hosts: set) -> set:
-    """Drop a host:port form when its bare host is also present, so one host doesn't
-    become two circles (10.0.0.5 + 10.0.0.5:8080)."""
-    bare = {h.split(":")[0] for h in hosts}
-    return {h for h in hosts if ":" not in h or h.split(":")[0] not in bare}
 
 
 def _hosts_in_text(text: str, asset_hosts: set) -> set:

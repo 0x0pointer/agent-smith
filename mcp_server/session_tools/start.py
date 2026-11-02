@@ -8,6 +8,7 @@ from .start_helpers import (
     _reset_coverage_matrix,
     _prior_findings_brief,
     _start_first_move,
+    _norm_target,
 )
 
 
@@ -60,7 +61,25 @@ def _start_response(cfg: dict, classification: dict, target: str, scan_mode: str
         lines += [
             "BENCHMARK MODE: On critical/high findings, do NOT pause — exploit the chain autonomously.",
             "Demonstrate full impact: RCE → execute commands, SQLi → dump data, SSRF → pivot internally.",
-            "Document every step as a finding. All other safety checks and HIR triggers remain active.",
+            "Document every step as a finding. Self-resolvable HIR pauses are auto-resolved in this mode.",
+            "",
+        ]
+    if depth == "danger" or scan_mode == "benchmark":
+        lines += [
+            "DEEP-PIVOT MODE: when SSRF/RCE/file-read reveals an INTERNAL host (RFC1918 10./172.16-31./",
+            "192.168., *.cluster.local, cloud IMDS, a pod IP), it is auto-promoted to known_assets and",
+            "becomes a per-host SCAN SURFACE — you CANNOT complete the scan while any discovered internal",
+            "host is unscanned. These hosts are NEW SURFACES WITHIN THIS SAME SCAN: do NOT call",
+            "session(action='start') for an internal host (that spawns a separate scan and drops the",
+            "depth) — register and test them here. For EACH internal host:",
+            "  1. tunnel in FIRST — a direct scan from Kali usually can't route to a cluster-internal IP.",
+            "     kali('chisel server …')+client, or kali('ssh -D 1080 user@PIVOT -N -f') + proxychains4.",
+            "  2. THROUGH the tunnel: naabu/nmap top-ports → httpx → nuclei against the host.",
+            "  3. if a web/API service is up: spider it + register endpoints host-qualified",
+            "     (report(action='coverage', data={path:'http://<host>:<port>/…', host:'<host>:<port>'})),",
+            "     then run /web-exploit · /api-security against them.",
+            "If a host is genuinely UNREACHABLE (no pivot foothold / network-isolated), document that as a",
+            "dead-end and move on — don't loop on it. Honor out_of_scope.",
             "",
         ]
     prior_brief = _prior_findings_brief(target)
@@ -230,7 +249,62 @@ def _clear_adjunction_log() -> None:
         pass
 
 
+def _dashboard_url() -> str:
+    """Existing dashboard link (read the token, don't mint — a resume must not invalidate
+    the operator's already-open tab)."""
+    try:
+        from core import dashboard_auth
+        _tok = dashboard_auth.read_token()
+    except Exception:
+        _tok = None
+    return f"http://localhost:7777/#k={_tok}" if _tok else "http://localhost:7777/"
+
+
+def _resume_in_place_response(live: dict) -> str:
+    """A re-issued start() landed on a scan that is still RUNNING (respawned MCP process,
+    or the model re-calling start). Resume it in place — DO NOT re-initialise (that reset
+    target/depth and wiped known_assets + the wishlist mid-run; IMPROVEMENT-PLAN 1.1) —
+    and hand back the recovery brief so the agent picks up exactly where it left off."""
+    return "\n".join([
+        "RESUME — a scan on this target is already RUNNING; state preserved (NOT reset).",
+        f"  Target: {live.get('target')} | Depth: {live.get('depth')} | "
+        f"Mode: {live.get('scan_mode', 'pentest')} | Phase: {live.get('scan_phase', '?')}",
+        f"  Dashboard: {_dashboard_url()}",
+        "",
+        "Recovery state follows — read it, then continue from EXECUTE_NOW (do not re-run "
+        "finished steps, do not re-register endpoints; the matrix is on disk):",
+        "",
+        _st._do_recovery(),
+    ])
+
+
+def _running_scan_refusal(live: dict, requested: str) -> str:
+    """A start() for a DIFFERENT target arrived while a scan is still running. Don't
+    silently switch targets (that is the mid-run clobber). Tell the operator how to
+    proceed instead (IMPROVEMENT-PLAN 1.1)."""
+    return "\n".join([
+        f"REFUSED: a scan on {live.get('target')!r} (depth={live.get('depth')}, "
+        f"phase={live.get('scan_phase', '?')}) is still RUNNING.",
+        f"Starting a new scan on {requested!r} would discard that live scan's state "
+        "(coverage matrix, known_assets, findings linkage, gates, wishlist).",
+        "",
+        "If this is an internal host reached via the foothold, do NOT start a new scan — "
+        "it is a NEW SURFACE WITHIN THE RUNNING SCAN (register + test it host-qualified "
+        "here; see the deep-pivot guidance in the running scan's start output).",
+        "",
+        "Otherwise finish the current scan first (session(action='complete')), or, to "
+        "replace it deliberately, re-issue start with options={..., 'force_restart': true}.",
+    ])
+
+
 def _do_start(opts):
+    # Reconcile with disk FIRST (IMPROVEMENT-PLAN 1.1): a RESPAWNED MCP process has an
+    # empty in-memory cache, so without this a re-issued start would see no session and
+    # re-initialise over the scan that is still running on disk.
+    if scan_session.get() is None:
+        scan_session.load_from_disk()
+    else:
+        scan_session._reconcile_if_external_write()
     existing = scan_session.get() or {}
     if existing.get("status") == "intervention_required":
         return (
@@ -238,6 +312,18 @@ def _do_start(opts):
             "Respond via session(action='resume', options={choice: '...', message: '...'}) "
             "before starting a new scan."
         )
+    target = opts.get("target", "")
+    force_restart = bool(opts.get("force_restart"))
+    # Live-scan guard: never silently re-initialise over a running scan. Resume it in
+    # place when the same target is re-issued (the respawn case); refuse a different
+    # target so the operator can't accidentally switch targets mid-run. force_restart
+    # bypasses both to replace the scan deliberately.
+    if existing.get("status") == "running" and not force_restart:
+        live = scan_session.resume_if_running()
+        if live is not None:
+            if target and _norm_target(live.get("target")) != _norm_target(target):
+                return _running_scan_refusal(live, target)
+            return _resume_in_place_response(live)
     _prev_complete_attempts, _prev_analysis_passes, _prev_scan_phase = _prior_progress(existing)
     _st._complete_attempts = 0
     _st._analysis_passes = 0

@@ -137,6 +137,62 @@ def _attribute_http_surface_coverage(tool: str, ctx: dict) -> None:
         pass
 
 
+_REACH_NEG = (
+    "no open port", "0 open port", "no valid ipv4", "failed to resolve", "host seems down",
+    "all 65535", "filtered (no-response)", "could not parse status", "connection refused",
+    "timed out", "timeout", "unreachable", "name resolution", "no route", "0 hosts",
+    "no open ports found",
+)
+_REACH_POS = (
+    "open port", "host is up", " is up", "http/1", "http/2", "200 ok",
+    "status: 2", "status: 3", "status: 4", "status: 5", "banner", "received ",
+)
+
+
+def _reached_from_result(result, raw_output: str) -> bool:
+    """Did a scan actually REACH the host? True only on positive contact evidence — so a
+    hollow 0-ports/unreachable/DNS-fail scan is NOT counted as coverage (it's recorded
+    unreachable instead). Conservative: ambiguous → not-reached."""
+    ev = getattr(result, "evidence", {}) or {}
+    if isinstance(ev, dict) and (ev.get("ports") or ev.get("findings") or ev.get("tech")
+                                 or ev.get("status") or ev.get("server")):
+        return True
+    s = f"{getattr(result, 'summary', '')} {ev} {(raw_output or '')[:3000]}".lower()
+    if any(m in s for m in _REACH_NEG):
+        return False
+    return any(m in s for m in _REACH_POS)
+
+
+def _deep_pivot_host_tracking(tool: str, result, ctx: dict, raw_output: str) -> None:
+    """Deep-pivot (danger/benchmark), fail-soft, NON-BLOCKING:
+      1) PROMOTE internal hosts from ANY tool's output (not just finding-prose/http_request) —
+         closes the gap where nmap/naabu/nuclei/spider/kali output never promoted.
+      2) Credit a scan that REACHES a promoted host to the host-unit skills regardless of the
+         active skill (mis-attribution fix), or record it unreachable if it didn't reach."""
+    try:
+        from core import session as _sess
+        if not _sess.deep_pivot_enabled(_sess.get()):
+            return
+        from core import pivot as _pivot
+        text = f"{getattr(result, 'summary', '')} {getattr(result, 'evidence', '')} {(raw_output or '')[:4000]}"
+        _pivot.handle_internal_host_discovery(text, source=tool)
+        from core.session import surface_ledger as _ledger
+        na = (_sess.get().get("surface_coverage") or {}).get("network-assess") or {}
+        promoted = [h for h in na.get("discovered", []) if h]
+        if not promoted:
+            return
+        blob = (f"{ctx.get('url', '')} {ctx.get('target', '')} {ctx.get('host', '')} "
+                f"{ctx.get('command', '')} {(raw_output or '')[:2000]}")
+        targeted = [h for h in promoted if h in blob]
+        if not targeted:
+            return
+        reached = _reached_from_result(result, raw_output)
+        for h in targeted:
+            _ledger.record_host_scanned(h, reached)
+    except Exception:
+        pass
+
+
 def wrap(tool: str, raw_output: str, context: dict | None = None,
          artifact_raw: str | None = None) -> str:
     """Central entry point: raw tool output in, canonical envelope JSON out.
@@ -194,6 +250,10 @@ def wrap(tool: str, raw_output: str, context: dict | None = None,
     # 2c. PR-C: advisory surface-coverage attribution for http_request (bypasses
     # _record/add_tool_called, so attribute it here). NON-BLOCKING + fail-soft.
     _attribute_http_surface_coverage(tool, ctx)
+
+    # 2d. Deep-pivot (danger/benchmark): promote internal hosts from ANY tool output and
+    # credit reached-host scans to the host-unit skills regardless of active skill.
+    _deep_pivot_host_tracking(tool, result, ctx, raw_output)
 
     # 3. Compute server-determined state and planner next-actions
     state = get_state()
