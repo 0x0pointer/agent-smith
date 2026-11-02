@@ -557,16 +557,24 @@ def test_ai_redteam_gate_needs_manual_layer_not_just_garak():
     assert core.session.skill_worked("ai-redteam") is True
 
 
-def test_ai_redteam_gate_satisfied_by_tested_llm_cells():
+def test_ai_redteam_gate_requires_toolchain_closed_llm_cells():
     import json
     import core.coverage as cov
     core.session.start("chat.example.com")
     core.session.set_skill("ai-redteam")
     core.session.add_tool_called("garak")
     assert core.session.skill_worked("ai-redteam") is False
-    # (B) an LLM attack cell was actually tested -> the manual layer engaged
+    # A jailbreak cell closed off a BARE http() probe is the first-try fallacy —
+    # it must NOT satisfy the ai-redteam deep requirement (issue #248).
     cov.COVERAGE_FILE.write_text(
-        json.dumps({"matrix": [{"injection_type": "jailbreak", "status": "tested_clean"}]}),
+        json.dumps({"matrix": [{"injection_type": "jailbreak", "status": "tested_clean",
+                                "artifact_id": "http_request_101112_abcd1234"}]}),
+        encoding="utf-8")
+    assert core.session.skill_worked("ai-redteam") is False
+    # (B) closed with the attack toolchain (redteam artifact) -> manual layer engaged.
+    cov.COVERAGE_FILE.write_text(
+        json.dumps({"matrix": [{"injection_type": "jailbreak", "status": "tested_clean",
+                                "artifact_id": "redteam_101112_abcd1234"}]}),
         encoding="utf-8")
     assert core.session.skill_worked("ai-redteam") is True
 

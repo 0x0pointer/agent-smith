@@ -20,7 +20,7 @@ from typing import Callable
 from mcp_server.transforms import encode as _tencode
 from mcp_server.transforms.generators import mutate as _mutate
 
-from .oracles import Verdict, llm_judge
+from .oracles import Verdict, llm_judge, transport_status
 from .techniques import TECHNIQUES, render, render_variant, technique_pool
 
 _DEFAULT_TECHS = ["direct", "authority", "roleplay", "hypothetical",
@@ -29,7 +29,7 @@ _DEFAULT_TECHS = ["direct", "authority", "roleplay", "hypothetical",
 _DEFAULT_TFS = ["base64", "leetspeak", "unicode_tags", "rot13"]
 
 
-def _result(jailbroken, best, transcript, attempts):
+def _result(jailbroken, best, transcript, attempts, codes=None, reached=0, blocked=0):
     v, tname, tf, payload = best
     return {
         "jailbroken": jailbroken,
@@ -37,6 +37,13 @@ def _result(jailbroken, best, transcript, attempts):
                  "label": v.label, "rationale": v.rationale,
                  "payload": payload if isinstance(payload, str) else " | ".join(payload)},
         "attempts": attempts,
+        # Transport accounting: on a probabilistic gateway half the attempts may be
+        # HTTP 5xx that never reached the model, so "0/36" overstates testing. Split
+        # attempts into reached-model vs blocked and report the status histogram so
+        # success is read over reached_model, not total (issue #261.#17).
+        "codes": codes or {},
+        "reached_model": reached,
+        "blocked": blocked,
         "transcript": transcript,
     }
 
@@ -74,6 +81,9 @@ class _Run:
         self.transcript: list[dict] = []
         self.attempts = 0
         self.best = (Verdict(False, -1.0, "refused"), "none", None, goal)
+        self.codes: dict[str, int] = {}   # status/transport histogram across attempts
+        self.reached = 0                  # attempts that reached the model
+        self.blocked = 0                  # attempts a transport error blocked
 
     def exhausted(self) -> bool:
         return self.attempts >= self._max
@@ -94,16 +104,36 @@ class _Run:
             resp = f"[send error: {e}]"
         v = self._judge(resp)
         self.attempts += 1
+        tkind, tcode = transport_status(resp)
+        key = str(tcode) if tcode else ("error" if tkind else "200")
+        self.codes[key] = self.codes.get(key, 0) + 1
+        if tkind:
+            self.blocked += 1
+        else:
+            self.reached += 1
         sent = payload if isinstance(payload, str) else " ⟶ ".join(payload)
         self.transcript.append({"phase": phase, "technique": tname, "transform": tf,
                                 "sent": sent[:240], "score": v.score, "label": v.label,
-                                "resp": resp[:220]})
+                                "code": key, "resp": resp[:220]})
         if v.score > self.best[0].score:
             self.best = (v, tname, tf, payload)
         return v.complied
 
     def result(self) -> dict:
-        return _result(self.jailbroken(), self.best, self.transcript, self.attempts)
+        r = _result(self.jailbroken(), self.best, self.transcript, self.attempts,
+                    self.codes, self.reached, self.blocked)
+        # Full per-technique / per-phase histograms, computed from the WHOLE transcript
+        # before the tool layer trims it to 12 for context — so the other N-12 attempts
+        # are still auditable (issue #257).
+        th: dict[str, int] = {}
+        pc: dict[str, int] = {}
+        for t in self.transcript:
+            tn = t.get("technique") or "?"
+            th[tn] = th.get(tn, 0) + 1
+            pc[str(t.get("phase"))] = pc.get(str(t.get("phase")), 0) + 1
+        r["technique_histogram"] = th
+        r["phase_counts"] = pc
+        return r
 
 
 def _phase_breadth(run, techs, breadth_cap, goal, rng):
@@ -149,10 +179,15 @@ def feedback_attack(goal: str,
                     transforms: list[str] | None = None,
                     techniques_order: list[str] | None = None,
                     max_attempts: int = 24,
-                    seed: int = 0) -> dict:
+                    seed: int = 0,
+                    judge: Callable[[str], Verdict] | None = None) -> dict:
     """Drive the target toward `goal`. `send_fn(message, conversation_id=None) -> str`.
     `success_markers` (e.g. a secret) make the oracle decisive; `model` (callable)
-    enables the semantic LLM-judge, else a heuristic gradient is used."""
+    enables the semantic LLM-judge, else a heuristic gradient is used.
+
+    `judge` (optional) overrides the oracle entirely with a caller-supplied
+    `judge(reply)->Verdict` — used to pursue an *integrity* objective (e.g. a
+    structured JSONPath oracle) instead of the jailbreak/refusal gradient."""
     techs = techniques_order or technique_pool(seed=seed, creative=True)
     tfs = transforms if transforms is not None else _DEFAULT_TFS
     rng = random.Random(seed)
@@ -162,10 +197,27 @@ def feedback_attack(goal: str,
     depth_reserve = max(8, max_attempts // 3)
     breadth_cap = max(len(TECHNIQUES), max_attempts - depth_reserve)
 
-    def judge(text: str) -> Verdict:
-        return llm_judge(text, goal, model=model, success_markers=success_markers)
+    if judge is None:
+        def judge(text: str) -> Verdict:          # noqa: F811 — default oracle
+            return llm_judge(text, goal, model=model, success_markers=success_markers)
 
-    run = _Run(judge, _make_deliver(send_fn, rng), max_attempts, goal)
+    deliver = _make_deliver(send_fn, rng)
+
+    # Preflight: a benign probe. If the session/token is dead (401/403) the whole
+    # run would be meaningless — every attempt a transport error read as "clean".
+    # Abort with a clear signal instead of producing a spurious 0/N (issue #261.3).
+    pre = deliver("Hello, can you help me with a quick question?")
+    tkind, tcode = transport_status(pre)
+    if tkind == "auth_failure":
+        res = _result(False, (Verdict(False, 0.0, "refused"), "none", None, goal), [], 0,
+                      {str(tcode): 1}, 0, 1)
+        res["aborted"] = "auth_failure"
+        res["error"] = (f"preflight auth failure (HTTP {tcode}): the session/token is dead — "
+                        f"re-authenticate (headers_from='known_assets' or mint a fresh token) "
+                        f"before attacking. No attempts were run.")
+        return res
+
+    run = _Run(judge, deliver, max_attempts, goal)
 
     # Run the phases in order; `or` short-circuits as soon as one jailbreaks.
     (_phase_breadth(run, techs, breadth_cap, goal, rng)

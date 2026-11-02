@@ -11,6 +11,7 @@ silently passes everything).
 from __future__ import annotations
 
 import json
+import urllib.error
 import urllib.request
 
 from .attack_loop import feedback_attack
@@ -40,7 +41,26 @@ def _refuse_always(_message, conversation_id=None):
     return "I'm sorry, but I can't help with that. Ask me about orders instead."
 
 
+def _reachable(base_url: str) -> bool:
+    """True if the labs base URL answers at all. Without this, a labs-not-running
+    run reports 'calibrated: false 1/4' — which reads as an engine defect rather
+    than 'nothing to calibrate against' (issue #261.5)."""
+    try:
+        req = urllib.request.Request(base_url.rstrip("/") + "/", method="GET")
+        with urllib.request.urlopen(req, timeout=5):
+            return True
+    except urllib.error.HTTPError:
+        return True          # answered (even a 404) → reachable
+    except Exception:
+        return False
+
+
 def calibrate(base_url: str = "http://127.0.0.1:9000", max_attempts: int = 14) -> dict:
+    if not _reachable(base_url):
+        return {"unreachable": True, "calibrated": False,
+                "summary": f"labs unreachable at {base_url} — start the OWASP labs "
+                           f"(or point target= at them) before trusting a clean result; "
+                           f"this is NOT an engine failure."}
     results = []
 
     # positive controls — the engine MUST jailbreak these

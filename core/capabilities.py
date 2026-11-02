@@ -29,6 +29,9 @@ except ImportError:  # pragma: no cover - feature no-ops without a YAML parser
     yaml = None
 
 _SKILLS_DIR = _paths.REPO_ROOT / "skills"
+# Top-level dirs of the skills repo that hold another project's skills (construct/ = Construct's
+# scan-stage skills); never agent-smith skills, so never looked up or installed.
+SEPARATE_SKILL_SETS = frozenset({"construct"})
 _RUN_ON = {"host", "kali"}
 
 
@@ -70,7 +73,7 @@ def _capabilities_path(skill_name: str) -> Path | None:
         return direct
     try:
         for sub in _SKILLS_DIR.iterdir():
-            if sub.is_dir():
+            if sub.is_dir() and sub.name not in SEPARATE_SKILL_SETS:
                 nested = sub / skill_name / "capabilities.yaml"
                 if nested.is_file():
                     return nested

@@ -32,6 +32,16 @@ def _write_text(path: str, content: str) -> None:
         fh.write(content)
 
 
+def _load_artifact_payload(artifact_id: str) -> str | None:
+    """Read a stored payload artifact's bytes (issue #252), or None if missing."""
+    try:
+        from mcp_server.scan_engine.artifacts import _ARTIFACTS_DIR
+        f = _ARTIFACTS_DIR / f"{artifact_id}.txt"
+        return f.read_text(encoding="utf-8") if f.exists() else None
+    except Exception:
+        return None
+
+
 @mcp.tool()
 async def http(
     action:  str,
@@ -63,6 +73,16 @@ async def http(
         body = json.dumps(body)
     headers = _ensure_dict(headers)
     opts = _ensure_dict(options) or {}
+
+    # payload_artifact_id: deliver a big stored payload (tokenbomb/steg/encoded) from
+    # disk without round-tripping its bytes through context (issue #252). body_key
+    # wraps it as JSON {body_key: payload}; otherwise it IS the raw body.
+    pa_id = opts.get("payload_artifact_id")
+    if pa_id:
+        payload = _load_artifact_payload(pa_id)
+        if payload is None:
+            return f"payload_artifact_id '{pa_id}' not found on disk."
+        body = json.dumps({opts["body_key"]: payload}) if opts.get("body_key") else payload
 
     if action == "request":
         return await _do_request(url, method, headers, body, opts)

@@ -32,6 +32,21 @@ class TestKaliTimeoutDetect:
         assert not kt._kali_timed_out("")
 
 
+class TestTimeblindProbeGating:
+    """The time-based-blind LEAD is only for injection/timing probes, not a slow
+    batch job that happened to time out (issue #254)."""
+
+    def test_sqlmap_is_a_probe(self):
+        assert kt._is_timeblind_probe("sqlmap -u http://t/x --technique=T")
+
+    def test_sleep_payload_is_a_probe(self):
+        assert kt._is_timeblind_probe("curl \"http://t/x?q=1' OR SLEEP(5)-- -\"")
+
+    def test_batch_tool_is_not_a_probe(self):
+        assert not kt._is_timeblind_probe("hydra -L users.txt -P rockyou.txt ssh://t")
+        assert not kt._is_timeblind_probe("gobuster dir -u http://t -w big.txt")
+
+
 # ── Observability: command preview + redaction ───────────────────────────────
 
 class TestRedactCmd:

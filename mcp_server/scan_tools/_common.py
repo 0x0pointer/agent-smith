@@ -30,11 +30,13 @@ def _strip_scheme(target: str) -> str:
 # the target URL itself via tools.kali_runner._host_rewrite and stages its
 # config into a /work mount.)
 def _ai_headers(options: dict) -> dict:
-    hdrs = {"Content-Type": "application/json"}
-    extra = options.get("headers") or {}
-    if isinstance(extra, dict):
-        hdrs.update({str(k): str(v) for k, v in extra.items()})
-    return hdrs
+    """Headers for the garak/LLM transports: Content-Type + auth sourced from
+    known_assets when options ask (headers_from / auth_profile), under any explicit
+    options["headers"] (issue #247). Garak runs out-of-process so it can't hot-refresh
+    a rotating cookie mid-run, but it is seeded with the latest known_assets cookies.
+    """
+    from core import auth_headers as _auth
+    return _auth.resolve_headers(options, {"Content-Type": "application/json"})
 
 
 # Signals that unambiguously mean the spider tool failed to execute at all.

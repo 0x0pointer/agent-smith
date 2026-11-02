@@ -174,7 +174,7 @@ while IFS= read -r _skill_file; do
     [ "$_skill_name" = "pentester-opencode" ] && continue
 
     _install_skill_dir "$_skill_name" "$_skill_dir"
-done < <(find "$REPO_DIR/skills" -mindepth 2 -maxdepth 3 -name SKILL.md 2>/dev/null)
+done < <(find "$REPO_DIR/skills" -mindepth 2 -maxdepth 3 -name SKILL.md -not -path '*/skills/construct/*' 2>/dev/null)
 
 ok "$_SKILL_OK security analysis skills installed"
 if [ ${#_SKILL_MISSING[@]} -gt 0 ]; then

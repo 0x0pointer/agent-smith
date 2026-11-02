@@ -30,6 +30,10 @@ import secrets as _secrets
 
 _REPO_ROOT = _pathlib.Path(__file__).resolve().parents[1]
 _GUARD_SRC = _REPO_ROOT / "tools" / "kali" / "api_guard.py"
+# Session artifacts/ mounted READ-ONLY into the container at /artifacts, so Kali
+# tools can read generated payload sets (tokenbomb/steg/encoded files, wordlists)
+# directly — no temporary localhost HTTP server to serve them (issue #253).
+_ARTIFACTS_SRC = _REPO_ROOT / "artifacts"
 _TOKEN_FILE = _REPO_ROOT / "logs" / ".kali_api_token"
 # kali-server-mcp runs loopback-only inside the container on this port; only the
 # in-container guard (published on :5000) can reach it.
@@ -160,6 +164,8 @@ async def ensure_running() -> tuple[bool, str]:
                 # guard is MOUNTED so this is live without an image rebuild; the Dockerfile bakes
                 # the same guard for clean builds.
                 "-v", f"{_GUARD_SRC}:/usr/local/bin/kali-api-guard:ro",
+                # Session artifacts mounted read-only at /artifacts (issue #253).
+                "-v", f"{_ARTIFACTS_SRC}:/artifacts:ro",
                 "-e", f"KALI_API_TOKEN={_token}",
                 "-e", f"KALI_UPSTREAM_PORT={_KALI_UPSTREAM_PORT}",
                 "-e", "KALI_GUARD_PORT=5000",
@@ -178,6 +184,13 @@ async def ensure_running() -> tuple[bool, str]:
             )
             _, err = await p.communicate()
             return (p.returncode or 0), err.decode().strip()
+
+        # Ensure the artifacts dir exists on the host before mounting it, so docker
+        # doesn't create an empty root-owned one (issue #253).
+        try:
+            _ARTIFACTS_SRC.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
 
         rc, err = await _docker_run(_run_argv(_extra_ports))
         if rc != 0 and _extra_ports:

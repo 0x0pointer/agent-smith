@@ -199,6 +199,42 @@ BYPASS_REQUIRED_TYPES: dict[str, str] = {
     "role_prefix_spoofing": "forged turn delimiters (User:/Assistant:/System:/tool-output) tested in user input AND in tool-returned/RAG content, across delimiter variants",
 }
 
+# ── AI/LLM red-team cells — first-try-fallacy gate (issue #248) ────────────────
+# LLM output is non-deterministic and a gateway/guardrail is often probabilistic,
+# so a single refusal is not "clean" and a single success is not "confirmed".
+# These sets drive closure validation: an AI cell can't be closed off one bare
+# http() probe, and the required cells must cite the attack toolchain.
+
+# Every AI attack-surface cell type (LLM Top-10 + endpoint-level + MCP runtime).
+LLM_REDTEAM_TYPES = {
+    "prompt_injection", "jailbreak", "system_prompt_leak", "sensitive_info_disclosure",
+    "improper_output_handling", "excessive_agency", "misinformation", "unbounded_consumption",
+    "model_extraction", "content_bias", "membership_inference", "cot_forgery",
+    "role_prefix_spoofing", "rag_poisoning", "embedding_manipulation",
+    "mcp_token_exposure", "mcp_scope_creep", "mcp_tool_poisoning", "mcp_command_injection",
+    "mcp_intent_subversion", "mcp_auth", "mcp_context_oversharing",
+}
+
+# The subset that MUST be closed with a redteam()/transform()/garak artifact — a
+# bare http() probe is only ever one attempt (the first-try fallacy). Issue #248.
+LLM_TOOLCHAIN_REQUIRED_TYPES = {
+    "prompt_injection", "jailbreak", "system_prompt_leak",
+    "improper_output_handling", "unbounded_consumption",
+}
+
+# Artifact tool-prefixes (see core/coverage/operations._tested_by_from_artifact)
+# that count as the AI attack toolchain, as opposed to a bare http()/scanner probe.
+LLM_TOOLCHAIN_ARTIFACT_PREFIXES = {
+    "redteam", "transform", "encode", "mutate", "bijection", "tokenbomb", "steg",
+    "garak", "sweep", "oob_interaction",
+}
+
+# Minimum redteam attempts per LLM cell before `tested_clean` is accepted, by scan
+# depth (quick/recon 5 · standard 10 · thorough 20). Issue #248 proposal 1.
+LLM_MIN_ATTEMPTS_BY_DEPTH = {"recon": 5, "quick": 5, "standard": 10, "thorough": 20}
+LLM_MIN_DISTINCT_TECHNIQUES = 2
+
+
 # ── Injection cell types where 401/403 is meaningless evidence of cleanliness
 # (auth blocked the payload). Excludes auth/access-control types where 401/403
 # IS the finding signal. ──────────────────────────────────────────────────────
