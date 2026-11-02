@@ -251,8 +251,23 @@ async def add_chain(
         "combined_severity": combined_severity,
         "mermaid":           mermaid,
     }
+
+    def _path_sig(st):
+        # The composition itself — the ordered (from → to) finding-id hand-offs — ignoring the
+        # name / artifact-id / technique, so two chains over the SAME finding path are one chain.
+        return tuple((s.get("from_finding_id"), s.get("to_finding_id"))
+                     for s in (st or []) if isinstance(s, dict))
+
     async with _lock:
         data = _load()
-        data.setdefault("chains", []).append(entry)
+        chains = data.setdefault("chains", [])
+        sig = _path_sig(steps)
+        if sig:
+            for existing in chains:
+                if _path_sig(existing.get("steps")) == sig:
+                    # Identical finding path already on record — don't duplicate. Return the
+                    # existing entry so the caller can report it without appending a twin.
+                    return {**existing, "duplicate": True}
+        chains.append(entry)
         _save(data)
     return entry
