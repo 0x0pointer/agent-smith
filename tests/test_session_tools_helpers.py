@@ -954,6 +954,39 @@ class TestDoComplete:
             or "complete" in result.lower()
         )
 
+    def test_already_terminal_short_circuits_without_re_running_gate(self, tmp_path, monkeypatch):
+        """Operator force-completed out-of-band (terminal status on disk). The
+        agent's next complete() must acknowledge the scan is over and STOP —
+        not re-enter the quality gate (the infinite HIR/force-complete loop a
+        model that ignores 'stop calling complete' falls into)."""
+        import json
+        import core.session as scan_session
+        import mcp_server.session_tools as st
+        self._setup_session(tmp_path, monkeypatch)
+        monkeypatch.setattr(st, "_complete_attempts", 0)
+        # Dashboard force-completed:
+        sf = tmp_path / "session.json"
+        data = json.loads(sf.read_text())
+        data["status"] = "incomplete_with_unresolved_blockers"
+        sf.write_text(json.dumps(data))
+        # _collect_completion_blockers must NOT even be consulted.
+        with patch("mcp_server.session_tools._collect_completion_blockers",
+                   side_effect=AssertionError("gate must not run on a terminal scan")):
+            result = _do_complete()
+        assert "SCAN IS OVER" in result
+        assert st._complete_attempts == 0  # no attempt was counted
+
+    def test_cleared_session_short_circuits(self, tmp_path, monkeypatch):
+        """Dashboard 'Clear All' deleted session.json. The agent's next
+        complete() must stop — not recreate the file via the counter-flush."""
+        import core.session as scan_session
+        self._setup_session(tmp_path, monkeypatch)
+        (tmp_path / "session.json").unlink()  # Clear All
+        result = _do_complete()
+        assert "SCAN IS OVER" in result
+        # The counter-flush path never ran, so the file was not recreated.
+        assert not (tmp_path / "session.json").exists()
+
     def test_thorough_enforces_3_passes_then_operator_terminated(self, tmp_path, monkeypatch):
         # THOROUGH = MY LAYOUT: 3 mandatory escalating re-run passes, THEN
         # unlimited/operator-terminated. The first (_min_iterations()-1) complete()

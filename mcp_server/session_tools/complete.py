@@ -5,6 +5,7 @@ from core import cost as cost_tracker
 from core import findings as findings_store
 from core import logger as log
 from core import session as scan_session
+from core.session.persistence import _TERMINAL_STATUSES
 
 import mcp_server.session_tools as _st
 from .blocker_response import _build_blocker_response
@@ -189,11 +190,28 @@ def _blocker_response_or_none(data):
 
 
 def _do_complete():
+    # Authoritative disk truth FIRST. The operator may have force-completed or
+    # cleared the scan from the dashboard — a SEPARATE process whose write our
+    # cached _current hasn't observed (get() does not reconcile). Without this,
+    # a model that ignores the "stop calling complete" directive keeps re-entering
+    # the gate on a stale 'running' cache: the infinite HIR/force-complete loop,
+    # and the reason a dashboard "Clear All" is immediately recreated by the next
+    # counter-flush. Once the scan is terminal or gone, acknowledge and STOP —
+    # never re-run the quality gate.
+    _st.scan_session.load_from_disk(force=True)
     current0 = _st.scan_session.get() or {}
+    if not current0 or current0.get("status") in _TERMINAL_STATUSES:
+        return (
+            "SCAN IS OVER — the operator finalized or cleared this scan from the "
+            "dashboard. Do NOT call session(action='complete') again and do NOT "
+            "start a new scan. Write one brief final summary of the findings for "
+            "the user, then END your turn."
+        )
     # Deep-pivot (danger/benchmark): HARD-block completion while promoted internal hosts
-    # are unscanned. Checked FIRST so it applies on every path — including the thorough
-    # gate below, which returns before the normal blocker collection. Operator
-    # force-complete (scan_session.complete via the dashboard) still bypasses this.
+    # are unscanned. Checked FIRST (after the terminal short-circuit) so it applies on
+    # every path — including the thorough gate below, which returns before the normal
+    # blocker collection. Operator force-complete (scan_session.complete via the
+    # dashboard) still bypasses this.
     from .completion_gates import _deep_pivot_host_blocker
     _dp = _deep_pivot_host_blocker()
     if _dp:
