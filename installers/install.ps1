@@ -30,6 +30,22 @@ function Write-Fail  { param([string]$m) Write-Host "FAIL $m" -ForegroundColor R
 
 function Test-Cmd { param([string]$name) [bool](Get-Command $name -ErrorAction SilentlyContinue) }
 
+# Run a native command for its side effect, tolerating stderr output and a
+# non-zero exit. Under $ErrorActionPreference='Stop', a native command writing
+# to stderr (e.g. `claude mcp remove` printing "No MCP server named ..." when
+# there's nothing to remove) is promoted to a TERMINATING NativeCommandError
+# that aborts the whole install. Dropping EAP + redirecting ALL streams to null
+# makes these fire-and-forget calls safe. Returns the native exit code; never
+# throws. Use only when you don't need the command's output.
+function Invoke-NativeQuiet {
+    param([Parameter(Mandatory)][scriptblock]$Command)
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try { & $Command *> $null; return $LASTEXITCODE }
+    catch { return 1 }
+    finally { $ErrorActionPreference = $prev }
+}
+
 # Windows PowerShell 5.1's Out-File/Set-Content -Encoding utf8 writes a BOM,
 # which a leading-BOM-intolerant JSON parser (opencode / Claude settings) rejects
 # and which turns the first .env key into "﻿KEY" (silently ignored). Write
@@ -108,9 +124,21 @@ Write-Ok 'MCP SSE server running on localhost:7778'
 # ── Register MCP with Claude Code (SSE) ──────────────────────────────────────
 Write-Host ''
 Write-Host 'Registering pentest-agent MCP server with Claude Code (SSE)...'
-claude mcp remove --scope user pentest-agent 2>$null | Out-Null
-claude mcp add --scope user --transport sse pentest-agent http://127.0.0.1:7778/sse
-Write-Ok 'MCP server registered with Claude Code'
+if (Test-Cmd claude) {
+    # 'remove' first so re-runs are idempotent — it prints "No MCP server named
+    # ..." to stderr when absent, which under EAP='Stop' would abort the install;
+    # Invoke-NativeQuiet swallows that. Then add, and report on the real exit code.
+    Invoke-NativeQuiet { claude mcp remove --scope user pentest-agent } | Out-Null
+    $rc = Invoke-NativeQuiet { claude mcp add --scope user --transport sse pentest-agent http://127.0.0.1:7778/sse }
+    if ($rc -eq 0) {
+        Write-Ok 'MCP server registered with Claude Code'
+    } else {
+        Write-Warn ('Claude Code MCP registration returned exit {0}. Register manually with:' -f $rc)
+        Write-Warn '  claude mcp add --scope user --transport sse pentest-agent http://127.0.0.1:7778/sse'
+    }
+} else {
+    Write-Warn 'Claude Code CLI (claude) not found on PATH — skipping Claude registration (opencode/Codex are unaffected).'
+}
 
 # ── Register MCP with opencode (if installed) ────────────────────────────────
 $OpencodeConfig = Join-Path $env:USERPROFILE '.config\opencode\opencode.json'
@@ -142,7 +170,14 @@ $action  = New-ScheduledTaskAction -Execute 'powershell.exe' `
 $trigger = New-ScheduledTaskTrigger -AtLogOn
 $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) `
               -ExecutionTimeLimit (New-TimeSpan -Days 365)
-$principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -RunLevel Highest
+# Run the MCP auto-start task as the interactive user at LEAST privilege, NOT
+# elevated. -RunLevel Highest made the logon-spawned MCP (and the dashboard it
+# spawns) admin-owned; its launcher then exits, orphaning an elevated process
+# tree a normal shell can't stop (taskkill → "Access is denied"). The server
+# needs no elevation: port 7778 is unprivileged and Docker Desktop is reachable
+# from the user's own session. LogonType Interactive keeps it in that session so
+# it can talk to Docker Desktop.
+$principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
 $task = New-ScheduledTask -Action $action -Trigger $trigger -Settings $settings -Principal $principal `
                           -Description 'pentest-agent MCP SSE server (auto-start on logon)'
 try {

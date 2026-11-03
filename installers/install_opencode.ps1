@@ -135,7 +135,12 @@ $action  = New-ScheduledTaskAction -Execute 'powershell.exe' `
 $trigger = New-ScheduledTaskTrigger -AtLogOn
 $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) `
               -ExecutionTimeLimit (New-TimeSpan -Days 365)
-$principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -RunLevel Highest
+# Least privilege, interactive session — NOT elevated. -RunLevel Highest made the
+# logon-spawned MCP server admin-owned; its launcher then exits, orphaning an
+# elevated process tree a normal shell can't kill ("Access is denied"). The server
+# needs no elevation (port 7778 unprivileged, Docker Desktop reachable from the
+# user session), so run it as the interactive user at Limited level.
+$principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
 $task = New-ScheduledTask -Action $action -Trigger $trigger -Settings $settings -Principal $principal `
                           -Description 'pentest-agent MCP SSE server (auto-start on logon)'
 try {

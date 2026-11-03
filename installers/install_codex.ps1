@@ -21,6 +21,19 @@ function Write-Warn  { param([string]$m) Write-Host "WARN $m" -ForegroundColor Y
 function Write-Fail  { param([string]$m) Write-Host "FAIL $m" -ForegroundColor Red; exit 1 }
 function Test-Cmd    { param([string]$name) [bool](Get-Command $name -ErrorAction SilentlyContinue) }
 
+# Run a native command for its side effect, tolerating stderr output + non-zero
+# exit. Under EAP='Stop', a native command's stderr write (e.g. `codex mcp remove`
+# reporting nothing to remove) becomes a TERMINATING NativeCommandError that aborts
+# the install. Drop EAP + swallow all streams. Returns the exit code; never throws.
+function Invoke-NativeQuiet {
+    param([Parameter(Mandatory)][scriptblock]$Command)
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try { & $Command *> $null; return $LASTEXITCODE }
+    catch { return 1 }
+    finally { $ErrorActionPreference = $prev }
+}
+
 # Windows PowerShell 5.1 writes a BOM with -Encoding utf8; a BOM on the first
 # .env line turns the first key into "﻿KEY" (silently ignored). Write
 # UTF-8 without a BOM.
@@ -67,9 +80,16 @@ Write-Host 'Registering pentest-agent MCP server with Codex (stdio)...'
 # and `-m mcp_server` only resolves with the repo on PYTHONPATH — the wrapper sets
 # that (and resolves the venv Python) regardless of the cwd/PATH Codex spawns with.
 $runScript = Join-Path $RepoDir 'installers\run-mcp-server.ps1'
-codex mcp remove pentest-agent 2>$null | Out-Null
-codex mcp add pentest-agent -- powershell -NoProfile -ExecutionPolicy Bypass -File $runScript
-Write-Ok 'MCP server registered with Codex'
+# 'remove' first for idempotent re-runs; it errors to stderr when absent, which
+# under EAP='Stop' would abort the install — Invoke-NativeQuiet swallows it.
+Invoke-NativeQuiet { codex mcp remove pentest-agent } | Out-Null
+$rc = Invoke-NativeQuiet { codex mcp add pentest-agent -- powershell -NoProfile -ExecutionPolicy Bypass -File $runScript }
+if ($rc -eq 0) {
+    Write-Ok 'MCP server registered with Codex'
+} else {
+    Write-Warn ('Codex MCP registration returned exit {0}. Register manually with:' -f $rc)
+    Write-Warn ('  codex mcp add pentest-agent -- powershell -NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $runScript)
+}
 
 # ── Skills ───────────────────────────────────────────────────────────────────
 New-Item -ItemType Directory -Path $CodexSkills -Force | Out-Null
