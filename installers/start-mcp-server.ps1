@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Start / stop / restart / status of the pentest-agent MCP SSE server (Windows).
 
@@ -26,7 +26,12 @@ $ErrorActionPreference = 'Stop'
 
 $RepoDir = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $PidFile = Join-Path $RepoDir 'logs\mcp_sse.pid'
+# Start-Process cannot point stdout and stderr at the SAME file (unlike the shell
+# `>> log 2>&1`), so they are split. stderr -> mcp_sse.log keeps tracebacks and
+# the server's logging (which go to stderr) in the file the install/troubleshoot
+# messages tell you to check; stdout -> mcp_sse.out.log.
 $LogFile = Join-Path $RepoDir 'logs\mcp_sse.log'
+$OutFile = Join-Path $RepoDir 'logs\mcp_sse.out.log'
 $Port    = 7778
 
 function Test-PidAlive {
@@ -73,13 +78,35 @@ function Start-MCP {
         New-Item -ItemType Directory -Path (Join-Path $RepoDir 'logs') | Out-Null
     }
 
-    $venvPython = & poetry -C $RepoDir env info --executable 2>$null
-    if (-not $venvPython) {
-        Write-Error 'Could not determine venv Python path — run `poetry install` in the repo first'
+    # Resolve the Poetry venv Python. In PS 5.1, a native command writing to
+    # stderr while $ErrorActionPreference='Stop' raises NativeCommandError, so
+    # drop EAP locally and keep only the stdout string line (the exe path);
+    # stderr warnings arrive as ErrorRecord objects and are filtered out.
+    $venvPython = $null
+    try {
+        $prevEAP = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        $venvPython = (& poetry -C $RepoDir env info --executable 2>&1 |
+                        Where-Object { $_ -is [string] -and $_.Trim() } |
+                        Select-Object -First 1)
+    } finally { $ErrorActionPreference = $prevEAP }
+    if ($venvPython) { $venvPython = $venvPython.Trim() }
+    if (-not $venvPython -or -not (Test-Path $venvPython)) {
+        Write-Host "FAIL Could not determine the Poetry venv Python (poetry env info --executable returned nothing)."
+        Write-Host "     Run:  poetry -C `"$RepoDir`" install --no-interaction"
+        Write-Host "     If 'python' on your PATH is the Microsoft Store stub, turn it off under"
+        Write-Host "     Settings > Apps > Advanced app settings > App execution aliases so Poetry"
+        Write-Host "     builds its venv on the real interpreter, then re-run."
         exit 1
     }
 
     $env:PYTHONPATH = $RepoDir
+    # Force Python into UTF-8 mode. The server prints non-ASCII (e.g. a "→") in
+    # its startup logging; Windows defaults stdout/stderr to the ANSI code page
+    # (cp1252), which can't encode those and raises UnicodeEncodeError that
+    # crashes boot. UTF-8 mode makes stdout/stderr/filesystem UTF-8.
+    $env:PYTHONUTF8 = '1'
+    $env:PYTHONIOENCODING = 'utf-8'
     # Start-Process with -NoNewWindow + redirected I/O detaches the child so
     # closing this PowerShell session doesn't kill the MCP. The equivalent of
     # nohup on Unix.
@@ -87,18 +114,29 @@ function Start-MCP {
                            -ArgumentList @('-m', 'mcp_server', '--transport', 'sse',
                                             '--host', '127.0.0.1', '--port', "$Port") `
                            -WorkingDirectory $RepoDir `
-                           -RedirectStandardOutput $LogFile `
+                           -RedirectStandardOutput $OutFile `
                            -RedirectStandardError $LogFile `
                            -WindowStyle Hidden `
                            -PassThru
     $proc.Id | Out-File -FilePath $PidFile -Encoding ascii -NoNewline
 
-    # Poll /sse for up to 8s to confirm readiness.
+    # Poll until the port accepts a TCP connection (up to 8s). Do NOT probe /sse
+    # with Invoke-WebRequest: /sse is an endless Server-Sent-Events stream, and on
+    # PS 5.1 Invoke-WebRequest reads the entire response body before returning, so
+    # on a never-ending stream it blocks forever (-TimeoutSec caps only the initial
+    # response, not the streaming body read — unlike curl's --max-time in the .sh
+    # port). A raw TCP connect proves the server is listening without reading it.
     for ($i = 0; $i -lt 16; $i++) {
+        $connected = $false
+        $client = New-Object System.Net.Sockets.TcpClient
         try {
-            $r = Invoke-WebRequest -Uri "http://127.0.0.1:$Port/sse" -TimeoutSec 1 -UseBasicParsing -ErrorAction Stop
-            if ($r.StatusCode -lt 500) { break }
-        } catch { }
+            $async = $client.BeginConnect('127.0.0.1', $Port, $null, $null)
+            if ($async.AsyncWaitHandle.WaitOne(1000) -and $client.Connected) {
+                $client.EndConnect($async)
+                $connected = $true
+            }
+        } catch { } finally { $client.Close() }
+        if ($connected) { break }
         Start-Sleep -Milliseconds 500
     }
 
@@ -123,3 +161,9 @@ switch ($Action) {
         }
     }
 }
+
+# Reaching here means no failure path called `exit 1`. Return 0 explicitly so the
+# caller's `if ($LASTEXITCODE -ne 0)` check is deterministic — without this, the
+# exit code is inherited from the last native command (e.g. the poetry shim),
+# which on Windows can be nonzero even on success and spuriously trips the check.
+exit 0
