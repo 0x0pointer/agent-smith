@@ -92,15 +92,48 @@ def set_smith_session_id(session_id: str) -> None:
     _sess._flush()
 
 
+# A scan is OVER once any of these lands on disk. They are sticky: no process
+# may overwrite a terminal status with a non-terminal one (e.g. 'running').
+# Mirrors mcp_server.session_tools.recovery._TERMINAL_SCAN_STATUSES; duplicated
+# here because core.session must not import mcp_server (import-cycle rule).
+_TERMINAL_STATUSES = (
+    "complete", "incomplete_with_unresolved_blockers", "limit_reached",
+)
+
+
 def _flush() -> None:
-    if _sess._current:
-        _store.save(_sess._SESSION_FILE, _sess._current)
+    if not _sess._current:
+        return
+    # Terminal-sticky guard (force-complete race). The dashboard and the MCP
+    # server keep SEPARATE _current caches and both write session.json. When the
+    # operator force-completes, the dashboard writes a TERMINAL status to disk;
+    # a looping agent's next counter-flush in the MCP process would otherwise
+    # overwrite it with its stale 'running', re-arming the completion gate
+    # forever (the infinite HIR loop a weak model that ignores "stop calling
+    # complete" falls into). So: before writing a NON-terminal status, if disk
+    # was changed externally since our last flush AND now holds a terminal
+    # status, adopt disk's state and abort this flush instead of clobbering it.
+    if _sess._current.get("status") not in _TERMINAL_STATUSES:
         try:
-            _sess._last_local_write_mtime = _sess._SESSION_FILE.stat().st_mtime
+            disk_mtime = _sess._SESSION_FILE.stat().st_mtime
         except OSError:
-            # Hold the previous mtime; reconcile will conservatively reload
-            # the next time it's called.
-            pass
+            disk_mtime = None
+        if disk_mtime is not None and disk_mtime > _sess._last_local_write_mtime + 0.001:
+            try:
+                fresh = json.loads(_sess._SESSION_FILE.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                fresh = None
+            if isinstance(fresh, dict) and fresh.get("status") in _TERMINAL_STATUSES:
+                _sess._current = fresh
+                _sess._last_local_write_mtime = disk_mtime
+                return
+    _store.save(_sess._SESSION_FILE, _sess._current)
+    try:
+        _sess._last_local_write_mtime = _sess._SESSION_FILE.stat().st_mtime
+    except OSError:
+        # Hold the previous mtime; reconcile will conservatively reload
+        # the next time it's called.
+        pass
 
 
 def _reconcile_if_external_write() -> None:

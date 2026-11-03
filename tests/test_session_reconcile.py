@@ -160,6 +160,55 @@ class TestInterventionSurvivesMutationRace:
 
 
 # ---------------------------------------------------------------------------
+# _flush terminal-sticky guard — protects paths that flush WITHOUT first
+# reconciling (the completion-loop counter-flush), where the reconcile-based
+# protection above does not apply.
+# ---------------------------------------------------------------------------
+
+class TestFlushTerminalSticky:
+
+    def test_flush_does_not_clobber_external_terminal_status(self, isolated_session):
+        """A looping agent's counter-flush path mutates _current directly and
+        calls _flush() WITHOUT reconciling. If the dashboard force-completed
+        out-of-band (terminal status on disk), that flush must NOT overwrite it
+        with the stale 'running'. Instead _flush adopts the disk state."""
+        scan_session.start(target="http://x.test", depth="quick")
+        # Dashboard force-completes out-of-band.
+        _write_external_state(
+            isolated_session / "session.json",
+            status="incomplete_with_unresolved_blockers",
+            finished="2026-06-10T08:00:00+00:00",
+        )
+        # Our stale in-memory copy still says running; flush directly.
+        assert scan_session._current["status"] == "running"
+        scan_session._flush()
+
+        on_disk = json.loads((isolated_session / "session.json").read_text())
+        assert on_disk["status"] == "incomplete_with_unresolved_blockers"
+        assert on_disk["finished"] == "2026-06-10T08:00:00+00:00"
+        # _current adopted the terminal disk state rather than re-writing running.
+        assert scan_session._current["status"] == "incomplete_with_unresolved_blockers"
+
+    def test_flush_still_writes_when_local_status_is_terminal(self, isolated_session):
+        """The guard only fires for a NON-terminal local status. A terminal
+        local status (the operator's own complete()) writes through normally."""
+        scan_session.start(target="http://x.test", depth="quick")
+        scan_session._current["status"] = "complete"
+        scan_session._flush()
+        on_disk = json.loads((isolated_session / "session.json").read_text())
+        assert on_disk["status"] == "complete"
+
+    def test_flush_still_creates_file_for_fresh_start(self, isolated_session):
+        """The guard must never block a brand-new session from creating
+        session.json (it only compares against an EXISTING newer terminal
+        disk state). A fresh start writes a running session fine."""
+        scan_session.start(target="http://x.test", depth="quick")
+        assert (isolated_session / "session.json").exists()
+        on_disk = json.loads((isolated_session / "session.json").read_text())
+        assert on_disk["status"] == "running"
+
+
+# ---------------------------------------------------------------------------
 # Reconcile mechanics (verify the helper behaves correctly in isolation)
 # ---------------------------------------------------------------------------
 
