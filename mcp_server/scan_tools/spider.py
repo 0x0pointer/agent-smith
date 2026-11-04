@@ -282,6 +282,13 @@ async def _handle_spider(target, flags, options):
             f"  2. Retry: scan(tool='spider', target='{target}')\n"
             f"  (Failure tracking auto-releases after {scan_session.spider_max_retries()} retries.)"
         )
-    else:
-        result += await _spider_autodiscovery_note(target, raw, cookies)
+    # Auto-discovery runs REGARDLESS of the crawl-success gate. _discover_spec and the
+    # descriptor/transport probes hit the target's well-known paths directly (e.g.
+    # /static/openapi.json) and do NOT depend on crawl output, so a weak or
+    # false-negative crawl must not skip importing the authoritative OpenAPI/Swagger
+    # inventory. Gating it behind spider_ok silently collapsed the matrix to the
+    # hand-registered surface when _spider_succeeded mis-judged a productive crawl as
+    # failed. A genuinely empty crawl just yields no spider URLs — the direct spec
+    # probe still runs. Fail-soft: returns '' on nothing-found/error.
+    result += await _spider_autodiscovery_note(target, raw, cookies)
     return result

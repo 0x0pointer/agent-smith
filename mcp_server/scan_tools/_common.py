@@ -44,8 +44,23 @@ _SPIDER_HARD_FAIL_SIGNALS = ("command not found", "exec: ", "no such file or dir
 
 
 def _spider_succeeded(raw: str) -> bool:
-    """Return True if the spider tool executed (even finding nothing). False = failed to run."""
+    """Return True if the spider tool executed (even finding nothing). False = failed to run.
+
+    A productive crawl is proof it ran. If the output carries discovered URLs, the
+    spider succeeded even when a hard-fail *substring* ("no such file or directory",
+    "exec: ", …) also appears somewhere — in thorough mode the output is katana +
+    playwright + ZAP merged, so that string routinely shows up in a CRAWLED PAGE BODY
+    or one sub-spider's stderr while the crawl as a whole found dozens of endpoints.
+    Letting an incidental substring brand a 42-endpoint crawl a failure flips
+    ``spider_ok`` off and SKIPS spec auto-discovery (observed: a 39-operation OpenAPI
+    spec went unimported, collapsing the matrix to the hand-registered surface). The
+    hard-fail signals therefore only decide the verdict when NO usable output exists.
+    """
     if not raw or not raw.strip():
         return False
+    # Any crawled URL line is unambiguous evidence the spider ran (matches how
+    # _spider_autodiscovery_note harvests URLs), so trust it over incidental noise.
+    if any(ln.strip().startswith(("http://", "https://")) for ln in raw.splitlines()):
+        return True
     low = raw.lower()
     return not any(sig in low for sig in _SPIDER_HARD_FAIL_SIGNALS)
