@@ -62,6 +62,7 @@ def start(
     skill:            str   | None = None,
     model_profile:    str   | None = None,
     scan_mode:        str        = "pentest",
+    force_limits:     bool       = False,
 ) -> dict:
     """scan_mode: "pentest" (default) — HIR pauses for human decisions on ambiguous situations.
                   "benchmark" — fully autonomous + aggressive exploitation: the self-resolvable
@@ -96,6 +97,27 @@ def start(
         pass
 
     preset = _sess.PRESETS.get(depth, _sess.PRESETS["standard"])
+
+    # thorough/danger are DEFINED as "runs until complete (no cost/time/call cap)".
+    # A small/weak model composing the start() call tends to populate the optional
+    # max_* fields with plausible-but-wrong numbers (observed: 180min/500calls on a
+    # thorough run), silently throttling a scan that was meant to be uncapped — it
+    # died at ~15% coverage. For these depths, DROP caller-supplied caps unless the
+    # operator deliberately sets force_limits=True; record what was dropped so the
+    # start message can warn. Explicit caps are still honoured on recon/standard, and
+    # on any depth when force_limits is set (an operator intentionally bounding a run).
+    from core.session import is_thorough_like
+    _ignored_limits: dict[str, object] = {}
+    if is_thorough_like(depth) and not force_limits:
+        for _name, _val in (
+            ("max_cost_usd", max_cost_usd),
+            ("max_time_minutes", max_time_minutes),
+            ("max_tool_calls", max_tool_calls),
+        ):
+            if _val is not None:
+                _ignored_limits[_name] = _val
+        max_cost_usd = max_time_minutes = max_tool_calls = None
+
     limits = {
         "max_cost_usd":     max_cost_usd     if max_cost_usd     is not None else preset["max_cost_usd"],
         "max_time_minutes": max_time_minutes  if max_time_minutes is not None else preset["max_time_minutes"],
@@ -115,6 +137,10 @@ def start(
         "status":       "running",   # running | limit_reached | complete
         "stop_reason":  None,
         "limits":       limits,
+        # Caps the caller passed that were DROPPED because the depth is uncapped-by-
+        # contract (thorough/danger, force_limits not set). Surfaced in the start
+        # message so the operator sees the run is intentionally uncapped. None = none dropped.
+        "ignored_limits": _ignored_limits or None,
         "skill":         skill,
         "skill_history": [
             {
