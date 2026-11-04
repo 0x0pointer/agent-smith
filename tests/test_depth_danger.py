@@ -85,3 +85,53 @@ def test_recovery_iter_status_fires_for_danger():
     # …non-thorough-like depths still return None (behaviour unchanged)
     assert _recovery_iter_status({"depth": "standard"}) is None
     assert _recovery_iter_status({"depth": "recon"}) is None
+
+
+# ── start() guard: a small model can't silently cap a thorough/danger run ──────
+# Regression for the 180min/500call self-cap that killed a thorough scan at ~15%
+# coverage. thorough/danger are uncapped-by-contract: caller-supplied max_* are
+# dropped (and recorded in `ignored_limits`) unless force_limits=True.
+
+@pytest.mark.parametrize("depth", ["thorough", "danger"])
+def test_start_ignores_caller_caps_on_uncapped_depth(depth):
+    sess = scan_session.start(
+        "example.com", depth=depth,
+        max_time_minutes=180, max_tool_calls=500, max_cost_usd=0.25,
+    )
+    # caps dropped → preset's uncapped values stand
+    assert sess["limits"]["max_time_minutes"] is None
+    assert sess["limits"]["max_cost_usd"] is None
+    assert sess["limits"]["max_tool_calls"] == 0
+    # …and what was dropped is recorded for the start message to warn on
+    assert sess["ignored_limits"] == {
+        "max_cost_usd": 0.25, "max_time_minutes": 180, "max_tool_calls": 500,
+    }
+
+
+@pytest.mark.parametrize("depth", ["thorough", "danger"])
+def test_force_limits_honours_caller_caps_on_uncapped_depth(depth):
+    sess = scan_session.start(
+        "example.com", depth=depth,
+        max_time_minutes=180, max_tool_calls=500, force_limits=True,
+    )
+    assert sess["limits"]["max_time_minutes"] == 180
+    assert sess["limits"]["max_tool_calls"] == 500
+    assert sess["ignored_limits"] is None   # nothing dropped when forced
+
+
+def test_start_uncapped_depth_no_caps_passed_is_clean():
+    # the common case: no caps passed → nothing to drop, no warning
+    sess = scan_session.start("example.com", depth="thorough")
+    assert sess["ignored_limits"] is None
+    assert sess["limits"]["max_time_minutes"] is None
+
+
+@pytest.mark.parametrize("depth", ["standard", "recon"])
+def test_start_still_honours_caps_on_capped_depths(depth):
+    # the guard must NOT touch recon/standard — explicit caps still apply there
+    sess = scan_session.start(
+        "example.com", depth=depth, max_time_minutes=20, max_tool_calls=5,
+    )
+    assert sess["limits"]["max_time_minutes"] == 20
+    assert sess["limits"]["max_tool_calls"] == 5
+    assert sess["ignored_limits"] is None

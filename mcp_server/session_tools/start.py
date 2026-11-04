@@ -23,6 +23,12 @@ def _start_response(cfg: dict, classification: dict, target: str, scan_mode: str
         f"Scan started — target={target}  depth={depth}  "
         f"limits: {cost_str} / {time_str} / {call_limit_str}"
     )
+    _ignored = cfg.get("ignored_limits")
+    if _ignored:
+        log.note(
+            f"Dropped caller-supplied limit(s) on uncapped depth '{depth}': {_ignored} "
+            "(pass force_limits=true to honour them)"
+        )
     mode_label = (
         "BENCHMARK (auto-exploit critical findings)" if scan_mode == "benchmark"
         else "Pentest (human-in-the-loop for exploitation decisions)"
@@ -57,6 +63,16 @@ def _start_response(cfg: dict, classification: dict, target: str, scan_mode: str
         "  ⚠ AI-generated content may be incorrect. It should always be validated by a person.",
         "",
     ]
+    _ignored = cfg.get("ignored_limits")
+    if _ignored:
+        _parts = ", ".join(f"{k}={v}" for k, v in _ignored.items())
+        lines += [
+            f"  ⓘ IGNORED caller-supplied limit(s) [{_parts}] — depth '{depth}' runs until",
+            "    complete (no cost/time/call cap) by design, so these were dropped. This scan",
+            "    is UNCAPPED; end it with session(action='complete') or the dashboard. To bound",
+            "    it deliberately, re-start with options={'force_limits': true, 'max_time_minutes': N}.",
+            "",
+        ]
     if scan_mode == "benchmark":
         lines += [
             "BENCHMARK MODE: On critical/high findings, do NOT pause — exploit the chain autonomously.",
@@ -353,6 +369,7 @@ def _do_start(opts):
         skill=opts.get("skill"),
         model_profile=opts.get("model_profile"),  # None → auto-detect from env
         scan_mode=scan_mode,
+        force_limits=bool(opts.get("force_limits")),  # thorough/danger ignore caps unless set
     )
     _announce_dashboard_token()
     # Deterministic target classification — an advisory PRIOR, never a gate. It
