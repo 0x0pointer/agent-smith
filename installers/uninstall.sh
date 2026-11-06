@@ -20,6 +20,32 @@ else
     warn "claude CLI not found — skipping MCP removal"
 fi
 
+# ── Remove the auto-start supervisor (launchd on macOS, systemd on Linux) ────
+# install.sh puts the MCP server under a supervisor (KeepAlive=true /
+# Restart=always). Left in place it keeps respawning the server on port 7778
+# after everything else is removed, so stop and delete it.
+PLIST_DST="$HOME/Library/LaunchAgents/com.agent-smith.mcp-sse.plist"
+if [ -f "$PLIST_DST" ]; then
+    launchctl unload "$PLIST_DST" 2>/dev/null || true
+    rm -f "$PLIST_DST"
+    ok "launchd plist removed"
+fi
+
+SYSTEMD_UNIT="agent-smith-mcp.service"
+SYSTEMD_UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+if [ -f "$SYSTEMD_UNIT_DIR/$SYSTEMD_UNIT" ]; then
+    # `systemctl --user` needs a live user D-Bus session; without one, fall
+    # back to removing the files (the enable symlink included) directly.
+    if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
+        systemctl --user disable --now "$SYSTEMD_UNIT" 2>/dev/null || true
+    fi
+    rm -f "$SYSTEMD_UNIT_DIR/$SYSTEMD_UNIT" "$SYSTEMD_UNIT_DIR/default.target.wants/$SYSTEMD_UNIT"
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl --user daemon-reload 2>/dev/null || true
+    fi
+    ok "systemd user unit removed ($SYSTEMD_UNIT)"
+fi
+
 # ── Remove /pentester slash command ───────────────────────────────────────────
 CMD_FILE="$HOME/.claude/commands/pentester.md"
 if [ -f "$CMD_FILE" ]; then
