@@ -38,12 +38,26 @@ def _reset_coverage_matrix(target: str, prev_target: str, has_data: bool) -> boo
         archive_path = archive_dir / f"coverage_matrix_{ts}.json"
         shutil.copy2(COVERAGE_FILE, archive_path)
         log.note(f"Coverage matrix archived to {archive_path.name} (previous target: {prev_target})")
-        for stale in ("quick_log.json", _st._QA_STATE_FILENAME):
+        # A different target is a new engagement: the dashboard must not keep showing the
+        # old target's findings/metrics/log. Archive (not delete) then clear them, same as
+        # coverage above — findings.json persists across runs by design (prior-findings
+        # brief), so it was the one store that leaked stale results onto the dashboard.
+        for stale in ("quick_log.json", _st._QA_STATE_FILENAME, "findings.json"):
             p = COVERAGE_FILE.parent / stale
             if p.exists():
                 archive_stale = archive_dir / f"{p.stem}_{ts}.json"
                 shutil.copy2(p, archive_stale)
                 p.unlink()
+        # pentest.log lives inside logs/ (= archive_dir): archive a copy then TRUNCATE in
+        # place (not unlink) so the running logger keeps a valid open handle.
+        plog = archive_dir / "pentest.log"
+        if plog.exists():
+            try:
+                shutil.copy2(plog, archive_dir / f"pentest_{ts}.log")
+                plog.write_text("")
+            except Exception:
+                pass
+        log.note(f"findings + pentest.log archived and reset for new target {target}")
         _cov_save({
             "meta": {
                 "created": datetime.now(timezone.utc).isoformat(),
