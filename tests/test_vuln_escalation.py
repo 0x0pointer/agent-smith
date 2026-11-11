@@ -144,4 +144,41 @@ def test_sources_are_methodology_urls():
 def test_load_technique_brief_failsoft(monkeypatch, tmp_path):
     """No readable ref → empty string, never an exception."""
     monkeypatch.setattr(cs, "_REFS_DIRS", [str(tmp_path / "nope")])
-    assert cs._load_technique_brief(["ssti", "sqli"]) == ""
+    assert cs._load_technique_brief(cs._WEB_AREA, ["ssti", "sqli"]) == ""
+
+
+# ── Generic across attack areas (not just web) ────────────────────────────────
+
+def _ad_entries():
+    return [
+        {"type": "TOOL", "name": "kali", "command": "netexec smb 10.0.0.5 -u u -p p --shares"},
+        {"type": "TOOL", "name": "kali", "command": "GetUserSPNs.py -request -dc-ip 10.0.0.1"},
+    ]
+
+
+def test_detect_ad_area_from_tooling():
+    a = cs._detect_stuck_area(_ad_entries(), None)
+    assert a is not None and a["area"] == "ad" and a["skill"] == "ad-assessment"
+
+
+def test_detect_postex_area_from_tooling():
+    a = cs._detect_stuck_area([{"type": "TOOL", "name": "kali", "command": "./linpeas.sh"}], None)
+    assert a["area"] == "post-ex" and a["skill"] == "post-exploit"
+
+
+def test_detect_web_fallback():
+    a = cs._detect_stuck_area([{"type": "TOOL", "name": "http_request", "command": ""}], None)
+    assert a["area"] == "web" and a["skill"] == "web-exploit"
+
+
+def test_ad_stall_fires_and_points_at_ad_skill(directives):
+    """A stalled AD phase fires the SAME escalation, pointed at the AD skill (generic)."""
+    fd = {"findings": []}
+    sess = {"depth": "danger", "skill_history": [], "started_at": _iso(-20)}
+    alerts = cs._check_stuck_retrieval_escalation(_ad_entries(), fd, sess, None)
+    assert alerts and alerts[0]["code"] == "STUCK_RETRIEVAL_ESCALATION"
+    assert "/ad-assessment" in alerts[0]["message"]
+    msg = directives[0]["message"]
+    assert "ad-assessment" in msg                      # points at the AD skill
+    assert "active-directory" in msg.lower()           # the AD methodology URL
+    assert directives[0]["skill"] == "ad-assessment"   # directive is skill-scoped
