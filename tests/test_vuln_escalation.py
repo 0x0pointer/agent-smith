@@ -1,70 +1,68 @@
-"""Tests for the confirmed-but-unexploited vuln retrieval-escalation check.
+"""Tests for the stuck-triggered, technique-focused retrieval escalation.
 
-A `vulnerable` coverage cell of a known-payload injection class must raise an
-ESCALATE_<TYPE> alert (and, in the live flow, a blocking gate + a directive that
-names the exact web-exploit ref and a payload-list research URL). Clean cells,
-non-exploitable classes, and already-satisfied/dismissed gates must not fire.
+Progress-gated recovery: when a deep-pivot scan stalls on an unsolved web target
+(no new finding for a while), force a RETRIEVAL escalation — study the technique
+reference + research a methodology source + ADAPT — rather than letting it repeat
+or give up. Must NOT fire for a non-deep-pivot scan, before recon, while findings
+are still flowing, or while web-exploit is already running.
 """
-from core.qa_agent.checks_skills import (
-    _check_confirmed_vuln_escalation,
-    _VULN_ESCALATION,
-)
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+import core.qa_agent.checks_skills as cs
 
 
-def _cov(*cells):
-    return {"matrix": list(cells)}
+def _iso(delta_min=0):
+    return (datetime.now(timezone.utc) + timedelta(minutes=delta_min)).isoformat()
 
 
-def test_confirmed_ssti_cell_fires_escalation():
-    alerts = _check_confirmed_vuln_escalation(
-        _cov({"id": "c1", "injection_type": "ssti", "status": "vulnerable"}),
-        {"gates": [], "skill_history": []},
-    )
-    assert [a["code"] for a in alerts] == ["ESCALATE_SSTI"]
-    msg = alerts[0]["message"]
-    assert "refs/ssti.md" in msg or "ssti" in msg.lower()
+DEEP = {"depth": "danger", "skill_history": []}
+COV = {"endpoints": [{"path": "/x"}], "matrix": [{"injection_type": "ssti", "status": "pending"}]}
 
 
-def test_clean_and_non_mapped_cells_ignored():
-    alerts = _check_confirmed_vuln_escalation(
-        _cov(
-            {"id": "a", "injection_type": "sqli", "status": "tested_clean"},  # clean
-            {"id": "b", "injection_type": "idor", "status": "vulnerable"},    # not mapped
-            {"id": "c", "injection_type": "cors", "status": "vulnerable"},    # not mapped
-        ),
-        {"gates": [], "skill_history": []},
-    )
-    assert alerts == []
+@pytest.fixture
+def directives(monkeypatch):
+    """Capture injected directives + force no-pending so the check proceeds."""
+    calls = []
+    monkeypatch.setattr(cs._qa, "_has_pending_directives", lambda: False)
+    import core.steering as st
+    monkeypatch.setattr(st.steering_queue, "add_directive", lambda **k: calls.append(k))
+    return calls
 
 
-def test_one_alert_per_injection_type():
-    alerts = _check_confirmed_vuln_escalation(
-        _cov(
-            {"id": "x1", "injection_type": "ssti", "status": "vulnerable"},
-            {"id": "x2", "injection_type": "ssti", "status": "vulnerable"},
-            {"id": "y1", "injection_type": "xxe", "status": "vulnerable"},
-        ),
-        {"gates": [], "skill_history": []},
-    )
-    assert sorted(a["code"] for a in alerts) == ["ESCALATE_SSTI", "ESCALATE_XXE"]
+def test_not_deep_pivot_no_fire():
+    assert cs._check_stuck_retrieval_escalation([], {}, {"depth": "standard"}, COV) == []
 
 
-def test_satisfied_or_dismissed_gate_suppresses():
-    cov = _cov({"id": "c1", "injection_type": "ssti", "status": "vulnerable"})
-    for st in ("satisfied", "not_applicable"):
-        alerts = _check_confirmed_vuln_escalation(
-            cov, {"gates": [{"id": "exploit_ssti", "status": st}], "skill_history": []}
-        )
-        assert alerts == [], f"gate status {st!r} should suppress"
+def test_before_recon_no_fire():
+    assert cs._check_stuck_retrieval_escalation([], {}, DEEP, {"endpoints": []}) == []
 
 
-def test_no_cells_is_empty():
-    assert _check_confirmed_vuln_escalation({}, {"gates": [], "skill_history": []}) == []
-    assert _check_confirmed_vuln_escalation({"matrix": []}, {"gates": []}) == []
+def test_findings_still_flowing_not_stuck(directives):
+    fd = {"findings": [{"ts": _iso(0)}]}  # a finding just landed
+    assert cs._check_stuck_retrieval_escalation([], fd, DEEP, COV) == []
+    assert directives == []
 
 
-def test_map_covers_known_payload_classes():
-    for cls in ("ssti", "xxe", "cmdi", "sqli", "ssrf", "xss", "deserialization"):
-        assert cls in _VULN_ESCALATION
-        ref, url = _VULN_ESCALATION[cls]
-        assert ref.startswith("refs/") and url.startswith("https://")
+def test_stalled_fires_with_technique_framing(directives):
+    fd = {"findings": [{"ts": _iso(-10)}]}  # no new finding for ~10 min
+    alerts = cs._check_stuck_retrieval_escalation([], fd, DEEP, COV)
+    assert alerts and alerts[0]["code"] == "STUCK_RETRIEVAL_ESCALATION"
+    assert directives and directives[0]["trigger"] == "STUCK_RETRIEVAL_ESCALATION"
+    msg = directives[0]["message"]
+    assert "refs/ssti.md" in msg          # points at the right local technique ref
+    assert "hacktricks" in msg.lower()    # + a methodology source to research
+    assert "ADAPT" in msg and "payload list" in msg.lower()  # technique, not payloads
+
+
+def test_already_escalating_no_fire(directives):
+    fd = {"findings": [{"ts": _iso(-10)}]}
+    sess = {"depth": "danger", "skill_history": [{"skill": "web-exploit", "ts": _iso(-2)}]}
+    assert cs._check_stuck_retrieval_escalation([], fd, sess, COV) == []
+
+
+def test_sources_are_methodology_urls():
+    for c in ("ssti", "sqli", "cmdi", "xxe", "ssrf", "traversal", "deserialization"):
+        ref, url = cs._RETRIEVAL_SOURCES[c]
+        assert ref.endswith(".md") and url.startswith("https://")

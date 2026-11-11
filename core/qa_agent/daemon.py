@@ -47,11 +47,11 @@ from .checks_shortcuts import (
     _check_suspicious_speed,
 )
 from .checks_skills import (
-    _check_confirmed_vuln_escalation,
     _check_core_skill_chain,
     _check_missing_skill,
     _check_no_spider_after_httpx,
     _check_post_exploit_depth,
+    _check_stuck_retrieval_escalation,
 )
 
 _log = logging.getLogger(__name__)
@@ -98,10 +98,12 @@ _CHECKS: list[tuple] = [
     (_check_no_spider_after_httpx, ("entries",)),
     (_check_core_skill_chain,      ("entries", "session_data", "coverage_data")),
     (_check_missing_skill,         ("coverage_data", "session_data")),
-    # Confirmed-but-unexploited web vuln → force the retrieval ladder (load the
-    # payload ref, apply, web-research), hard-gated. Catches the SSTI/XXE/etc.
-    # "stopped at {{7*7}}=49" misses the generic exploit nudge above left behind.
-    (_check_confirmed_vuln_escalation, ("coverage_data", "session_data")),
+    # Stalled on an unsolved web target → force retrieval escalation (study the
+    # technique ref + research + ADAPT), progress-gated so it's model-adaptive:
+    # a strong model making findings never stalls; a weak one that stops cold gets
+    # the escalation path it never takes on its own. Delivery is instruction-based
+    # today; see design note re: harness-side injection.
+    (_check_stuck_retrieval_escalation, ("entries", "findings_data", "session_data", "coverage_data")),
     # Deep post-exploitation: RCE→shell, container escape, real lateral movement
     (_check_post_exploit_depth,    ("session_data",)),
     # Reverse-shell with a placeholder LHOST → point at OOB / operator listener / documented dead-end
