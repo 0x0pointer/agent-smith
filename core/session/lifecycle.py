@@ -96,6 +96,17 @@ def start(
     except Exception:
         pass
 
+    # Steering is NOT session-scoped and nothing else resets it on a new scan, so a prior
+    # scan's human steers, QA directives (STUCK_RETRIEVAL, chain nudges) and resolved-HIR
+    # directives leak into THIS scan — the agent then chases ghost instructions and a
+    # leftover HIR can block the session outright (benchmark: a re-run's first lab died in
+    # 2min fighting a stale HIR). A new scan is a clean slate: wipe them too. Fail-soft.
+    try:
+        from core.steering import steering_queue as _sq
+        _sq.clear()
+    except Exception:
+        pass
+
     preset = _sess.PRESETS.get(depth, _sess.PRESETS["standard"])
 
     # thorough/danger are DEFINED as "runs until complete (no cost/time/call cap)".

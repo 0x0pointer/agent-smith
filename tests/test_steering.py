@@ -238,3 +238,15 @@ class TestIdenticalDirectiveCollapse:
         id1 = q.add_directive(code=CHAIN_REQUIRED, message="CHAIN: web-exploit", skill="web-exploit")
         id2 = q.add_directive(code=CHAIN_REQUIRED, message="CHAIN: web-exploit", skill="web-exploit")
         assert id1 is not None and id2 is None       # non-force identical still deduped to None
+
+
+class TestClearOnNewScan:
+    def test_clear_empties_queue_and_returns_count(self, q):
+        q.add_directive(code=RESUME_REQUIRED, message="HUMAN INSTRUCTION: a",
+                        trigger="HUMAN_STEER", force=True)
+        q.add_directive(code=CHAIN_REQUIRED, message="STUCK: retrieval escalation",
+                        trigger="STUCK_RETRIEVAL_ESCALATION", force=True)
+        assert len(q.get_active()) == 2
+        assert q.clear() == 2          # returns count removed
+        assert q.get_active() == []    # clean slate
+        assert q.clear() == 0          # idempotent on an empty queue
