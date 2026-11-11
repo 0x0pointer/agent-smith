@@ -407,17 +407,43 @@ def _load_technique_brief(area: dict, classes: list[str]) -> str:
 
 
 def _kb_recall_brief(area: dict, classes: list[str]) -> str:
-    """Phase-2 wire point: once the local KB (feat/kb-local-retrieval) is merged, pull
-    this area's methodology from it so non-web areas get harness-delivered content too —
-    the same injection, only the source swaps from a local file to KB recall. Safe no-op
-    (returns "") until that API exists, so the generic mechanism ships without it."""
+    """Harness-deliver this area's methodology from the local KB (BM25 over kb/index.db).
+
+    Used when the skill has no local refs/ (every non-web area today), so AD / cloud /
+    post-ex etc. get real inline technique text once the KB is built — the same
+    injection, only the source swaps from a local file to KB recall. Prefers methodology
+    kinds (WSTG, our skill refs, GTFOBins/LOLBAS) over raw CVE/exploit dumps, and pulls
+    the matched doc's body (bounded), not just the snippet. Fail-soft: "" when the index
+    is absent or empty, so the generic mechanism never breaks without a KB."""
     try:
-        from core.kb import recall_brief as _kb  # lands with the KB merge
-    except Exception:
-        return ""
-    try:
-        q = " ".join([area["area"], *classes[:3], "methodology exploitation"]).strip()
-        return (_kb(q, limit=2, budget=_BRIEF_BUDGET) or "").strip()
+        from core import kb as _kb
+        con = _kb.open_index()
+        if con is None:
+            return ""
+        q = " ".join([area["area"], *classes[:3],
+                      area["skill"].replace("-", " "), "exploitation technique"]).strip()
+        hits = (_kb.query_index(con, q, kinds=["wstg", "skill_ref", "gtfobins", "lolbas"], limit=2)
+                or _kb.query_index(con, q, limit=2))
+        parts: list[str] = []
+        budget = _BRIEF_BUDGET
+        for h in hits:
+            if budget <= 0:
+                break
+            body = ""
+            try:
+                row = con.execute("SELECT body FROM kb_docs WHERE source=? LIMIT 1",
+                                  [h.get("source")]).fetchone()
+                body = (row[0] if row else "") or ""
+            except Exception:
+                body = h.get("snippet") or ""
+            body = body.strip()
+            if not body:
+                continue
+            chunk = body[:min(budget, _BRIEF_PER_CLASS)].rstrip()
+            parts.append(f"TECHNIQUE {h.get('title') or h.get('kind', 'kb')} "
+                         f"({h.get('source', '')}):\n{chunk}")
+            budget -= len(chunk)
+        return "\n\n".join(parts).strip()
     except Exception:
         return ""
 
