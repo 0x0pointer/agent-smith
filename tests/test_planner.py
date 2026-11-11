@@ -94,3 +94,68 @@ def test_inject_pending_gates_skips_already_invoked_skill():
          patch("core.session.get", return_value={"skill_history": [{"skill": "credential-audit"}]}):
         planner._inject_pending_gates(required)
     assert required == []   # skill already chained → no directive
+
+
+# ── KB recall hints (plan 5.1 §7 / D1-D2) ────────────────────────────────────
+
+def _kb_with_kinds(tmp_path, kinds):
+    """Build a kb/index.db containing one doc per kind; point kb_mod at it."""
+    from core import kb as kb_mod
+    kb_root = tmp_path / "kb"
+    kb_root.mkdir(exist_ok=True)
+    monkey_paths = {
+        "KB_ROOT": kb_root, "SOURCES_DIR": kb_root / "sources",
+        "RAW_DIR": kb_root / "sources" / "_raw", "SESSIONS_DIR": kb_root / "sessions",
+        "INDEX_DB": kb_root / "index.db", "MANIFEST": kb_root / "MANIFEST.json",
+    }
+    con = kb_mod.open_index(kb_root / "index.db", create=True)
+    for k in kinds:
+        kb_mod.replace_source(con, f"kb:{k}", [{
+            "source": f"kb:{k}/one", "kind": k, "title": k, "tags": [],
+            "text": f"{k} content", "untrusted": False}])
+    con.close()
+    planner._KB_HINT_CACHE = {"checked_at": 0.0, "kinds": set()}   # drop cross-test cache
+    return monkey_paths
+
+
+def test_kb_recall_hint_for_fingerprinted_tech(tmp_path, monkeypatch):
+    """D1: a known technology gets ONE local-KB recall suggestion (deduped)."""
+    from core import kb as kb_mod
+    monkeypaths = _kb_with_kinds(tmp_path, {"cve", "exploit"})
+    for attr, val in monkeypaths.items():
+        monkeypatch.setattr(kb_mod, attr, val)
+    monkeypatch.setattr(planner, "_kb_hint_suggested", {})
+    sess = {"id": "s1", "known_assets": {"technologies": ["Flask:2.0.1"]}}
+    rec = []
+    with patch("core.session.get", return_value=sess):
+        planner._add_kb_recall_hints(rec)
+        planner._add_kb_recall_hints(rec)          # second call must dedupe
+    assert len(rec) == 1
+    assert "recall" in rec[0] and "Flask:2.0.1" in rec[0]
+
+
+def test_kb_recall_hint_quiet_without_exploit_kinds(tmp_path, monkeypatch):
+    """No cve/exploit/nuclei kinds in the KB → no suggestion (stay quiet)."""
+    from core import kb as kb_mod
+    monkeypaths = _kb_with_kinds(tmp_path, {"skill_ref"})
+    for attr, val in monkeypaths.items():
+        monkeypatch.setattr(kb_mod, attr, val)
+    monkeypatch.setattr(planner, "_kb_hint_suggested", {})
+    sess = {"id": "s1", "known_assets": {"technologies": ["Flask:2.0.1"]}}
+    rec = []
+    with patch("core.session.get", return_value=sess):
+        planner._add_kb_recall_hints(rec)
+    assert rec == []
+
+
+def test_cve_gate_points_at_local_kb_first():
+    """D1: a CVE-triggered gate appends the recall-before-web hint."""
+    required = []
+    gate = {"id": "analyze_cve", "required_skills": ["analyze-cve"],
+            "trigger": "CVE identified: CVE-2023-25577"}
+    with patch("core.session.pending_gates", return_value=[gate]), \
+         patch("core.session.get", return_value={"skill_history": []}):
+        planner._inject_pending_gates(required)
+    assert len(required) == 1
+    assert "recall" in required[0] and "cve-2023-25577" in required[0]
+    assert "scope:'kb'" in required[0]

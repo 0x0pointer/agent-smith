@@ -2108,3 +2108,22 @@
 .sess-running  { color:var(--green); }
 .sess-complete { color:var(--text-muted); }
 .sess-inactive { color:var(--text-dim); }
+
+/* ── Engagement-docs upload (Operator Actions, plan 5.1) ────────────────────
+   Style the native file-picker button to the filled-button recipe used across
+   the dashboard (green primary, like Fulfil), instead of the browser default
+   grey. ::file-selector-button is supported in all modern engines; the
+   -webkit- variant is kept for older Safari. */
+#kb-docs-input::file-selector-button,
+#kb-docs-input::-webkit-file-upload-button {
+  background: #16a34a;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  padding: 0.3rem 0.7rem;
+  font-size: 0.74rem;
+  font-family: 'Outfit', sans-serif;
+  cursor: pointer;
+  margin-right: 0.5rem;
+}
+#kb-docs-input::file-selector-button:hover { background: #15803d; }

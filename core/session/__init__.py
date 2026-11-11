@@ -249,6 +249,7 @@ from .gates import (  # noqa: E402
     open_trigger_gate,
     pending_gates,
     reconcile_worked_gates,
+    record_recall,
     reopen_gate_on_evidence,
     restore_gates,
     satisfy_gate,

@@ -96,11 +96,21 @@ def start(
     except Exception:
         pass
 
+    # Ephemeral engagement docs (plan 5.1 §6.3): a new scan starting means any
+    # kb/sessions/* leftovers from a crashed/never-completed session are stale
+    # client data — sweep them all (one scan at a time; static KB untouched).
+    try:
+        from core import kb as _kb
+        _kb.purge_session_docs()
+    except Exception:
+        pass
+
     # Steering is NOT session-scoped and nothing else resets it on a new scan, so a prior
-    # scan's human steers, QA directives (STUCK_RETRIEVAL, chain nudges) and resolved-HIR
-    # directives leak into THIS scan — the agent then chases ghost instructions and a
-    # leftover HIR can block the session outright (benchmark: a re-run's first lab died in
-    # 2min fighting a stale HIR). A new scan is a clean slate: wipe them too. Fail-soft.
+    # scan's human steers, QA directives (STUCK_RETRIEVAL, chain nudges), KB_DOCS_ATTACHED
+    # notes (pointing at docs we just purged) and resolved-HIR directives leak into THIS
+    # scan — the agent then chases ghost instructions and a leftover HIR can block the
+    # session outright (benchmark: a re-run's first lab died in 2min fighting a stale HIR).
+    # A new scan is a clean slate: wipe them too. Fail-soft.
     try:
         from core.steering import steering_queue as _sq
         _sq.clear()
@@ -293,6 +303,17 @@ def complete(
         # the durable training bundle (self-contained), then tear down the RCE containers.
         snapshot_training_bundle()
         stop_pentest_containers()
+        # Engagement docs are ephemeral (plan 5.1 §6.3): purge this scan's
+        # client/target docs on the terminal transition — data minimization.
+        # Only the known_assets.kb_docs NAME audit trail survives in session.json.
+        try:
+            from core import kb as _kb
+            purged = _kb.purge_session_docs(_sess._current.get("id"))
+            if purged:
+                _sess._current["kb_docs_purged"] = purged
+                _sess._flush()
+        except Exception:
+            pass
     return _sess._current or {}
 
 

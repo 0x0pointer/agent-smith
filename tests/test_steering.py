@@ -250,3 +250,20 @@ class TestClearOnNewScan:
         assert q.clear() == 2          # returns count removed
         assert q.get_active() == []    # clean slate
         assert q.clear() == 0          # idempotent on an empty queue
+
+
+def test_session_start_clears_stale_steering(monkeypatch, tmp_path):
+    """A new scan is a clean slate — prior-scan steers (human steers, stale
+    KB_DOCS_ATTACHED notes, resolved HIRs) must NOT leak in. Regression for the
+    stale 'api-notes'/ghost-steer leakage."""
+    import core.steering as st
+    import core.session as scan_session
+    monkeypatch.setattr(st, "_STEERING_FILE", tmp_path / "steering_queue.json")
+    st.steering_queue.add_directive(
+        code=st.RESUME_REQUIRED, message="HUMAN INSTRUCTION: focus on /api/login SQLi",
+        trigger="HUMAN_STEER", force=True)
+    st.steering_queue.add_directive(
+        code="INFO", message="KB DOCS ATTACHED — uploaded api-notes.md", trigger="KB_DOCS_ATTACHED")
+    assert len(st.steering_queue.get_active()) == 2
+    scan_session.start("http://target.example")
+    assert st.steering_queue.get_active() == []   # scan start wiped the leftovers

@@ -71,9 +71,10 @@ class SteeringQueue:
 
     def clear(self) -> int:
         """Drop ALL directives (a clean slate). Returns how many were removed. Called at
-        scan start so a prior scan's steers / HIR resolutions / QA directives don't leak
-        into the new scan — steering is not session-scoped, so without this the agent
-        inherits stale, now-meaningless instructions from the previous run."""
+        scan start so a prior scan's steers / KB-docs notes / HIR resolutions / QA
+        directives don't leak into the new scan — steering is not session-scoped, so
+        without this the agent inherits stale, now-meaningless instructions from the
+        previous run."""
         n = len(self._load())
         self._save([])
         return n
