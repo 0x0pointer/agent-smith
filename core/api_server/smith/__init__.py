@@ -40,6 +40,10 @@ _watchdog_last_respawn_progress: tuple = ()
 # credit / auth message) so the no-progress HIR can report the REAL cause instead
 # of the generic "agent keeps exiting without testing". Cleared on a live respawn.
 _last_spawn_failure: str = ""
+# Session id of the last scan the watchdog went dormant for because it runs in
+# scan_mode=benchmark (an external runner owns the restart loop there). Tracks the
+# transition so the one-shot "dormant for this scan" log fires once per scan.
+_watchdog_benched_for: str = ""
 # Restart throttle for the MCP SSE self-heal — reset by tests on this facade.
 _mcp_sse_last_restart_ts: float = 0.0
 # ── Usage-Policy refusal monitor state ───────────────────────────────────────
