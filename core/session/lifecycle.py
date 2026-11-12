@@ -110,10 +110,17 @@ def start(
     # notes (pointing at docs we just purged) and resolved-HIR directives leak into THIS
     # scan — the agent then chases ghost instructions and a leftover HIR can block the
     # session outright (benchmark: a re-run's first lab died in 2min fighting a stale HIR).
-    # A new scan is a clean slate: wipe them too. Fail-soft.
+    # A NEW target is a clean slate: wipe them. A same-target RESUME keeps still-PENDING
+    # HUMAN_STEER directives — operator input for THIS engagement awaiting delivery that
+    # a restart (crash / compaction / benchmark re-launch) must not silently destroy.
+    # (_current still holds the PREVIOUS session here — it is replaced further below.)
+    # Fail-soft.
     try:
         from core.steering import steering_queue as _sq
-        _sq.clear()
+        _prev_tgt = str((_sess._current or {}).get("target") or "")
+        _norm = lambda s: s.strip().lower().rstrip("/")
+        _same = bool(_prev_tgt) and _norm(_prev_tgt) == _norm(str(target or ""))
+        _sq.clear(keep_pending_human=_same)
     except Exception:
         pass
 

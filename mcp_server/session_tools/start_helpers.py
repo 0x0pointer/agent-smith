@@ -25,19 +25,31 @@ def _backfill_matrix_target(target: str) -> None:
 
 
 def _reset_coverage_matrix(target: str, prev_target: str, has_data: bool) -> bool:
-    """Reset/init coverage matrix. Returns True if this is a resume of the same target."""
-    from core.coverage import COVERAGE_FILE, _save as _cov_save
+    """Reset/init coverage matrix. Returns True if this is a resume of the same target.
+
+    The fresh-vs-resume decision NORMALISES both sides (case, whitespace, trailing
+    slash — same rule as _norm_target below): a ``http://X/`` variant of the same lab
+    must RESUME (keeping findings/coverage), never archive+wipe mid-engagement. When
+    no previous session exists (session.json deleted/expired), fall back to the
+    matrix's own meta.target so a leftover matrix from a DIFFERENT target is still
+    detected and reset rather than silently inherited."""
+    from core.coverage import COVERAGE_FILE, _save as _cov_save, get_matrix
     from datetime import datetime, timezone
     import shutil
 
-    if prev_target and prev_target != target and has_data:
+    nt = _norm_target(target)
+    prev_eff = _norm_target(prev_target)
+    if not prev_eff and COVERAGE_FILE.exists():
+        prev_eff = _norm_target((get_matrix() or {}).get("meta", {}).get("target", ""))
+
+    if prev_eff and prev_eff != nt and has_data:
         # Different target — archive the old matrix AND archive (not delete) quick_log + qa_state
         ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         archive_dir = COVERAGE_FILE.parent / "logs"
         archive_dir.mkdir(exist_ok=True)
         archive_path = archive_dir / f"coverage_matrix_{ts}.json"
         shutil.copy2(COVERAGE_FILE, archive_path)
-        log.note(f"Coverage matrix archived to {archive_path.name} (previous target: {prev_target})")
+        log.note(f"Coverage matrix archived to {archive_path.name} (previous target: {prev_eff})")
         # A different target is a new engagement: the dashboard must not keep showing the
         # old target's findings/metrics/log. Archive (not delete) then clear them, same as
         # coverage above — findings.json persists across runs by design (prior-findings
@@ -80,10 +92,11 @@ def _reset_coverage_matrix(target: str, prev_target: str, has_data: bool) -> boo
             "endpoints": [],
             "matrix": [],
         })
-    # Same target with existing data — keep matrix as-is (resume or view results), but backfill
-    # meta.target if a prior path left it empty (see _backfill_matrix_target).
+    # Same target (normalised) with existing data — keep matrix as-is (resume or view
+    # results), but backfill meta.target if a prior path left it empty (see
+    # _backfill_matrix_target).
     _backfill_matrix_target(target)
-    return bool(prev_target and prev_target == target and has_data)
+    return bool(prev_eff and prev_eff == nt and has_data)
 
 
 def _norm_target(s) -> str:

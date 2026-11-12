@@ -69,15 +69,25 @@ class SteeringQueue:
         except Exception:
             pass
 
-    def clear(self) -> int:
-        """Drop ALL directives (a clean slate). Returns how many were removed. Called at
+    def clear(self, keep_pending_human: bool = False) -> int:
+        """Drop directives (a clean slate). Returns how many were removed. Called at
         scan start so a prior scan's steers / KB-docs notes / HIR resolutions / QA
         directives don't leak into the new scan — steering is not session-scoped, so
         without this the agent inherits stale, now-meaningless instructions from the
-        previous run."""
-        n = len(self._load())
-        self._save([])
-        return n
+        previous run.
+
+        ``keep_pending_human=True`` (a same-target RESUME) spares directives with
+        trigger HUMAN_STEER that are still PENDING — operator-typed input for THIS
+        engagement that has not been delivered yet. Dropping those on a mid-engagement
+        restart (crash, compaction, benchmark re-launch) silently loses operator input;
+        already-injected ones are fair to drop (the agent saw them)."""
+        directives = self._load()
+        keep = [d for d in directives
+                if keep_pending_human
+                and d.get("trigger") == "HUMAN_STEER"
+                and d.get("status") == "pending"]
+        self._save(keep)
+        return len(directives) - len(keep)
 
     def _now(self) -> str:
         return datetime.now(timezone.utc).isoformat()

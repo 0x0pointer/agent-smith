@@ -267,3 +267,50 @@ def test_session_start_clears_stale_steering(monkeypatch, tmp_path):
     assert len(st.steering_queue.get_active()) == 2
     scan_session.start("http://target.example")
     assert st.steering_queue.get_active() == []   # scan start wiped the leftovers
+
+
+def test_clear_keep_pending_human_spares_only_pending_human_steers(q):
+    """keep_pending_human=True (a same-target resume): a still-PENDING HUMAN_STEER
+    survives; an already-injected human steer and every QA directive are dropped."""
+    import core.steering as st
+    pending_human = q.add_directive(
+        code=st.RESUME_REQUIRED, message="HUMAN INSTRUCTION: check /admin",
+        trigger="HUMAN_STEER", force=True)
+    q.add_directive(code=st.CHAIN_REQUIRED, skill="web-exploit", message="STUCK: …",
+                    trigger="STUCK_RETRIEVAL_ESCALATION", force=True)
+    injected_human = q.add_directive(
+        code=st.RESUME_REQUIRED, message="HUMAN INSTRUCTION: delivered already",
+        trigger="HUMAN_STEER", force=True)
+    q.mark_injected(injected_human)
+    assert pending_human and injected_human and len(q.get_active()) == 3
+    assert q.clear(keep_pending_human=True) == 2
+    active = q.get_active()
+    assert len(active) == 1
+    assert active[0].trigger == "HUMAN_STEER" and active[0].status == "pending"
+    assert "check /admin" in active[0].message
+    assert q.clear() == 1 and q.get_active() == []   # default still wipes everything
+
+
+def test_session_start_same_target_resume_keeps_pending_human_steer(monkeypatch, tmp_path):
+    """A same-target RE-start must not destroy a still-pending HUMAN_STEER directive —
+    operator input for THIS engagement awaiting delivery (a restart after a crash /
+    compaction / benchmark re-launch must not lose it). A different-target start
+    wipes everything."""
+    import core.steering as st
+    import core.session as scan_session
+    monkeypatch.setattr(st, "_STEERING_FILE", tmp_path / "steering_queue.json")
+    scan_session.start("http://target.example")
+    st.steering_queue.add_directive(
+        code=st.RESUME_REQUIRED, message="HUMAN INSTRUCTION: dig into /api/login",
+        trigger="HUMAN_STEER", force=True)
+    st.steering_queue.add_directive(
+        code=st.CHAIN_REQUIRED, skill="web-exploit", message="chain nudge",
+        trigger="MISSING_WEB_EXPLOIT")
+    assert len(st.steering_queue.get_active()) == 2
+    # same target — trailing-slash variant — is a RESUME: pending human steer survives
+    scan_session.start("http://target.example/")
+    active = st.steering_queue.get_active()
+    assert [d.trigger for d in active] == ["HUMAN_STEER"]
+    # a different target is a clean slate
+    scan_session.start("http://other.example")
+    assert st.steering_queue.get_active() == []
