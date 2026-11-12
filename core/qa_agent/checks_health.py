@@ -291,7 +291,7 @@ def _check_exploit_escalation(entries: list[dict], findings_data: dict, session_
     now = datetime.now(timezone.utc)
     _EXPLOIT_TOOLS = {"metasploit", "kali", "sqlmap", "kali_sqlmap"}
     for finding in findings:
-        age_secs = _ts_age_secs(finding.get("ts", ""), now)
+        age_secs = _ts_age_secs(finding.get("timestamp", ""), now)  # findings use "timestamp"
         if age_secs < 600:  # 10 min grace
             continue
         target = finding.get("target", "")
@@ -300,7 +300,7 @@ def _check_exploit_escalation(entries: list[dict], findings_data: dict, session_
             if e.get("type") == "TOOL"
             and e.get("name", "") in _EXPLOIT_TOOLS
             and e.get("target", "") == target
-            and e.get("ts", "") > finding.get("ts", "")
+            and e.get("ts", "") > finding.get("timestamp", "")
         ]
         if exploit_tools_after:
             continue
