@@ -221,24 +221,105 @@ def compute_next(tool: str, state: dict) -> dict:
     return {"required": required, "recommended": recommended, "warnings": warnings}
 
 
+_GRAPH_STEER_MAX = 3  # small-window budget: never flood the turn with graph steers
+
+# A tested_for cell in one of these states is no longer pending work.
+_STEER_ADDRESSED = {"tested_clean", "vulnerable", "not_applicable", "skipped"}
+
+
+def _graph_bridge_steer(g) -> list[str]:
+    """Fix 2 — surface the top primitive_unblock bridge every turn (not only when
+    QA fires): a ready-made chain the model otherwise never self-assembles. Own
+    fail-soft so a graph error here never costs the other steers."""
+    try:
+        from core.graph import candidate_chains
+        try:
+            from mcp_server.report_tools.diagrams import _proven_chain_fids
+            proven = _proven_chain_fids()
+        except Exception:
+            proven = None
+        bridges = [c for c in candidate_chains(g, proven) if c.get("kind") == "primitive_unblock"]
+        if not bridges:
+            return []
+        b = bridges[0]
+        steps = b.get("steps") or []
+        provider = steps[0] if steps else b.get("provider_id", "the provider finding")
+        blocked = steps[-1] if steps else b.get("blocked_id", "the blocked finding")
+        return [f"Chain bridge: run {_fence(provider)} to obtain the {_fence(b.get('primitive', 'needed'))} "
+                f"primitive, then retry the blocked step {_fence(blocked)} and file it — "
+                f"report(action='chain', data={{type:'suggest'}})."]
+    except Exception:
+        return []
+
+
+def _graph_dataflow_steers(g) -> list[str]:
+    """Fix 1 — deterministic next actions over the DATAFLOW edges (auth / credential
+    reuse / pivot reach): each is a concrete 'do this next' the model would
+    otherwise have to infer. Capped to the top 2. Own fail-soft."""
+    try:
+        from core.graph import match_chain, paths
+        from core.graph import model as m
+
+        def _pending(n) -> bool:
+            return any(e.attrs.get("status") not in _STEER_ADDRESSED
+                       for e in g.out_edges(n.id, m.TESTED_FOR))
+
+        lines: list[str] = []
+        # A) you hold a token minted by a login that unlocks an untested endpoint
+        for mt in match_chain(g, [
+            paths.NodeM(m.ENDPOINT, var="login"), paths.Rel(m.ISSUES),
+            paths.NodeM(m.TOKEN, var="tok"), paths.Rel(m.GRANTS),
+            paths.NodeM(m.ENDPOINT, where=_pending, var="target")], limit=3):
+            lines.append(
+                f"Auth dataflow: you hold a token minted by {_fence(mt.vars['login'].label)}; it unlocks "
+                f"{_fence(mt.vars['target'].label)}, which has untested cells — test it AUTHENTICATED "
+                f"with that token.")
+        # B) a finding leaked creds that authenticate an untested surface
+        for mt in match_chain(g, [
+            paths.NodeM(m.FINDING, var="f"), paths.Rel(m.LEAKS),
+            paths.NodeM(m.CREDENTIAL, var="cred"), paths.Rel(m.AUTHENTICATES),
+            paths.NodeM(where=_pending, var="target")], limit=3):
+            lines.append(
+                f"Credential reuse: {_fence(mt.vars['f'].label)} leaks credentials that authenticate "
+                f"{_fence(mt.vars['target'].label)} — replay them there.")
+        # C) a finding reaches an internal host exposing untested endpoints
+        for mt in match_chain(g, [
+            paths.NodeM(m.FINDING, var="f"), paths.Rel(m.REACHES),
+            paths.NodeM(m.HOST, var="h"), paths.Rel(m.HOSTS),
+            paths.NodeM(m.ENDPOINT, where=_pending, var="target")], limit=3):
+            lines.append(
+                f"Pivot reach: {_fence(mt.vars['f'].label)} reaches internal host {_fence(mt.vars['h'].label)}; "
+                f"it exposes untested {_fence(mt.vars['target'].label)} — pivot and test it.")
+        return lines[:2]
+    except Exception:
+        return []
+
+
 def _add_graph_steer(recommended: list[str]) -> None:
-    """Append graph-ranked next actions (WF-A5 / value ranking). Fail-soft +
-    fenced (finding/endpoint text is target-derived)."""
+    """Append graph-DERIVED next actions, most-actionable first (WF-A5 + dataflow
+    reachability). Each line replaces a hoped-for model inference with a
+    deterministic graph query. Fail-soft + fenced (target-derived text); capped at
+    _GRAPH_STEER_MAX per turn so a small context window isn't flooded."""
     try:
         from core.graph import build_graph, next_targets, rank_findings
         g = build_graph()
+        steers: list[str] = []
+        steers += _graph_bridge_steer(g)        # Fix 2 — ready-made chain (top value)
+        steers += _graph_dataflow_steers(g)     # Fix 1 — auth/cred/pivot dataflow
         ranked = rank_findings(g)
         if ranked:
             top = ranked[0]
-            recommended.append(
+            steers.append(
                 f"Deepen the highest-value finding: {_fence(top['label'])} "
                 f"[{top['severity']}] — {top['why']}. Chain it: report(action='chain', data={{type:'suggest'}})")
-        tgts = next_targets(g, limit=1)
+        tgts = next_targets(g, limit=3)         # profile-sized candidate set (Fix 1)
         if tgts:
-            recommended.append(
+            steers.append(
                 f"Highest-value untested endpoint: {_fence(tgts[0]['path'])} "
                 f"({tgts[0]['pending_cells']} pending cell(s)) — sweep it: "
                 "report(action='coverage', data={type:'sweep'})")
+        for line in steers[:_GRAPH_STEER_MAX]:
+            recommended.append(line)
     except Exception:
         pass
 
