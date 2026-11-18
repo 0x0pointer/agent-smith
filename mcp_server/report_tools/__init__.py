@@ -247,6 +247,15 @@ async def report(action: str, data: Any) -> str:
         cells, and returns oracle-positive cells as CANDIDATES for you to confirm,
         file a finding, and close vulnerable. Use this to close injection coverage
         fast instead of hand-running every probe — then handle the candidates.
+        (SSTI uses a two-probe DIFFERENTIAL so a page merely containing "49" is
+        not mistaken for template injection.)
+
+      id_sweep — DETERMINISTIC IDOR/BOLA id enumeration once a request WORKS for
+        one id: url (with a {} placeholder or the literal id), baseline=<that id>,
+        window=40, max_probes<=100, method=. The server enumerates nearest-first,
+        diffs the responses, and returns authorization-boundary / distinct-object
+        ids as CANDIDATES (never auto-filed). Use it the moment you confirm a
+        primitive on an indexed param instead of hand-guessing ids.
 
       import_openapi / import_graphql — register EVERY operation of a schema in
         ONE call (vs hand-transcribing each): data.url = the spec URL (OpenAPI/

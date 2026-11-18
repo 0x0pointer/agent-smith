@@ -149,7 +149,7 @@ INDEX: list[Technique] = [
         "the list/collection endpoint returns objects but not the sensitive field",
         "hit the SINGULAR getter per id (/item/<id>) and SWEEP the id space — the field a "
         "list omits is often present on the single-object view",
-        "report(action='coverage', data={type:'sweep'})  (then sweep ids deterministically)",
+        "report(action='coverage', data={type:'id_sweep', url:'<getter url with {}>', baseline:<known id>})",
         signals=("list endpoint", "collection", "returns a list", "no flag in", "field missing",
                  "not in the list", "enumerate"),
         tried_markers=("/receipt", "sweep", "/item/", "id="),

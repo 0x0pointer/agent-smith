@@ -893,6 +893,70 @@ def _phase_a_deepwork_redirect(cov_type: str) -> str:
     )
 
 
+async def _do_coverage_id_sweep(data, cov):
+    """#4 — bounded, deterministic IDOR/BOLA id enumeration, gated on the request
+    that already worked (the confirmed primitive). Fires nearest-first around the
+    baseline id, diffs the responses, and surfaces authorization-boundary /
+    distinct-object ids as CANDIDATES (never auto-filed — the model confirms + files).
+    Deliberate (the model supplies the baseline), bounded (<=100 probes), fail-soft."""
+    import hashlib
+    from core.coverage import id_sweep as _ids
+    from mcp_server.http_tools import http_probe
+    from mcp_server.scan_engine.envelope import store_artifact
+
+    url = (data.get("url") or "").strip()
+    baseline = data.get("baseline")
+    if not url or baseline in (None, ""):
+        return ("id_sweep needs data.url (the request that worked) and data.baseline (the id in it "
+                "to vary). Put a {} placeholder where the id goes, or the literal id value in the url. "
+                "Example: report(action='coverage', data={type:'id_sweep', "
+                "url:'http://t/order/{}/receipt', baseline:300123, window:50}).")
+    if "{}" not in url and str(baseline) not in url:
+        return f"id_sweep: baseline '{baseline}' is not in the url and no {{}} placeholder present."
+    method = (data.get("method") or "GET").upper()
+    window = data.get("window", 40)
+    max_probes = min(int(data.get("max_probes", 60) or 60), 100)
+    auth = _sweep_auth_headers() or None
+
+    def mk(idv) -> str:
+        return url.replace("{}", str(idv)) if "{}" in url else url.replace(str(baseline), str(idv))
+
+    async def fetch(u) -> dict:
+        resp = await http_probe(u, method, headers=auth)
+        body = resp.get("body", "") or ""
+        return {"status": resp.get("status", 0), "length": len(body),
+                "body_hash": hashlib.sha256(body.encode("utf-8", "replace")).hexdigest()[:16]}
+
+    try:
+        baseline_result = await fetch(mk(baseline))
+        ids = _ids.plan_ids(baseline, window, max_probes, data.get("extra_ids"))
+        results = []
+        for idv in ids:
+            try:
+                r = await fetch(mk(idv))
+                r["id"] = idv
+                results.append(r)
+            except Exception as exc:  # fail-soft — one dead probe never aborts the sweep
+                log.note(f"id_sweep probe error id={idv}: {exc}")
+    except Exception as exc:
+        return f"id_sweep could not run: {exc}"
+
+    verdict = _ids.evaluate(baseline_result, results)
+    artifact_id = store_artifact(
+        "id_sweep", json.dumps({"baseline_url": mk(baseline), "baseline": baseline_result,
+                                "results": results, "verdict": verdict})[:20_000])
+    from core.prompt_fence import fence as _fence
+    head = (f"🔑 ID-SWEEP: probed {len(results)} id(s) around {_fence(str(baseline))} — "
+            f"{verdict['verdict']}. {verdict['basis']} (artifact_id={artifact_id}).")
+    if verdict["verdict"] != "candidate":
+        return head + "\nNo broken-object-authorization candidate surfaced."
+    lines = [head, "\nCANDIDATE ids — confirm each reads another principal's object, then file "
+             "an IDOR/BOLA finding citing the artifact_id:"]
+    for h in verdict["hits"]:
+        lines.append(f"  • id={h['id']} (HTTP {h['status']}) — {h['why']}")
+    return "\n".join(lines)
+
+
 async def _do_coverage(data):
     from core import coverage as cov
 
@@ -927,6 +991,8 @@ async def _do_coverage(data):
         return await _do_coverage_next_batch(data, cov)
     if cov_type == "sweep":
         return await _do_coverage_sweep(data, cov)
+    if cov_type == "id_sweep":
+        return await _do_coverage_id_sweep(data, cov)
     if cov_type in ("import_openapi", "import_graphql"):
         return await _do_coverage_import(cov_type, data)
     if cov_type == "import_prior":
@@ -935,7 +1001,7 @@ async def _do_coverage(data):
         return await _do_coverage_auto_crosscutting(data, cov)
     return (
         f"Unknown coverage type '{cov_type}'. Use: endpoint, tested, bulk_tested, list, next_batch, "
-        f"sweep, import_openapi, import_graphql, import_prior, auto_crosscutting, reset. "
+        f"sweep, id_sweep, import_openapi, import_graphql, import_prior, auto_crosscutting, reset. "
         f"Example: report(action='coverage', data={{type:'endpoint', path:'/login', method:'GET', "
         f"params:[{{name:'user', type:'query', value_hint:'string'}}]}})"
     )
