@@ -70,3 +70,6 @@ run_2/
 # ExploitDB metadata is no-redistribution. KB provenance (which snapshot an
 # engagement queried) is recorded per-engagement by build_engagement_digest.py.
 kb/
+
+# Cross-run graph snapshots (generated per target)
+graph-snapshots/
