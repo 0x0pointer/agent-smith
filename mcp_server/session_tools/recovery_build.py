@@ -141,6 +141,18 @@ def _build_recovery_result(
     except Exception:
         pass
 
+    # #1 — the durable fact ledger: evidence-backed CONFIRMED facts to build on,
+    # unverified HYPOTHESES to test, and RULED-OUT negatives NOT to re-walk. The
+    # single biggest restart tax in the XBEN failures was a fresh context re-
+    # deriving what a prior one had already confirmed or already ruled out. Fail-soft.
+    try:
+        from core.session import fact_ledger as _facts
+        ledger = _facts.overview()
+        if ledger:
+            result["fact_ledger"] = ledger
+    except Exception:
+        pass
+
     # Open wishlist items — needs Smith raised for the operator. Surfaced so a
     # fulfilled need (operator dropped in creds/scope) is picked up after
     # compaction and the linked cells get reopened instead of forgotten.
