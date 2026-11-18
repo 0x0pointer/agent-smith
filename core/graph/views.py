@@ -47,6 +47,14 @@ def rank_findings(g: m.Graph) -> list[dict]:
         if h:
             hosts[h] = hosts.get(h, 0) + 1
 
+    # Fix 3 (reachability-aware ranking): the set of primitives some finding is
+    # BLOCKED needing — a finding that PROVIDES one of these unblocks real work and
+    # should outrank an isolated finding of equal severity.
+    required_prims: set[str] = set()
+    for f in g.of_kind(m.FINDING):
+        for e in g.out_edges(f.id, m.REQUIRES):
+            required_prims.add(e.dst)
+
     ranked = []
     for f in g.of_kind(m.FINDING):
         sev = f.attrs.get("severity", "")
@@ -58,6 +66,16 @@ def rank_findings(g: m.Graph) -> list[dict]:
         if g.out_edges(f.id, m.LEAKS):
             score += 4
             why.append("leaks credential material")
+        # Fix 3: unlocks a blocked finding (PROVIDES a REQUIRED primitive) — the
+        # compositional bridge is the highest-value next move, so it outweighs
+        # co-location noise.
+        if any(e.dst in required_prims for e in g.out_edges(f.id, m.PROVIDES)):
+            score += 6
+            why.append("unblocks a blocked finding")
+        # Fix 3: opens new host surface (a confirmed pivot reach).
+        if g.out_edges(f.id, m.REACHES):
+            score += 3
+            why.append("opens new host surface")
         h = _host(f.id)
         if h and hosts.get(h, 0) > 1:
             score += 2
