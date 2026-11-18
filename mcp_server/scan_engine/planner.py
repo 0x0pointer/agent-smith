@@ -410,13 +410,17 @@ def _injection_command_with_payload(inj: str, target: str, path: str, method: st
 
 
 def build_probe(inj: str, target: str, path: str, method: str, param: str,
-                param_type: str = "query") -> dict | None:
+                param_type: str = "query", operands: tuple[int, int] | None = None) -> dict | None:
     """Structured probe for the server-side sweep (SM-5). Unlike
     _concrete_test_command (a human-readable string), this returns the params the
     sweep executes directly. ``None`` when the type isn't server-side sweepable.
 
-      {"kind": "http", "url", "method", "payload"}   # inject payload, read response
-      {"kind": "kali", "cmd", "payload": ""}          # sqlmap runs its own oracle
+      {"kind": "http", "url", "method", "payload", "expected"}  # inject, read response
+      {"kind": "kali", "cmd", "payload": ""}                     # sqlmap runs its oracle
+
+    ``operands=(a, b)`` crafts an SSTI arithmetic probe for a*b (default 7*7) and
+    sets ``expected`` to the product — the sweep runs two with distinct operands
+    so the oracle can require the output to TRACK them (phantom-resistant).
     """
     techs = _known_techs()
     if inj == "sqli":
@@ -432,7 +436,12 @@ def build_probe(inj: str, target: str, path: str, method: str, param: str,
     }
     if inj in http_payloads:
         payload = http_payloads[inj]
-        return {"kind": "http", "method": method, "payload": payload,
+        expected = None
+        if inj == "ssti":
+            a, b = operands or (7, 7)
+            payload = payload.replace("7*7", f"{a}*{b}")
+            expected = str(a * b)
+        return {"kind": "http", "method": method, "payload": payload, "expected": expected,
                 "url": _resolve_url(target, path, param, param_type, payload)}
     return None  # ssrf/xxe/nosqli/idor/… need OOB / diffing / judgment — not swept
 

@@ -680,6 +680,43 @@ async def _run_kali_probe(probe: dict, c):
     return status, body, content
 
 
+async def _run_ssti_differential(c, ep, target):
+    """SSTI sweep with a TWO-probe differential (phantom-resistant): fire two
+    randomized arithmetic payloads (a*b, c*d with distinct products) and require
+    the response to TRACK both operands. A page that merely contains "49" can't
+    also contain a second random product — so a bare constant no longer
+    false-fires an SSTI candidate (the biggest single-probe phantom)."""
+    import random
+    from core.coverage import sweep as _sweep
+    from mcp_server.scan_engine import planner as _planner
+    from mcp_server.scan_engine.envelope import store_artifact
+
+    pool = list(range(11, 30))
+    a, b = random.choice(pool), random.choice(pool)
+    cc, dd = random.choice(pool), random.choice(pool)
+    for _ in range(10):
+        if a * b != cc * dd:
+            break
+        cc, dd = random.choice(pool), random.choice(pool)
+    results, contents = [], []
+    for ops in ((a, b), (cc, dd)):
+        probe = _planner.build_probe(
+            "ssti", target, ep.get("path", ""), ep.get("method", "GET"),
+            c.get("param", ""), c.get("param_type", "query"), operands=ops)
+        if not probe:
+            return None
+        try:
+            status, body, content = await _run_http_probe(probe)
+        except Exception as exc:  # fail-soft — one dead probe never aborts the sweep
+            log.note(f"ssti differential probe error on cell {c['id']}: {exc}")
+            return None
+        contents.append(content)
+        results.append({"expected": probe["expected"], "payload": probe["payload"],
+                        "status": status, "body": body})
+    artifact_id = store_artifact("sweep", "\n--- differential probe ---\n".join(contents))
+    return artifact_id, _sweep.evaluate_ssti_differential(results)
+
+
 async def _run_sweep_probe(c, ep, target):
     """Build + run the probe for one cell, store the artifact, evaluate it.
     Returns (artifact_id, verdict_dict) — or None when the probe couldn't run
@@ -687,6 +724,9 @@ async def _run_sweep_probe(c, ep, target):
     from core.coverage import sweep as _sweep
     from mcp_server.scan_engine import planner as _planner
     from mcp_server.scan_engine.envelope import store_artifact
+
+    if c.get("injection_type") == "ssti":
+        return await _run_ssti_differential(c, ep, target)
 
     probe = _planner.build_probe(
         c["injection_type"], target, ep.get("path", ""), ep.get("method", "GET"),
