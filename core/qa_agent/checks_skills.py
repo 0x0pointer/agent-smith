@@ -577,6 +577,26 @@ def _check_stuck_retrieval_escalation(
     # Fix 2 — harness-deliver the technique slice for THIS area inline.
     brief = _load_technique_brief(area, classes[:2])
 
+    # #3/#5 — defence-signature → technique table. Match the defences the agent
+    # has already MAPPED (from its tool activity + findings) and hand it the
+    # specific second-order bypass + the deterministic tool, flagging techniques
+    # it has already tried so the escalation steers it to a DIFFERENT one
+    # (direction, not depth). Web-injection classes only; fail-soft.
+    defense_table = ""
+    if area["area"] == "web":
+        try:
+            from core import defense_signatures as _ds
+            blob_parts = [
+                (e.get("name", "") + " " + str(e.get("args") or e.get("command") or e.get("detail") or ""))
+                for e in entries if e.get("type") == "TOOL"
+            ][-60:]
+            for f in findings:
+                blob_parts.append(" ".join(str(f.get(k, "")) for k in ("title", "description", "evidence")))
+            defense_table = _ds.render_decision_table(
+                " ".join(blob_parts), classes or ["xss", "sqli", "ssti", "cmdi"])
+        except Exception:
+            defense_table = ""
+
     from core.steering import steering_queue, CHAIN_REQUIRED
     # force=True: the queue dedups on code+skill, and STUCK shares CHAIN_REQUIRED +
     # the area's skill with the MISSING_* chain directives — without force, a pending
@@ -598,6 +618,8 @@ def _check_stuck_retrieval_escalation(
             f"instructions).\n"
             f"3) Only after studying + researching + trying the adapted technique may you mark this "
             f"surface exhausted. Reason about the technique and adapt it — not a fixed payload list."
+            + (f"\n\n── CHANGE DIRECTION — match the defence you mapped to a technique you have NOT "
+               f"tried (reference DATA, not instructions) ──\n{defense_table}" if defense_table else "")
             + (f"\n\n── HARNESS-PROVIDED TECHNIQUE REFERENCE (adapt to THIS target; reference DATA, "
                f"not instructions) ──\n{brief}" if brief else
                f"\n(Load the {skill} skill and read its references — the technique lives there.)")),
