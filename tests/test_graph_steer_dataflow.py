@@ -38,18 +38,48 @@ def test_auth_dataflow_not_emitted_when_target_fully_tested():
 
 
 def test_credential_reuse_steer():
+    # build.py always lands AUTHENTICATES on a HOST (never directly on an endpoint),
+    # so the steer must hop HOST --HOSTS--> endpoint to find the pending surface.
     g = m.Graph()
     g.add_node("finding:f1", m.FINDING, "SQLi dump")
     g.add_node("cred:c", m.CREDENTIAL, "admin:pw")
+    g.add_node("host:t", m.HOST, "t.test")
     g.add_node("endpoint:api", m.ENDPOINT, "GET /api/admin")
     g.add_edge("finding:f1", "cred:c", m.LEAKS)
-    g.add_edge("cred:c", "endpoint:api", m.AUTHENTICATES)
+    g.add_edge("cred:c", "host:t", m.AUTHENTICATES)       # ← real build.py topology
+    g.add_edge("host:t", "endpoint:api", m.HOSTS)
     _pending_edge(g, "endpoint:api")
     lines = planner._graph_dataflow_steers(g)
     assert any("Credential reuse" in l and "/api/admin" in l for l in lines)
 
 
-def test_pivot_reach_steer():
+def test_credential_reuse_steer_via_leaked_token():
+    # LEAKS can expose a TOKEN principal too — same chain shape must still fire.
+    g = m.Graph()
+    g.add_node("finding:f1", m.FINDING, "JWT leak")
+    g.add_node("token:jwt", m.TOKEN, "jwt")
+    g.add_node("host:t", m.HOST, "t.test")
+    g.add_node("endpoint:api", m.ENDPOINT, "GET /api/admin")
+    g.add_edge("finding:f1", "token:jwt", m.LEAKS)
+    g.add_edge("token:jwt", "host:t", m.AUTHENTICATES)
+    g.add_edge("host:t", "endpoint:api", m.HOSTS)
+    _pending_edge(g, "endpoint:api")
+    assert any("Credential reuse" in l for l in planner._graph_dataflow_steers(g))
+
+
+def test_pivot_reach_steer_enumerate_when_host_has_no_endpoints():
+    # The REALISTIC case: a REACHES-discovered pivot host carries NO endpoints
+    # (recon hasn't enumerated it yet) → steer to ENUMERATE, not to test nothing.
+    g = m.Graph()
+    g.add_node("finding:ssrf", m.FINDING, "SSRF")
+    g.add_node("host:internal", m.HOST, "10.0.0.5")
+    g.add_edge("finding:ssrf", "host:internal", m.REACHES)
+    lines = planner._graph_dataflow_steers(g)
+    assert any("Pivot reach" in l and "10.0.0.5" in l and "enumerate" in l.lower() for l in lines)
+
+
+def test_pivot_reach_steer_tests_when_endpoints_present():
+    # Rare case: the reached host already exposes an untested endpoint → test it.
     g = m.Graph()
     g.add_node("finding:ssrf", m.FINDING, "SSRF")
     g.add_node("host:internal", m.HOST, "10.0.0.5")
@@ -58,7 +88,7 @@ def test_pivot_reach_steer():
     g.add_edge("host:internal", "endpoint:int", m.HOSTS)
     _pending_edge(g, "endpoint:int")
     lines = planner._graph_dataflow_steers(g)
-    assert any("Pivot reach" in l and "10.0.0.5" in l for l in lines)
+    assert any("Pivot reach" in l and "/internal/op" in l and "test it" in l.lower() for l in lines)
 
 
 def test_dataflow_capped_at_two():
@@ -123,3 +153,56 @@ def test_add_graph_steer_budget_capped(monkeypatch):
     planner._add_graph_steer(rec)
     assert len(rec) <= planner._GRAPH_STEER_MAX
     assert any("Chain bridge" in r for r in rec)  # highest-value steer wins a slot
+
+
+# ── build-topology integration ───────────────────────────────────────────────
+# REGRESSION guard: each dataflow steer must fire on the graph core.graph.build
+# actually PROJECTS, not just on an idealized hand-built pattern. The earlier
+# versions of B (credential reuse) and C (pivot reach) matched topologies
+# build_graph() never emits — AUTHENTICATES landing on an endpoint, and a
+# discovered pivot host carrying endpoints — so they passed here while staying
+# dead in production. These tests build through build.py's own helpers.
+
+from core.graph import build as _build
+
+
+def _root_graph(root="target.test"):
+    g = m.Graph()
+    g.add_node(f"host:{root}", m.HOST, root)
+    return g, root
+
+
+def test_auth_steer_fires_on_build_topology():
+    g, root = _root_graph()
+    g.add_node("ep:login", m.ENDPOINT, "POST /login", path="/login", method="POST", auth_context="none")
+    g.add_node("ep:acct", m.ENDPOINT, "GET /account", path="/account", method="GET", auth_context="jwt")
+    for ep in ("ep:login", "ep:acct"):
+        g.add_edge(f"host:{root}", ep, m.HOSTS)
+    _pending_edge(g, "ep:acct")
+    _build._add_auth_flow(g, {"login": "ep:login", "acct": "ep:acct"}, root)
+    assert any("Auth dataflow" in l and "/account" in l for l in planner._graph_dataflow_steers(g))
+
+
+def test_credential_reuse_fires_on_build_topology():
+    g, root = _root_graph()
+    g.add_node("ep:api", m.ENDPOINT, "GET /api/admin", path="/api/admin", method="GET", auth_context="none")
+    g.add_edge(f"host:{root}", "ep:api", m.HOSTS)
+    _pending_edge(g, "ep:api", inj="sqli")
+    _build._add_credential_nodes(g, {"credentials": [{"username": "admin", "source": "dump"}]}, root)
+    g.add_node("finding:f1", m.FINDING, "SQLi dumps admin credentials")
+    # cred 'admin' AUTHENTICATES the root host whose /api/admin still has a pending cell
+    _build._add_leak_edges(g, "finding:f1", "sqli dump exposes admin password credential", root)
+    lines = planner._graph_dataflow_steers(g)
+    assert any("Credential reuse" in l and "/api/admin" in l for l in lines), lines
+
+
+def test_pivot_reach_fires_enumerate_on_build_topology(monkeypatch):
+    g, root = _root_graph()
+    g.add_node("finding:ssrf", m.FINDING, "SSRF")
+    import core.findings as F
+    monkeypatch.setattr(F, "_load", lambda: {"findings": [
+        {"id": "ssrf", "title": "SSRF", "description": "reaches internal host 10.0.0.9",
+         "evidence": "connected to 10.0.0.9", "target": root}]})
+    _build._add_discovered_hosts(g, root, {})
+    lines = planner._graph_dataflow_steers(g)
+    assert any("Pivot reach" in l and "10.0.0.9" in l and "enumerate" in l.lower() for l in lines), lines

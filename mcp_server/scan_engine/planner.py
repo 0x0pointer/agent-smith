@@ -255,7 +255,15 @@ def _graph_bridge_steer(g) -> list[str]:
 def _graph_dataflow_steers(g) -> list[str]:
     """Fix 1 — deterministic next actions over the DATAFLOW edges (auth / credential
     reuse / pivot reach): each is a concrete 'do this next' the model would
-    otherwise have to infer. Capped to the top 2. Own fail-soft."""
+    otherwise have to infer. Capped to the top 2. Own fail-soft.
+
+    The chains below follow the exact edge topology core.graph.build projects, NOT
+    an idealized one: AUTHENTICATES always lands on a HOST (never directly on an
+    endpoint), so credential-reuse must hop HOST --HOSTS--> endpoint to find the
+    pending surface; and a REACHES-discovered pivot host carries NO endpoints yet
+    (recon hasn't enumerated it), so the pivot steer drives ENUMERATION rather than
+    demanding endpoints that don't exist. Validated end-to-end against build_graph()
+    output in tests/test_graph_steer_dataflow.py (the build-topology integration tests)."""
     try:
         from core.graph import match_chain, paths
         from core.graph import model as m
@@ -264,8 +272,17 @@ def _graph_dataflow_steers(g) -> list[str]:
             return any(e.attrs.get("status") not in _STEER_ADDRESSED
                        for e in g.out_edges(n.id, m.TESTED_FOR))
 
+        def _pending_eps_under(host_id: str) -> list:
+            eps = []
+            for e in g.out_edges(host_id, m.HOSTS):
+                ep = g.nodes.get(e.dst)
+                if ep is not None and ep.kind == m.ENDPOINT and _pending(ep):
+                    eps.append(ep)
+            return eps
+
         lines: list[str] = []
         # A) you hold a token minted by a login that unlocks an untested endpoint
+        #    ENDPOINT(login) --ISSUES--> TOKEN --GRANTS--> ENDPOINT(pending)
         for mt in match_chain(g, [
             paths.NodeM(m.ENDPOINT, var="login"), paths.Rel(m.ISSUES),
             paths.NodeM(m.TOKEN, var="tok"), paths.Rel(m.GRANTS),
@@ -274,22 +291,40 @@ def _graph_dataflow_steers(g) -> list[str]:
                 f"Auth dataflow: you hold a token minted by {_fence(mt.vars['login'].label)}; it unlocks "
                 f"{_fence(mt.vars['target'].label)}, which has untested cells — test it AUTHENTICATED "
                 f"with that token.")
-        # B) a finding leaked creds that authenticate an untested surface
+        # B) a finding leaked a principal (credential/token) that authenticates a host
+        #    whose surface still has untested cells:
+        #    FINDING --LEAKS--> CREDENTIAL|TOKEN --AUTHENTICATES--> HOST --HOSTS--> ENDPOINT(pending)
         for mt in match_chain(g, [
             paths.NodeM(m.FINDING, var="f"), paths.Rel(m.LEAKS),
-            paths.NodeM(m.CREDENTIAL, var="cred"), paths.Rel(m.AUTHENTICATES),
-            paths.NodeM(where=_pending, var="target")], limit=3):
-            lines.append(
-                f"Credential reuse: {_fence(mt.vars['f'].label)} leaks credentials that authenticate "
-                f"{_fence(mt.vars['target'].label)} — replay them there.")
-        # C) a finding reaches an internal host exposing untested endpoints
-        for mt in match_chain(g, [
-            paths.NodeM(m.FINDING, var="f"), paths.Rel(m.REACHES),
+            paths.NodeM(where=lambda n: n.kind in (m.CREDENTIAL, m.TOKEN), var="cred"),
+            paths.Rel(m.AUTHENTICATES),
             paths.NodeM(m.HOST, var="h"), paths.Rel(m.HOSTS),
             paths.NodeM(m.ENDPOINT, where=_pending, var="target")], limit=3):
             lines.append(
-                f"Pivot reach: {_fence(mt.vars['f'].label)} reaches internal host {_fence(mt.vars['h'].label)}; "
-                f"it exposes untested {_fence(mt.vars['target'].label)} — pivot and test it.")
+                f"Credential reuse: {_fence(mt.vars['f'].label)} leaks credentials that authenticate "
+                f"{_fence(mt.vars['h'].label)} — replay them against its untested "
+                f"{_fence(mt.vars['target'].label)}.")
+        # C) a finding reached an internal host. A freshly-discovered pivot host has NO
+        #    mapped endpoints yet, so steer to ENUMERATE it; only in the rare case it
+        #    already exposes untested endpoints do we steer to test them directly.
+        seen_hosts: set = set()
+        for mt in match_chain(g, [
+            paths.NodeM(m.FINDING, var="f"), paths.Rel(m.REACHES),
+            paths.NodeM(m.HOST, var="h")], limit=5):
+            host = mt.vars["h"]
+            if host.id in seen_hosts:
+                continue
+            seen_hosts.add(host.id)
+            pend = _pending_eps_under(host.id)
+            if pend:
+                lines.append(
+                    f"Pivot reach: {_fence(mt.vars['f'].label)} reaches internal host "
+                    f"{_fence(host.label)}; it exposes untested {_fence(pend[0].label)} — pivot and test it.")
+            else:
+                lines.append(
+                    f"Pivot reach: {_fence(mt.vars['f'].label)} reached internal host "
+                    f"{_fence(host.label)}, which has no mapped endpoints yet — enumerate it "
+                    f"(spider/scan through the reaching primitive) before it can be tested.")
         return lines[:2]
     except Exception:
         return []
