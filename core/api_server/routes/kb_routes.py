@@ -183,14 +183,19 @@ async def api_kb_docs_delete(name: str) -> JSONResponse:
     sid = _session_id()
     sdir = kb_mod.SESSIONS_DIR / sid
     safe = re.sub(r"[^a-zA-Z0-9._()-]+", "_", name)
-    base = sdir.resolve()
-    target = (base / safe).resolve()
-    # CodeQL py/path-injection: the char-allowlist still permits ".", so a name
-    # like ".." would escape the session dir. Require the resolved path to sit
-    # DIRECTLY inside it (engagement docs are stored flat).
-    if safe in ("", ".", "..") or target.parent != base:
-        return JSONResponse({"ok": False, "error": "invalid name"}, status_code=400)
-    if not target.is_file():
+    # Resolve the target by ENUMERATING the session dir and matching on name,
+    # never by joining user input into a path: the unlinked path comes from
+    # iterdir() (filesystem-derived, not tainted), so a traversal name ("..")
+    # simply matches nothing. CodeQL py/path-injection.
+    target = None
+    try:
+        for entry in sdir.iterdir():
+            if entry.name == safe and entry.is_file():
+                target = entry
+                break
+    except OSError:
+        target = None
+    if target is None:
         return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
     try:
         target.unlink()
