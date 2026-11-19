@@ -133,6 +133,8 @@ async def api_kb_docs_upload(files: list[UploadFile] = File(...),
             except Exception:
                 pass
         if status != "ok":
+            # parser_note is a sanitized, non-exception reason (parse_document logs
+            # and strips exception detail at the source — CodeQL py/stack-trace-exposure).
             skipped.append({"name": name, "reason": parser_note})
             continue
         dest = kb_mod.add_session_doc(sid, name, text, is_untrusted)
@@ -181,7 +183,13 @@ async def api_kb_docs_delete(name: str) -> JSONResponse:
     sid = _session_id()
     sdir = kb_mod.SESSIONS_DIR / sid
     safe = re.sub(r"[^a-zA-Z0-9._()-]+", "_", name)
-    target = sdir / safe
+    base = sdir.resolve()
+    target = (base / safe).resolve()
+    # CodeQL py/path-injection: the char-allowlist still permits ".", so a name
+    # like ".." would escape the session dir. Require the resolved path to sit
+    # DIRECTLY inside it (engagement docs are stored flat).
+    if safe in ("", ".", "..") or target.parent != base:
+        return JSONResponse({"ok": False, "error": "invalid name"}, status_code=400)
     if not target.is_file():
         return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
     try:

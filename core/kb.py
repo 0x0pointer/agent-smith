@@ -28,11 +28,14 @@ instructions.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
+
+_log = logging.getLogger(__name__)
 
 # Root is cwd-relative (like engagements/) so a checkout is self-contained;
 # SMITH_KB_ROOT overrides for machine-global installs (plan §10.4).
@@ -493,8 +496,11 @@ def parse_document(path: Path) -> tuple[str, str, str]:
         if not text:
             return "", note + " (no text extracted)", "empty"
         return text[:400_000], note, "ok"
-    except Exception as exc:
-        return "", f"parse error: {exc}", "skipped"
+    except Exception:
+        # Log the detail server-side; do NOT return exception text to the caller —
+        # it flows into the upload HTTP response (CodeQL py/stack-trace-exposure).
+        _log.warning("parse_document failed for %s", path, exc_info=True)
+        return "", "parse error", "skipped"
 
 
 # ── Session-doc writer (plan §6.1/6.4) ────────────────────────────────────

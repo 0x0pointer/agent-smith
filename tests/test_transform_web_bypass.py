@@ -24,7 +24,10 @@ def _node_eval_string(expr: str) -> str | None:
     """Return String(eval(expr)) from node, or None on error."""
     js = ("try{process.stdout.write(JSON.stringify(String(eval(" + json.dumps(expr) +
           "))))}catch(e){process.stdout.write('null')}")
-    r = subprocess.run([_NODE, "-e", js], capture_output=True, text=True, timeout=60)
+    # Feed the program on STDIN (node -), not via -e: a full-ASCII JSFuck string
+    # exceeds Linux's 128 KiB single-argv cap (MAX_ARG_STRLEN) and raises
+    # "Argument list too long" on CI, though macOS allows it. stdin has no cap.
+    r = subprocess.run([_NODE, "-"], input=js, capture_output=True, text=True, timeout=60)
     try:
         return json.loads(r.stdout)
     except Exception:
@@ -41,7 +44,7 @@ def _node_run_payload(payload: str) -> list | None:
         "try{eval(" + json.dumps(payload) + ")}catch(e){F=['ERR',String(e)]}"
         "process.stdout.write(JSON.stringify(F))"
     )
-    r = subprocess.run([_NODE, "-e", probe], capture_output=True, text=True, timeout=60)
+    r = subprocess.run([_NODE, "-"], input=probe, capture_output=True, text=True, timeout=60)
     try:
         return json.loads(r.stdout)
     except Exception:
