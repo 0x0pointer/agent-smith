@@ -349,6 +349,20 @@ Operator supplies a wished-for resource. Marks the item `fulfilled` **and inject
 
 ---
 
+### `GET /api/kb/docs`
+
+**Engagement documents** (Operator Actions tab → "Engagement documents"): the per-pentest KB tier. Lists documents attached to the active session (stored under `kb/sessions/<sid>/`), each with `{name, bytes, untrusted, modified_at}`, plus the supported-extension list. Smith searches these with `report(action="recall", data={query, scope:"docs"})` — they never enter the static KB.
+
+### `POST /api/kb/docs`
+
+Multipart upload of engagement documents (`files=` + optional `untrusted=` form field, default `false`). Parsed through the fail-soft chain (pdf via pdftotext→pypdf→salvage, docx, html, json/yaml with an OpenAPI-aware pass, md/txt/csv raw), stored in `kb/sessions/<sid>/`, registered in `known_assets.kb_docs`, and — while a scan is running — a steering note tells Smith to `recall(scope:"docs")` them. Mark `untrusted=true` for content sourced from the target: recall renders it fenced (data, never instructions). Max 20 files / 25 MB each; skips are reported per file, never fatal.
+
+### `DELETE /api/kb/docs/{name}`
+
+Removes one engagement document and its untrusted meta entry. The same result as `session(action="kb_add")` attachments removed by the agent.
+
+---
+
 ### `POST /api/wishlist/{id}/dismiss`
 
 Operator declines a wishlist item (won't/can't supply it). **Request body:** `{ "note": "out of scope for this engagement" }`

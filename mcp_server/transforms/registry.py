@@ -3,10 +3,10 @@ exposes the encode/decode/chain primitives the MCP tool calls.
 """
 from __future__ import annotations
 
-from . import encodings, homoglyphs, invisible, scripts
+from . import encodings, homoglyphs, invisible, scripts, web_bypass
 
 TRANSFORMS: dict[str, dict] = {}
-for _mod in (encodings, homoglyphs, invisible, scripts):
+for _mod in (encodings, homoglyphs, invisible, scripts, web_bypass):
     for _name, _spec in _mod.TRANSFORMS.items():
         TRANSFORMS[_name] = _spec  # names are unique across modules; last wins if not
 

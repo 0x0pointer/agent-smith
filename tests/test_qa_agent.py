@@ -794,14 +794,16 @@ def _http_entry(offset_min=1, status_code=200, target="https://example.com", err
 
 
 def _finding_entry(severity="high", target="https://example.com", offset_min=25):
+    # PRODUCTION schema: findings carry their time under "timestamp" (core.findings)
     return {
-        "severity": severity, "target": target, "ts": _ts(offset_min),
+        "severity": severity, "target": target, "timestamp": _ts(offset_min),
         "title": f"Test {severity} finding", "id": "f-1",
     }
 
 
 def _skill_history_entry(skill: str, offset_min: int = 25) -> dict:
-    return {"skill": skill, "ts": _ts(offset_min), "reason": "test"}
+    # PRODUCTION schema: skill_history entries carry "timestamp" (gates.set_skill)
+    return {"skill": skill, "timestamp": _ts(offset_min), "reason": "test"}
 
 
 def _error_tool_entry(name="nmap", target="https://example.com", offset_min=1):

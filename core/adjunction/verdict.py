@@ -21,7 +21,12 @@ coverage validates artifacts), keeping this layer side-effect-free.
 """
 from __future__ import annotations
 
-from core.adjunction.rubric import SEVERITIES, chain_terminal_severity, severity_rank
+from core.adjunction.rubric import (
+    SEVERITIES,
+    chain_terminal_severity,
+    graph_terminal_severity,
+    severity_rank,
+)
 
 
 def is_adjudicated(finding: dict) -> bool:
@@ -80,6 +85,12 @@ def coerce_adjudication(raw, finding: dict | None = None) -> dict | None:
     # chain to a worse terminal (done lead + recorded result), re-rate it at the
     # terminal impact — chains compose, they never average. Only ever raises.
     chain_sev = chain_terminal_severity(finding or {})
+    # Fix 4: corroborate with a graph traversal — a PROVEN path to a terminal node
+    # (code_exec primitive / metadata host / admin surface) re-rates even when the
+    # finding's own text lacks the keyword. Take the stronger band (both only raise).
+    graph_sev = graph_terminal_severity(finding or {})
+    if graph_sev and severity_rank(graph_sev) > severity_rank(chain_sev or "info"):
+        chain_sev = graph_sev
     chain_escalated_from = None
     if chain_sev and severity_rank(chain_sev) > severity_rank(revised or "info"):
         chain_escalated_from = revised

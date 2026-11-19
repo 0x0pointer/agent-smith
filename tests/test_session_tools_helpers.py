@@ -420,6 +420,93 @@ class TestResetCoverageMatrix:
         assert data["meta"]["target"] == "https://new.example.com"
         assert data["meta"]["total_cells"] == 0
 
+    def test_different_target_also_archives_findings_and_log(self, coverage_file):
+        """Fresh engagement (different target): findings.json + pentest.log must be
+        archived AND cleared so the dashboard stops showing the old target's results."""
+        import json
+        base = coverage_file.parent
+        coverage_file.write_text(json.dumps({
+            "meta": {"target": "https://old.example.com", "total_cells": 3, "tested": 1,
+                     "in_progress": 0, "vulnerable": 0, "not_applicable": 0, "skipped": 0,
+                     "created": "2025-01-01"},
+            "endpoints": [], "matrix": [],
+        }))
+        (base / "findings.json").write_text(json.dumps({"findings": [{"id": "old-1"}]}))
+        logs = base / "logs"; logs.mkdir(exist_ok=True)
+        (logs / "pentest.log").write_text("old target log line\n")
+
+        _reset_coverage_matrix("https://new.example.com", "https://old.example.com", True)
+
+        assert not (base / "findings.json").exists()        # live findings cleared
+        assert (logs / "pentest.log").read_text() == ""     # log truncated in place
+        assert list(logs.glob("findings_*.json")), "findings not archived"
+        assert list(logs.glob("pentest_*.log")), "pentest.log not archived"
+
+    def test_same_target_resume_keeps_findings(self, coverage_file):
+        """Resume (same target) must NOT clear findings — continuity is preserved."""
+        import json
+        base = coverage_file.parent
+        coverage_file.write_text(json.dumps({
+            "meta": {"target": "https://same.example.com", "total_cells": 1, "tested": 1,
+                     "in_progress": 0, "vulnerable": 0, "not_applicable": 0, "skipped": 0,
+                     "created": "2025-01-01"},
+            "endpoints": [{"id": "ep1", "path": "/api"}], "matrix": [],
+        }))
+        (base / "findings.json").write_text(json.dumps({"findings": [{"id": "keep-1"}]}))
+        _reset_coverage_matrix("https://same.example.com", "https://same.example.com", True)
+        assert (base / "findings.json").exists()            # kept on resume
+
+    def test_trailing_slash_variant_is_a_resume_not_a_reset(self, coverage_file):
+        """Normalization: http://X and http://X/ (and case variants) are the SAME
+        target — a re-issued start with a trailing slash must RESUME (keep findings),
+        never hit the different-target branch that archives+wipes mid-engagement."""
+        import json
+        base = coverage_file.parent
+        coverage_file.write_text(json.dumps({
+            "meta": {"target": "https://same.example.com", "total_cells": 1, "tested": 1,
+                     "in_progress": 0, "vulnerable": 0, "not_applicable": 0, "skipped": 0,
+                     "created": "2025-01-01"},
+            "endpoints": [{"id": "ep1", "path": "/api"}], "matrix": [],
+        }))
+        (base / "findings.json").write_text(json.dumps({"findings": [{"id": "keep-1"}]}))
+        result = _reset_coverage_matrix("HTTPS://SAME.EXAMPLE.COM/", "https://same.example.com", True)
+        assert result is True                                  # resume
+        assert (base / "findings.json").exists()               # findings NOT wiped
+
+    def test_no_session_but_stale_matrix_meta_target_still_resets(self, coverage_file):
+        """Missing session.json must not leak a leftover engagement: the matrix's own
+        meta.target (different target) drives the archive+reset even with prev_target=''.
+        (Benchmark + interactive: a prior lab with zero registered endpoints used to
+        keep its findings.json alive into the next target.)"""
+        import json
+        base = coverage_file.parent
+        coverage_file.write_text(json.dumps({
+            "meta": {"target": "https://old.example.com", "total_cells": 3, "tested": 1,
+                     "in_progress": 0, "vulnerable": 0, "not_applicable": 0, "skipped": 0,
+                     "created": "2025-01-01"},
+            "endpoints": [], "matrix": [],
+        }))
+        (base / "findings.json").write_text(json.dumps({"findings": [{"id": "old-1"}]}))
+        result = _reset_coverage_matrix("https://new.example.com", "", True)
+        assert result is False                                 # not a resume
+        assert not (base / "findings.json").exists()           # stale findings archived+cleared
+        data = json.loads(coverage_file.read_text())
+        assert data["meta"]["target"] == "https://new.example.com"
+
+    def test_no_session_same_matrix_target_is_resume(self, coverage_file):
+        """Missing session.json + matrix for the SAME target → resume (keeps state).
+        Previously returned False, which wiped quick_log via _archive_qa_state on a
+        same-engagement restart."""
+        import json
+        coverage_file.write_text(json.dumps({
+            "meta": {"target": "https://same.example.com", "total_cells": 1, "tested": 1,
+                     "in_progress": 0, "vulnerable": 0, "not_applicable": 0, "skipped": 0,
+                     "created": "2025-01-01"},
+            "endpoints": [{"id": "ep1", "path": "/api"}], "matrix": [],
+        }))
+        result = _reset_coverage_matrix("https://same.example.com", "", True)
+        assert result is True
+
 
 # ---------------------------------------------------------------------------
 # _manage_skill_gates

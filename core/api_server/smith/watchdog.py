@@ -250,6 +250,20 @@ async def _watchdog_tick(now: float) -> None:
         return
     if (session_data.get("intervention") or {}).get("code"):
         return
+    # scan_mode=benchmark: an EXTERNAL runner (e.g. the XBEN benchmark loop) owns the
+    # restart loop — a second driver here means concurrent agents racing on one lab
+    # (the "v4 hybrid" bug). Stay dormant for the whole scan; re-arm automatically
+    # when a pentest-mode scan starts. This makes SMITH_WATCHDOG_DISABLED safe to
+    # leave at its default (enabled) instead of a global .env toggle that must be
+    # remembered/flipped per benchmark run.
+    if str(session_data.get("scan_mode", "")) == "benchmark":
+        _sid = str(session_data.get("id") or "")
+        if _smith._watchdog_benched_for != _sid:
+            _smith._watchdog_benched_for = _sid
+            _log.info("watchdog: scan %.8s runs scan_mode=benchmark — an external runner "
+                      "owns restarts, watchdog dormant for this scan", _sid)
+        return
+    _smith._watchdog_benched_for = ""
 
     # Hung-process detection runs BEFORE the _smith_running() early-return.
     # A hung opencode/claude keeps _signal_pid_file_alive() and

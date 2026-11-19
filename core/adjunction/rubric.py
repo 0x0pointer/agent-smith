@@ -173,6 +173,67 @@ def chain_terminal_severity(finding: dict) -> str | None:
     return best
 
 
+# Fix 4 (graph-derived blast radius): primitive-node labels that are themselves a
+# critical terminal (a finding that PROVIDES one of these has code-exec reach).
+_CRITICAL_PRIMITIVE_LABELS = (
+    "code_exec", "code execution", "rce", "command_exec", "command execution",
+    "remote_code_execution", "shell", "web_shell", "webshell",
+)
+
+
+def _terminal_band(node) -> str | None:
+    """Classify a graph node as a critical / high terminal, or None. Pure; matches
+    on node kind + label/attrs (a code_exec PRIMITIVE, an IMDS/metadata host, an
+    admin endpoint …)."""
+    if node is None:
+        return None
+    label = (getattr(node, "label", "") or "").lower()
+    if getattr(node, "kind", "") == "primitive" and any(k in label for k in _CRITICAL_PRIMITIVE_LABELS):
+        return "critical"
+    attrs = getattr(node, "attrs", None) or {}
+    blob = (label + " " + " ".join(f"{k}={v}" for k, v in attrs.items())).lower()
+    if any(t in blob for t in _TERMINAL_CRITICAL_TERMS):
+        return "critical"
+    if any(t in blob for t in _TERMINAL_HIGH_TERMS):
+        return "high"
+    return None
+
+
+def graph_terminal_severity(finding: dict, g=None) -> str | None:
+    """Fix 4: corroborate terminal severity with a TRAVERSAL, not just keywords.
+
+    If the world-model graph has a proven escalation path (≤4 hops over
+    REACHES/PROVIDES/ESCALATES_TO) from this finding to a terminal node — a
+    code_exec primitive, a cloud-metadata host, an admin surface — re-rate at that
+    terminal's band. Catches a finding whose own text lacks the keyword but whose
+    graph reach is established (e.g. finding -PROVIDES-> code_exec). Pure wrt the
+    graph, fail-soft, and only ever RAISES (the caller takes the stronger band)."""
+    try:
+        fid = (finding or {}).get("id")
+        if not fid:
+            return None
+        from core.graph import build_graph, reachable
+        from core.graph import model as m
+        from core.graph.paths import NodeM
+        g = g if g is not None else build_graph()
+        node_id = f"finding:{fid}" if f"finding:{fid}" in g.nodes else (fid if fid in g.nodes else None)
+        if node_id is None:
+            return None
+        paths_found = reachable(
+            g, node_id, NodeM(where=lambda n: _terminal_band(n) is not None),
+            edge_kinds=[m.REACHES, m.PROVIDES, m.ESCALATES_TO], max_hops=4, limit=30)
+        best: str | None = None
+        for p in paths_found:
+            band = _terminal_band(g.nodes.get(p[-1]))
+            if band == "critical":
+                return "critical"
+            if band == "high":
+                best = "high"
+        return best
+    except Exception:
+        return None
+
+
 def rubric_text() -> str:
     """Compact Markdown rendering of the rubric for embedding in a directive."""
     lines = ["SEVERITY RUBRIC (rate every finding against THIS, not an ad-hoc scale):"]

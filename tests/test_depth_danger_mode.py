@@ -64,8 +64,9 @@ def test_agent_intervene_pauses_in_danger(steer_session):
 # ── 2e: exploit-escalation fires under deep-pivot (danger + benchmark), not normal ──
 
 def _crit_findings():
+    # findings carry their time under "timestamp" (core.findings.append)
     return {"findings": [{"title": "RCE via SSTI", "severity": "critical",
-                          "target": "http://x.test/t", "ts": "2020-01-01T00:00:00+00:00"}]}
+                          "target": "http://x.test/t", "timestamp": "2020-01-01T00:00:00+00:00"}]}
 
 
 @pytest.mark.parametrize("session_data,fires", [

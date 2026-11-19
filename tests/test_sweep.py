@@ -31,10 +31,15 @@ async def test_sweep_autocloses_clean_and_flags_candidates(
     await core.coverage.add_endpoint(
         "/q", "GET", [{"name": "q", "type": "query", "value_hint": ""}])
 
+    import re as _re
+
     async def fake_probe(url, method="GET", headers=None, body=None, timeout=20):
-        # the SSTI probe evaluates (49); everything else is benign → clean
-        if "{{7*7}}" in url:
-            return {"status": 200, "headers": {}, "body": "answer is 49"}
+        # Simulate a real template engine: evaluate any a*b arithmetic payload
+        # (the SSTI sweep now sends two RANDOMIZED operands for its differential).
+        # Everything else is benign → clean.
+        m = _re.search(r"(\d+)\*(\d+)", url)
+        if m:
+            return {"status": 200, "headers": {}, "body": f"answer is {int(m.group(1)) * int(m.group(2))}"}
         return {"status": 200, "headers": {}, "body": "nothing interesting here"}
 
     async def fake_kali(cmd, *a, **k):

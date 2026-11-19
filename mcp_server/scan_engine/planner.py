@@ -4,12 +4,21 @@ Coverage-driven planner — computes next actions and detects behavioral drift.
 Called by the envelope wrapper on every tool response. Returns required actions
 (obligations the model must fulfill) and recommended actions (suggestions).
 Also detects drift: duplicate tests, phase-inappropriate tools, skipped coverage.
+
+KB hooks (plan 5.1 §7, meta-skills D1/D2): fingerprints become recall
+obligations — known technologies get a version→CVE/exploit lookup suggestion
+against the local KB (before any web search), and CVE-triggered gates point at
+`recall(scope:'kb')` first.
 """
 from __future__ import annotations
+
+import re
 
 from core import session as scan_session
 from core.coverage import get_matrix, select_next_batch
 from core.prompt_fence import fence as _fence
+
+_CVE_RE = re.compile(r"CVE-\d{4}-\d{4,8}", re.I)
 
 
 def _add_recon_actions(required: list[str], recommended: list[str], tools_run: set, target: str) -> None:
@@ -58,6 +67,13 @@ def _inject_pending_gates(required: list[str]) -> None:
                 s for s in gate.get("required_skills", [])
                 if s not in satisfied_skills
             ]
+            hint = ""
+            # D1 hook: a CVE-triggered gate points at the local KB first —
+            # recall (NVD + exploitdb + nuclei rows) BEFORE any web lookup.
+            cve = _CVE_RE.search(str(gate.get("trigger", "")))
+            if cve:
+                hint = (f"  Before any external lookup: report(action='recall', "
+                        f"data={{query:'{cve.group(0).lower()}', scope:'kb'}})")
             if not missing:
                 continue
             trigger = gate.get("trigger", "")
@@ -67,9 +83,68 @@ def _inject_pending_gates(required: list[str]) -> None:
                     f"Finish your current recon/mapping step first if you're mid-task, then chain it: "
                     f"session(action='set_skill', options={{skill: '{skill}', reason: 'gate {gate['id']}'}}) then Skill('{skill}'). "
                     "Don't leave it unaddressed — this gate blocks completion."
+                    + hint
                 ))
             # Inject at most one gate per response to avoid context flooding.
             break
+    except Exception:
+        pass
+
+
+# ── KB recall hints (plan 5.1 §7 / D1-D2) ───────────────────────────────
+_KB_HINT_CACHE: dict = {"checked_at": 0.0, "kinds": set()}
+_kb_hint_suggested: dict[str, set] = {}      # session_id → techs already hinted
+
+
+def _kb_exploit_kinds() -> set[str]:
+    """Kinds present in kb/index.db (60s-cached) — empty when no index."""
+    import time
+    try:
+        from core import kb as kb_mod
+        if not kb_mod.INDEX_DB.exists():
+            return set()
+        now = time.time()
+        if now - _KB_HINT_CACHE["checked_at"] > 60:
+            con = kb_mod.open_index()
+            kinds = set()
+            if con is not None:
+                try:
+                    kinds = {r[0] for r in con.execute(
+                        "SELECT DISTINCT kind FROM kb_docs").fetchall()}
+                except Exception:
+                    pass
+                finally:
+                    con.close()
+            _KB_HINT_CACHE["checked_at"] = now
+            _KB_HINT_CACHE["kinds"] = kinds
+        return _KB_HINT_CACHE["kinds"]
+    except Exception:
+        return set()
+
+
+def _add_kb_recall_hints(recommended: list[str]) -> None:
+    """D1/D2: version→CVE→exploit intelligence from the LOCAL KB, one recall
+    suggestion per technology, before the model reaches for a web search."""
+    try:
+        kinds = _kb_exploit_kinds()
+        if not kinds & {"cve", "exploit", "nuclei"}:
+            return                      # KB lacks exploit intelligence — stay quiet
+        sess = scan_session.get() or {}
+        sid = sess.get("id") or ""
+        suggested = _kb_hint_suggested.setdefault(sid, set())
+        techs = ((sess.get("known_assets") or {}).get("technologies") or [])[:8]
+        for tech in techs:
+            t = str(tech).strip()
+            if not t or t in suggested:
+                continue
+            suggested.add(t)
+            recommended.append(
+                f"Local-KB intelligence for '{t}' (before any web search): "
+                f"report(action='recall', data={{query:'{t}', scope:'kb+nvd+exploitdb+nuclei'}}) "
+                "— version→CVE→exploit/playbook rows, offline."
+            )
+            if len(suggested) >= 3:    # a few per scan, not every fingerprint
+                break
     except Exception:
         pass
 
@@ -139,27 +214,147 @@ def compute_next(tool: str, state: dict) -> dict:
     if phase in ("testing", "validation"):
         _add_graph_steer(recommended)
 
+    # Local-KB intelligence hints (plan 5.1 §7): fingerprints → recall, not memorize
+    if phase in ("recon", "discovery", "testing"):
+        _add_kb_recall_hints(recommended)
+
     return {"required": required, "recommended": recommended, "warnings": warnings}
 
 
+_GRAPH_STEER_MAX = 3  # small-window budget: never flood the turn with graph steers
+
+# A tested_for cell in one of these states is no longer pending work.
+_STEER_ADDRESSED = {"tested_clean", "vulnerable", "not_applicable", "skipped"}
+
+
+def _graph_bridge_steer(g) -> list[str]:
+    """Fix 2 — surface the top primitive_unblock bridge every turn (not only when
+    QA fires): a ready-made chain the model otherwise never self-assembles. Own
+    fail-soft so a graph error here never costs the other steers."""
+    try:
+        from core.graph import candidate_chains
+        try:
+            from mcp_server.report_tools.diagrams import _proven_chain_fids
+            proven = _proven_chain_fids()
+        except Exception:
+            proven = None
+        bridges = [c for c in candidate_chains(g, proven) if c.get("kind") == "primitive_unblock"]
+        if not bridges:
+            return []
+        b = bridges[0]
+        steps = b.get("steps") or []
+        provider = steps[0] if steps else b.get("provider_id", "the provider finding")
+        blocked = steps[-1] if steps else b.get("blocked_id", "the blocked finding")
+        return [f"Chain bridge: run {_fence(provider)} to obtain the {_fence(b.get('primitive', 'needed'))} "
+                f"primitive, then retry the blocked step {_fence(blocked)} and file it — "
+                f"report(action='chain', data={{type:'suggest'}})."]
+    except Exception:
+        return []
+
+
+def _graph_dataflow_steers(g) -> list[str]:
+    """Fix 1 — deterministic next actions over the DATAFLOW edges (auth / credential
+    reuse / pivot reach): each is a concrete 'do this next' the model would
+    otherwise have to infer. Capped to the top 2. Own fail-soft.
+
+    The chains below follow the exact edge topology core.graph.build projects, NOT
+    an idealized one: AUTHENTICATES always lands on a HOST (never directly on an
+    endpoint), so credential-reuse must hop HOST --HOSTS--> endpoint to find the
+    pending surface; and a REACHES-discovered pivot host carries NO endpoints yet
+    (recon hasn't enumerated it), so the pivot steer drives ENUMERATION rather than
+    demanding endpoints that don't exist. Validated end-to-end against build_graph()
+    output in tests/test_graph_steer_dataflow.py (the build-topology integration tests)."""
+    try:
+        from core.graph import match_chain, paths
+        from core.graph import model as m
+
+        def _pending(n) -> bool:
+            return any(e.attrs.get("status") not in _STEER_ADDRESSED
+                       for e in g.out_edges(n.id, m.TESTED_FOR))
+
+        def _pending_eps_under(host_id: str) -> list:
+            eps = []
+            for e in g.out_edges(host_id, m.HOSTS):
+                ep = g.nodes.get(e.dst)
+                if ep is not None and ep.kind == m.ENDPOINT and _pending(ep):
+                    eps.append(ep)
+            return eps
+
+        lines: list[str] = []
+        # A) you hold a token minted by a login that unlocks an untested endpoint
+        #    ENDPOINT(login) --ISSUES--> TOKEN --GRANTS--> ENDPOINT(pending)
+        for mt in match_chain(g, [
+            paths.NodeM(m.ENDPOINT, var="login"), paths.Rel(m.ISSUES),
+            paths.NodeM(m.TOKEN, var="tok"), paths.Rel(m.GRANTS),
+            paths.NodeM(m.ENDPOINT, where=_pending, var="target")], limit=3):
+            lines.append(
+                f"Auth dataflow: you hold a token minted by {_fence(mt.vars['login'].label)}; it unlocks "
+                f"{_fence(mt.vars['target'].label)}, which has untested cells — test it AUTHENTICATED "
+                f"with that token.")
+        # B) a finding leaked a principal (credential/token) that authenticates a host
+        #    whose surface still has untested cells:
+        #    FINDING --LEAKS--> CREDENTIAL|TOKEN --AUTHENTICATES--> HOST --HOSTS--> ENDPOINT(pending)
+        for mt in match_chain(g, [
+            paths.NodeM(m.FINDING, var="f"), paths.Rel(m.LEAKS),
+            paths.NodeM(where=lambda n: n.kind in (m.CREDENTIAL, m.TOKEN), var="cred"),
+            paths.Rel(m.AUTHENTICATES),
+            paths.NodeM(m.HOST, var="h"), paths.Rel(m.HOSTS),
+            paths.NodeM(m.ENDPOINT, where=_pending, var="target")], limit=3):
+            lines.append(
+                f"Credential reuse: {_fence(mt.vars['f'].label)} leaks credentials that authenticate "
+                f"{_fence(mt.vars['h'].label)} — replay them against its untested "
+                f"{_fence(mt.vars['target'].label)}.")
+        # C) a finding reached an internal host. A freshly-discovered pivot host has NO
+        #    mapped endpoints yet, so steer to ENUMERATE it; only in the rare case it
+        #    already exposes untested endpoints do we steer to test them directly.
+        seen_hosts: set = set()
+        for mt in match_chain(g, [
+            paths.NodeM(m.FINDING, var="f"), paths.Rel(m.REACHES),
+            paths.NodeM(m.HOST, var="h")], limit=5):
+            host = mt.vars["h"]
+            if host.id in seen_hosts:
+                continue
+            seen_hosts.add(host.id)
+            pend = _pending_eps_under(host.id)
+            if pend:
+                lines.append(
+                    f"Pivot reach: {_fence(mt.vars['f'].label)} reaches internal host "
+                    f"{_fence(host.label)}; it exposes untested {_fence(pend[0].label)} — pivot and test it.")
+            else:
+                lines.append(
+                    f"Pivot reach: {_fence(mt.vars['f'].label)} reached internal host "
+                    f"{_fence(host.label)}, which has no mapped endpoints yet — enumerate it "
+                    f"(spider/scan through the reaching primitive) before it can be tested.")
+        return lines[:2]
+    except Exception:
+        return []
+
+
 def _add_graph_steer(recommended: list[str]) -> None:
-    """Append graph-ranked next actions (WF-A5 / value ranking). Fail-soft +
-    fenced (finding/endpoint text is target-derived)."""
+    """Append graph-DERIVED next actions, most-actionable first (WF-A5 + dataflow
+    reachability). Each line replaces a hoped-for model inference with a
+    deterministic graph query. Fail-soft + fenced (target-derived text); capped at
+    _GRAPH_STEER_MAX per turn so a small context window isn't flooded."""
     try:
         from core.graph import build_graph, next_targets, rank_findings
         g = build_graph()
+        steers: list[str] = []
+        steers += _graph_bridge_steer(g)        # Fix 2 — ready-made chain (top value)
+        steers += _graph_dataflow_steers(g)     # Fix 1 — auth/cred/pivot dataflow
         ranked = rank_findings(g)
         if ranked:
             top = ranked[0]
-            recommended.append(
+            steers.append(
                 f"Deepen the highest-value finding: {_fence(top['label'])} "
                 f"[{top['severity']}] — {top['why']}. Chain it: report(action='chain', data={{type:'suggest'}})")
-        tgts = next_targets(g, limit=1)
+        tgts = next_targets(g, limit=3)         # profile-sized candidate set (Fix 1)
         if tgts:
-            recommended.append(
+            steers.append(
                 f"Highest-value untested endpoint: {_fence(tgts[0]['path'])} "
                 f"({tgts[0]['pending_cells']} pending cell(s)) — sweep it: "
                 "report(action='coverage', data={type:'sweep'})")
+        for line in steers[:_GRAPH_STEER_MAX]:
+            recommended.append(line)
     except Exception:
         pass
 
@@ -331,13 +526,17 @@ def _injection_command_with_payload(inj: str, target: str, path: str, method: st
 
 
 def build_probe(inj: str, target: str, path: str, method: str, param: str,
-                param_type: str = "query") -> dict | None:
+                param_type: str = "query", operands: tuple[int, int] | None = None) -> dict | None:
     """Structured probe for the server-side sweep (SM-5). Unlike
     _concrete_test_command (a human-readable string), this returns the params the
     sweep executes directly. ``None`` when the type isn't server-side sweepable.
 
-      {"kind": "http", "url", "method", "payload"}   # inject payload, read response
-      {"kind": "kali", "cmd", "payload": ""}          # sqlmap runs its own oracle
+      {"kind": "http", "url", "method", "payload", "expected"}  # inject, read response
+      {"kind": "kali", "cmd", "payload": ""}                     # sqlmap runs its oracle
+
+    ``operands=(a, b)`` crafts an SSTI arithmetic probe for a*b (default 7*7) and
+    sets ``expected`` to the product — the sweep runs two with distinct operands
+    so the oracle can require the output to TRACK them (phantom-resistant).
     """
     techs = _known_techs()
     if inj == "sqli":
@@ -353,7 +552,12 @@ def build_probe(inj: str, target: str, path: str, method: str, param: str,
     }
     if inj in http_payloads:
         payload = http_payloads[inj]
-        return {"kind": "http", "method": method, "payload": payload,
+        expected = None
+        if inj == "ssti":
+            a, b = operands or (7, 7)
+            payload = payload.replace("7*7", f"{a}*{b}")
+            expected = str(a * b)
+        return {"kind": "http", "method": method, "payload": payload, "expected": expected,
                 "url": _resolve_url(target, path, param, param_type, payload)}
     return None  # ssrf/xxe/nosqli/idor/… need OOB / diffing / judgment — not swept
 

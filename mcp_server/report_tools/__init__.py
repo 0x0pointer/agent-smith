@@ -116,6 +116,33 @@ def _loads_lenient(s: str):
     return None, False, err
 
 
+def _do_fact(data: Any) -> str:
+    """Record a durable fact in the ledger carried across context restarts (#1).
+
+    data: {status: confirmed|hypothesis|ruled_out, text, evidence=, reason=}
+      confirmed  — an evidence-backed primitive/fact. REQUIRES evidence (an
+                   artifact_id / finding_id); without it the fact is demoted to a
+                   HYPOTHESIS (only evidence-backed facts are authoritative).
+      hypothesis — an unverified lead to test later.
+      ruled_out  — a tried-and-failed negative (reason=) so a fresh context does
+                   not re-walk the dead end.
+    """
+    if not isinstance(data, dict):
+        return "Error: fact data must be a JSON object"
+    from core.session import fact_ledger as _fl
+    status = str(data.get("status", "confirmed")).lower()
+    text = data.get("text", "")
+    if not text:
+        return "Error: fact data needs a 'text' field"
+    if status == "hypothesis":
+        res = _fl.record_hypothesis(text)
+    elif status == "ruled_out":
+        res = _fl.record_ruled_out(text, data.get("reason", ""))
+    else:
+        res = _fl.record_confirmed(text, data.get("evidence"))
+    return json.dumps(res)
+
+
 def _do_decision(data: Any) -> str:
     """Record the structured decision BEHIND the next action(s) — the training-data 'why' (§3).
     Best-effort: emits a `decision` smith-event and links the following tool calls caused_by it.
@@ -135,7 +162,14 @@ def _do_decision(data: Any) -> str:
 async def report(action: str, data: Any) -> str:
     """Log findings, diagrams, notes, coverage updates, or the DECISION behind your next action.
 
-    action : finding | update_finding | delete_finding | list_findings | diagram | note | dashboard | coverage | chain | decision
+    action : finding | update_finding | delete_finding | list_findings | diagram | note | dashboard | coverage | chain | decision | fact
+
+    fact data (durable across context restarts — build on evidence, don't re-derive):
+      status (confirmed|hypothesis|ruled_out), text, evidence= (artifact/finding id;
+      REQUIRED for confirmed — without it the fact is demoted to hypothesis), reason=
+      (for ruled_out). Record a cracked key / mapped filter / reflected header as
+      CONFIRMED with evidence; a dead end (param=1 → 404) as RULED_OUT so a fresh
+      context never re-walks it.
 
     decision data (record BEFORE a non-trivial tool call — captures the 'why' for training data;
     provide what you actually reasoned, omit the rest):
@@ -213,6 +247,15 @@ async def report(action: str, data: Any) -> str:
         cells, and returns oracle-positive cells as CANDIDATES for you to confirm,
         file a finding, and close vulnerable. Use this to close injection coverage
         fast instead of hand-running every probe — then handle the candidates.
+        (SSTI uses a two-probe DIFFERENTIAL so a page merely containing "49" is
+        not mistaken for template injection.)
+
+      id_sweep — DETERMINISTIC IDOR/BOLA id enumeration once a request WORKS for
+        one id: url (with a {} placeholder or the literal id), baseline=<that id>,
+        window=40, max_probes<=100, method=. The server enumerates nearest-first,
+        diffs the responses, and returns authorization-boundary / distinct-object
+        ids as CANDIDATES (never auto-filed). Use it the moment you confirm a
+        primitive on an indexed param instead of hand-guessing ids.
 
       import_openapi / import_graphql — register EVERY operation of a schema in
         ONE call (vs hand-transcribing each): data.url = the spec URL (OpenAPI/
@@ -258,8 +301,10 @@ async def report(action: str, data: Any) -> str:
         return await _do_chain(data)
     elif action == "decision":
         return _do_decision(data)
+    elif action == "fact":
+        return _do_fact(data)
     elif action == "recall":
         return await _do_recall(data)
     else:
         return ("Unknown action '{}'. Use: finding, update_finding, delete_finding, list_findings, "
-                "diagram, note, dashboard, coverage, chain, decision, recall").format(action)
+                "diagram, note, dashboard, coverage, chain, decision, fact, recall").format(action)

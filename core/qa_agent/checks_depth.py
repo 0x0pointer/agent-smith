@@ -44,7 +44,8 @@ def _check_depth_after_finding(entries: list[dict], findings_data: dict) -> dict
         return None
     now = datetime.now(timezone.utc)
     for finding in findings:
-        age_secs = _ts_age_secs(finding.get("ts", ""), now)
+        # findings carry their time under "timestamp" (core.findings.append)
+        age_secs = _ts_age_secs(finding.get("timestamp", ""), now)
         if age_secs < 1200:  # 20 min
             continue
         target = finding.get("target", "")
@@ -52,7 +53,7 @@ def _check_depth_after_finding(entries: list[dict], findings_data: dict) -> dict
             e for e in entries
             if e.get("type") in ("TOOL", "SPIDER")
             and e.get("target", "") == target
-            and e.get("ts", "") > finding.get("ts", "")
+            and e.get("ts", "") > finding.get("timestamp", "")
         ]
         if tools_after:
             continue
@@ -384,7 +385,7 @@ def _check_stuck_on_target(entries: list[dict], findings_data: dict, session_dat
     recent_findings = [
         f for f in findings_data.get("findings", [])
         if f.get("target", "") == stuck_target
-        and _ts_age_secs(f.get("ts", ""), now) <= window_secs
+        and _ts_age_secs(f.get("timestamp", ""), now) <= window_secs  # findings use "timestamp"
     ]
     if recent_findings:
         # Smith is making progress — findings are being logged

@@ -21,6 +21,31 @@
     } catch { /* ignore */ }
   }
 
+  // plan 5.1e #5 — live KB-recall usage metric (where + how much the KB is used).
+  // Empty-but-muted when no recall has fired this scan; silent of specifics otherwise.
+  function _recallUsageHtml(ru) {
+    if (!ru?.total) {
+      return '<div style="font-size:.78rem;color:#6e7681;margin-top:.5rem;width:100%">&#128269; KB recall: none yet this scan</div>';
+    }
+    const byTier = Object.entries(ru.by_tier || {}).sort((a, b) => b[1] - a[1])
+      .map(([t, n]) => `<span style="color:#79c0ff">${esc(t)}</span>&#183;${n}`).join('  ');
+    const bySkill = Object.entries(ru.by_skill || {}).sort((a, b) => b[1] - a[1]).slice(0, 6)
+      .map(([k, n]) => `${esc(k)}&#183;${n}`).join('  ');
+    const recent = (ru.recent || []).slice(-4).reverse().map(r =>
+      `<div style="color:#8b949e;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">` +
+      `&#8220;${esc(r.query)}&#8221; &#8594; ${r.hits} hit${r.hits === 1 ? '' : 's'} ` +
+      `<span style="color:#6e7681">[${esc((r.tiers || []).join('+'))}${r.skill ? ' &#183; ' + esc(r.skill) : ''}]</span></div>`
+    ).join('');
+    return (
+      '<div style="width:100%;margin-top:.5rem;padding:.5rem .6rem;background:#0d1117;border:1px solid #21262d;border-radius:6px;font-size:.8rem">' +
+        `<div style="color:#f0f6fc"><strong>&#128269; KB recall</strong>: ${ru.total} call${ru.total === 1 ? '' : 's'} &#183; ${ru.total_hits} hit${ru.total_hits === 1 ? '' : 's'}</div>` +
+        (byTier ? `<div style="color:#8b949e;margin-top:.25rem">by tier: ${byTier}</div>` : '') +
+        (bySkill ? `<div style="color:#8b949e;margin-top:.15rem">by skill: ${bySkill}</div>` : '') +
+        (recent ? `<div style="margin-top:.3rem;border-top:1px solid #21262d;padding-top:.3rem">${recent}</div>` : '') +
+      '</div>'
+    );
+  }
+
   function renderSkills() {
     const wrap   = document.getElementById('skills-wrap');
     const sumWrap = document.getElementById('skills-summary');
@@ -59,7 +84,7 @@
         ? `<span class="cov-stat cov-vulnerable">${requiredCount} gate-required</span>`
         : '',
       `<span style="font-size:.8rem;color:#6e7681;align-self:center">active skill: <strong style="color:#f0f6fc">${s.skill ? '/'+s.skill : '—'}</strong></span>`,
-    ].join('');
+    ].join('') + _recallUsageHtml(s.recall_usage);
 
     // Group skills
     const groups = {};
