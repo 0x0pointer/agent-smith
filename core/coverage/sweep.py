@@ -54,9 +54,47 @@ def _eval_sqli(body: str) -> dict:
 def _eval_ssti(payload: str, body: str) -> dict:
     # 7*7=49 for every engine. Evaluated (49 present, literal payload absent) →
     # candidate; a reflected-but-unevaluated payload is an XSS concern, not SSTI.
+    # NOTE: single-probe "49 in body" false-fires on any page that merely CONTAINS
+    # "49" (a price, an id, the year 1949). Prefer evaluate_ssti_differential()
+    # (two randomized operands that must BOTH track) wherever two probes are run.
     if "49" in body and payload not in body:
         return _verdict("candidate", "arithmetic evaluated (49) — template injection")
     return _verdict("clean", "payload not evaluated by a template engine")
+
+
+def evaluate_ssti_differential(probes: list[dict]) -> dict:
+    """Phantom-resistant SSTI verdict from TWO+ probes with distinct expected
+    arithmetic results. A page that merely contains one product (e.g. "49")
+    cannot also contain a second randomized product (e.g. "143") unless the
+    template actually evaluated both — so a positive requires the output to TRACK
+    the operands, not match a single constant.
+
+    probes: [{"expected": "49", "payload": "{{7*7}}", "status": int, "body": str}, …]
+
+    Verdicts (same contract as evaluate_probe):
+      candidate     >=2 distinct expected products each appear in their own
+                    response → the engine evaluated them. Surfaced, never auto-filed.
+      clean         NO probe's product appears → safe to auto-close tested_clean.
+      inconclusive  exactly one product appears (coincidence or filtered), or no
+                    usable pair (5xx / empty) → stays pending, the model decides.
+      blocked       any probe auth-blocked (401/403).
+    """
+    if any(p.get("status") in (401, 403) for p in probes):
+        return _verdict("blocked", "auth blocked a differential probe")
+    usable = [p for p in probes
+              if 0 < p.get("status", 0) < 500 and p.get("body")]
+    if len(usable) < 2:
+        return _verdict("inconclusive", "need two usable differential responses")
+    tracked = {str(p["expected"]) for p in usable if str(p["expected"]) in p["body"]}
+    if len(tracked) >= 2:
+        return _verdict("candidate",
+                        f"arithmetic tracked across differential probes "
+                        f"({', '.join(sorted(tracked))}) — template injection")
+    if not tracked:
+        return _verdict("clean", "no probe's arithmetic was evaluated")
+    return _verdict("inconclusive",
+                    "only one operand result appeared — coincidental reflection, "
+                    "not a tracked evaluation; stays pending")
 
 
 def _eval_xss(payload: str, body: str) -> dict:

@@ -207,6 +207,16 @@ def _do_complete():
             "start a new scan. Write one brief final summary of the findings for "
             "the user, then END your turn."
         )
+    # Fix 5 (opt-in, SMITH_GRAPH_CROSSRUN=1): persist this target's recon asset map
+    # so a future scan of the same target starts with its hosts/endpoints present.
+    # Default OFF ⇒ no file written. Fail-soft.
+    try:
+        from core.graph import build_graph, persist
+        if persist.crossrun_enabled():
+            persist.save_snapshot(build_graph(), current0.get("target", ""))
+    except Exception:
+        pass
+
     # Deep-pivot (danger/benchmark): HARD-block completion while promoted internal hosts
     # are unscanned. Checked FIRST (after the terminal short-circuit) so it applies on
     # every path — including the thorough gate below, which returns before the normal

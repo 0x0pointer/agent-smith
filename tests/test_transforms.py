@@ -45,7 +45,7 @@ def _input_for(name: str) -> str:
 def test_registry_populated():
     assert len(TRANSFORMS) >= 60
     assert set(CATEGORIES) == {"base", "cipher", "radio", "homoglyph",
-                               "invisible", "script", "word", "case"}
+                               "invisible", "script", "word", "case", "web"}
 
 
 def test_every_spec_well_formed():

@@ -23,6 +23,7 @@ from mcp_server.transforms import (
 from mcp_server.transforms import encode as _encode_chain
 from mcp_server.transforms import decode as _decode_chain
 from mcp_server.transforms import invisible as _invisible
+from mcp_server.transforms import web_bypass as _web
 
 # Inline output cap — big payloads (token-bombs, large mutation sets) are stored
 # as artifacts and only previewed inline so context/cost stay bounded.
@@ -60,7 +61,7 @@ def _payload_summary(out: str, artifact_id: str | None, extra: dict | None = Non
 async def transform(action: str, text: str = "", options: dict | str | None = None) -> str:
     """Craft, mutate, or decode obfuscated LLM payloads (P4RS3LT0NGV3-style).
 
-    action : list | encode | decode | mutate | bijection | tokenbomb | steg
+    action : list | encode | decode | mutate | bijection | tokenbomb | steg | webgen
     text   : the payload / ciphertext to operate on
     options: action-specific settings (dict)
 
@@ -71,8 +72,16 @@ async def transform(action: str, text: str = "", options: dict | str | None = No
     bijection — Bijection-Learning jailbreak scaffold.  options: mapping_type=letters|digits|tokens, alphabet_size=26, seed=
     tokenbomb — token-exhaustion payload (LLM10).  options: size=200, seed=, save_artifact=true
     steg      — hide/reveal via invisible Unicode.  options: mode=hide|reveal, method=variation_selector|zero_width|unicode_tags, carrier=
+    webgen    — web filter-bypass payloads keyed to a defence you have mapped.
+                options: kind=jsfuck|sql_keyword|xss_filter, context=, keywords=[...], save_artifact=
+                  jsfuck       — run `text` as JS using only []()!+  (alphanumerics blocked)
+                  sql_keyword  — obfuscate a SQL `text` vs a keyword allow/deny-list
+                  xss_filter   — XSS vectors surviving a filter class (context=html|attribute|
+                                 js_string|href|alphanumeric_blocked)
 
-    Categories: base, cipher, radio, homoglyph, invisible, script, word, case.
+    Web (deterministic exploit encoders): jsfuck, js_fromcharcode, js_unicode_escape,
+    js_hex_escape are also usable via encode. Categories: base, cipher, radio,
+    homoglyph, invisible, script, word, case, web.
     """
     opts = _ensure_dict(options) or {}
     _record("transform")  # count as AI red-team work for coverage/skill-worked gates
@@ -101,10 +110,34 @@ def _do_encode(text, opts):
     if not names:
         return json.dumps({"error": "encode requires options.transforms=[...]"})
     out = _encode_chain(text, names)
-    art = _maybe_artifact("transform", out, opts.get("save_artifact", False))
+    # Auto-save when the payload overflows the inline cap (e.g. JSFuck runs
+    # 5-80KB) so the full bytes are always retrievable via payload_artifact_id,
+    # even if the caller forgot save_artifact.
+    save = opts.get("save_artifact", False) or len(out) > _INLINE_CAP
+    art = _maybe_artifact("transform", out, save)
     return json.dumps({"transforms": names, "input_len": len(text),
                        "output": out[:_INLINE_CAP], "output_len": len(out),
                        "truncated": len(out) > _INLINE_CAP, "artifact_id": art})
+
+
+def _do_webgen(text, opts):
+    kind = opts.get("kind") or opts.get("technique") or "jsfuck"
+    if kind == "jsfuck":
+        out = _web.jsfuck(text or "alert(1)")
+        save = opts.get("save_artifact", True) or len(out) > _INLINE_CAP
+        art = _maybe_artifact("transform", out, save)
+        return json.dumps({"kind": "jsfuck", "charset": "[]()!+", "output_len": len(out),
+                           "output": out[:_INLINE_CAP], "truncated": len(out) > _INLINE_CAP,
+                           "artifact_id": art,
+                           "note": "executing payload; deliver via payload_artifact_id. "
+                                   "V8/Chromium-family (headless-browser XSS oracle)."})
+    if kind == "sql_keyword":
+        variants = _web.sql_keyword_bypass(text, opts.get("keywords"))
+        return json.dumps({"kind": "sql_keyword", "count": len(variants), "variants": variants}, indent=2)
+    if kind == "xss_filter":
+        variants = _web.xss_filter_bypass(text or "alert(1)", opts.get("context", "html"))
+        return json.dumps({"kind": "xss_filter", "count": len(variants), "variants": variants}, indent=2)
+    return json.dumps({"error": f"unknown webgen kind '{kind}'. Use: jsfuck, sql_keyword, xss_filter"})
 
 
 def _do_decode(text, opts):
@@ -178,7 +211,8 @@ def _do_steg(text, opts):
 
 
 _DISPATCH = {"list": _do_list, "encode": _do_encode, "decode": _do_decode, "mutate": _do_mutate,
-             "bijection": _do_bijection, "tokenbomb": _do_tokenbomb, "steg": _do_steg}
+             "bijection": _do_bijection, "tokenbomb": _do_tokenbomb, "steg": _do_steg,
+             "webgen": _do_webgen}
 
 
 def _dispatch(action: str, text: str, opts: dict) -> str:

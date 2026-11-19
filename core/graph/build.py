@@ -493,4 +493,14 @@ def _assemble() -> m.Graph:
     _add_auth_flow(g, ep_by_id, root_host)
     _add_finding_nodes(g, root_host, ep_by_path, fid_to_ep, fid_to_param)
     _add_discovered_hosts(g, root_host, ka)
+
+    # Fix 5 (opt-in, SMITH_GRAPH_CROSSRUN=1): merge a prior run's recon asset map
+    # for this target as carried CONTEXT (tagged prior_run + candidate). Default
+    # OFF ⇒ no behaviour change. Fail-soft.
+    try:
+        from . import persist
+        if target and persist.crossrun_enabled():
+            persist.merge_prior_assets(g, target)
+    except Exception:
+        pass
     return g
