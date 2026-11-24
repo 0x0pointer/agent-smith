@@ -13,6 +13,13 @@ Both are started by their Fabro automation (on a schedule, or with the Run
 button in the web UI). A run picks the oldest approved issue, or the oldest
 Fabro pull request with failed checks, and does nothing when there is none.
 
+Issues are built one at a time. Labels on an issue show its state:
+`fabro-approved` (released by a maintainer, waiting), `fabro-in-progress`
+(being built, nothing else starts), `fabro-built` (see the draft pull
+request), `fabro-failed` (the run ended without a change). Remove
+`fabro-built` or `fabro-failed` to have an issue built again. If a run was
+killed and `fabro-in-progress` stayed behind, remove it by hand.
+
 ## What is specific to this repository
 
 `workflow.fabro` is identical in every repository that uses the pipeline.

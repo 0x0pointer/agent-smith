@@ -22,17 +22,21 @@ digraph IssueToPR {
     //    approval label AND the issue text was not edited after that.
     //    Only the title and body are passed on; comments are never read.
     //    With issue=0 (the default, and what an automation run gets) it
-    //    picks the oldest approved issue without the in-progress label.
-    //    It adds that label to the issue it accepts.
+    //    picks the oldest approved issue no run has handled yet, unless
+    //    another issue is still being built: one build at a time.
+    //    It adds the in-progress label to the issue it accepts; the release
+    //    step at the end of the run replaces it with built or failed.
     // ------------------------------------------------------------------
     check_issue [
         shape=parallelogram, label="Check issue approval", language="python", max_retries=0, timeout="2m",
         script="
-import json, os, sys, urllib.request
+import json, os, sys, urllib.parse, urllib.request
 REPO_OWNER, REPO_NAME = '{{ inputs.repo_owner }}', '{{ inputs.repo_name }}'
 RAW_NUMBER = '{{ inputs.issue }}'.strip()
 LABEL = '{{ inputs.approval_label }}'
 CLAIM = '{{ inputs.in_progress_label }}'
+BUILT = '{{ inputs.built_label }}'
+FAILED = '{{ inputs.failed_label }}'
 MAINTAINERS = set(m.strip().lower() for m in '{{ inputs.maintainers }}'.split(',') if m.strip())
 class Refused(Exception):
     pass
@@ -101,10 +105,19 @@ def approved(number):
     if edited and edited > last['createdAt']:
         raise Refused('issue text was edited after approval; a maintainer must re-apply the label')
     return issue, actor, last['createdAt']
-def claim(number):
-    # Mark the issue as picked up, so a run started without a number skips it.
-    send('https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/issues/' + str(number) + '/labels',
-        dict(labels=[CLAIM]))
+def claim(number, labels):
+    # Mark the issue as being built. While it carries this label no run
+    # started without a number picks another issue: one build at a time.
+    base = 'https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/issues/' + str(number) + '/labels'
+    send(base, dict(labels=[CLAIM]))
+    for old in (BUILT, FAILED):
+        if old in labels:
+            try:
+                req = urllib.request.Request(base + '/' + urllib.parse.quote(old), method='DELETE',
+                    headers=dict(Authorization='Bearer ' + token, Accept='application/json'))
+                urllib.request.urlopen(req, timeout=30).read()
+            except Exception:
+                pass
 if NUMBER > 0:
     # A specific issue was asked for (-I issue=<number>, or construct-build).
     try:
@@ -112,19 +125,26 @@ if NUMBER > 0:
     except Refused as exc:
         refuse(str(exc))
     try:
-        claim(NUMBER)
+        claim(NUMBER, [l['name'] for l in issue['labels']['nodes']])
     except Exception as exc:
         print('warning: could not add the label ' + CLAIM + ' (' + type(exc).__name__ + ')')
 else:
-    # No issue given (the automation's Run button): take the oldest open,
-    # approved issue that no run has picked up yet. Every candidate still has
-    # to pass the full approval check; one that fails is skipped, not built.
+    # No issue given (an automation run): take the oldest open, approved issue
+    # that no run has handled yet. Every candidate still has to pass the full
+    # approval check; one that fails is skipped, not built.
+    # One build at a time: nothing is picked while another issue is being built.
+    busy = [n['number'] for n in graphql(LIST_QUERY, l=CLAIM)['issues']['nodes']]
+    if busy:
+        print('WAITING: issue ' + str(busy[0]) + ' is still being built (label ' + CLAIM + '). One issue is built at a time.')
+        print('If no run is working on it any more, remove that label from the issue.')
+        sys.exit(1)
     issue = None
     candidates = graphql(LIST_QUERY, l=LABEL)['issues']['nodes']
     for node in candidates:
         number = node['number']
-        if CLAIM in [l['name'] for l in node['labels']['nodes']]:
-            print('skipped issue', number, '- already picked up (label ' + CLAIM + ')')
+        handled = [l['name'] for l in node['labels']['nodes'] if l['name'] in (BUILT, FAILED)]
+        if handled:
+            print('skipped issue', number, '- already handled (label ' + handled[0] + ')')
             continue
         try:
             issue, actor, when = approved(number)
@@ -135,15 +155,17 @@ else:
         break
     if issue is None:
         print('NOTHING TO BUILD: no open issue labelled ' + LABEL + ' is waiting (' + str(len(candidates)) + ' checked).')
-        print('To build an issue again, remove its ' + CLAIM + ' label.')
+        print('To build an issue again, remove its ' + BUILT + ' or ' + FAILED + ' label.')
         sys.exit(1)
     try:
-        claim(NUMBER)
+        claim(NUMBER, [])
     except Exception as exc:
         refuse('could not add the label ' + CLAIM + ' to issue ' + str(NUMBER) + ' (' + type(exc).__name__ + '); not building it, because the next run would pick it again')
 os.makedirs('/tmp/fabro', exist_ok=True)
 with open('/tmp/fabro/issue.md', 'w') as f:
     f.write('# ' + issue['title'] + chr(10) + chr(10) + (issue['body'] or '') + chr(10))
+with open('/tmp/fabro/issue_number', 'w') as f:
+    f.write(str(NUMBER))
 print('APPROVED: issue', NUMBER, 'released by', actor, 'at', when)
 print('title:', issue['title'])
 "
@@ -637,6 +659,48 @@ stop(route, 'REVIEW REJECTED, round ' + str(rounds) + ' of ' + str(MAX_ROUNDS) +
     stuck [shape=hexagon, label="Automatic fixing did not converge. Stop, or allow one more attempt?"]
 
     // ------------------------------------------------------------------
+    // Last step of every run that picked an issue: take the in-progress label
+    // off again, so the next run can pick the next issue, and say how it
+    // ended. A run that is killed never gets here; its label then has to be
+    // removed by hand.
+    // ------------------------------------------------------------------
+    release [
+        shape=parallelogram, label="Release the issue", language="python", max_retries=0, timeout="2m",
+        script="
+import json, os, urllib.parse, urllib.request
+REPO_OWNER, REPO_NAME = '{{ inputs.repo_owner }}', '{{ inputs.repo_name }}'
+CLAIM = '{{ inputs.in_progress_label }}'
+BUILT = '{{ inputs.built_label }}'
+FAILED = '{{ inputs.failed_label }}'
+D = '/tmp/fabro'
+token = os.environ.get('GITHUB_TOKEN') or ''
+try:
+    with open(D + '/issue_number') as f:
+        number = int(f.read().strip())
+except Exception:
+    number = 0
+# The review gate leaves review-notes.md behind only when the change passed.
+passed = os.path.exists(D + '/review-notes.md') and not os.path.exists(D + '/review.md')
+outcome = BUILT if passed else FAILED
+def call(method, path, body=None):
+    req = urllib.request.Request('https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/issues/' + str(number) + path,
+        data=json.dumps(body).encode() if body is not None else None, method=method,
+        headers=dict(Authorization='Bearer ' + token, Accept='application/json'))
+    urllib.request.urlopen(req, timeout=30).read()
+if number <= 0:
+    print('no issue was picked in this run, nothing to release')
+else:
+    for step, args in (('add ' + outcome, ('POST', '/labels', dict(labels=[outcome]))),
+                       ('remove ' + CLAIM, ('DELETE', '/labels/' + urllib.parse.quote(CLAIM)))):
+        try:
+            call(*args)
+        except Exception as exc:
+            print('warning: could not ' + step + ' on issue ' + str(number) + ' (' + type(exc).__name__ + ')')
+    print('RELEASED: issue', number, 'is now labelled', outcome)
+"
+    ]
+
+    // ------------------------------------------------------------------
     // Edges. Keep the conditions: with plain edges a failed step does NOT
     // stop the run. Where a script picks the route, the edge without a
     // condition is the safe default (strong reviewer, or a human).
@@ -645,12 +709,12 @@ stop(route, 'REVIEW REJECTED, round ' + str(rounds) + ' of ' + str(MAX_ROUNDS) +
     check_issue -> install [condition="outcome=succeeded"]
     check_issue -> exit    [label="Refused"]
     install -> spec        [condition="outcome=succeeded"]
-    install -> exit        [label="Install failed"]
+    install -> release     [label="Install failed"]
 
     spec -> approve
     approve -> implement   [label="[A] Approve"]
     approve -> spec        [label="Revise", freeform=true]
-    approve -> exit        [label="[X] Reject"]
+    approve -> release     [label="[X] Reject"]
 
     implement -> verify
     quick_fix -> verify
@@ -667,13 +731,14 @@ stop(route, 'REVIEW REJECTED, round ' + str(rounds) + ' of ' + str(MAX_ROUNDS) +
     review_light -> review_gate
     review       -> review_gate
 
-    review_gate -> exit      [label="Approved", condition="outcome=succeeded"]
+    review_gate -> release   [label="Approved", condition="outcome=succeeded"]
     review_gate -> verify    [label="Repo changed", condition="outcome=failed && context.command.output contains ROUTE_reverify"]
     review_gate -> review    [label="Escalate review", condition="outcome=failed && context.command.output contains ROUTE_escalate"]
     review_gate -> implement [label="Fix findings", condition="outcome=failed && context.command.output contains ROUTE_implement"]
     review_gate -> deep_fix  [label="Fix findings (escalated)", condition="outcome=failed && context.command.output contains ROUTE_deep"]
     review_gate -> stuck     [label="Needs a human"]
 
-    stuck -> exit     [label="[X] Stop, fail the run"]
+    stuck -> release  [label="[X] Stop, fail the run"]
+    release -> exit
     stuck -> deep_fix [label="[S] One more attempt, strong model"]
 }

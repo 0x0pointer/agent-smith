@@ -19,8 +19,15 @@ graph = "workflow.fabro"
 issue = "0"
 # Label a maintainer adds to release an issue to the pipeline.
 approval_label = "fabro-approved"
-# Label the run adds to the issue it accepts. Remove it to have the issue built again.
+# Label the run adds to the issue it accepts. While any open issue carries
+# it, automation runs pick no other issue: one build at a time. The last step
+# of the run replaces it with built_label or failed_label. If a run was
+# killed and the label stayed behind, remove it by hand.
 in_progress_label = "fabro-in-progress"
+# How the run ended. Automation runs skip issues carrying either; remove the
+# label to have the issue built again.
+built_label = "fabro-built"
+failed_label = "fabro-failed"
 # GitHub logins allowed to release an issue (comma separated, no spaces).
 maintainers = "RiieCco,blabla1337,JorgeCarvalhoPT"
 
