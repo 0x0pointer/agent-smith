@@ -1,0 +1,77 @@
+_version = 1
+
+# Failed CI on a Fabro pull request -> read the failures -> fix -> local checks -> push to the same PR branch.
+#
+# Started by its Fabro automation (schedule or the Run button in the web UI) or:
+#   fabro run .fabro/workflows/fix-ci/workflow.toml [-I pr=<number>]
+#
+# The graph in workflow.fabro is the same in every repository that uses this
+# pipeline. Everything specific to this repository is set below.
+# No secrets belong in this file. Keys and tokens live in Fabro's vault.
+
+[workflow]
+graph = "workflow.fabro"
+
+[run.inputs]
+# Pull request to fix. "0" lets the run pick the oldest open pull request that
+# qualifies. Automations cannot pass inputs, so they always get "0".
+pr = "0"
+# Only pull requests opened by these logins, from a branch of this repository
+# that starts with branch_prefix, are ever touched (comma separated, no spaces).
+pr_authors = "0x0pointerbot"
+branch_prefix = "fabro/run/"
+# Fix runs allowed per pull request. After that it is left for a human.
+max_rounds = "3"
+# Failed local verifications in a row before the run gives up without pushing.
+max_fix_attempts = "2"
+# Failed checks with these names are ignored (comma separated, no spaces).
+ignore_checks = "notify"
+# SonarCloud project read through its public API, or "none".
+sonar_project = "0x0pointer_agent-smith"
+
+# --- This repository --------------------------------------------------------
+repo_owner = "0x0pointer"
+repo_name = "agent-smith"
+# Shown to every agent as: the <owner>/<name> repository (<description>).
+repo_description = "Python 3.11 project managed with Poetry: the MCP server in mcp_server/, the engine in core/, tool wrappers in tools/, the dashboard in dashboard/, tests in tests/"
+# Extra rule appended to the list of paths agents may not touch.
+repo_rules = "The skills/ directory is a git submodule of the separate skills repository: never edit anything in it and never change its pointer or .gitmodules. If the work needs a change to a skill, say so in your final summary; that change is made in the skills repository."
+# Shell commands. install_command also runs as the first step of every run.
+# lint_command may be "none".
+install_command = "git submodule update -q --init --recursive && poetry install --with dev --no-interaction -q"
+lint_command = "none"
+test_command = "poetry run pytest -q"
+# Told to the agents: what can and cannot be run in the sandbox.
+test_notes = "The whole test suite runs in this sandbox with poetry run pytest. There is no Docker daemon here, so nothing can be checked by starting containers."
+# Paths a run may never change (comma separated, no spaces): prefixes and
+# exact file names. The verify step rejects the run if one of them changed.
+protected_prefixes = ".github/,.fabro/,skills/,.env"
+protected_files = "LICENSE,sonar-project.properties,.gitmodules,skills"
+
+# Default model for any stage the stylesheet in workflow.fabro does not cover.
+[run.model]
+name = "gpt-5.4"
+
+[run.environment]
+id = "agent-smith"
+
+[environments.agent-smith]
+provider = "docker"
+
+[environments.agent-smith.image]
+# Built from .fabro/docker/Dockerfile
+docker = "agent-smith-fabro:latest"
+
+[environments.agent-smith.resources]
+cpu = 1
+memory = "1500MB"
+
+[run.pull_request]
+enabled = false
+
+[run.integrations.github.permissions]
+issues = "write"
+contents = "write"
+pull_requests = "write"
+checks = "read"
+actions = "read"
