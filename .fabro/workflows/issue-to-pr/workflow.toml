@@ -1,0 +1,85 @@
+_version = 1
+
+# Issue -> spec -> human approval -> code -> checks -> independent review -> draft PR.
+#
+# Started by its Fabro automation (schedule or the Run button in the web UI) or:
+#   fabro run .fabro/workflows/issue-to-pr/workflow.toml [-I issue=<number>]
+#
+# The graph in workflow.fabro is the same in every repository that uses this
+# pipeline. Everything specific to this repository is set below.
+# No secrets belong in this file. Keys and tokens live in Fabro's vault.
+
+[workflow]
+graph = "workflow.fabro"
+
+[run.inputs]
+# Issue number to work on. "0" lets the run pick the oldest open issue that
+# carries approval_label and not in_progress_label. Automations cannot pass
+# inputs, so they always get "0".
+issue = "0"
+# Label a maintainer adds to release an issue to the pipeline.
+approval_label = "fabro-approved"
+# Label the run adds to the issue it accepts. Remove it to have the issue built again.
+in_progress_label = "fabro-in-progress"
+# GitHub logins allowed to release an issue (comma separated, no spaces).
+maintainers = "RiieCco,blabla1337,JorgeCarvalhoPT"
+
+# Retry budgets. When a budget is used up the run pauses and asks a human.
+max_cheap_fixes = "2"
+max_fix_attempts = "4"
+max_review_rounds = "3"
+
+# Review depth. A change gets the cheaper reviewer only if it is at most this
+# many changed lines, the spec says "Risk level: low", and it touches none of
+# the sensitive paths (substrings of changed non-test paths).
+max_light_review_lines = "40"
+sensitive_paths = "auth,secret,token,crypt,password,sandbox,policy,proxy,session,mcp_server,installers,tools/,scripts/,Dockerfile,pyproject.toml,poetry.lock,requirements,config"
+# Directory that holds the tests, or "none". Python code changes must come
+# with a change under it unless the spec says "Tests required: no".
+tests_dir = "tests/"
+
+# --- This repository --------------------------------------------------------
+repo_owner = "0x0pointer"
+repo_name = "agent-smith"
+# Shown to every agent as: the <owner>/<name> repository (<description>).
+repo_description = "Python 3.11 project managed with Poetry: the MCP server in mcp_server/, the engine in core/, tool wrappers in tools/, the dashboard in dashboard/, tests in tests/"
+# Extra rule appended to the list of paths agents may not touch.
+repo_rules = "The skills/ directory is a git submodule of the separate skills repository: never edit anything in it and never change its pointer or .gitmodules. If the work needs a change to a skill, say so in your final summary; that change is made in the skills repository."
+# Shell commands. install_command also runs as the first step of every run.
+# lint_command may be "none".
+install_command = "git submodule update -q --init --recursive && poetry install --with dev --no-interaction -q"
+lint_command = "none"
+test_command = "poetry run pytest -q"
+# Told to the agents: what can and cannot be run in the sandbox.
+test_notes = "The whole test suite runs in this sandbox with poetry run pytest. There is no Docker daemon here, so nothing can be checked by starting containers."
+# Paths a run may never change (comma separated, no spaces): prefixes and
+# exact file names. The verify step rejects the run if one of them changed.
+protected_prefixes = ".github/,.fabro/,skills/,.env"
+protected_files = "LICENSE,sonar-project.properties,.gitmodules,skills"
+
+# Default model for any stage the stylesheet in workflow.fabro does not cover.
+[run.model]
+name = "gpt-5.4"
+
+[run.environment]
+id = "agent-smith"
+
+[environments.agent-smith]
+provider = "docker"
+
+[environments.agent-smith.image]
+# Built from .fabro/docker/Dockerfile
+docker = "agent-smith-fabro:latest"
+
+[environments.agent-smith.resources]
+cpu = 1
+memory = "1500MB"
+
+[run.pull_request]
+enabled = true
+draft = true
+
+[run.integrations.github.permissions]
+issues = "write"
+contents = "write"
+pull_requests = "write"
