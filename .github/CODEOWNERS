@@ -1,0 +1,7 @@
+# Changes to these paths need an approving review from one of the maintainers
+# (enforced by the "require review from Code Owners" rule on main).
+#
+# .fabro/ holds the Fabro pipeline, including the list of people who may
+# release an issue to it. .github/ holds CI and this file.
+/.fabro/   @RiieCco @blabla1337 @JorgeCarvalhoPT
+/.github/  @RiieCco @blabla1337 @JorgeCarvalhoPT
