@@ -509,14 +509,117 @@
     }
   },
   "web_url": "https://fabro.tail2ccfc9.ts.net/runs/01M8750T7F0QP092F01A42XHDH",
-  "start": null,
-  "status": {
-    "kind": "starting"
+  "start": {
+    "start_time": "2026-11-24T16:08:07.396286148Z",
+    "run_branch": "fabro/run/01M8750T7F0QP092F01A42XHDH",
+    "base_sha": "6d1a76a96d3f12e31db0986024e053d75d890a3e"
   },
-  "status_updated_at": "2026-11-24T16:08:02.607299160Z",
-  "last_event_at": "2026-11-24T16:08:06.602852785Z",
+  "status": {
+    "kind": "running"
+  },
+  "status_updated_at": "2026-11-24T16:08:07.397694554Z",
+  "last_event_at": "2026-11-24T16:08:11.032491911Z",
   "pending_control": null,
-  "checkpoints": [],
+  "checkpoints": [
+    {
+      "seq": 20,
+      "checkpoint": {
+        "timestamp": "2026-11-24T16:08:09.770471628Z",
+        "current_node": "start",
+        "completed_nodes": [
+          "start"
+        ],
+        "node_retries": {},
+        "context_values": {
+          "internal.thread_id": null,
+          "outcome": "succeeded",
+          "graph.model_stylesheet": "\n            *       { model: gpt-5.4; reasoning_effort: medium; }\n            .strong { model: gpt-5.5; reasoning_effort: high; }\n        ",
+          "failure_signature": "",
+          "current_node": "start",
+          "graph.rankdir": "LR",
+          "internal.retry_count.start": 0,
+          "internal.run_id": "01M8750T7F0QP092F01A42XHDH",
+          "failure_class": "",
+          "internal.node_visit_count": 1,
+          "internal.work_dir": "/workspace/agent-smith",
+          "graph.goal": "Fix the failed CI checks on a Fabro pull request of 0x0pointer/agent-smith and push the fix to the same branch",
+          "graph.max_node_visits": "12",
+          "internal.fidelity": "compact"
+        },
+        "node_outcomes": {
+          "start": {
+            "status": "succeeded",
+            "usage": null
+          }
+        },
+        "next_node_id": "pick_pr",
+        "node_visits": {
+          "start": 1
+        }
+      },
+      "diff": {}
+    },
+    {
+      "seq": 0,
+      "checkpoint": {
+        "timestamp": "2026-11-24T16:08:11.039991685Z",
+        "current_node": "pick_pr",
+        "completed_nodes": [
+          "start",
+          "pick_pr"
+        ],
+        "node_retries": {},
+        "context_values": {
+          "internal.fidelity": "compact",
+          "failure_class": "deterministic",
+          "graph.rankdir": "LR",
+          "internal.retry_count.start": 0,
+          "internal.retry_count.pick_pr": 0,
+          "graph.max_node_visits": "12",
+          "failure_signature": "pick_pr|deterministic|script failed with exit code: <n> ## output skipped pull request <n> - its branch dependabot/pip/pip-<hex> is not a fabro run branch nothing to fix: no pull request with failed checks is waiting (<n> looked at).",
+          "graph.model_stylesheet": "\n            *       { model: gpt-5.4; reasoning_effort: medium; }\n            .strong { model: gpt-5.5; reasoning_effort: high; }\n        ",
+          "internal.thread_id": "start",
+          "internal.node_visit_count": 1,
+          "outcome": "failed",
+          "thread.start.current_node": "pick_pr",
+          "internal.work_dir": "/workspace/agent-smith",
+          "graph.goal": "Fix the failed CI checks on a Fabro pull request of 0x0pointer/agent-smith and push the fix to the same branch",
+          "internal.run_id": "01M8750T7F0QP092F01A42XHDH",
+          "command.output": "blob://sha256/077a696a264a006256ff911d1feebc75732d7a0c1c442c4014f96a48bb616171",
+          "current_node": "pick_pr"
+        },
+        "node_outcomes": {
+          "pick_pr": {
+            "status": "failed",
+            "context_updates": {
+              "command.output": "blob://sha256/077a696a264a006256ff911d1feebc75732d7a0c1c442c4014f96a48bb616171"
+            },
+            "failure": {
+              "message": "Script failed with exit code: 1\n\n## output\nskipped pull request 287 - its branch dependabot/pip/pip-89390a9de7 is not a fabro run branch\nNOTHING TO FIX: no pull request with failed checks is waiting (1 looked at).\n",
+              "category": "deterministic"
+            },
+            "usage": null,
+            "timing": {
+              "wall_time_ms": 0,
+              "inference_time_ms": 0,
+              "tool_time_ms": 1255,
+              "active_time_ms": 1255
+            }
+          },
+          "start": {
+            "status": "succeeded",
+            "usage": null
+          }
+        },
+        "next_node_id": "exit",
+        "node_visits": {
+          "start": 1,
+          "pick_pr": 1
+        }
+      },
+      "diff": {}
+    }
+  ],
   "conclusion": null,
   "sandbox": {
     "kind": "ready",
@@ -543,5 +646,78 @@
   "pull_request": null,
   "superseded_by": null,
   "pending_interviews": {},
-  "stages": {}
+  "stages": {
+    "start@1": {
+      "first_event_seq": 17,
+      "prompt": null,
+      "response": null,
+      "completion": {
+        "outcome": "succeeded",
+        "notes": null,
+        "failure_reason": null,
+        "timestamp": "2026-11-24T16:08:09.770337529Z"
+      },
+      "provider_used": null,
+      "diff": null,
+      "script_invocation": null,
+      "script_timing": null,
+      "parallel_results": null,
+      "output": null,
+      "started_at": "2026-11-24T16:08:09.770244332Z",
+      "handler": "start",
+      "timing": {
+        "wall_time_ms": 0,
+        "inference_time_ms": 0,
+        "tool_time_ms": 0,
+        "active_time_ms": 0
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "reasoning_tokens": 0,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0
+      },
+      "state": "succeeded"
+    },
+    "pick_pr@1": {
+      "first_event_seq": 21,
+      "prompt": null,
+      "response": null,
+      "completion": null,
+      "provider_used": null,
+      "diff": null,
+      "script_invocation": {
+        "script": "\nimport json, os, re, subprocess, sys, urllib.error, urllib.parse, urllib.request\nOWNER, NAME = '0x0pointer', 'agent-smith'\nAPI = 'https://api.github.com/repos/' + OWNER + '/' + NAME\nRAW_PR = '0'.strip()\nAUTHORS = set(a.strip().lower() for a in '0x0pointerbot'.split(',') if a.strip())\nPREFIX = 'fabro/run/'\nMAX_ROUNDS = int('3')\nIGNORED = set(c.strip().lower() for c in 'notify'.split(',') if c.strip())\nSONAR = '0x0pointer_agent-smith'\nMARK = '<!-- fabro-fix-ci -->'\nFAILING = ('failure', 'timed_out', 'startup_failure')\nD = '/tmp/fabro'\nNL = chr(10)\nclass Skip(Exception):\n    pass\ndef refuse(msg):\n    print('REFUSED: ' + msg)\n    sys.exit(1)\ntoken = os.environ.get('GITHUB_TOKEN')\nif not token:\n    refuse('no GITHUB_TOKEN in the sandbox')\nif not RAW_PR.isdigit():\n    refuse('pr must be a number; 0 picks the oldest pull request with failed checks')\nPR = int(RAW_PR)\nif not AUTHORS or not PREFIX:\n    refuse('pr_authors and branch_prefix must be set')\ndef fetch(url, body=None, auth=True, raw=False, redirect=True):\n    headers = dict(Accept='application/vnd.github+json')\n    if auth:\n        headers['Authorization'] = 'Bearer ' + token\n    data = json.dumps(body).encode() if body is not None else None\n    req = urllib.request.Request(url, data=data, headers=headers)\n    opener = urllib.request.build_opener() if redirect else urllib.request.build_opener(NoRedirect)\n    with opener.open(req, timeout=60) as resp:\n        content = resp.read()\n    return content if raw else json.loads(content or b'null')\nclass NoRedirect(urllib.request.HTTPRedirectHandler):\n    def redirect_request(self, *args, **kwargs):\n        return None\ndef job_log(job_id):\n    # The log lives on a storage host behind a redirect that must not get our token.\n    url = API + '/actions/jobs/' + str(job_id) + '/logs'\n    try:\n        return fetch(url, raw=True, redirect=False).decode(errors='replace')\n    except urllib.error.HTTPError as exc:\n        location = exc.headers.get('Location')\n        if exc.code not in (301, 302, 303, 307, 308) or not location:\n            raise\n    req = urllib.request.Request(location)\n    with urllib.request.urlopen(req, timeout=60) as resp:\n        return resp.read().decode(errors='replace')\nANSI = re.compile(re.escape(chr(27) + '[') + '[0-9;]*[A-Za-z]')\nSTAMP = re.compile('^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z ?')\ndef excerpt(log, slug):\n    # Returns the part of a job log worth reading. The complete log and the\n    # complete failure output are saved next to it, untruncated.\n    lines = [STAMP.sub('', ANSI.sub('', l.lstrip(chr(65279)))) for l in log.splitlines()]\n    os.makedirs(D + '/ci-logs', exist_ok=True)\n    full_path = D + '/ci-logs/' + slug + '.log'\n    with open(full_path, 'w') as f:\n        f.write(NL.join(lines) + NL)\n    def first(needles, start=0):\n        for i in range(start, len(lines)):\n            if any(n in lines[i] for n in needles):\n                return i\n        return None\n    detail = first(('= FAILURES =', '= ERRORS ='))\n    summary = first(('short test summary info',))\n    error = first(('##[error]',))\n    parts = []\n    note = 'Complete job log: ' + full_path\n    if summary is not None:\n        tail = lines[summary:summary + 200]\n        stop = [i for i, l in enumerate(tail) if '##[error]' in l]\n        tail = tail[:stop[0] + 1] if stop else tail\n        parts.append(NL.join(l[:400] for l in tail))\n    if detail is not None:\n        end = first(('= warnings summary =', '= tests coverage =', 'short test summary info'), detail + 1)\n        block = lines[detail:end if end is not None else len(lines)]\n        fail_path = D + '/ci-logs/' + slug + '-failures.txt'\n        with open(fail_path, 'w') as f:\n            f.write(NL.join(block) + NL)\n        shown = NL.join(l[:3000] for l in block)\n        cut = len(shown) > 60000 or any(len(l) > 3000 for l in block)\n        parts.append(shown[:60000])\n        note = 'Complete failure output' + (' (the text above is cut)' if cut else '') + ': ' + fail_path + NL + note\n    if not parts:\n        if error is not None:\n            parts.append(NL.join(l[:3000] for l in lines[max(0, error - 150):error + 1]))\n        else:\n            parts.append(NL.join(l[:3000] for l in lines[-150:]))\n    return (NL + NL).join(parts) + NL + NL + note\ndef sonar_report(number, sha):\n    # Returns (text, needs_work) from SonarCloud's public API, or (None, False)\n    # when it has not analysed this pull request.\n    if not SONAR or SONAR.lower() == 'none':\n        return None, False\n    base = 'https://sonarcloud.io/api/'\n    key = urllib.parse.quote(SONAR)\n    scope = key + '&pullRequest=' + str(number)\n    out = []\n    try:\n        listed = fetch(base + 'project_pull_requests/list?project=' + key, auth=False).get('pullRequests', [])\n        mine = [p for p in listed if str(p.get('key')) == str(number)]\n        if not mine:\n            return None, False\n        analysed = str((mine[0].get('commit') or dict()).get('sha') or '')\n        if analysed and analysed != sha:\n            out.append('NOTE: SonarCloud last analysed commit ' + analysed[:8] + ', not the current ' + sha[:8]\n                + '. Findings below may already be fixed; check each against the current code.')\n    except Exception:\n        pass\n    status = None\n    try:\n        gate = fetch(base + 'qualitygates/project_status?projectKey=' + scope, auth=False)['projectStatus']\n        status = gate.get('status')\n        out.append('Quality gate: ' + str(status))\n        for c in gate.get('conditions', []):\n            if c.get('status') != 'OK':\n                out.append('- failed condition ' + str(c.get('metricKey')) + ': actual ' + str(c.get('actualValue')) + ', threshold ' + str(c.get('errorThreshold')))\n    except Exception as exc:\n        out.append('Quality gate could not be read (' + type(exc).__name__ + ')')\n    total = 0\n    try:\n        issues = []\n        for page in range(1, 6):\n            found = fetch(base + 'issues/search?componentKeys=' + scope + '&resolved=false&ps=100&p=' + str(page), auth=False)\n            total = int(found.get('total') or 0)\n            issues.extend(found.get('issues', []))\n            if len(issues) >= total or not found.get('issues'):\n                break\n        out.append('Open issues on this pull request: ' + str(total) + (' (first ' + str(len(issues)) + ' listed)' if len(issues) < total else ''))\n        for i in issues:\n            path = str(i.get('component', '')).split(':', 1)[-1]\n            out.append('- ' + path + ':' + str(i.get('line', '?')) + ' [' + str(i.get('type')) + ', ' + str(i.get('severity')) + ', ' + str(i.get('rule')) + '] ' + str(i.get('message', ''))[:500])\n    except Exception as exc:\n        out.append('Issues could not be read (' + type(exc).__name__ + ')')\n    spots = []\n    try:\n        spots = fetch(base + 'hotspots/search?projectKey=' + scope + '&status=TO_REVIEW&ps=100', auth=False).get('hotspots', [])\n        for h in spots:\n            path = str(h.get('component', '')).split(':', 1)[-1]\n            out.append('- security hotspot ' + path + ':' + str(h.get('line', '?')) + ' ' + str(h.get('message', ''))[:500])\n    except Exception:\n        pass\n    return NL.join(out), bool(total or spots or status not in (None, 'OK'))\ndef is_sonar(run):\n    return 'sonar' in ((run.get('app') or dict()).get('slug') or '').lower() or 'sonar' in run['name'].lower()\ndef describe(run, number, sha):\n    # Everything known about one failed check, as text for the fixing agent.\n    name = run['name']\n    app = ((run.get('app') or dict()).get('slug') or '').lower()\n    text = ['## Failed check: ' + name, '']\n    output = run.get('output') or dict()\n    if output.get('title'):\n        text.append('Title: ' + str(output['title'])[:300])\n    if is_sonar(run):\n        text.append(sonar_report(number, sha)[0] or 'SonarCloud has no analysis for this pull request. See ' + str(run.get('html_url')))\n    elif app == 'github-actions':\n        try:\n            slug = re.sub('[^A-Za-z0-9]+', '-', name).strip('-').lower() + '-' + str(run['id'])\n            text.append('Relevant part of the job log:' + NL + NL + excerpt(job_log(run['id']), slug))\n        except Exception as exc:\n            text.append('The job log could not be read (' + type(exc).__name__ + '). See ' + str(run.get('html_url')))\n    else:\n        if output.get('summary'):\n            text.append(str(output['summary'])[:3000])\n    try:\n        notes = fetch(API + '/check-runs/' + str(run['id']) + '/annotations?per_page=50')\n        notes = [a for a in notes if a.get('annotation_level') != 'notice'][:40]\n        if notes:\n            text.append(NL + 'Annotations:')\n            for a in notes:\n                text.append('- ' + str(a.get('path')) + ':' + str(a.get('start_line')) + ' ' + str(a.get('message', ''))[:300])\n    except Exception:\n        pass\n    return NL.join(text)\ndef qualify(pull):\n    # The gate. Raises Skip unless this pull request may be fixed now.\n    number, head = pull['number'], pull['head']\n    ref, sha = head['ref'], head['sha']\n    if pull.get('state') != 'open':\n        raise Skip('it is not open')\n    repo = ((head.get('repo') or dict()).get('full_name') or '').lower()\n    if repo != (OWNER + '/' + NAME).lower():\n        raise Skip('its branch is not in this repository')\n    if not ref.startswith(PREFIX):\n        raise Skip('its branch ' + ref + ' is not a fabro run branch')\n    author = ((pull.get('user') or dict()).get('login') or '').lower()\n    if author not in AUTHORS:\n        raise Skip('it was opened by ' + (author or 'unknown') + ', who is not listed in pr_authors')\n    runs = fetch(API + '/commits/' + sha + '/check-runs?per_page=100')['check_runs']\n    runs = [r for r in runs if r['name'].lower() not in IGNORED]\n    if not runs:\n        raise Skip('it has no checks yet')\n    if [r for r in runs if r['status'] != 'completed']:\n        raise Skip('its checks are still running')\n    failed = [r for r in runs if r.get('conclusion') in FAILING]\n    if not failed:\n        raise Skip('no check failed')\n    comments = fetch(API + '/issues/' + str(number) + '/comments?per_page=100')\n    mine = [c for c in comments if ((c.get('user') or dict()).get('login') or '').lower() in AUTHORS and MARK in (c.get('body') or '')]\n    if [c for c in mine if sha in c['body']]:\n        raise Skip('a fix run already handled commit ' + sha[:8])\n    if len(mine) >= MAX_ROUNDS:\n        raise Skip('it already had ' + str(len(mine)) + ' fix runs (max_rounds); it needs a human')\n    return failed, len(mine) + 1\ndef git(*args):\n    p = subprocess.run(('git',) + args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='replace')\n    if p.returncode != 0:\n        refuse('git ' + args[0] + ' failed: ' + p.stdout[-300:])\n    return p.stdout.strip()\nchosen = None\nif PR > 0:\n    pulls = [fetch(API + '/pulls/' + str(PR))]\nelse:\n    pulls = fetch(API + '/pulls?state=open&sort=created&direction=asc&per_page=100')\nfor pull in pulls:\n    try:\n        failed, round_no = qualify(pull)\n    except Skip as exc:\n        print('skipped pull request', pull['number'], '-', exc)\n        continue\n    chosen = pull\n    break\nif chosen is None:\n    print('NOTHING TO FIX: no pull request with failed checks is waiting (' + str(len(pulls)) + ' looked at).')\n    sys.exit(1)\nnumber, ref, sha = chosen['number'], chosen['head']['ref'], chosen['head']['sha']\nnames = ', '.join(r['name'] for r in failed)\nreport = '# Failed CI checks on pull request ' + str(number) + ' at commit ' + sha + NL + NL\nos.makedirs(D, exist_ok=True)\nreport += (NL + NL).join(describe(r, number, sha) for r in failed) + NL\nif not [r for r in failed if is_sonar(r)]:\n    # Sonar findings are worth fixing in the same round even when its own\n    # check did not fail (or did not run because an earlier step failed).\n    try:\n        sonar_text, needs_work = sonar_report(number, sha)\n    except Exception:\n        sonar_text, needs_work = None, False\n    if sonar_text and needs_work:\n        report += NL + '## SonarCloud findings (fix these in the same change)' + NL + NL + sonar_text + NL\n# Work on top of the pull request branch from here on.\ngit('fetch', '-q', 'origin', ref)\nif git('rev-parse', 'FETCH_HEAD') != sha:\n    refuse('the branch ' + ref + ' moved while this run was starting; try again')\ngit('reset', '-q', '--hard', sha)\nos.makedirs(D, exist_ok=True)\nfor stale in ('verify_fails', 'verify-summary.md'):\n    if os.path.exists(D + '/' + stale):\n        os.remove(D + '/' + stale)\nwith open(D + '/ci-failures.md', 'w') as f:\n    f.write(report[:150000])\nwith open(D + '/pr.md', 'w') as f:\n    f.write('# ' + str(chosen.get('title')) + NL + NL + (chosen.get('body') or '').split('### Fabro Details')[0][:6000] + NL)\nwith open(D + '/pr.json', 'w') as f:\n    json.dump(dict(number=number, ref=ref, sha=sha, round=round_no, checks=names), f)\n# Claim this commit last, so that a run which could not start leaves no trace.\ntry:\n    fetch(API + '/issues/' + str(number) + '/comments', body=dict(body=MARK + NL\n        + 'Fabro fix run ' + str(round_no) + ' of ' + str(MAX_ROUNDS) + ' started for commit ' + sha\n        + '. Failed checks: ' + names + '.'))\nexcept Exception as exc:\n    refuse('could not comment on pull request ' + str(number) + ' (' + type(exc).__name__ + '); not fixing it, because the next run would pick it again')\nprint('PICKED: pull request', number, 'branch', ref, 'commit', sha[:8], 'fix run', round_no, 'of', MAX_ROUNDS)\nprint('failed checks:', names)\nprint(report[:2500])",
+        "command": "exec 2>&1\npython3 -c \"\nimport json, os, re, subprocess, sys, urllib.error, urllib.parse, urllib.request\nOWNER, NAME = '0x0pointer', 'agent-smith'\nAPI = 'https://api.github.com/repos/' + OWNER + '/' + NAME\nRAW_PR = '0'.strip()\nAUTHORS = set(a.strip().lower() for a in '0x0pointerbot'.split(',') if a.strip())\nPREFIX = 'fabro/run/'\nMAX_ROUNDS = int('3')\nIGNORED = set(c.strip().lower() for c in 'notify'.split(',') if c.strip())\nSONAR = '0x0pointer_agent-smith'\nMARK = '<\"'!-- fabro-fix-ci -->'\"'\nFAILING = ('failure', 'timed_out', 'startup_failure')\nD = '/tmp/fabro'\nNL = chr(10)\nclass Skip(Exception):\n    pass\ndef refuse(msg):\n    print('REFUSED: ' + msg)\n    sys.exit(1)\ntoken = os.environ.get('GITHUB_TOKEN')\nif not token:\n    refuse('no GITHUB_TOKEN in the sandbox')\nif not RAW_PR.isdigit():\n    refuse('pr must be a number; 0 picks the oldest pull request with failed checks')\nPR = int(RAW_PR)\nif not AUTHORS or not PREFIX:\n    refuse('pr_authors and branch_prefix must be set')\ndef fetch(url, body=None, auth=True, raw=False, redirect=True):\n    headers = dict(Accept='application/vnd.github+json')\n    if auth:\n        headers['Authorization'] = 'Bearer ' + token\n    data = json.dumps(body).encode() if body is not None else None\n    req = urllib.request.Request(url, data=data, headers=headers)\n    opener = urllib.request.build_opener() if redirect else urllib.request.build_opener(NoRedirect)\n    with opener.open(req, timeout=60) as resp:\n        content = resp.read()\n    return content if raw else json.loads(content or b'null')\nclass NoRedirect(urllib.request.HTTPRedirectHandler):\n    def redirect_request(self, *args, **kwargs):\n        return None\ndef job_log(job_id):\n    # The log lives on a storage host behind a redirect that must not get our token.\n    url = API + '/actions/jobs/' + str(job_id) + '/logs'\n    try:\n        return fetch(url, raw=True, redirect=False).decode(errors='replace')\n    except urllib.error.HTTPError as exc:\n        location = exc.headers.get('Location')\n        if exc.code not in (301, 302, 303, 307, 308) or not location:\n            raise\n    req = urllib.request.Request(location)\n    with urllib.request.urlopen(req, timeout=60) as resp:\n        return resp.read().decode(errors='replace')\nANSI = re.compile(re.escape(chr(27) + '[') + '[0-9;]*[A-Za-z]')\nSTAMP = re.compile('\"'^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z ?'\"')\ndef excerpt(log, slug):\n    # Returns the part of a job log worth reading. The complete log and the\n    # complete failure output are saved next to it, untruncated.\n    lines = [STAMP.sub('', ANSI.sub('', l.lstrip(chr(65279)))) for l in log.splitlines()]\n    os.makedirs(D + '/ci-logs', exist_ok=True)\n    full_path = D + '/ci-logs/' + slug + '.log'\n    with open(full_path, 'w') as f:\n        f.write(NL.join(lines) + NL)\n    def first(needles, start=0):\n        for i in range(start, len(lines)):\n            if any(n in lines[i] for n in needles):\n                return i\n        return None\n    detail = first(('= FAILURES =', '= ERRORS ='))\n    summary = first(('short test summary info',))\n    error = first(('##[error]',))\n    parts = []\n    note = 'Complete job log: ' + full_path\n    if summary is not None:\n        tail = lines[summary:summary + 200]\n        stop = [i for i, l in enumerate(tail) if '##[error]' in l]\n        tail = tail[:stop[0] + 1] if stop else tail\n        parts.append(NL.join(l[:400] for l in tail))\n    if detail is not None:\n        end = first(('= warnings summary =', '= tests coverage =', 'short test summary info'), detail + 1)\n        block = lines[detail:end if end is not None else len(lines)]\n        fail_path = D + '/ci-logs/' + slug + '-failures.txt'\n        with open(fail_path, 'w') as f:\n            f.write(NL.join(block) + NL)\n        shown = NL.join(l[:3000] for l in block)\n        cut = len(shown) > 60000 or any(len(l) > 3000 for l in block)\n        parts.append(shown[:60000])\n        note = 'Complete failure output' + (' (the text above is cut)' if cut else '') + ': ' + fail_path + NL + note\n    if not parts:\n        if error is not None:\n            parts.append(NL.join(l[:3000] for l in lines[max(0, error - 150):error + 1]))\n        else:\n            parts.append(NL.join(l[:3000] for l in lines[-150:]))\n    return (NL + NL).join(parts) + NL + NL + note\ndef sonar_report(number, sha):\n    # Returns (text, needs_work) from SonarCloud's public API, or (None, False)\n    # when it has not analysed this pull request.\n    if not SONAR or SONAR.lower() == 'none':\n        return None, False\n    base = 'https://sonarcloud.io/api/'\n    key = urllib.parse.quote(SONAR)\n    scope = key + '&pullRequest=' + str(number)\n    out = []\n    try:\n        listed = fetch(base + 'project_pull_requests/list?project=' + key, auth=False).get('pullRequests', [])\n        mine = [p for p in listed if str(p.get('key')) == str(number)]\n        if not mine:\n            return None, False\n        analysed = str((mine[0].get('commit') or dict()).get('sha') or '')\n        if analysed and analysed \"'!= sha:\n            out.append('\"'NOTE: SonarCloud last analysed commit ' + analysed[:8] + ', not the current ' + sha[:8]\n                + '. Findings below may already be fixed; check each against the current code.')\n    except Exception:\n        pass\n    status = None\n    try:\n        gate = fetch(base + 'qualitygates/project_status?projectKey=' + scope, auth=False)['projectStatus']\n        status = gate.get('status')\n        out.append('Quality gate: ' + str(status))\n        for c in gate.get('conditions', []):\n            if c.get('status') \"'!= '\"'OK':\n                out.append('- failed condition ' + str(c.get('metricKey')) + ': actual ' + str(c.get('actualValue')) + ', threshold ' + str(c.get('errorThreshold')))\n    except Exception as exc:\n        out.append('Quality gate could not be read (' + type(exc).__name__ + ')')\n    total = 0\n    try:\n        issues = []\n        for page in range(1, 6):\n            found = fetch(base + 'issues/search?componentKeys=' + scope + '&resolved=false&ps=100&p=' + str(page), auth=False)\n            total = int(found.get('total') or 0)\n            issues.extend(found.get('issues', []))\n            if len(issues) >= total or not found.get('issues'):\n                break\n        out.append('Open issues on this pull request: ' + str(total) + (' (first ' + str(len(issues)) + ' listed)' if len(issues) < total else ''))\n        for i in issues:\n            path = str(i.get('component', '')).split(':', 1)[-1]\n            out.append('- ' + path + ':' + str(i.get('line', '?')) + ' [' + str(i.get('type')) + ', ' + str(i.get('severity')) + ', ' + str(i.get('rule')) + '] ' + str(i.get('message', ''))[:500])\n    except Exception as exc:\n        out.append('Issues could not be read (' + type(exc).__name__ + ')')\n    spots = []\n    try:\n        spots = fetch(base + 'hotspots/search?projectKey=' + scope + '&status=TO_REVIEW&ps=100', auth=False).get('hotspots', [])\n        for h in spots:\n            path = str(h.get('component', '')).split(':', 1)[-1]\n            out.append('- security hotspot ' + path + ':' + str(h.get('line', '?')) + ' ' + str(h.get('message', ''))[:500])\n    except Exception:\n        pass\n    return NL.join(out), bool(total or spots or status not in (None, 'OK'))\ndef is_sonar(run):\n    return 'sonar' in ((run.get('app') or dict()).get('slug') or '').lower() or 'sonar' in run['name'].lower()\ndef describe(run, number, sha):\n    # Everything known about one failed check, as text for the fixing agent.\n    name = run['name']\n    app = ((run.get('app') or dict()).get('slug') or '').lower()\n    text = ['## Failed check: ' + name, '']\n    output = run.get('output') or dict()\n    if output.get('title'):\n        text.append('Title: ' + str(output['title'])[:300])\n    if is_sonar(run):\n        text.append(sonar_report(number, sha)[0] or 'SonarCloud has no analysis for this pull request. See ' + str(run.get('html_url')))\n    elif app == 'github-actions':\n        try:\n            slug = re.sub('[\"'^A-Za-z0-9]+'\"', '-', name).strip('-').lower() + '-' + str(run['id'])\n            text.append('Relevant part of the job log:' + NL + NL + excerpt(job_log(run['id']), slug))\n        except Exception as exc:\n            text.append('The job log could not be read (' + type(exc).__name__ + '). See ' + str(run.get('html_url')))\n    else:\n        if output.get('summary'):\n            text.append(str(output['summary'])[:3000])\n    try:\n        notes = fetch(API + '/check-runs/' + str(run['id']) + '/annotations?per_page=50')\n        notes = [a for a in notes if a.get('annotation_level') \"'!= '\"'notice'][:40]\n        if notes:\n            text.append(NL + 'Annotations:')\n            for a in notes:\n                text.append('- ' + str(a.get('path')) + ':' + str(a.get('start_line')) + ' ' + str(a.get('message', ''))[:300])\n    except Exception:\n        pass\n    return NL.join(text)\ndef qualify(pull):\n    # The gate. Raises Skip unless this pull request may be fixed now.\n    number, head = pull['number'], pull['head']\n    ref, sha = head['ref'], head['sha']\n    if pull.get('state') \"'!= '\"'open':\n        raise Skip('it is not open')\n    repo = ((head.get('repo') or dict()).get('full_name') or '').lower()\n    if repo \"'!= (OWNER + '\"'/' + NAME).lower():\n        raise Skip('its branch is not in this repository')\n    if not ref.startswith(PREFIX):\n        raise Skip('its branch ' + ref + ' is not a fabro run branch')\n    author = ((pull.get('user') or dict()).get('login') or '').lower()\n    if author not in AUTHORS:\n        raise Skip('it was opened by ' + (author or 'unknown') + ', who is not listed in pr_authors')\n    runs = fetch(API + '/commits/' + sha + '/check-runs?per_page=100')['check_runs']\n    runs = [r for r in runs if r['name'].lower() not in IGNORED]\n    if not runs:\n        raise Skip('it has no checks yet')\n    if [r for r in runs if r['status'] \"'!= '\"'completed']:\n        raise Skip('its checks are still running')\n    failed = [r for r in runs if r.get('conclusion') in FAILING]\n    if not failed:\n        raise Skip('no check failed')\n    comments = fetch(API + '/issues/' + str(number) + '/comments?per_page=100')\n    mine = [c for c in comments if ((c.get('user') or dict()).get('login') or '').lower() in AUTHORS and MARK in (c.get('body') or '')]\n    if [c for c in mine if sha in c['body']]:\n        raise Skip('a fix run already handled commit ' + sha[:8])\n    if len(mine) >= MAX_ROUNDS:\n        raise Skip('it already had ' + str(len(mine)) + ' fix runs (max_rounds); it needs a human')\n    return failed, len(mine) + 1\ndef git(*args):\n    p = subprocess.run(('git',) + args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='replace')\n    if p.returncode \"'!= 0:\n        refuse('\"'git ' + args[0] + ' failed: ' + p.stdout[-300:])\n    return p.stdout.strip()\nchosen = None\nif PR > 0:\n    pulls = [fetch(API + '/pulls/' + str(PR))]\nelse:\n    pulls = fetch(API + '/pulls?state=open&sort=created&direction=asc&per_page=100')\nfor pull in pulls:\n    try:\n        failed, round_no = qualify(pull)\n    except Skip as exc:\n        print('skipped pull request', pull['number'], '-', exc)\n        continue\n    chosen = pull\n    break\nif chosen is None:\n    print('NOTHING TO FIX: no pull request with failed checks is waiting (' + str(len(pulls)) + ' looked at).')\n    sys.exit(1)\nnumber, ref, sha = chosen['number'], chosen['head']['ref'], chosen['head']['sha']\nnames = ', '.join(r['name'] for r in failed)\nreport = '# Failed CI checks on pull request ' + str(number) + ' at commit ' + sha + NL + NL\nos.makedirs(D, exist_ok=True)\nreport += (NL + NL).join(describe(r, number, sha) for r in failed) + NL\nif not [r for r in failed if is_sonar(r)]:\n    # Sonar findings are worth fixing in the same round even when its own\n    # check did not fail (or did not run because an earlier step failed).\n    try:\n        sonar_text, needs_work = sonar_report(number, sha)\n    except Exception:\n        sonar_text, needs_work = None, False\n    if sonar_text and needs_work:\n        report += NL + '## SonarCloud findings (fix these in the same change)' + NL + NL + sonar_text + NL\n# Work on top of the pull request branch from here on.\ngit('fetch', '-q', 'origin', ref)\nif git('rev-parse', 'FETCH_HEAD') \"'!= sha:\n    refuse('\"'the branch ' + ref + ' moved while this run was starting; try again')\ngit('reset', '-q', '--hard', sha)\nos.makedirs(D, exist_ok=True)\nfor stale in ('verify_fails', 'verify-summary.md'):\n    if os.path.exists(D + '/' + stale):\n        os.remove(D + '/' + stale)\nwith open(D + '/ci-failures.md', 'w') as f:\n    f.write(report[:150000])\nwith open(D + '/pr.md', 'w') as f:\n    f.write('# ' + str(chosen.get('title')) + NL + NL + (chosen.get('body') or '').split('### Fabro Details')[0][:6000] + NL)\nwith open(D + '/pr.json', 'w') as f:\n    json.dump(dict(number=number, ref=ref, sha=sha, round=round_no, checks=names), f)\n# Claim this commit last, so that a run which could not start leaves no trace.\ntry:\n    fetch(API + '/issues/' + str(number) + '/comments', body=dict(body=MARK + NL\n        + 'Fabro fix run ' + str(round_no) + ' of ' + str(MAX_ROUNDS) + ' started for commit ' + sha\n        + '. Failed checks: ' + names + '.'))\nexcept Exception as exc:\n    refuse('could not comment on pull request ' + str(number) + ' (' + type(exc).__name__ + '); not fixing it, because the next run would pick it again')\nprint('PICKED: pull request', number, 'branch', ref, 'commit', sha[:8], 'fix run', round_no, 'of', MAX_ROUNDS)\nprint('failed checks:', names)\nprint(report[:2500])\"",
+        "language": "python",
+        "timeout_ms": 300000
+      },
+      "script_timing": {
+        "output": "blob://sha256/077a696a264a006256ff911d1feebc75732d7a0c1c442c4014f96a48bb616171",
+        "exit_code": 1,
+        "duration_ms": 1255,
+        "termination": "exited",
+        "output_bytes": 171,
+        "live_streaming": true
+      },
+      "parallel_results": null,
+      "output": null,
+      "output_bytes": 171,
+      "live_streaming": true,
+      "termination": "exited",
+      "started_at": "2026-11-24T16:08:09.770565393Z",
+      "handler": "command",
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "reasoning_tokens": 0,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0
+      },
+      "state": "running"
+    }
+  }
 }
