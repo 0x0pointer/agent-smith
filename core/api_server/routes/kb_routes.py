@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from fastapi import File, Form, Query, UploadFile
 from fastapi.responses import JSONResponse
 
@@ -11,11 +13,12 @@ _DEPRECATION = "/api/kb/docs is deprecated; use /api/vector/docs"
 
 def _with_deprecation(resp: JSONResponse) -> JSONResponse:
     resp.headers["X-Agent-Smith-Deprecated"] = _DEPRECATION
+    headers = {k: v for k, v in resp.headers.items() if k.lower() != "content-length"}
     try:
-        payload = resp.body and __import__("json").loads(resp.body)
+        payload = resp.body and json.loads(resp.body)
         if isinstance(payload, dict):
             payload.setdefault("deprecated", _DEPRECATION)
-            return JSONResponse(payload, status_code=resp.status_code, headers=resp.headers)
+            return JSONResponse(payload, status_code=resp.status_code, headers=headers)
     except Exception:
         pass
     return resp

@@ -292,6 +292,8 @@
 
   let _vectorDocs = [];
   let _vectorDocsSig = '';
+  let _vectorVaultsSig = '';
+  let _vectorHooksBound = false;
 
   function _vectorFmt(bytes) {
     if (bytes > 1_000_000) return (bytes / 1_000_000).toFixed(1) + ' MB';
@@ -307,6 +309,60 @@
   function _vectorDatasetValue() {
     const el = document.getElementById('vector-dataset-input');
     return (el && el.value.trim()) || 'docs';
+  }
+
+  function _selectVectorVaultDataset(vault, dataset) {
+    const vaultInput = document.getElementById('vector-vault-input');
+    const datasetInput = document.getElementById('vector-dataset-input');
+    if (vaultInput) vaultInput.value = vault || '';
+    if (datasetInput) datasetInput.value = dataset || 'docs';
+    _loadVectorDocs();
+  }
+
+  function _renderVectorVaults(vaults) {
+    const wrap = document.getElementById('vector-vaults-wrap');
+    if (!wrap) return;
+    if (!vaults || !vaults.length) {
+      wrap.innerHTML = '<div class="empty-placeholder">No vector vaults yet — upload docs to create one.</div>';
+      return;
+    }
+    const activeVault = _vectorVaultValue();
+    const activeDataset = _vectorDatasetValue();
+    wrap.innerHTML = vaults.map(vault => `
+      <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:6px;padding:0.6rem 0.85rem;margin-bottom:0.5rem;">
+        <div style="display:flex;justify-content:space-between;gap:0.6rem;align-items:center;flex-wrap:wrap;margin-bottom:0.4rem;">
+          <div style="color:var(--text);font-size:0.8rem;font-family:'IBM Plex Mono',monospace;">${_sgEsc(vault.name)}</div>
+          <div style="color:var(--text-dim);font-size:0.72rem;font-family:'IBM Plex Mono',monospace;">${vault.docs || 0} doc${vault.docs === 1 ? '' : 's'}</div>
+        </div>
+        <div style="display:flex;gap:0.35rem;flex-wrap:wrap;">
+          ${(vault.datasets || []).map(dataset => {
+            const selected = activeVault === (vault.name || '') && activeDataset === (dataset.name || 'docs');
+            return `<button type="button"
+                            data-vector-select="1"
+                            data-vector-vault="${_sgEsc(vault.name || '')}"
+                            data-vector-dataset="${_sgEsc(dataset.name || 'docs')}"
+                            style="padding:0.22rem 0.6rem;border-radius:999px;border:1px solid ${selected ? '#5bf29b' : 'var(--border)'};background:${selected ? 'rgba(91,242,155,0.12)' : 'transparent'};color:${selected ? '#d1fae5' : 'var(--text-dim)'};font-size:0.72rem;font-family:'IBM Plex Mono',monospace;cursor:pointer;">
+                      ${_sgEsc(dataset.name)} · ${dataset.docs || 0}
+                    </button>`;
+          }).join('') || '<span style="color:var(--text-dim);font-size:0.72rem;">No datasets yet.</span>'}
+        </div>
+      </div>`).join('');
+    wrap.querySelectorAll('[data-vector-select]').forEach(btn => {
+      btn.addEventListener('click', () => _selectVectorVaultDataset(
+        btn.getAttribute('data-vector-vault') || '',
+        btn.getAttribute('data-vector-dataset') || 'docs',
+      ));
+    });
+  }
+
+  function _ensureVectorInputHooks() {
+    if (_vectorHooksBound) return;
+    [['vector-vault-input', 'change'], ['vector-dataset-input', 'change']].forEach(([id, eventName]) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.addEventListener(eventName, () => _loadVectorDocs());
+    });
+    _vectorHooksBound = true;
   }
 
   function _renderVectorDocs(docs) {
@@ -336,13 +392,16 @@
 
   async function _loadVectorDocs() {
     try {
+      _ensureVectorInputHooks();
       const params = new URLSearchParams({ _: String(Date.now()), vault: _vectorVaultValue(), dataset: _vectorDatasetValue() });
       const r = await fetch(`/api/vector/docs?${params.toString()}`);
       if (!r.ok) return;
       const data = await r.json();
       _vectorDocs = data.docs || [];
-      const sig = JSON.stringify(_vectorDocs);
+      const sig = JSON.stringify([_vectorVaultValue(), _vectorDatasetValue(), _vectorDocs]);
       if (sig !== _vectorDocsSig) { _vectorDocsSig = sig; _renderVectorDocs(_vectorDocs); }
+      const vaultSig = JSON.stringify([_vectorVaultValue(), _vectorDatasetValue(), data.vaults || []]);
+      if (vaultSig !== _vectorVaultsSig) { _vectorVaultsSig = vaultSig; _renderVectorVaults(data.vaults || []); }
     } catch { /* keep last good list */ }
   }
 
@@ -475,3 +534,4 @@
   // Expose globals referenced by common.js switchTab + inline handlers.
   window.pollSetupGates = pollSetupGates;
   window.renderSetupGates = renderSetupGates;
+  window._selectVectorVaultDataset = _selectVectorVaultDataset;

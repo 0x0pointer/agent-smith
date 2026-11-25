@@ -64,6 +64,7 @@ def test_kb_docs_aliases_return_deprecation_header_or_field(vector_api_env):
     r = client.get("/api/kb/docs")
     assert r.headers.get("X-Agent-Smith-Deprecated")
     assert "deprecated" in r.json()
+    assert int(r.headers["content-length"]) == len(r.content)
 
 
 def test_too_many_large_empty_unsupported_corrupt_meta_fail_soft(vector_api_env, monkeypatch):
