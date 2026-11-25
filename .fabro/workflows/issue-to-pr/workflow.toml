@@ -1,6 +1,7 @@
 _version = 1
 
-# Issue -> spec -> human approval -> code -> checks -> independent review -> draft PR.
+# Issue -> spec -> human approval -> code -> checks -> one independent review
+# (standard or security) -> draft PR.
 #
 # Started by its Fabro automation (schedule or the Run button in the web UI) or:
 #   fabro run .fabro/workflows/issue-to-pr/workflow.toml [-I issue=<number>]
@@ -32,14 +33,22 @@ failed_label = "fabro-failed"
 maintainers = "RiieCco,blabla1337,JorgeCarvalhoPT"
 
 # Retry budgets. When a budget is used up the run pauses and asks a human.
-max_cheap_fixes = "2"
-max_fix_attempts = "4"
+# Failed verifications in a row that go back to the implementer.
+first_fix_attempts = "2"
+# Failed verifications in a row before a human is asked (the strong model
+# handles the attempts after first_fix_attempts).
+max_fix_attempts = "3"
+# Times a reviewer may reject the change before a human is asked. The first
+# rejection goes back to the implementer, the next one to the strong model.
 max_review_rounds = "3"
 
-# Review depth. A change gets the cheaper reviewer only if it is at most this
-# many changed lines, the spec says "Risk level: low", and it touches none of
-# the sensitive paths (substrings of changed non-test paths).
-max_light_review_lines = "40"
+# Which reviewer. A change gets the security reviewer (strong model, Trail of
+# Bits differential-review skill in .fabro/skills/) if it touches one of the
+# sensitive paths (substrings of changed non-test paths), adds a risky
+# construct, has more changed lines than this, or the spec says
+# "Risk level: high". Everything else gets the standard reviewer, which can
+# still hand a change over to the security reviewer.
+max_standard_review_lines = "400"
 sensitive_paths = "auth,secret,token,crypt,password,sandbox,policy,proxy,session,mcp_server,installers,tools/,scripts/,Dockerfile,pyproject.toml,poetry.lock,requirements,config"
 # Directory that holds the tests, or "none". Python code changes must come
 # with a change under it unless the spec says "Tests required: no".
