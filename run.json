@@ -913,7 +913,7 @@
     "kind": "running"
   },
   "status_updated_at": "2026-11-25T09:18:11.907782600Z",
-  "last_event_at": "2026-11-25T09:18:15.703465551Z",
+  "last_event_at": "2026-11-25T09:18:21.273799697Z",
   "pending_control": null,
   "checkpoints": [
     {
@@ -956,9 +956,9 @@
       "diff": {}
     },
     {
-      "seq": 0,
+      "seq": 29,
       "checkpoint": {
-        "timestamp": "2026-11-25T09:18:15.712332116Z",
+        "timestamp": "2026-11-25T09:18:21.272483159Z",
         "current_node": "check_issue",
         "completed_nodes": [
           "start",
@@ -966,26 +966,30 @@
         ],
         "node_retries": {},
         "context_values": {
-          "failure_signature": "check_issue|deterministic|script failed with exit code: <n> ## output nothing to build: no open issue labelled fabro-approved is waiting (<n> checked). to build an issue again,remove its fabro-built or fabro-failed label.",
+          "internal.run_id": "01M88ZYSW34QFNQJE2N8V40TRZ",
+          "current_node": "check_issue",
+          "graph.max_node_visits": "30",
+          "graph.model_stylesheet": "\n            *       { model: gpt-5.4; reasoning_effort: medium; }\n            .strong { model: gpt-5.5; reasoning_effort: high; }\n            .cheap  { model: gpt-5.4-mini; reasoning_effort: low; }\n        ",
           "internal.retry_count.check_issue": 0,
+          "thread.start.current_node": "check_issue",
+          "internal.thread_id": "start",
+          "failure_signature": "check_issue|deterministic|script failed with exit code: <n> ## output nothing to build: no open issue labelled fabro-approved is waiting (<n> checked). to build an issue again,remove its fabro-built or fabro-failed label.",
+          "graph.rankdir": "LR",
+          "failure_class": "deterministic",
+          "command.output": "blob://sha256/921fc24a244a518c32777ec9c76ece9a4e2ca2669ad60b56424da90ae59876d4",
           "internal.node_visit_count": 1,
           "graph.goal": "Resolve the next maintainer-approved GitHub issue of 0x0pointer/agent-smith with a reviewed spec, code, and passing tests",
-          "outcome": "failed",
-          "internal.thread_id": "start",
+          "internal.fidelity": "compact",
           "graph.loop_restart_signature_limit": "10",
           "internal.retry_count.start": 0,
-          "internal.run_id": "01M88ZYSW34QFNQJE2N8V40TRZ",
-          "internal.work_dir": "/workspace/agent-smith",
-          "thread.start.current_node": "check_issue",
-          "graph.model_stylesheet": "\n            *       { model: gpt-5.4; reasoning_effort: medium; }\n            .strong { model: gpt-5.5; reasoning_effort: high; }\n            .cheap  { model: gpt-5.4-mini; reasoning_effort: low; }\n        ",
-          "current_node": "check_issue",
-          "command.output": "blob://sha256/921fc24a244a518c32777ec9c76ece9a4e2ca2669ad60b56424da90ae59876d4",
-          "graph.rankdir": "LR",
-          "internal.fidelity": "compact",
-          "failure_class": "deterministic",
-          "graph.max_node_visits": "30"
+          "outcome": "failed",
+          "internal.work_dir": "/workspace/agent-smith"
         },
         "node_outcomes": {
+          "start": {
+            "status": "succeeded",
+            "usage": null
+          },
           "check_issue": {
             "status": "failed",
             "context_updates": {
@@ -1002,22 +1006,64 @@
               "tool_time_ms": 1577,
               "active_time_ms": 1577
             }
-          },
-          "start": {
-            "status": "succeeded",
-            "usage": null
           }
         },
         "next_node_id": "exit",
+        "git_commit_sha": "d31c5c5e0b2b28bd947bc89c46793621343b7770",
+        "loop_failure_signatures": {
+          "check_issue|deterministic|script failed with exit code: <n> ## output nothing to build: no open issue labelled fabro-approved is waiting (<n> checked). to build an issue again,remove its fabro-built or fabro-failed label.": 1
+        },
         "node_visits": {
           "start": 1,
           "check_issue": 1
         }
       },
-      "diff": {}
+      "diff": {
+        "summary": {
+          "files_changed": 0,
+          "additions": 0,
+          "deletions": 0
+        }
+      }
     }
   ],
-  "conclusion": null,
+  "conclusion": {
+    "timestamp": "2026-11-25T09:18:21.373811181Z",
+    "status": "succeeded",
+    "timing": {
+      "wall_time_ms": 9380,
+      "inference_time_ms": 0,
+      "tool_time_ms": 1577,
+      "active_time_ms": 1577
+    },
+    "final_git_commit_sha": "d31c5c5e0b2b28bd947bc89c46793621343b7770",
+    "stages": [
+      {
+        "stage_id": "start",
+        "stage_label": "start",
+        "timing": {
+          "wall_time_ms": 0,
+          "inference_time_ms": 0,
+          "tool_time_ms": 0,
+          "active_time_ms": 0
+        },
+        "retries": 0
+      },
+      {
+        "stage_id": "check_issue",
+        "stage_label": "check_issue",
+        "timing": {
+          "wall_time_ms": 1588,
+          "inference_time_ms": 0,
+          "tool_time_ms": 1577,
+          "active_time_ms": 1577
+        },
+        "retries": 0
+      }
+    ],
+    "total_retries": 0,
+    "diff": {}
+  },
   "sandbox": {
     "kind": "ready",
     "plan": {
@@ -1126,6 +1172,40 @@
         "cache_write_tokens": 0
       },
       "state": "failed"
+    },
+    "exit@1": {
+      "first_event_seq": 32,
+      "prompt": null,
+      "response": null,
+      "completion": {
+        "outcome": "succeeded",
+        "notes": null,
+        "failure_reason": null,
+        "timestamp": "2026-11-25T09:18:21.273799697Z"
+      },
+      "provider_used": null,
+      "diff": null,
+      "script_invocation": null,
+      "script_timing": null,
+      "parallel_results": null,
+      "output": null,
+      "started_at": "2026-11-25T09:18:21.273728015Z",
+      "handler": "exit",
+      "timing": {
+        "wall_time_ms": 0,
+        "inference_time_ms": 0,
+        "tool_time_ms": 0,
+        "active_time_ms": 0
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "reasoning_tokens": 0,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0
+      },
+      "state": "succeeded"
     }
   }
 }
