@@ -97,24 +97,13 @@ _kb_hint_suggested: dict[str, set] = {}      # session_id → techs already hint
 
 
 def _kb_exploit_kinds() -> set[str]:
-    """Kinds present in kb/index.db (60s-cached) — empty when no index."""
+    """Kinds present in the static security vector vault (60s-cached)."""
     import time
     try:
-        from core import kb as kb_mod
-        if not kb_mod.INDEX_DB.exists():
-            return set()
+        from core import vector_store as vector_mod
         now = time.time()
         if now - _KB_HINT_CACHE["checked_at"] > 60:
-            con = kb_mod.open_index()
-            kinds = set()
-            if con is not None:
-                try:
-                    kinds = {r[0] for r in con.execute(
-                        "SELECT DISTINCT kind FROM kb_docs").fetchall()}
-                except Exception:
-                    pass
-                finally:
-                    con.close()
+            kinds = {d.get("kind") for d in vector_mod.list_docs(vector_mod.STATIC_SECURITY_VAULT) if d.get("kind")}
             _KB_HINT_CACHE["checked_at"] = now
             _KB_HINT_CACHE["kinds"] = kinds
         return _KB_HINT_CACHE["kinds"]

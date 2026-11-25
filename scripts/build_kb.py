@@ -40,6 +40,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from core import kb as kb_mod  # noqa: E402
+from core import vector_store as vector_mod  # noqa: E402
 
 try:
     import yaml  # type: ignore
@@ -81,6 +82,15 @@ LIGHT_SOURCES = ["skill_refs", "gtfobins", "lolbas", "wstg", "exploitdb"]   # --
 BULK_SOURCES = ["nuclei", "nvd"]                                           # explicit only
 PER_DOC_SOURCES = {"skill_refs", "gtfobins", "lolbas", "wstg"}             # 1 file per doc
 BULK_CHUNK = 500                                    # rows per normalized bulk file
+SOURCE_DATASET = {
+    "skill_refs": "skill_ref",
+    "gtfobins": "gtfobins",
+    "lolbas": "lolbas",
+    "wstg": "wstg",
+    "exploitdb": "exploit",
+    "nuclei": "nuclei",
+    "nvd": "cve",
+}
 
 # ── fetch helpers ───────────────────────────────────────────────────────────
 def _sh(args: list[str], cwd: Path | None = None) -> str:
@@ -447,9 +457,6 @@ def write_flat(source: str, docs: list[dict]) -> int:
 
 # ── build / status / selftest ───────────────────────────────────────────────
 def build(sources: list[str], refresh: bool, offline: bool) -> int:
-    if not kb_mod.fts5_available():
-        print("⚠ sqlite3 lacks FTS5 — building flat files only (recall flat-scan path).")
-    con = kb_mod.open_index(create=True) if kb_mod.fts5_available() else None
     manifest = kb_mod.load_manifest()
     total = 0
     for name in sources:
@@ -472,10 +479,19 @@ def build(sources: list[str], refresh: bool, offline: bool) -> int:
             print(f"— {name}: ingesting…")
             docs = ingester(raw, kb_mod.SOURCES_DIR / name)
             n = write_flat(name, docs)
-            if con is not None and docs:
-                kb_mod.replace_source(con, f"kb:{name}", docs)
-                kb_mod.record_meta(con, name, len(docs), upstream_ref=upstream,
-                                   license_note=LICENSE_NOTES.get(name, ""))
+            dataset = SOURCE_DATASET.get(name, name)
+            vector_mod.purge_dataset(vector_mod.STATIC_SECURITY_VAULT, dataset)
+            for d in docs:
+                vector_mod.ingest_text(
+                    vault=vector_mod.STATIC_SECURITY_VAULT,
+                    dataset=d.get("kind") or dataset,
+                    name=d.get("title") or d.get("source") or dataset,
+                    text=d.get("text") or "",
+                    untrusted=bool(d.get("untrusted")),
+                    kind=d.get("kind") or dataset,
+                    source=d.get("source") or f"kb:{name}",
+                    metadata={"tags": d.get("tags") or []},
+                )
             manifest[name] = {
                 "fetched_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 "upstream_ref": upstream,
@@ -485,24 +501,21 @@ def build(sources: list[str], refresh: bool, offline: bool) -> int:
                 "license_sha": _license_sha(raw) if hasattr(raw, "glob") else "",
             }
             total += len(docs)
-            print(f"  ✓ {name}: {len(docs)} docs indexed, {n} flat files")
+            print(f"  ✓ {name}: {len(docs)} docs loaded into vectors/{vector_mod.STATIC_SECURITY_VAULT}/{dataset}, {n} flat files")
         except Exception as exc:
             print(f"  ✗ {name}: FAILED ({exc}) — source skipped, rest continue")
-    if con is not None:
-        con.close()
     kb_mod.MANIFEST.parent.mkdir(parents=True, exist_ok=True)
     kb_mod.MANIFEST.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     print(f"\nKB build complete: {total} docs across {len(sources)} source(s). "
-          f"Index: {kb_mod.INDEX_DB} (exists={kb_mod.INDEX_DB.exists()})")
+          f"Static vault: {vector_mod.VECTOR_ROOT / vector_mod.STATIC_SECURITY_VAULT}")
     return 0
 
 
 def status() -> int:
     manifest = kb_mod.load_manifest()
-    con = kb_mod.open_index()
-    stats = kb_mod.index_stats(con) if con else {"kinds": {}, "built_at": None}
-    if con:
-        con.close()
+    stats: dict[str, int] = {}
+    for doc in vector_mod.list_docs(vector_mod.STATIC_SECURITY_VAULT):
+        stats[doc.get("kind") or doc.get("dataset")] = stats.get(doc.get("kind") or doc.get("dataset"), 0) + 1
     if not manifest:
         print("KB empty — nothing built yet. Run: python3 scripts/build_kb.py --all")
         return 0
@@ -516,9 +529,9 @@ def status() -> int:
         except Exception:
             pass
         print(f"{name:<14}{m.get('docs', 0):>8}  {age:>7}  {m.get('upstream_ref', '')[:12]}  {m.get('license', '')[:48]}")
-    kinds = ", ".join(f"{k}:{v}" for k, v in sorted(stats.get("kinds", {}).items()))
-    print(f"\nindex: {kb_mod.INDEX_DB} ({'present' if kb_mod.INDEX_DB.exists() else 'MISSING'}"
-          f"{', built ' + str(stats.get('built_at')) if stats.get('built_at') else ''})")
+    kinds = ", ".join(f"{k}:{v}" for k, v in sorted(stats.items()))
+    print(f"\nvector vault: {vector_mod.VECTOR_ROOT / vector_mod.STATIC_SECURITY_VAULT} "
+          f"({'present' if vector_mod.list_docs(vector_mod.STATIC_SECURITY_VAULT) else 'MISSING'})")
     if kinds:
         print(f"kinds: {kinds}")
     return 0
@@ -533,19 +546,17 @@ SELFTEST = [  # (query, expected kind substring) — recall@k sanity (plan §9.1
 
 
 def selftest() -> int:
-    con = kb_mod.open_index()
-    if con is None:
-        print("selftest: no kb/index.db — run scripts/build_kb.py first.")
+    if not vector_mod.list_docs(vector_mod.STATIC_SECURITY_VAULT):
+        print("selftest: no static security vector vault — run scripts/build_kb.py first.")
         return 1
     ok = 0
     for query, want in SELFTEST:
-        hits = kb_mod.query_index(con, query, None, 8)
+        hits = vector_mod.search(query, vault=vector_mod.STATIC_SECURITY_VAULT, limit=8)
         kinds = [h["kind"] for h in hits]
         hit = want in kinds
         ok += hit
         top = f"{hits[0]['kind']}:{hits[0]['title'][:60]}" if hits else "—"
         print(f"{'✓' if hit else '✗'} '{query}' → top: {top}  (want kind {want})")
-    con.close()
     print(f"\nselftest: {ok}/{len(SELFTEST)} passed")
     return 0 if ok == len(SELFTEST) else 1
 

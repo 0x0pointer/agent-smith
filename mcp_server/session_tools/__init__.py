@@ -166,7 +166,7 @@ from .setup_gates import (
 async def session(action: str, options: dict | str | None = None, ctx: Context | None = None) -> str:
     """Scan lifecycle and infrastructure management.
 
-    action  : start | complete | status | recovery | artifact | qa_reply | set_skill | set_step | dismiss_gate | wishlist_add | wishlist_list | job_poll | job_list | start_kali | stop_kali | start_metasploit | stop_metasploit | pull_images | set_codebase
+    action  : start | complete | status | recovery | artifact | qa_reply | set_skill | set_step | dismiss_gate | wishlist_add | wishlist_list | job_poll | job_list | start_kali | stop_kali | start_metasploit | stop_metasploit | pull_images | set_codebase | vector_add | kb_add
 
     dismiss_gate options (close a PENDING skill-chain gate as a documented dead-end when
       its required skill genuinely cannot run on this target — a false-positive trigger or
@@ -186,14 +186,16 @@ async def session(action: str, options: dict | str | None = None, ctx: Context |
 
     wishlist_list: returns the open wishlist (what you've asked the operator for)
 
-    kb_add options (attach documents to THIS engagement — searchable via report(action='recall',
-      scope:'docs'); plan 5.1 tier B):
+    vector_add options (ingest documents into a vector vault/dataset — searchable via
+      report(action='recall', data={query, vault, dataset}) or the compatibility scopes):
       path= (local file or dir; client-supplied docs default TRUSTED), url= (fetched — target/
       vendor content defaults UNTRUSTED), artifact_id= (saved tool output, UNTRUSTED),
+      vault= (defaults to this scan's engagement vault), dataset= (defaults to 'docs'),
       untrusted= true|false to override the default, name= (label when ingesting one file).
       Parses pdf (pdftotext→pypdf→salvage), docx (textutil/pandoc), html (tag-strip), json/yaml
-      (OpenAPI/GraphQL-aware), md/txt/csv raw. Fail-soft per file; every skip is reported.
-      Stored under kb/sessions/<sid>/ and registered in known_assets.kb_docs.
+      (OpenAPI-aware), md/txt/csv raw. Fail-soft per file; every skip is reported.
+
+    kb_add: deprecated alias for vector_add using the active engagement vault/dataset.
 
     start options:
       target, depth=standard (recon|standard|thorough|danger), scope=[],
@@ -304,6 +306,9 @@ async def _dispatch_async_action(action: str, opts: dict) -> str | None:
     if action == "kb_add":
         from .kb_add import _do_kb_add
         return await _do_kb_add(opts)
+    if action == "vector_add":
+        from .vector_add import _do_vector_add
+        return await _do_vector_add(opts)
     return None
 
 
@@ -349,4 +354,4 @@ def _dispatch_sync_action_extra(action: str, opts: dict) -> str:
     if action == "job_list":
         from mcp_server import jobs
         return jobs.list_response(opts)
-    return f"Unknown action '{action}'. Use: start, complete, status, qa_reply, recovery, artifact, pre_chain, set_skill, set_step, resume, dismiss_gate, wishlist_add, wishlist_list, setup_gate, start_kali, stop_kali, start_metasploit, stop_metasploit, start_mobsf, stop_mobsf, pull_images, set_codebase, oob_start, oob_mint, oob_poll, job_poll, job_list, kb_add"
+    return f"Unknown action '{action}'. Use: start, complete, status, qa_reply, recovery, artifact, pre_chain, set_skill, set_step, resume, dismiss_gate, wishlist_add, wishlist_list, setup_gate, start_kali, stop_kali, start_metasploit, stop_metasploit, start_mobsf, stop_mobsf, pull_images, set_codebase, oob_start, oob_mint, oob_poll, job_poll, job_list, vector_add, kb_add"

@@ -159,13 +159,13 @@ async def _start_background_tasks() -> None:
     global _qa_task, _watchdog_task, _status_task, _refusal_task
     from mcp_server._app import _load_dotenv
     _load_dotenv()
-    # One-time KB bootstrap nudge (plan 5.1): the security KB ships empty
+    # One-time vector bootstrap nudge: the static security vault ships empty
     # (too large for git; built by the installers) — say so once, fail-soft.
     try:
-        from core import kb as _kb
-        if not _kb.INDEX_DB.exists():
-            _log.info("local KB not built — recall(scope:'kb') answers from engagement "
-                      "stores only. Build it: python3 scripts/build_kb.py --all "
+        from core import vector_store as _vector
+        if not _vector.list_docs(_vector.STATIC_SECURITY_VAULT):
+            _log.info("static security vector vault not built — recall(scope:'kb') answers from "
+                      "engagement docs / prior stores only. Build it: python3 scripts/build_kb.py --all "
                       "(installers do this automatically on a fresh install)")
     except Exception:
         pass

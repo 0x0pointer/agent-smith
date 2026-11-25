@@ -286,27 +286,36 @@
     ]);
   }
 
-  // ── Engagement documents (per-pentest KB uploads, plan 5.1 §6) ─────────────
-  // Renders + uploads kb/sessions/<sid>/ docs via /api/kb/docs. Non-blocking:
-  // Smith learns about new uploads from the steering note the endpoint injects.
+  // ── Vector vault docs ────────────────────────────────────────────────────────
+  // Renders + uploads docs via /api/vector/docs. Non-blocking: Smith learns
+  // about new uploads from the steering note the endpoint injects.
 
-  let _kbDocs = [];
-  let _kbDocsSig = '';
+  let _vectorDocs = [];
+  let _vectorDocsSig = '';
 
-  function _kbFmt(bytes) {
+  function _vectorFmt(bytes) {
     if (bytes > 1_000_000) return (bytes / 1_000_000).toFixed(1) + ' MB';
     if (bytes > 1_000) return (bytes / 1_000).toFixed(1) + ' KB';
     return bytes + ' B';
   }
 
-  function _renderKbDocs(docs) {
-    const wrap = document.getElementById('kb-docs-wrap');
+  function _vectorVaultValue() {
+    const el = document.getElementById('vector-vault-input');
+    return (el && el.value.trim()) || '';
+  }
+
+  function _vectorDatasetValue() {
+    const el = document.getElementById('vector-dataset-input');
+    return (el && el.value.trim()) || 'docs';
+  }
+
+  function _renderVectorDocs(docs) {
+    const wrap = document.getElementById('vector-docs-wrap');
     if (!wrap) return;
     if (!docs || !docs.length) {
-      wrap.innerHTML = '<div class="empty-placeholder">No engagement documents attached yet.</div>';
+      wrap.innerHTML = '<div class="empty-placeholder">No vector documents in this vault/dataset yet.</div>';
       return;
     }
-    // Same card recipe as the wishlist cards: bg-card + border + 3px left accent.
     wrap.innerHTML = docs.map(d => `
       <div style="background:var(--bg-card);border:1px solid var(--border);
                   border-left:3px solid ${d.untrusted ? '#ff4d6d' : '#5bf29b'};
@@ -317,40 +326,44 @@
           ${d.untrusted ? 'UNTRUSTED' : 'trusted'}</span>
         <span style="color:var(--text);flex:1;overflow:hidden;text-overflow:ellipsis;
                      white-space:nowrap;" title="${_sgEsc(d.name)}">${_sgEsc(d.name)}</span>
-        <span style="color:var(--text-dim);font-size:0.74rem;font-family:'IBM Plex Mono',monospace;">${_kbFmt(d.bytes)}</span>
-        <button onclick="_deleteKbDoc('${_sgEsc(d.name).replace(/'/g, '&#39;')}')"
+        <span style="color:var(--text-dim);font-size:0.74rem;font-family:'IBM Plex Mono',monospace;">${_vectorFmt(d.bytes)}</span>
+        <span style="color:var(--text-dim);font-size:0.72rem;font-family:'IBM Plex Mono',monospace;">${_sgEsc(d.dataset || '')}</span>
+        <button onclick="_deleteVectorDoc('${_sgEsc(d.name).replace(/'/g, '&#39;')}')"
                 style="padding:0.3rem 0.7rem;border:none;border-radius:4px;background:#6b7280;color:#fff;
                        font-size:0.74rem;cursor:pointer;">Remove</button>
       </div>`).join('');
   }
 
-  async function _loadKbDocs() {
+  async function _loadVectorDocs() {
     try {
-      const r = await fetch(`/api/kb/docs?_=${Date.now()}`);
+      const params = new URLSearchParams({ _: String(Date.now()), vault: _vectorVaultValue(), dataset: _vectorDatasetValue() });
+      const r = await fetch(`/api/vector/docs?${params.toString()}`);
       if (!r.ok) return;
       const data = await r.json();
-      _kbDocs = data.docs || [];
-      const sig = JSON.stringify(_kbDocs);
-      if (sig !== _kbDocsSig) { _kbDocsSig = sig; _renderKbDocs(_kbDocs); }
+      _vectorDocs = data.docs || [];
+      const sig = JSON.stringify(_vectorDocs);
+      if (sig !== _vectorDocsSig) { _vectorDocsSig = sig; _renderVectorDocs(_vectorDocs); }
     } catch { /* keep last good list */ }
   }
 
-  async function _uploadKbDocs() {
-    const input = document.getElementById('kb-docs-input');
-    const status = document.getElementById('kb-docs-status');
-    const btn = document.getElementById('kb-docs-upload-btn');
+  async function _uploadVectorDocs() {
+    const input = document.getElementById('vector-docs-input');
+    const status = document.getElementById('vector-docs-status');
+    const btn = document.getElementById('vector-docs-upload-btn');
     if (!input || !input.files || !input.files.length) {
       if (status) status.textContent = 'pick file(s) first';
       return;
     }
     const fd = new FormData();
     for (const f of input.files) fd.append('files', f);
-    const untrusted = document.getElementById('kb-docs-untrusted');
+    const untrusted = document.getElementById('vector-docs-untrusted');
+    fd.append('vault', _vectorVaultValue());
+    fd.append('dataset', _vectorDatasetValue());
     fd.append('untrusted', untrusted && untrusted.checked ? 'true' : 'false');
     if (btn) { btn.disabled = true; btn.style.opacity = '0.5'; btn.style.cursor = 'not-allowed'; }
     if (status) status.textContent = 'uploading…';
     try {
-      const r = await fetch('/api/kb/docs', { method: 'POST', body: fd });
+      const r = await fetch('/api/vector/docs', { method: 'POST', body: fd });
       const data = await r.json();
       if (!r.ok || !data.ok) throw new Error((data && data.error) || r.status);
       const parts = [];
@@ -361,7 +374,7 @@
       if (status) status.textContent = parts.join(' — ') || 'done';
       input.value = '';
       if (untrusted) untrusted.checked = false;
-      await _loadKbDocs();
+      await _loadVectorDocs();
     } catch (e) {
       if (status) status.textContent = 'upload failed: ' + e.message;
     } finally {
@@ -369,11 +382,12 @@
     }
   }
 
-  async function _deleteKbDoc(name) {
+  async function _deleteVectorDoc(name) {
     try {
-      await fetch(`/api/kb/docs/${encodeURIComponent(name)}`, { method: 'DELETE' });
+      const params = new URLSearchParams({ name, vault: _vectorVaultValue(), dataset: _vectorDatasetValue() });
+      await fetch(`/api/vector/docs?${params.toString()}`, { method: 'DELETE' });
     } catch { /* ignore */ }
-    await _loadKbDocs();
+    await _loadVectorDocs();
   }
 
   async function pollSetupGates() {
@@ -412,7 +426,7 @@
       // Render the cards only while the operator is on the tab, and only when the
       // data actually changed — the background cadence just keeps the badge live.
       if (active) {
-        _loadKbDocs();                       // engagement-doc list rides the same cadence
+        _loadVectorDocs();                    // vector-doc list rides the same cadence
         const sig = _oaSig();
         if (sig !== _oaRenderSig) {
           renderSetupGates(_oaGates);

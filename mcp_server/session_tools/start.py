@@ -13,9 +13,9 @@ from .start_helpers import (
 
 
 def _kb_norm_lines() -> list[str]:
-    """Presence-gated 'recall-first' norm for the scan-start message (plan 5.1e #3).
-    Returns [] when no static KB and no engagement docs exist — so a scan with no KB
-    set up shows nothing (zero noise for users who never built/attached one). Scope
+    """Presence-gated 'recall-first' norm for the scan-start message.
+    Returns [] when no static vault and no engagement docs exist — so a scan with no
+    vector store set up shows nothing. Scope
     lines are emitted per available tier only."""
     try:
         from core.kb import kb_status
@@ -24,7 +24,7 @@ def _kb_norm_lines() -> list[str]:
         return []
     if not kb.get("any"):
         return []
-    out = [f"  ┌─ LOCAL KB AVAILABLE ({kb['summary']}) ─",
+    out = [f"  ┌─ LOCAL VECTOR STORE AVAILABLE ({kb['summary']}) ─",
            "  │  RECALL-FIRST — before any web-search or guess, look it up locally:",
            "  │  report(action='recall', data={query:'…', scope:'…'}). Useful scopes here:"]
     if kb.get("docs"):

@@ -96,12 +96,14 @@ def start(
     except Exception:
         pass
 
-    # Ephemeral engagement docs (plan 5.1 §6.3): a new scan starting means any
-    # kb/sessions/* leftovers from a crashed/never-completed session are stale
-    # client data — sweep them all (one scan at a time; static KB untouched).
+    # Ephemeral engagement docs: a new scan starting means any old engagement
+    # vaults from a crashed/never-completed session are stale client data — sweep
+    # them all (one scan at a time; static security vault untouched).
     try:
-        from core import kb as _kb
-        _kb.purge_session_docs()
+        from core import vector_store as _vector
+        for vault in [v["name"] for v in _vector.list_vaults()
+                      if v["name"].startswith(f"{_vector.ENGAGEMENT_VAULT_PREFIX}-")]:
+            _vector.purge_vault(vault)
     except Exception:
         pass
 
@@ -310,14 +312,14 @@ def complete(
         # the durable training bundle (self-contained), then tear down the RCE containers.
         snapshot_training_bundle()
         stop_pentest_containers()
-        # Engagement docs are ephemeral (plan 5.1 §6.3): purge this scan's
-        # client/target docs on the terminal transition — data minimization.
-        # Only the known_assets.kb_docs NAME audit trail survives in session.json.
+        # Engagement vector docs are ephemeral: purge this scan's client/target
+        # docs on the terminal transition — data minimization. Only the
+        # known_assets.kb_docs name audit trail survives in session.json.
         try:
-            from core import kb as _kb
-            purged = _kb.purge_session_docs(_sess._current.get("id"))
+            from core import vector_store as _vector
+            purged = _vector.purge_active_session(_sess._current.get("id"))
             if purged:
-                _sess._current["kb_docs_purged"] = purged
+                _sess._current["vector_docs_purged"] = purged
                 _sess._flush()
         except Exception:
             pass

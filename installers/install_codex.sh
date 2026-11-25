@@ -483,8 +483,8 @@ case "${SMITH_INSTALL_KB:-}" in
   1|true|yes) _kb_mode="yes" ;;
   0|false|no) _kb_mode="no" ;;
 esac
-if [ -f "$REPO_DIR/kb/index.db" ]; then
-  echo "  Local security KB present (kb/index.db) — skipping bootstrap."
+if [ -d "$REPO_DIR/vectors/security" ] && find "$REPO_DIR/vectors/security" -name '*.json' -print -quit | grep -q .; then
+  echo "  Static security vector vault present (vectors/security) — skipping bootstrap."
 else
   (cd "$REPO_DIR" && poetry run python scripts/build_kb.py --source skill_refs >/dev/null 2>&1) || true
   if [ "$_kb_mode" = "ask" ]; then

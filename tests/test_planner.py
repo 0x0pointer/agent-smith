@@ -99,31 +99,30 @@ def test_inject_pending_gates_skips_already_invoked_skill():
 # ── KB recall hints (plan 5.1 §7 / D1-D2) ────────────────────────────────────
 
 def _kb_with_kinds(tmp_path, kinds):
-    """Build a kb/index.db containing one doc per kind; point kb_mod at it."""
-    from core import kb as kb_mod
+    """Build a static security vector vault containing one doc per kind."""
+    from core import vector_store as vector_mod
     kb_root = tmp_path / "kb"
+    vectors = tmp_path / "vectors"
     kb_root.mkdir(exist_ok=True)
     monkey_paths = {
-        "KB_ROOT": kb_root, "SOURCES_DIR": kb_root / "sources",
-        "RAW_DIR": kb_root / "sources" / "_raw", "SESSIONS_DIR": kb_root / "sessions",
-        "INDEX_DB": kb_root / "index.db", "MANIFEST": kb_root / "MANIFEST.json",
+        "VECTOR_ROOT": vectors, "KB_ROOT": kb_root,
+        "RAW_DIR": kb_root / "sources" / "_raw", "MANIFEST": kb_root / "MANIFEST.json",
     }
-    con = kb_mod.open_index(kb_root / "index.db", create=True)
+    for attr, val in monkey_paths.items():
+        setattr(vector_mod, attr, val)
     for k in kinds:
-        kb_mod.replace_source(con, f"kb:{k}", [{
-            "source": f"kb:{k}/one", "kind": k, "title": k, "tags": [],
-            "text": f"{k} content", "untrusted": False}])
-    con.close()
+        vector_mod.ingest_text(vault=vector_mod.STATIC_SECURITY_VAULT, dataset=k, name=f"{k}.md",
+                               text=f"{k} content", untrusted=False, kind=k, source=f"kb:{k}/one")
     planner._KB_HINT_CACHE = {"checked_at": 0.0, "kinds": set()}   # drop cross-test cache
     return monkey_paths
 
 
 def test_kb_recall_hint_for_fingerprinted_tech(tmp_path, monkeypatch):
     """D1: a known technology gets ONE local-KB recall suggestion (deduped)."""
-    from core import kb as kb_mod
+    from core import vector_store as vector_mod
     monkeypaths = _kb_with_kinds(tmp_path, {"cve", "exploit"})
     for attr, val in monkeypaths.items():
-        monkeypatch.setattr(kb_mod, attr, val)
+        monkeypatch.setattr(vector_mod, attr, val)
     monkeypatch.setattr(planner, "_kb_hint_suggested", {})
     sess = {"id": "s1", "known_assets": {"technologies": ["Flask:2.0.1"]}}
     rec = []
@@ -136,10 +135,10 @@ def test_kb_recall_hint_for_fingerprinted_tech(tmp_path, monkeypatch):
 
 def test_kb_recall_hint_quiet_without_exploit_kinds(tmp_path, monkeypatch):
     """No cve/exploit/nuclei kinds in the KB → no suggestion (stay quiet)."""
-    from core import kb as kb_mod
+    from core import vector_store as vector_mod
     monkeypaths = _kb_with_kinds(tmp_path, {"skill_ref"})
     for attr, val in monkeypaths.items():
-        monkeypatch.setattr(kb_mod, attr, val)
+        monkeypatch.setattr(vector_mod, attr, val)
     monkeypatch.setattr(planner, "_kb_hint_suggested", {})
     sess = {"id": "s1", "known_assets": {"technologies": ["Flask:2.0.1"]}}
     rec = []

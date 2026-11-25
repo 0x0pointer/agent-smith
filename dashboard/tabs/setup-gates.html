@@ -30,36 +30,39 @@
     </div>
   </div>
 
-  <!-- ── Engagement documents (per-pentest KB uploads, plan 5.1 §6) ─────────── -->
+  <!-- ── Vector vaults (vault/dataset uploads, plan vector migration) ────────── -->
   <div class="activity-section">
     <div class="activity-section-header">
       <span class="activity-dot" style="background:#5bf29b;box-shadow:0 0 5px #5bf29b"></span>
-      <span class="activity-section-title">Engagement documents</span>
-      <span class="activity-section-meta" style="color:var(--text-dim);font-size:0.7rem">per-pentest KB · recall scope:'docs'</span>
+      <span class="activity-section-title">Vector vaults</span>
+      <span class="activity-section-meta" style="color:var(--text-dim);font-size:0.7rem">vault + dataset docs · recall scope:'docs' or direct vault lookup</span>
     </div>
     <div style="font-size:0.78rem;color:var(--text-dim);margin-bottom:0.65rem;line-height:1.5;">
-      Client documentation, API specs, or files pulled from the target — attached to
-      <em>this pentest only</em>. Smith searches them with <code>report(action='recall',
-      data={query:'…', scope:'docs'})</code>. Mark uploads <strong>UNTRUSTED</strong> when the
-      content came from the target (it may contain injected instructions — recall renders it fenced,
-      as data). Supported: pdf, docx, md, txt, json/yaml (OpenAPI-aware), html, csv.
-      <strong>Ephemeral:</strong> these documents are purged when the scan completes (or a new scan
-      starts) — only filenames survive in the audit trail; the static KB is never touched.
+      Client documentation, API specs, or files pulled from the target — stored in the selected
+      <em>vault</em> and <em>dataset</em>. Smith searches the active engagement docs with
+      <code>report(action='recall', data={query:'…', scope:'docs'})</code> or any chosen vault with
+      <code>report(action='recall', data={query:'…', vault:'…', dataset:'…'})</code>. Mark uploads
+      <strong>UNTRUSTED</strong> when the content came from the target; recall fences it as data,
+      never instructions. Engagement vaults are purged when the scan completes or a new scan starts.
     </div>
     <div style="display:flex;gap:0.4rem;align-items:center;flex-wrap:wrap;margin-bottom:0.7rem;">
-      <input type="file" id="kb-docs-input" multiple
+      <input type="text" id="vector-vault-input" placeholder="vault"
+             style="padding:0.3rem 0.5rem;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--text);font-size:0.74rem;min-width:10rem;">
+      <input type="text" id="vector-dataset-input" placeholder="dataset"
+             style="padding:0.3rem 0.5rem;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--text);font-size:0.74rem;min-width:8rem;">
+      <input type="file" id="vector-docs-input" multiple
              accept=".pdf,.docx,.doc,.md,.txt,.json,.yaml,.yml,.html,.htm,.csv,.log,.http,.xml"
              style="font-size:0.74rem;max-width:15rem;color:var(--text-dim);">
       <label style="display:flex;align-items:center;gap:0.35rem;font-size:0.74rem;color:var(--text-dim);cursor:pointer;">
-        <input type="checkbox" id="kb-docs-untrusted" style="accent-color:#ff4d6d;">
+        <input type="checkbox" id="vector-docs-untrusted" style="accent-color:#ff4d6d;">
         target-sourced (UNTRUSTED)
       </label>
-      <button id="kb-docs-upload-btn" onclick="_uploadKbDocs()"
+      <button id="vector-docs-upload-btn" onclick="_uploadVectorDocs()"
               style="padding:0.3rem 0.7rem;border:none;border-radius:4px;background:#16a34a;color:#fff;font-size:0.74rem;cursor:pointer;">Upload</button>
-      <span id="kb-docs-status" style="font-size:0.72rem;color:var(--text-dim);"></span>
+      <span id="vector-docs-status" style="font-size:0.72rem;color:var(--text-dim);"></span>
     </div>
-    <div id="kb-docs-wrap">
-      <div class="empty-placeholder">No engagement documents attached yet.</div>
+    <div id="vector-docs-wrap">
+      <div class="empty-placeholder">No vector documents in this vault/dataset yet.</div>
     </div>
   </div>
 

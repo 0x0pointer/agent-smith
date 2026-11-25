@@ -98,13 +98,14 @@ async def api_clear() -> JSONResponse:
     except Exception:
         pass
 
-    # kb/sessions/ — attached engagement docs (plan 5.1 tier B). "Clear All" means
-    # wipe scan data, so leftover client/target docs must not bleed into the next scan.
-    # (session.start() also sweeps these, but the button should be consistent with its
-    # "wipe all scan data" label.) Fail-soft: no-op if the KB feature isn't present.
+    # Engagement vector vaults — attached client/target docs. "Clear All" means
+    # wipe scan data, so leftover docs must not bleed into the next scan. Static
+    # security and prior-engagement stores are preserved.
     try:
-        from core import kb as _kb
-        _kb.purge_session_docs()
+        from core import vector_store as _vector
+        for vault in [v["name"] for v in _vector.list_vaults()
+                      if v["name"].startswith(f"{_vector.ENGAGEMENT_VAULT_PREFIX}-")]:
+            _vector.purge_vault(vault)
     except Exception:
         pass
 

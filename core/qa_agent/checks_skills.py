@@ -456,35 +456,22 @@ def _load_technique_brief(area: dict, classes: list[str]) -> str:
 
 
 def _kb_recall_brief(area: dict, classes: list[str]) -> str:
-    """Harness-deliver this area's methodology from the local KB (BM25 over kb/index.db).
-
-    Used when the skill has no local refs/ (every non-web area today), so AD / cloud /
-    post-ex etc. get real inline technique text once the KB is built — the same
-    injection, only the source swaps from a local file to KB recall. Prefers methodology
-    kinds (WSTG, our skill refs, GTFOBins/LOLBAS) over raw CVE/exploit dumps, and pulls
-    the matched doc's body (bounded), not just the snippet. Fail-soft: "" when the index
-    is absent or empty, so the generic mechanism never breaks without a KB."""
+    """Harness-deliver this area's methodology from the static security vector vault."""
     try:
-        from core import kb as _kb
-        con = _kb.open_index()
-        if con is None:
+        from core import vector_store as _vector
+        if not _vector.list_docs(_vector.STATIC_SECURITY_VAULT):
             return ""
         q = " ".join([area["area"], *classes[:3],
                       area["skill"].replace("-", " "), "exploitation technique"]).strip()
-        hits = (_kb.query_index(con, q, kinds=["wstg", "skill_ref", "gtfobins", "lolbas"], limit=2)
-                or _kb.query_index(con, q, limit=2))
+        hits = (_vector.search(q, vault=_vector.STATIC_SECURITY_VAULT,
+                               datasets=["wstg", "skill_ref", "gtfobins", "lolbas"], limit=2)
+                or _vector.search(q, vault=_vector.STATIC_SECURITY_VAULT, limit=2))
         parts: list[str] = []
         budget = _BRIEF_BUDGET
         for h in hits:
             if budget <= 0:
                 break
-            body = ""
-            try:
-                row = con.execute("SELECT body FROM kb_docs WHERE source=? LIMIT 1",
-                                  [h.get("source")]).fetchone()
-                body = (row[0] if row else "") or ""
-            except Exception:
-                body = h.get("snippet") or ""
+            body = (h.get("text") or h.get("snippet") or "").strip()
             body = body.strip()
             if not body:
                 continue

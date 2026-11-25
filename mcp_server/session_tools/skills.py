@@ -226,7 +226,7 @@ def _recall_hint(skill_name: str) -> str:
         if not scope:
             return ""
         return (
-            f"\n\n📚 LOCAL KB AVAILABLE ({status['summary']}). Before web-searching or guessing "
+            f"\n\n📚 LOCAL VECTOR STORE AVAILABLE ({status['summary']}). Before web-searching or guessing "
             f"for this skill, RECALL FIRST: report(action='recall', data={{query:'<what you need>', "
             f"scope:'{scope}'}}) — pulls {intent}. Offline + instant; web only on a miss."
         )
