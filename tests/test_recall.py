@@ -66,4 +66,5 @@ async def test_recall_ignores_legacy_kb_dirs(engagement_env):
     (legacy / "sudo.md").write_text("legacy kb data that should be ignored", encoding="utf-8")
     out = await _do_recall({"query": "legacy kb data"})
     assert "no matches" in out
-    assert "kb" not in out.lower() or "scope 'kb'" not in out.lower()
+    assert "legacy kb data that should be ignored" not in out
+    assert "kb:" not in out.lower()
