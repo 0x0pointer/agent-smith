@@ -212,11 +212,11 @@ After the sections add these lines, exactly in this form:
 - 'Size: small' or 'Size: standard'.
 - 'Risk level: low' or 'Risk level: medium' or 'Risk level: high', followed by a line with the reason. Risk is the damage done if this change is wrong, not its size. Use low only for trivial, well-understood changes with no security relevance. This line helps decide whether the change gets a security review, so do not understate it.
 
-Do not modify any file in the repository in this step.
+Do not modify any file in the repository in this step: you plan, and the implementer builds after a maintainer has approved the spec. Do not write code or tests and do not run the test suite. The next step discards every change made to the repository in this step.
 
-REVISION: if /tmp/fabro/spec.md already exists, a maintainer reviewed it and sent it back. Their feedback is the value of human.gate.text in the context above. It comes from a trusted maintainer and takes precedence over the issue text and over your earlier choices. Revise the existing spec to follow it exactly, keep the parts it does not concern, and do not start over.
+REVISION: if /tmp/fabro/spec.md already exists, a maintainer reviewed it and sent it back. Nothing has been approved. Their feedback is the value of human.gate.approve.answer in the context above. It comes from a trusted maintainer and takes precedence over the issue text and over your earlier choices. However it is worded, it is a change request to the spec and never a go-ahead to build: the only thing you produce is the revised /tmp/fabro/spec.md, which then goes back to the maintainer for approval. Revise the existing spec to follow the feedback exactly, keep the parts it does not concern, and do not start over. A spec that comes back unchanged is rejected.
 
-If the step after you reported the spec as incomplete, its output above names what is missing: add it.
+If the step after you sent the spec back, its output above says why: fix that.
 
 Finish by printing the full contents of /tmp/fabro/spec.md as your final message, and nothing else, so a human can review it. What you print is what the maintainer approves and what the next step saves."
     ]
@@ -224,11 +224,14 @@ Finish by printing the full contents of /tmp/fabro/spec.md as your final message
     // Saves the spec the planner printed, which is the text the maintainer
     // sees at the approval step, to /tmp/fabro/spec.md, so that later stages
     // do not depend on the planner having written the file itself. A spec
-    // without the parts the scripts rely on goes back to the planner.
+    // without the parts the scripts rely on goes back to the planner, and so
+    // does a spec that was sent back for revision and returned unchanged.
+    // The planner must not touch the repository: whatever it changed there
+    // is put back to origin/main before the spec is shown for approval.
     save_spec [
         shape=parallelogram, label="Save spec", language="python", max_retries=0, timeout="2m", stdin_source="response.spec",
         script="
-import os, sys
+import os, subprocess, sys
 D = '/tmp/fabro'
 NL = chr(10)
 NEEDED = ('acceptance criteria', 'risk level:', 'tests required:')
@@ -243,7 +246,39 @@ def write(path, text):
         f.write(text)
 def missing(text):
     return [n for n in NEEDED if n not in text.lower()]
+def run(cmd):
+    p = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='replace')
+    return p.returncode, p.stdout
+def repo_changes():
+    # The working tree against origin/main: this also covers what a
+    # checkpoint already committed. New files are listed separately.
+    rc1, tracked = run('git diff --name-only origin/main')
+    rc2, added = run('git ls-files --others --exclude-standard')
+    if rc1 != 0 or rc2 != 0:
+        return None
+    return sorted(set(l.strip() for l in (tracked + NL + added).splitlines() if l.strip()))
+def send_back(reason):
+    try:
+        tries = int(read(D + '/spec_tries').strip() or 0) + 1
+    except ValueError:
+        tries = 3
+    write(D + '/spec_tries', str(tries))
+    print('ROUTE_spec' if tries < 3 else 'ROUTE_stop')
+    print('The spec was not accepted (attempt ' + str(tries) + ' of 3). ' + reason)
+    sys.exit(1)
 os.makedirs(D, exist_ok=True)
+touched = repo_changes()
+discarded = ''
+if touched is None:
+    print('warning: could not compare the repository with origin/main, so changes made by the planner were not checked')
+elif touched:
+    run('git restore --source=origin/main --staged --worktree -- . && git clean -fdq')
+    left = repo_changes()
+    listed = ', '.join(touched[:20])
+    if left:
+        send_back('You changed files in the repository, which this step must not do, and they could not be put back: ' + ', '.join(left[:20]) + '. Restore them to their origin/main state, then deliver only the spec.')
+    discarded = 'You also changed files in the repository (' + listed + '). This step only writes the spec, so those changes were discarded; nothing is built before a maintainer approves the spec. '
+    print('DISCARDED ' + str(len(touched)) + ' repository file(s) the planner changed in the spec step: ' + listed)
 printed = sys.stdin.read().strip()
 on_disk = read(D + '/spec.md').strip()
 if printed and not missing(printed):
@@ -251,16 +286,14 @@ if printed and not missing(printed):
 elif on_disk and not missing(on_disk):
     spec, source = on_disk, 'the file the planner wrote'
 else:
-    try:
-        tries = int(read(D + '/spec_tries').strip() or 0) + 1
-    except ValueError:
-        tries = 3
-    write(D + '/spec_tries', str(tries))
     gaps = missing(printed or on_disk) if (printed or on_disk) else ['the whole spec: nothing was printed and /tmp/fabro/spec.md does not exist']
-    print('ROUTE_spec' if tries < 3 else 'ROUTE_stop')
-    print('The spec is incomplete (attempt ' + str(tries) + ' of 3). Missing: ' + '; '.join(gaps))
-    sys.exit(1)
+    send_back(discarded + 'The spec is incomplete. Missing: ' + '; '.join(gaps))
+# spec.shown.md is the spec as it was last shown to the maintainer. This step
+# runs again after it only when they sent it back with feedback.
+if spec == read(D + '/spec.shown.md').strip():
+    send_back(discarded + 'A maintainer sent the spec back with feedback (human.gate.approve.answer in your context) and /tmp/fabro/spec.md came back unchanged. Revise the spec to follow that feedback, write it to /tmp/fabro/spec.md and print it.')
 write(D + '/spec.md', spec + NL)
+write(D + '/spec.shown.md', spec + NL)
 write(D + '/spec_tries', '0')
 print('SPEC SAVED from ' + source + ': ' + str(len(spec.split())) + ' words')
 for line in spec.splitlines():
