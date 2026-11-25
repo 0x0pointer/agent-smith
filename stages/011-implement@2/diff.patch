@@ -1,0 +1,214 @@
+diff --git a/core/api_server/routes/kb_routes.py b/core/api_server/routes/kb_routes.py
+index ae36940..b1f8541 100644
+--- a/core/api_server/routes/kb_routes.py
++++ b/core/api_server/routes/kb_routes.py
+@@ -1,5 +1,7 @@
+ from __future__ import annotations
+ 
++import json
++
+ from fastapi import File, Form, Query, UploadFile
+ from fastapi.responses import JSONResponse
+ 
+@@ -11,11 +13,12 @@ _DEPRECATION = "/api/kb/docs is deprecated; use /api/vector/docs"
+ 
+ def _with_deprecation(resp: JSONResponse) -> JSONResponse:
+     resp.headers["X-Agent-Smith-Deprecated"] = _DEPRECATION
++    headers = {k: v for k, v in resp.headers.items() if k.lower() != "content-length"}
+     try:
+-        payload = resp.body and __import__("json").loads(resp.body)
++        payload = resp.body and json.loads(resp.body)
+         if isinstance(payload, dict):
+             payload.setdefault("deprecated", _DEPRECATION)
+-            return JSONResponse(payload, status_code=resp.status_code, headers=resp.headers)
++            return JSONResponse(payload, status_code=resp.status_code, headers=headers)
+     except Exception:
+         pass
+     return resp
+diff --git a/dashboard/js/setup-gates.js b/dashboard/js/setup-gates.js
+index e914a3b..4d22d40 100644
+--- a/dashboard/js/setup-gates.js
++++ b/dashboard/js/setup-gates.js
+@@ -292,6 +292,8 @@
+ 
+   let _vectorDocs = [];
+   let _vectorDocsSig = '';
++  let _vectorVaultsSig = '';
++  let _vectorHooksBound = false;
+ 
+   function _vectorFmt(bytes) {
+     if (bytes > 1_000_000) return (bytes / 1_000_000).toFixed(1) + ' MB';
+@@ -309,6 +311,60 @@
+     return (el && el.value.trim()) || 'docs';
+   }
+ 
++  function _selectVectorVaultDataset(vault, dataset) {
++    const vaultInput = document.getElementById('vector-vault-input');
++    const datasetInput = document.getElementById('vector-dataset-input');
++    if (vaultInput) vaultInput.value = vault || '';
++    if (datasetInput) datasetInput.value = dataset || 'docs';
++    _loadVectorDocs();
++  }
++
++  function _renderVectorVaults(vaults) {
++    const wrap = document.getElementById('vector-vaults-wrap');
++    if (!wrap) return;
++    if (!vaults || !vaults.length) {
++      wrap.innerHTML = '<div class="empty-placeholder">No vector vaults yet — upload docs to create one.</div>';
++      return;
++    }
++    const activeVault = _vectorVaultValue();
++    const activeDataset = _vectorDatasetValue();
++    wrap.innerHTML = vaults.map(vault => `
++      <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:6px;padding:0.6rem 0.85rem;margin-bottom:0.5rem;">
++        <div style="display:flex;justify-content:space-between;gap:0.6rem;align-items:center;flex-wrap:wrap;margin-bottom:0.4rem;">
++          <div style="color:var(--text);font-size:0.8rem;font-family:'IBM Plex Mono',monospace;">${_sgEsc(vault.name)}</div>
++          <div style="color:var(--text-dim);font-size:0.72rem;font-family:'IBM Plex Mono',monospace;">${vault.docs || 0} doc${vault.docs === 1 ? '' : 's'}</div>
++        </div>
++        <div style="display:flex;gap:0.35rem;flex-wrap:wrap;">
++          ${(vault.datasets || []).map(dataset => {
++            const selected = activeVault === (vault.name || '') && activeDataset === (dataset.name || 'docs');
++            return `<button type="button"
++                            data-vector-select="1"
++                            data-vector-vault="${_sgEsc(vault.name || '')}"
++                            data-vector-dataset="${_sgEsc(dataset.name || 'docs')}"
++                            style="padding:0.22rem 0.6rem;border-radius:999px;border:1px solid ${selected ? '#5bf29b' : 'var(--border)'};background:${selected ? 'rgba(91,242,155,0.12)' : 'transparent'};color:${selected ? '#d1fae5' : 'var(--text-dim)'};font-size:0.72rem;font-family:'IBM Plex Mono',monospace;cursor:pointer;">
++                      ${_sgEsc(dataset.name)} · ${dataset.docs || 0}
++                    </button>`;
++          }).join('') || '<span style="color:var(--text-dim);font-size:0.72rem;">No datasets yet.</span>'}
++        </div>
++      </div>`).join('');
++    wrap.querySelectorAll('[data-vector-select]').forEach(btn => {
++      btn.addEventListener('click', () => _selectVectorVaultDataset(
++        btn.getAttribute('data-vector-vault') || '',
++        btn.getAttribute('data-vector-dataset') || 'docs',
++      ));
++    });
++  }
++
++  function _ensureVectorInputHooks() {
++    if (_vectorHooksBound) return;
++    [['vector-vault-input', 'change'], ['vector-dataset-input', 'change']].forEach(([id, eventName]) => {
++      const el = document.getElementById(id);
++      if (!el) return;
++      el.addEventListener(eventName, () => _loadVectorDocs());
++    });
++    _vectorHooksBound = true;
++  }
++
+   function _renderVectorDocs(docs) {
+     const wrap = document.getElementById('vector-docs-wrap');
+     if (!wrap) return;
+@@ -336,13 +392,16 @@
+ 
+   async function _loadVectorDocs() {
+     try {
++      _ensureVectorInputHooks();
+       const params = new URLSearchParams({ _: String(Date.now()), vault: _vectorVaultValue(), dataset: _vectorDatasetValue() });
+       const r = await fetch(`/api/vector/docs?${params.toString()}`);
+       if (!r.ok) return;
+       const data = await r.json();
+       _vectorDocs = data.docs || [];
+-      const sig = JSON.stringify(_vectorDocs);
++      const sig = JSON.stringify([_vectorVaultValue(), _vectorDatasetValue(), _vectorDocs]);
+       if (sig !== _vectorDocsSig) { _vectorDocsSig = sig; _renderVectorDocs(_vectorDocs); }
++      const vaultSig = JSON.stringify([_vectorVaultValue(), _vectorDatasetValue(), data.vaults || []]);
++      if (vaultSig !== _vectorVaultsSig) { _vectorVaultsSig = vaultSig; _renderVectorVaults(data.vaults || []); }
+     } catch { /* keep last good list */ }
+   }
+ 
+@@ -475,3 +534,4 @@
+   // Expose globals referenced by common.js switchTab + inline handlers.
+   window.pollSetupGates = pollSetupGates;
+   window.renderSetupGates = renderSetupGates;
++  window._selectVectorVaultDataset = _selectVectorVaultDataset;
+diff --git a/dashboard/tabs/setup-gates.html b/dashboard/tabs/setup-gates.html
+index c3155f1..30e1dfb 100644
+--- a/dashboard/tabs/setup-gates.html
++++ b/dashboard/tabs/setup-gates.html
+@@ -61,6 +61,9 @@
+               style="padding:0.3rem 0.7rem;border:none;border-radius:4px;background:#16a34a;color:#fff;font-size:0.74rem;cursor:pointer;">Upload</button>
+       <span id="vector-docs-status" style="font-size:0.72rem;color:var(--text-dim);"></span>
+     </div>
++    <div id="vector-vaults-wrap" style="margin-bottom:0.7rem;">
++      <div class="empty-placeholder">No vector vaults yet — upload docs to create one.</div>
++    </div>
+     <div id="vector-docs-wrap">
+       <div class="empty-placeholder">No vector documents in this vault/dataset yet.</div>
+     </div>
+diff --git a/tests/test_api_vector_docs.py b/tests/test_api_vector_docs.py
+index 82b1915..5248d02 100644
+--- a/tests/test_api_vector_docs.py
++++ b/tests/test_api_vector_docs.py
+@@ -64,6 +64,7 @@ def test_kb_docs_aliases_return_deprecation_header_or_field(vector_api_env):
+     r = client.get("/api/kb/docs")
+     assert r.headers.get("X-Agent-Smith-Deprecated")
+     assert "deprecated" in r.json()
++    assert int(r.headers["content-length"]) == len(r.content)
+ 
+ 
+ def test_too_many_large_empty_unsupported_corrupt_meta_fail_soft(vector_api_env, monkeypatch):
+diff --git a/tests/test_dashboard_vector_ui.py b/tests/test_dashboard_vector_ui.py
+index ee23ee4..e8e214d 100644
+--- a/tests/test_dashboard_vector_ui.py
++++ b/tests/test_dashboard_vector_ui.py
+@@ -1,12 +1,58 @@
++import json
+ from pathlib import Path
+ 
++from fastapi.testclient import TestClient
++
++import core.api_server as api
++import core.session as scan_session
++from core import vector_store as vector_mod
++from core.api_server import app
++
++client = TestClient(app)
++
++
++def test_setup_gates_uses_vector_vaults_not_kb_docs(tmp_path, monkeypatch):
++    session_file = tmp_path / "session.json"
++    session_file.write_text(json.dumps({"id": "sess-ui", "target": "http://t", "status": "running"}))
++    monkeypatch.chdir(tmp_path)
++    monkeypatch.setattr(scan_session, "_SESSION_FILE", session_file)
++    monkeypatch.setattr(api, "_SESSION_FILE", session_file)
++    monkeypatch.setattr(vector_mod, "VECTOR_ROOT", tmp_path / "vectors")
++    monkeypatch.setattr(vector_mod, "KB_ROOT", tmp_path / "kb")
++    monkeypatch.setattr(vector_mod, "RAW_DIR", tmp_path / "kb" / "sources" / "_raw")
++    monkeypatch.setattr(vector_mod, "MANIFEST", tmp_path / "kb" / "MANIFEST.json")
++    scan_session._current = None
++    vector_mod.ingest_text(vault="engagement-sess-ui", dataset="docs", name="brief.md", text="alpha", untrusted=False)
++    vector_mod.ingest_text(vault="engagement-sess-ui", dataset="api", name="openapi.md", text="beta", untrusted=False)
++    vector_mod.ingest_text(vault="security", dataset="refs", name="owasp.md", text="gamma", untrusted=False)
++
++    payload = client.get("/api/vector/docs").json()
++    assert payload["vaults"] == [
++        {
++            "name": "engagement-sess-ui",
++            "datasets": [{"name": "api", "docs": 1}, {"name": "docs", "docs": 1}],
++            "docs": 2,
++        },
++        {
++            "name": "security",
++            "datasets": [{"name": "refs", "docs": 1}],
++            "docs": 1,
++        },
++    ]
+ 
+-def test_setup_gates_uses_vector_vaults_not_kb_docs():
+     root = Path(__file__).resolve().parent.parent / "dashboard"
+     html = (root / "tabs" / "setup-gates.html").read_text()
+     js = (root / "js" / "setup-gates.js").read_text()
+ 
+     assert "Vector vaults" in html
++    assert 'id="vector-vaults-wrap"' in html
+     assert "/api/vector/docs" in js
++    assert "_renderVectorVaults" in js
++    assert "_selectVectorVaultDataset" in js
++    assert "data.vaults" in js
++    assert "vault.name" in js
++    assert "vault.docs" in js
++    assert "dataset.name" in js
++    assert "dataset.docs" in js
+     assert "Engagement documents" not in html
+     assert "_uploadKbDocs" not in js
