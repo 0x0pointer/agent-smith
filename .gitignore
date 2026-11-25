@@ -65,10 +65,8 @@ SECURITY-REVIEW.md
 analysis/
 run_2/
 
-# local knowledge base (plan 5.1): built at INSTALL time (installers/* bootstrap
-# `scripts/build_kb.py --all`), never committed — the corpus is ~3.3 GB and the
-# ExploitDB metadata is no-redistribution. KB provenance (which snapshot an
-# engagement queried) is recorded per-engagement by build_engagement_digest.py.
+# legacy local knowledge-base data from older installs; ignored if present, but
+# runtime no longer depends on it.
 kb/
 
 # Cross-run graph snapshots (generated per target)

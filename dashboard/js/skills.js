@@ -21,11 +21,11 @@
     } catch { /* ignore */ }
   }
 
-  // plan 5.1e #5 — live KB-recall usage metric (where + how much the KB is used).
+  // Generic recall-usage metric (where + how much recall is used this scan).
   // Empty-but-muted when no recall has fired this scan; silent of specifics otherwise.
   function _recallUsageHtml(ru) {
     if (!ru?.total) {
-      return '<div style="font-size:.78rem;color:#6e7681;margin-top:.5rem;width:100%">&#128269; KB recall: none yet this scan</div>';
+      return '<div style="font-size:.78rem;color:#6e7681;margin-top:.5rem;width:100%">&#128269; Recall: none yet this scan</div>';
     }
     const byTier = Object.entries(ru.by_tier || {}).sort((a, b) => b[1] - a[1])
       .map(([t, n]) => `<span style="color:#79c0ff">${esc(t)}</span>&#183;${n}`).join('  ');
@@ -38,7 +38,7 @@
     ).join('');
     return (
       '<div style="width:100%;margin-top:.5rem;padding:.5rem .6rem;background:#0d1117;border:1px solid #21262d;border-radius:6px;font-size:.8rem">' +
-        `<div style="color:#f0f6fc"><strong>&#128269; KB recall</strong>: ${ru.total} call${ru.total === 1 ? '' : 's'} &#183; ${ru.total_hits} hit${ru.total_hits === 1 ? '' : 's'}</div>` +
+        `<div style="color:#f0f6fc"><strong>&#128269; Recall</strong>: ${ru.total} call${ru.total === 1 ? '' : 's'} &#183; ${ru.total_hits} hit${ru.total_hits === 1 ? '' : 's'}</div>` +
         (byTier ? `<div style="color:#8b949e;margin-top:.25rem">by tier: ${byTier}</div>` : '') +
         (bySkill ? `<div style="color:#8b949e;margin-top:.15rem">by skill: ${bySkill}</div>` : '') +
         (recent ? `<div style="margin-top:.3rem;border-top:1px solid #21262d;padding-top:.3rem">${recent}</div>` : '') +

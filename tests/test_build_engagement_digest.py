@@ -24,8 +24,7 @@ def digest_env(tmp_path, monkeypatch):
     session = {
         "id": "sess-abc", "target": "http://vulnbank.test:30081", "status": "complete",
         "stop_reason": "operator_accept_partial",
-        "known_assets": {"credentials": [{"user": "a"}], "auth_tokens": [{"value": "jwt"}],
-                         "kb_docs": [{"file": "api-notes.md", "untrusted": False}]},
+        "known_assets": {"credentials": [{"user": "a"}], "auth_tokens": [{"value": "jwt"}]},
     }
     (tmp_path / "session.json").write_text(json.dumps(session))
     (tmp_path / "findings.json").write_text(json.dumps({"findings": [
@@ -87,7 +86,8 @@ def test_build_writes_store(digest_env):
     assert resume["vulnerable_cells"][0]["finding_id"] == "f1"
     digest = (store / "digest.md").read_text()
     assert "Engagement digest" in digest and "SQLi in /login" in digest
-    assert "api-notes.md" in digest   # kb_doc names recorded (ephemeral, names only)
+    assert "KB snapshot queried" not in digest
+    assert "Engagement docs" not in digest
 
 
 def test_build_falls_back_to_all_findings_on_target_mismatch(digest_env, tmp_path):
