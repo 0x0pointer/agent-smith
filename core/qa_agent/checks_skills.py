@@ -306,8 +306,8 @@ _REFS_DIRS = _skill_refs_dirs("web-exploit")
 # area the agent is working in (from its recent tool activity), points at the skill
 # that owns that area, and harness-delivers that area's technique brief. Web keeps
 # per-injection-class granularity (_RETRIEVAL_SOURCES, 30 refs); every other area
-# delivers at the skill level from its refs/ dir (empty today) or the local KB once
-# merged — degrading gracefully to skill-pointing until content exists. ``sig`` are
+# delivers at the skill level from its refs/ dir, degrading gracefully to
+# skill-pointing when no local refs exist. ``sig`` are
 # lowercase substrings matched against recent TOOL entries (tool name + command);
 # order is detection priority, and the distinctive non-web tooling is matched before
 # the web fallback so an AD/cloud/post-ex phase is never mislabelled web.
@@ -448,53 +448,7 @@ def _load_technique_brief(area: dict, classes: list[str]) -> str:
             briefs.append(f"TECHNIQUE {label} (refs/{fname}):\n{chunk}")
             budget -= len(chunk)
             break
-    if not briefs:
-        kb = _kb_recall_brief(area, classes)
-        if kb:
-            briefs.append(kb)
     return "\n\n".join(briefs)
-
-
-def _kb_recall_brief(area: dict, classes: list[str]) -> str:
-    """Harness-deliver this area's methodology from the local KB (BM25 over kb/index.db).
-
-    Used when the skill has no local refs/ (every non-web area today), so AD / cloud /
-    post-ex etc. get real inline technique text once the KB is built — the same
-    injection, only the source swaps from a local file to KB recall. Prefers methodology
-    kinds (WSTG, our skill refs, GTFOBins/LOLBAS) over raw CVE/exploit dumps, and pulls
-    the matched doc's body (bounded), not just the snippet. Fail-soft: "" when the index
-    is absent or empty, so the generic mechanism never breaks without a KB."""
-    try:
-        from core import kb as _kb
-        con = _kb.open_index()
-        if con is None:
-            return ""
-        q = " ".join([area["area"], *classes[:3],
-                      area["skill"].replace("-", " "), "exploitation technique"]).strip()
-        hits = (_kb.query_index(con, q, kinds=["wstg", "skill_ref", "gtfobins", "lolbas"], limit=2)
-                or _kb.query_index(con, q, limit=2))
-        parts: list[str] = []
-        budget = _BRIEF_BUDGET
-        for h in hits:
-            if budget <= 0:
-                break
-            body = ""
-            try:
-                row = con.execute("SELECT body FROM kb_docs WHERE source=? LIMIT 1",
-                                  [h.get("source")]).fetchone()
-                body = (row[0] if row else "") or ""
-            except Exception:
-                body = h.get("snippet") or ""
-            body = body.strip()
-            if not body:
-                continue
-            chunk = body[:min(budget, _BRIEF_PER_CLASS)].rstrip()
-            parts.append(f"TECHNIQUE {h.get('title') or h.get('kind', 'kb')} "
-                         f"({h.get('source', '')}):\n{chunk}")
-            budget -= len(chunk)
-        return "\n\n".join(parts).strip()
-    except Exception:
-        return ""
 
 
 def _check_stuck_retrieval_escalation(

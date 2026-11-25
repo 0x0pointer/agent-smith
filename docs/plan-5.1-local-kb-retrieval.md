@@ -1,22 +1,8 @@
-# Plan 5.1 — Local security-knowledge retrieval (KB + engagement docs)
+# Obsolete plan — local KB / engagement-doc retrieval was removed
 
-> **Status:** ✅ COMPLETE — 5.1a–5.1e landed (5.1f embeddings deferred behind the BM25 gate).
-> 303k docs indexed: cve 241,452 (cvelistV5 — NVD feeds retired 403), exploitdb 47,159
-> (Kali-image recovery), nuclei 14,073, gtfobins 478, lolbas 245, wstg 149, skill_refs 100.
-> AND-first BM25 ranking; selftest 4/4. D1/D2 planner hooks: tech fingerprints → local-KB recall
-> suggestions, CVE-gates → recall-before-web hint. Engagement docs EPHEMERAL (§6.3 revised):
-> purged on completion/start, names-only audit trail. Previously: 5.1a + 5.1b + **5.1c landed** (kb_add action, parser chain, untrusted
-> fence, custom-dir no-code extension, digest copy-through). 972 docs indexed (gtfobins 478,
-> lolbas 245, wstg 149, skill_refs 100), selftest 4/4, 21 tests in `tests/test_kb_recall.py`,
-> full suite green. ExploitDB CSV fetch fail-soft (GitHub mirror archived; git.exploit-db.com
-> unreachable from build host — falls back to the Kali package path
-> `/usr/share/exploitdb/files_exploits.csv`). Next: 5.1d nuclei/nvd bulk sources, 5.1e D1/D2
-> hooks. Extending the KB (permanent + per-target) is documented in README "Adding content to
-> the KB"; the dashboard side (Operator Actions → Engagement documents, `/api/kb/docs`
-> upload/list/delete + steering note) is also landed.
-> **Scope decision:** one retrieval machinery, **three corpus tiers** (static KB, per-engagement
-> docs, prior-engagement stores). Attaching client/target documents discovered mid-pentest is the
-> same feature and shares the entire pipeline (§6).
+This document is retained only as historical context for the removed KB RAG
+feature. Current runtime behavior keeps `report(action="recall")` for prior
+engagement stores under `engagements/*` only.
 
 ---
 

@@ -182,21 +182,9 @@ def test_sources_are_methodology_urls():
 
 
 def test_load_technique_brief_failsoft(monkeypatch, tmp_path):
-    """No readable ref AND no KB content → empty string, never an exception.
-    (The KB hook is patched out — on a machine with a built kb/index.db the real
-    hook returns SKILL.md content, which is the designed fallback, not a miss.)"""
+    """No readable ref → empty string, never an exception."""
     monkeypatch.setattr(cs, "_REFS_DIRS", [str(tmp_path / "nope")])
-    monkeypatch.setattr(cs, "_kb_recall_brief", lambda area, classes: "")
     assert cs._load_technique_brief(cs._WEB_AREA, ["ssti", "sqli"]) == ""
-
-
-def test_load_technique_brief_kb_fallback(monkeypatch, tmp_path):
-    """No local ref → the KB recall hook supplies the brief (non-web areas rely on it)."""
-    monkeypatch.setattr(cs, "_REFS_DIRS", [str(tmp_path / "nope")])
-    monkeypatch.setattr(cs, "_kb_recall_brief",
-                        lambda area, classes: "TECHNIQUE kb-doc (kb:x):\nKB BODY")
-    out = cs._load_technique_brief(cs._WEB_AREA, ["ssti"])
-    assert "KB BODY" in out and "kb-doc" in out
 
 
 # ── Generic across attack areas (not just web) ────────────────────────────────
