@@ -6,7 +6,7 @@ there for the full description, the guardrails and the server setup.
 
 | Workflow | What it does |
 |---|---|
-| `workflows/issue-to-pr/` | Builds an issue a maintainer labelled `fabro-approved`: spec, human approval of the spec, code, checks, independent review, draft pull request. |
+| `workflows/issue-to-pr/` | Builds an issue a maintainer labelled `fabro-approved`: spec, human approval of the spec, code, checks, one independent review (standard, or security for sensitive changes), draft pull request. |
 | `workflows/fix-ci/` | Repairs a Fabro pull request whose CI checks failed, on the same branch. At most three rounds per pull request. |
 
 Both are started by their Fabro automation (on a schedule, or with the Run
@@ -28,7 +28,12 @@ in step with each other) and in `docker/Dockerfile`:
 
 - how to install, lint and test (`install_command`, `lint_command`, `test_command`);
 - which paths a run may never change (`protected_prefixes`, `protected_files`);
-- who may release an issue (`maintainers`).
+- who may release an issue (`maintainers`);
+- which changed paths send a change to the security reviewer (`sensitive_paths`).
+
+`skills/` in this folder holds the Trail of Bits `differential-review` skill
+that the security reviewer follows; `skills/README.md` there gives its source
+and license.
 
 `skills/` is a git submodule of `0x0pointer/skills`. Runs here may not change
 it or its pointer; skill changes are made in the skills repository and arrive
