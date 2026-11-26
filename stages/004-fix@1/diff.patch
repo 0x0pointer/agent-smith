@@ -1,0 +1,853 @@
+diff --git a/core/source_client.py b/core/source_client.py
+index 52c1f66..0c13005 100644
+--- a/core/source_client.py
++++ b/core/source_client.py
+@@ -44,37 +44,48 @@ def _neutralize_fences(text: Any) -> str:
+     return str(text or "").replace("`", "'")
+ 
+ 
++def _payload_items(payload: Any) -> Any:
++    if not isinstance(payload, dict):
++        return payload
++    for key in ("results", "items", "hits"):
++        items = payload.get(key)
++        if items is not None:
++            return items
++    return payload
++
++
++def _normalize_item(item: Any) -> dict[str, str] | None:
++    if isinstance(item, str):
++        label = "Source snippet"
++        snippet = item
++    elif isinstance(item, dict):
++        path = str(item.get("path") or item.get("source") or "").strip()
++        heading = str(item.get("heading") or item.get("title") or "").strip()
++        label = " › ".join(part for part in (path, heading) if part) or "Source snippet"
++        snippet = item.get("snippet") or item.get("text") or item.get("content") or ""
++    else:
++        return None
++    label = _cap(label, 120)
++    snippet = _cap(snippet, _MAX_SNIPPET_CHARS)
++    if not snippet:
++        return None
++    return {"label": label, "snippet": snippet}
++
++
+ def _normalize_items(payload: Any) -> list[dict[str, str]]:
+-    items = payload
+-    if isinstance(payload, dict):
+-        items = payload.get("results")
+-        if items is None:
+-            items = payload.get("items")
+-        if items is None:
+-            items = payload.get("hits")
++    items = _payload_items(payload)
+     if not isinstance(items, list):
+         return []
+     out: list[dict[str, str]] = []
+     total_chars = 0
+     for item in items[:_MAX_RESULTS]:
+-        if isinstance(item, str):
+-            label = "Source snippet"
+-            snippet = item
+-        elif isinstance(item, dict):
+-            path = str(item.get("path") or item.get("source") or "").strip()
+-            heading = str(item.get("heading") or item.get("title") or "").strip()
+-            label = " › ".join(p for p in (path, heading) if p) or "Source snippet"
+-            snippet = item.get("snippet") or item.get("text") or item.get("content") or ""
+-        else:
+-            continue
+-        label = _cap(label, 120)
+-        snippet = _cap(snippet, _MAX_SNIPPET_CHARS)
+-        if not snippet:
++        normalized = _normalize_item(item)
++        if not normalized:
+             continue
+-        total_chars += len(label) + len(snippet)
++        total_chars += len(normalized["label"]) + len(normalized["snippet"])
+         if total_chars > _MAX_TOTAL_CHARS:
+             break
+-        out.append({"label": label, "snippet": snippet})
++        out.append(normalized)
+     return out
+ 
+ 
+@@ -95,28 +106,30 @@ async def search(query: str, k: int = 3, mode: str | None = None,
+     if tags:
+         params["tags"] = ",".join(str(tag).strip() for tag in tags if str(tag).strip())
+     try:
+-        async with aiohttp.ClientSession(timeout=_TIMEOUT) as client:
+-            async with client.get(f"{source['url'].rstrip('/')}/search", params=params) as resp:
+-                if resp.status >= 400:
+-                    logger.note(f"Source search unavailable for {source['name']} (http {resp.status})")
+-                    return {
+-                        "ok": False,
+-                        "reason": "unreachable",
+-                        "message": f"Source '{source['name']}' is unavailable right now.",
+-                        "items": [],
+-                        "source": source,
+-                    }
+-                try:
+-                    payload = await resp.json(content_type=None)
+-                except Exception:
+-                    logger.note(f"Source search invalid JSON for {source['name']}")
+-                    return {
+-                        "ok": False,
+-                        "reason": "bad_json",
+-                        "message": f"Source '{source['name']}' returned unreadable data.",
+-                        "items": [],
+-                        "source": source,
+-                    }
++        async with aiohttp.ClientSession(timeout=_TIMEOUT) as client, client.get(
++            f"{source['url'].rstrip('/')}/search",
++            params=params,
++        ) as resp:
++            if resp.status >= 400:
++                logger.note(f"Source search unavailable for {source['name']} (http {resp.status})")
++                return {
++                    "ok": False,
++                    "reason": "unreachable",
++                    "message": f"Source '{source['name']}' is unavailable right now.",
++                    "items": [],
++                    "source": source,
++                }
++            try:
++                payload = await resp.json(content_type=None)
++            except Exception:
++                logger.note(f"Source search invalid JSON for {source['name']}")
++                return {
++                    "ok": False,
++                    "reason": "bad_json",
++                    "message": f"Source '{source['name']}' returned unreadable data.",
++                    "items": [],
++                    "source": source,
++                }
+     except Exception as exc:  # noqa: BLE001
+         logger.note(f"Source search unavailable for {source['name']} ({type(exc).__name__})")
+         return {
+@@ -159,12 +172,14 @@ async def ingest(notes: list[dict[str, Any]]) -> dict[str, Any]:
+     if not source or not notes:
+         return {"ok": False, "reason": "no_source" if not source else "no_notes"}
+     try:
+-        async with aiohttp.ClientSession(timeout=_TIMEOUT) as client:
+-            async with client.post(f"{source['url'].rstrip('/')}/ingest", json={"notes": notes}) as resp:
+-                if resp.status >= 400:
+-                    logger.note(f"Source ingest unavailable for {source['name']} (http {resp.status})")
+-                    return {"ok": False, "reason": "unreachable", "source": source}
+-                return {"ok": True, "source": source, "count": len(notes)}
++        async with aiohttp.ClientSession(timeout=_TIMEOUT) as client, client.post(
++            f"{source['url'].rstrip('/')}/ingest",
++            json={"notes": notes},
++        ) as resp:
++            if resp.status >= 400:
++                logger.note(f"Source ingest unavailable for {source['name']} (http {resp.status})")
++                return {"ok": False, "reason": "unreachable", "source": source}
++            return {"ok": True, "source": source, "count": len(notes)}
+     except Exception as exc:  # noqa: BLE001
+         logger.note(f"Source ingest unavailable for {source['name']} ({type(exc).__name__})")
+         return {"ok": False, "reason": "unreachable", "source": source}
+diff --git a/core/sources.py b/core/sources.py
+index 8d4fd75..9dd76b6 100644
+--- a/core/sources.py
++++ b/core/sources.py
+@@ -40,7 +40,7 @@ def _validate_source_url(url: str) -> str | None:
+         return None
+     netloc = parsed.netloc.rstrip("/")
+     path = parsed.path.rstrip("/")
+-    return f"http://{netloc}{path}"
++    return f"{parsed.scheme}://{netloc}{path}"
+ 
+ 
+ def _iter_entries(text: str) -> list[tuple[int, str]]:
+@@ -53,6 +53,59 @@ def _iter_entries(text: str) -> list[tuple[int, str]]:
+     return entries
+ 
+ 
++def _sources_block_indent(entries: list[tuple[int, str]]) -> int | None:
++    for _, line in entries:
++        indent = len(line) - len(line.lstrip(" "))
++        if line.lstrip(" ").startswith("sources:") and indent == 0:
++            return indent
++    return None
++
++
++def _entry_in_scope(in_sources: bool, entry_indent: int, indent: int, stripped: str) -> bool:
++    if not in_sources:
++        return indent == 0
++    if indent < entry_indent or indent != entry_indent:
++        return False
++    return stripped != "sources:"
++
++
++def _entry_name_and_rest(stripped: str) -> tuple[str, str] | None:
++    if ":" not in stripped:
++        return None
++    name, rest = stripped.split(":", 1)
++    name = name.strip()
++    if not name or name == "sources":
++        return None
++    return name, rest.strip()
++
++
++def _inline_or_scalar_url(rest: str) -> str | None:
++    if rest.startswith("{") and rest.endswith("}"):
++        match = _INLINE_URL_RE.search(rest[1:-1])
++        return match.group(1).strip().strip("'\"") if match else None
++    if rest:
++        return rest.strip().strip("'\"")
++    return None
++
++
++def _child_url(entries: list[tuple[int, str]], start: int, parent_indent: int) -> str | None:
++    for _, child in entries[start:]:
++        child_indent = len(child) - len(child.lstrip(" "))
++        if child_indent <= parent_indent:
++            return None
++        child_stripped = child.strip()
++        if child_stripped.startswith("url:"):
++            return child_stripped.split(":", 1)[1].strip().strip("'\"")
++    return None
++
++
++def _entry_url(entries: list[tuple[int, str]], index: int, indent: int, rest: str) -> str | None:
++    inline = _inline_or_scalar_url(rest)
++    if inline is not None:
++        return inline
++    return _child_url(entries, index + 1, indent)
++
++
+ def _load_registry(registry_path: str | os.PathLike[str] | None = None) -> dict:
+     path = _registry_path(registry_path)
+     try:
+@@ -69,71 +122,23 @@ def _load_registry(registry_path: str | os.PathLike[str] | None = None) -> dict:
+     sources: dict[str, dict[str, str]] = {}
+     errors: list[str] = []
+ 
+-    top_level_sources = next(
+-        (
+-            len(line) - len(line.lstrip(" "))
+-            for _, line in entries
+-            if line.lstrip(" ").startswith("sources:")
+-            and (len(line) - len(line.lstrip(" "))) == 0
+-        ),
+-        None,
+-    )
+-    in_sources = top_level_sources is not None
++    in_sources = _sources_block_indent(entries) is not None
+     entry_indent = 2 if in_sources else 0
+-    i = 0
+-    while i < len(entries):
+-        lineno, line = entries[i]
++    for i, (_, line) in enumerate(entries):
+         indent = len(line) - len(line.lstrip(" "))
+         stripped = line.strip()
+-        if in_sources:
+-            if indent == 0 and stripped == "sources:":
+-                i += 1
+-                continue
+-            if indent < entry_indent:
+-                i += 1
+-                continue
+-            if indent != entry_indent:
+-                i += 1
+-                continue
+-        elif indent != 0:
+-            i += 1
+-            continue
+-        if ":" not in stripped:
+-            i += 1
++        if not _entry_in_scope(in_sources, entry_indent, indent, stripped):
+             continue
+-        name, rest = stripped.split(":", 1)
+-        name = name.strip()
+-        rest = rest.strip()
+-        if not name or name == "sources":
+-            i += 1
++        entry = _entry_name_and_rest(stripped)
++        if not entry:
+             continue
+-
+-        url = None
+-        if rest.startswith("{") and rest.endswith("}"):
+-            match = _INLINE_URL_RE.search(rest[1:-1])
+-            if match:
+-                url = match.group(1).strip().strip("'\"")
+-        elif rest:
+-            url = rest.strip().strip("'\"")
+-        else:
+-            j = i + 1
+-            while j < len(entries):
+-                _, child = entries[j]
+-                child_indent = len(child) - len(child.lstrip(" "))
+-                if child_indent <= indent:
+-                    break
+-                child_stripped = child.strip()
+-                if child_stripped.startswith("url:"):
+-                    url = child_stripped.split(":", 1)[1].strip().strip("'\"")
+-                    break
+-                j += 1
+-
++        name, rest = entry
++        url = _entry_url(entries, i, indent, rest)
+         valid_url = _validate_source_url(url or "")
+         if valid_url:
+             sources[name] = {"name": name, "url": valid_url}
+         elif url is not None:
+             errors.append(f"{name}: invalid url")
+-        i += 1
+ 
+     return {"sources": sources, "errors": errors}
+ 
+diff --git a/mcp_server/report_tools/recall.py b/mcp_server/report_tools/recall.py
+index 54fab0d..72be057 100644
+--- a/mcp_server/report_tools/recall.py
++++ b/mcp_server/report_tools/recall.py
+@@ -287,6 +287,40 @@ def _no_hits_message(query: str) -> str:
+     return f"recall: no matches for '{query}' in prior engagement stores. Nothing on this — treat it as new ground."
+ 
+ 
++def _resolve_recall_request(data) -> tuple[set[str], list[str], int]:
++    limit = _parse_limit(data)
++    tiers, removed = _parse_scope(data)
++    if (data.get("path") or "").strip():
++        tiers = {"engagements"}
++    return tiers, removed, limit
++
++
++def _engagement_recall_section(data, query: str, query_terms: set[str], tiers: set[str], limit: int) -> tuple[str | None, int]:
++    stores = _resolve_stores(data)
++    if not stores:
++        if tiers == {"engagements"}:
++            return "recall: no prior engagement stores found. Build one first with python3 scripts/build_engagement_digest.py.", 0
++        return None, 0
++    scored = _collect_scored(stores, query_terms)
++    if not scored:
++        if tiers == {"engagements"}:
++            _record_recall(query, tiers, 0)
++            return _no_hits_message(query), 0
++        return None, 0
++    return _format_hits(query, query_terms, stores, scored, limit), len(scored)
++
++
++async def _source_recall_section(query: str, tiers: set[str], limit: int) -> tuple[str | None, int]:
++    source_result = await source_client.search(query, k=min(limit, 3))
++    heading = "Source recall"
++    if source_result.get("source"):
++        heading = f"Source recall — Source: {source_result['source']['name']}"
++    rendered = source_client.render_search(source_result, heading=heading)
++    if source_result.get("source") or tiers == {"source"}:
++        return rendered, len(source_result.get("items") or [])
++    return None, 0
++
++
+ async def _do_recall(data) -> str:
+     """Search prior engagement stores for `query`; return ranked snippets."""
+     query = (data.get("query") or "").strip()
+@@ -299,10 +333,7 @@ async def _do_recall(data) -> str:
+             "or pass path='engagements/<name>' to scope the local store search."
+         )
+ 
+-    limit = _parse_limit(data)
+-    tiers, removed = _parse_scope(data)
+-    if (data.get("path") or "").strip():
+-        tiers = {"engagements"}
++    tiers, removed, limit = _resolve_recall_request(data)
+     if removed:
+         return _unsupported_scope_message(removed[0])
+ 
+@@ -314,25 +345,20 @@ async def _do_recall(data) -> str:
+     total_hits = 0
+ 
+     if "engagements" in tiers:
+-        stores = _resolve_stores(data)
+-        if stores:
+-            scored = _collect_scored(stores, query_terms)
+-            if scored:
+-                sections.append(_format_hits(query, query_terms, stores, scored, limit))
+-                total_hits += len(scored)
+-            elif tiers == {"engagements"}:
+-                _record_recall(query, tiers, 0)
+-                return _no_hits_message(query)
+-        elif tiers == {"engagements"}:
+-            return "recall: no prior engagement stores found. Build one first with python3 scripts/build_engagement_digest.py."
++        section, hits = _engagement_recall_section(data, query, query_terms, tiers, limit)
++        if section:
++            sections.append(section)
++            total_hits += hits
++            if hits == 0:
++                return section
+ 
+     if "source" in tiers:
+-        source_result = await source_client.search(query, k=min(limit, 3))
+-        if source_result.get("source"):
+-            sections.append(source_client.render_search(source_result, heading=f"Source recall — Source: {source_result['source']['name']}"))
+-            total_hits += len(source_result.get("items") or [])
+-        elif tiers == {"source"}:
+-            return source_client.render_search(source_result, heading="Source recall")
++        section, hits = await _source_recall_section(query, tiers, limit)
++        if section:
++            sections.append(section)
++            total_hits += hits
++            if tiers == {"source"} and hits == 0:
++                return section
+ 
+     if not sections:
+         _record_recall(query, tiers, 0)
+diff --git a/mcp_server/session_tools/start.py b/mcp_server/session_tools/start.py
+index 5a4b35e..951fca9 100644
+--- a/mcp_server/session_tools/start.py
++++ b/mcp_server/session_tools/start.py
+@@ -35,16 +35,7 @@ def _start_response(cfg: dict, classification: dict, target: str, scan_mode: str
+         else "Pentest (human-in-the-loop for exploitation decisions)"
+     )
+     first_move = _start_first_move(classification, target)
+-    # Freshly minted in _do_start(); the token rides the URL *fragment* so it
+-    # never hits an HTTP access log. Surface the whole link here so the operator
+-    # can open the dashboard even if the agent runs report(action='dashboard')
+-    # silently (the failure the operator hit: dashboard started, token never shown).
+-    try:
+-        from core import dashboard_auth
+-        _tok = dashboard_auth.read_token()
+-    except Exception:
+-        _tok = None
+-    dash_url = f"http://localhost:7777/#k={_tok}" if _tok else "http://localhost:7777/"
++    dash_url = _dashboard_url()
+     lines = [
+         "Scan started.",
+         f"  Target: {target} | Depth: {cfg['depth_label']} | Mode: {mode_label} | Limits: {cost_str}/{time_str}/{call_limit_str}",
+@@ -65,57 +56,7 @@ def _start_response(cfg: dict, classification: dict, target: str, scan_mode: str
+         "  ⚠ AI-generated content may be incorrect. It should always be validated by a person.",
+         "",
+     ]
+-    _ignored = cfg.get("ignored_limits")
+-    if _ignored:
+-        _parts = ", ".join(f"{k}={v}" for k, v in _ignored.items())
+-        lines += [
+-            f"  ⓘ IGNORED caller-supplied limit(s) [{_parts}] — depth '{depth}' runs until",
+-            "    complete (no cost/time/call cap) by design, so these were dropped. This scan",
+-            "    is UNCAPPED; end it with session(action='complete') or the dashboard. To bound",
+-            "    it deliberately, re-start with options={'force_limits': true, 'max_time_minutes': N}.",
+-            "",
+-        ]
+-    if scan_mode == "benchmark":
+-        lines += [
+-            "BENCHMARK MODE: On critical/high findings, do NOT pause — exploit the chain autonomously.",
+-            "Demonstrate full impact: RCE → execute commands, SQLi → dump data, SSRF → pivot internally.",
+-            "Document every step as a finding. Self-resolvable HIR pauses are auto-resolved in this mode.",
+-            "",
+-        ]
+-    if depth == "danger" or scan_mode == "benchmark":
+-        lines += [
+-            "DEEP-PIVOT MODE: when SSRF/RCE/file-read reveals an INTERNAL host (RFC1918 10./172.16-31./",
+-            "192.168., *.cluster.local, cloud IMDS, a pod IP), it is auto-promoted to known_assets and",
+-            "becomes a per-host SCAN SURFACE — you CANNOT complete the scan while any discovered internal",
+-            "host is unscanned. These hosts are NEW SURFACES WITHIN THIS SAME SCAN: do NOT call",
+-            "session(action='start') for an internal host (that spawns a separate scan and drops the",
+-            "depth) — register and test them here. For EACH internal host:",
+-            "  1. tunnel in FIRST — a direct scan from Kali usually can't route to a cluster-internal IP.",
+-            "     kali('chisel server …')+client, or kali('ssh -D 1080 user@PIVOT -N -f') + proxychains4.",
+-            "  2. THROUGH the tunnel: naabu/nmap top-ports → httpx → nuclei against the host.",
+-            "  3. if a web/API service is up: spider it + register endpoints host-qualified",
+-            "     (report(action='coverage', data={path:'http://<host>:<port>/…', host:'<host>:<port>'})),",
+-            "     then run /web-exploit · /api-security against them.",
+-            "If a host is genuinely UNREACHABLE (no pivot foothold / network-isolated), document that as a",
+-            "dead-end and move on — don't loop on it. Honor out_of_scope.",
+-            "",
+-        ]
+-    prior_brief = _prior_findings_brief(target)
+-    if prior_brief:
+-        lines += [prior_brief, ""]
+-    if is_resume:
+-        lines += [
+-            "RESUME DETECTED: existing scan state found for this target.",
+-            "Recovery state follows — read it before issuing any tool calls:",
+-            "",
+-            _st._do_recovery(),
+-            "",
+-        ]
+-    try:
+-        from core.adjunction import anti_fp_digest
+-        lines += [anti_fp_digest(), ""]
+-    except Exception:
+-        pass
++    lines += _optional_start_lines(cfg, depth, scan_mode, target, is_resume)
+     lines += [
+         "EXECUTE NOW (do not ask questions): first give the operator the DASHBOARD",
+         "link shown above, then continue silently from here.",
+@@ -147,6 +88,83 @@ def _start_response(cfg: dict, classification: dict, target: str, scan_mode: str
+     return "\n".join(lines)
+ 
+ 
++def _optional_start_lines(cfg: dict, depth: str, scan_mode: str, target: str, is_resume: bool) -> list[str]:
++    lines: list[str] = []
++    ignored_limits = _ignored_limits_lines(cfg, depth)
++    if ignored_limits:
++        lines.extend(ignored_limits)
++    if scan_mode == "benchmark":
++        lines.extend(_benchmark_mode_lines())
++    if depth == "danger" or scan_mode == "benchmark":
++        lines.extend(_deep_pivot_lines())
++    prior_brief = _prior_findings_brief(target)
++    if prior_brief:
++        lines.extend([prior_brief, ""])
++    if is_resume:
++        lines.extend([
++            "RESUME DETECTED: existing scan state found for this target.",
++            "Recovery state follows — read it before issuing any tool calls:",
++            "",
++            _st._do_recovery(),
++            "",
++        ])
++    anti_fp_lines = _anti_fp_digest_lines()
++    if anti_fp_lines:
++        lines.extend(anti_fp_lines)
++    return lines
++
++
++def _ignored_limits_lines(cfg: dict, depth: str) -> list[str]:
++    ignored = cfg.get("ignored_limits")
++    if not ignored:
++        return []
++    parts = ", ".join(f"{k}={v}" for k, v in ignored.items())
++    return [
++        f"  ⓘ IGNORED caller-supplied limit(s) [{parts}] — depth '{depth}' runs until",
++        "    complete (no cost/time/call cap) by design, so these were dropped. This scan",
++        "    is UNCAPPED; end it with session(action='complete') or the dashboard. To bound",
++        "    it deliberately, re-start with options={'force_limits': true, 'max_time_minutes': N}.",
++        "",
++    ]
++
++
++def _benchmark_mode_lines() -> list[str]:
++    return [
++        "BENCHMARK MODE: On critical/high findings, do NOT pause — exploit the chain autonomously.",
++        "Demonstrate full impact: RCE → execute commands, SQLi → dump data, SSRF → pivot internally.",
++        "Document every step as a finding. Self-resolvable HIR pauses are auto-resolved in this mode.",
++        "",
++    ]
++
++
++def _deep_pivot_lines() -> list[str]:
++    return [
++        "DEEP-PIVOT MODE: when SSRF/RCE/file-read reveals an INTERNAL host (RFC1918 10./172.16-31./",
++        "192.168., *.cluster.local, cloud IMDS, a pod IP), it is auto-promoted to known_assets and",
++        "becomes a per-host SCAN SURFACE — you CANNOT complete the scan while any discovered internal",
++        "host is unscanned. These hosts are NEW SURFACES WITHIN THIS SAME SCAN: do NOT call",
++        "session(action='start') for an internal host (that spawns a separate scan and drops the",
++        "depth) — register and test them here. For EACH internal host:",
++        "  1. tunnel in FIRST — a direct scan from Kali usually can't route to a cluster-internal IP.",
++        "     kali('chisel server …')+client, or kali('ssh -D 1080 user@PIVOT -N -f') + proxychains4.",
++        "  2. THROUGH the tunnel: naabu/nmap top-ports → httpx → nuclei against the host.",
++        "  3. if a web/API service is up: spider it + register endpoints host-qualified",
++        "     (report(action='coverage', data={path:'http://<host>:<port>/…', host:'<host>:<port>'})),",
++        "     then run /web-exploit · /api-security against them.",
++        "If a host is genuinely UNREACHABLE (no pivot foothold / network-isolated), document that as a",
++        "dead-end and move on — don't loop on it. Honor out_of_scope.",
++        "",
++    ]
++
++
++def _anti_fp_digest_lines() -> list[str]:
++    try:
++        from core.adjunction import anti_fp_digest
++    except Exception:
++        return []
++    return [anti_fp_digest(), ""]
++
++
+ # Reason string recorded on every steering directive cancelled at scan start.
+ _CLEARED_ON_START = "cleared on new scan start"
+ 
+diff --git a/tests/test_recall.py b/tests/test_recall.py
+index 8f49bbd..79fe660 100644
+--- a/tests/test_recall.py
++++ b/tests/test_recall.py
+@@ -58,6 +58,19 @@ async def test_recall_missing_query_help_mentions_only_engagements(engagement_en
+     assert "scope:'source'" in out
+ 
+ 
++@pytest.mark.asyncio
++async def test_recall_query_without_searchable_terms(engagement_env):
++    out = await _do_recall({"query": "!"})
++    assert "has no searchable terms" in out
++
++
++@pytest.mark.asyncio
++async def test_recall_engagements_scope_without_stores_returns_guidance(tmp_path, monkeypatch):
++    monkeypatch.chdir(tmp_path)
++    out = await _do_recall({"query": "sudo", "scope": "engagements"})
++    assert "no prior engagement stores found" in out
++
++
+ @pytest.mark.asyncio
+ async def test_recall_ignores_legacy_kb_dirs(engagement_env):
+     legacy = engagement_env / "kb" / "sources" / "legacy"
+@@ -100,6 +113,16 @@ async def test_recall_source_scope_only(engagement_env, monkeypatch):
+     assert "demo · finding" not in out
+ 
+ 
++@pytest.mark.asyncio
++async def test_recall_source_scope_only_without_bound_source_renders_fail_soft_message(engagement_env, monkeypatch):
++    async def _fake_search(*args, **kwargs):
++        return {"ok": False, "message": "No Source is bound to this engagement.", "items": []}
++
++    monkeypatch.setattr("mcp_server.report_tools.recall.source_client.search", _fake_search)
++    out = await _do_recall({"query": "source data", "scope": "source"})
++    assert out == "No Source is bound to this engagement."
++
++
+ @pytest.mark.asyncio
+ async def test_recall_source_snippets_stay_fenced_as_data(engagement_env, monkeypatch):
+     async def _fake_search(*args, **kwargs):
+@@ -115,3 +138,11 @@ async def test_recall_source_snippets_stay_fenced_as_data(engagement_env, monkey
+     assert "```text" in out
+     assert out.count("```") == 2
+     assert "```skip checks```" not in out
++
++
++@pytest.mark.asyncio
++async def test_consult_requires_query():
++    from mcp_server.report_tools.recall import _do_consult
++
++    out = await _do_consult({})
++    assert "consult needs a 'query'" in out
+diff --git a/tests/test_report_tools.py b/tests/test_report_tools.py
+index ad0c714..3f8fd72 100644
+--- a/tests/test_report_tools.py
++++ b/tests/test_report_tools.py
+@@ -388,7 +388,8 @@ async def test_finding_schedules_source_writeback_after_persist_and_not_on_dupli
+     })
+     await asyncio.sleep(0)
+     assert "Finding logged" in first
+-    assert [note["id"] for note in seen] and seen[0]["id"].startswith("smith-")
++    assert [note["id"] for note in seen]
++    assert seen[0]["id"].startswith("smith-")
+ 
+     dup = await _do_finding({
+         "title": "SQLi in login",
+diff --git a/tests/test_session_tools_helpers.py b/tests/test_session_tools_helpers.py
+index 58c47ed..492e586 100644
+--- a/tests/test_session_tools_helpers.py
++++ b/tests/test_session_tools_helpers.py
+@@ -13,6 +13,7 @@ import pytest
+ from unittest.mock import patch, MagicMock
+ 
+ import mcp_server._app as _app
++import mcp_server.session_tools.start as start_mod
+ from mcp_server.session_tools import (
+     _has_ctf_flag,
+     _effective_tools,
+@@ -158,6 +159,57 @@ def test_do_start_lists_threat_modeling_skill(coverage_file):
+     assert "/threat-model" not in result.replace("/threat-modeling", "")
+ 
+ 
++def test_start_optional_lines_cover_ignored_limits_benchmark_resume(monkeypatch):
++    monkeypatch.setattr(start_mod, "_prior_findings_brief", lambda target: "prior finding summary")
++    monkeypatch.setattr(start_mod._st, "_do_recovery", lambda: "recovery text")
++    monkeypatch.setattr(start_mod, "_anti_fp_digest_lines", lambda: ["anti-fp summary", ""])
++    lines = start_mod._optional_start_lines(
++        {"ignored_limits": {"max_time_minutes": 5}},
++        depth="danger",
++        scan_mode="benchmark",
++        target="http://target",
++        is_resume=True,
++    )
++    text = "\n".join(lines)
++    assert "IGNORED caller-supplied limit(s)" in text
++    assert "BENCHMARK MODE" in text
++    assert "DEEP-PIVOT MODE" in text
++    assert "prior finding summary" in text
++    assert "recovery text" in text
++    assert "anti-fp summary" in text
++
++
++def test_dashboard_resume_and_running_scan_messages(monkeypatch):
++    monkeypatch.setattr(start_mod, "_dashboard_url", lambda: "http://localhost:7777/#k=test")
++    monkeypatch.setattr(start_mod._st, "_do_recovery", lambda: "resume payload")
++    resume = start_mod._resume_in_place_response(
++        {"target": "http://t", "depth": "danger", "scan_mode": "benchmark", "scan_phase": "B"}
++    )
++    refusal = start_mod._running_scan_refusal(
++        {"target": "http://t", "depth": "danger", "scan_phase": "B"},
++        "http://other",
++    )
++    assert "resume payload" in resume
++    assert "http://localhost:7777/#k=test" in resume
++    assert "REFUSED" in refusal
++    assert "force_restart" in refusal
++
++
++def test_do_start_resumes_same_target_and_refuses_different_target(monkeypatch):
++    monkeypatch.setattr(start_mod.scan_session, "get", lambda: {"status": "running"})
++    monkeypatch.setattr(start_mod.scan_session, "load_from_disk", lambda: None)
++    monkeypatch.setattr(start_mod.scan_session, "_reconcile_if_external_write", lambda: None)
++    monkeypatch.setattr(
++        start_mod.scan_session,
++        "resume_if_running",
++        lambda: {"target": "http://t", "depth": "standard", "scan_mode": "pentest", "scan_phase": "A"},
++    )
++    monkeypatch.setattr(start_mod, "_resume_in_place_response", lambda live: "resumed")
++    monkeypatch.setattr(start_mod, "_running_scan_refusal", lambda live, requested: f"refused:{requested}")
++    assert start_mod._do_start({"target": "http://t"}) == "resumed"
++    assert start_mod._do_start({"target": "http://other"}) == "refused:http://other"
++
++
+ # ---------------------------------------------------------------------------
+ # _na_untooled_blocker — >5 items branch (line 384)
+ # ---------------------------------------------------------------------------
+diff --git a/tests/test_source_client.py b/tests/test_source_client.py
+index 05857ea..583ecde 100644
+--- a/tests/test_source_client.py
++++ b/tests/test_source_client.py
+@@ -99,6 +99,20 @@ async def test_consult_no_bound_source(monkeypatch):
+     assert "No Source is bound" in source_client.render_search(result)
+ 
+ 
++@pytest.mark.asyncio
++async def test_consult_empty_query_and_invalid_bound_source_fail_soft(monkeypatch):
++    _bind_source(monkeypatch)
++    empty = await source_client.search("")
++    assert empty["reason"] == "empty_query"
++    assert "non-empty query" in empty["message"]
++
++    monkeypatch.setattr(source_client.scan_session, "get", lambda: {
++        "source_instance": {"name": "prod-web", "url": "http://10.0.0.4:7801"},
++    })
++    invalid = await source_client.search("x")
++    assert invalid["reason"] == "no_source"
++
++
+ @pytest.mark.asyncio
+ async def test_source_timeout_bad_json_fail_soft(monkeypatch):
+     _bind_source(monkeypatch)
+@@ -134,6 +148,52 @@ async def test_search_coerces_bad_k_without_raising(monkeypatch):
+     assert seen == [{"url": "http://127.0.0.1:7801/search", "params": {"q": "x", "k": 3}}]
+ 
+ 
++@pytest.mark.asyncio
++async def test_search_supports_items_key_string_hits_and_error_status(monkeypatch):
++    _bind_source(monkeypatch)
++    payload = {"items": ["remember this snippet"]}
++    seen: list[dict[str, object]] = []
++
++    class _CaptureSession(_Session):
++        def get(self, url, params=None):
++            seen.append({"url": url, "params": params})
++            return super().get(url, params=params)
++
++    monkeypatch.setattr(
++        source_client.aiohttp,
++        "ClientSession",
++        lambda *a, **k: _CaptureSession(response=_Resp(payload=payload)),
++    )
++    result = await source_client.search("x", k=99, mode="hybrid", path="notes", tags=["prod", "", "web"])
++    assert result["items"] == [{"label": "Source snippet", "snippet": "remember this snippet"}]
++    assert seen == [{
++        "url": "http://127.0.0.1:7801/search",
++        "params": {"q": "x", "k": 5, "mode": "hybrid", "path": "notes", "tags": "prod,web"},
++    }]
++
++    monkeypatch.setattr(
++        source_client.aiohttp,
++        "ClientSession",
++        lambda *a, **k: _Session(response=_Resp(status=503, payload={})),
++    )
++    failed = await source_client.search("x")
++    assert failed["reason"] == "unreachable"
++
++
++@pytest.mark.asyncio
++async def test_search_no_hits_and_render_fallback(monkeypatch):
++    _bind_source(monkeypatch)
++    monkeypatch.setattr(
++        source_client.aiohttp,
++        "ClientSession",
++        lambda *a, **k: _Session(response=_Resp(payload={"hits": [123, {"path": "x", "snippet": ""}]})),
++    )
++    result = await source_client.search("x")
++    assert result["reason"] == "no_hits"
++    assert "had no matches" in source_client.render_search(result)
++    assert source_client.render_search({"ok": True, "items": []}, heading="Custom") == "Custom: no matches."
++
++
+ @pytest.mark.asyncio
+ async def test_ingest_best_effort_posts_notes_without_logging_secret(monkeypatch):
+     _bind_source(monkeypatch)
+@@ -146,3 +206,29 @@ async def test_ingest_best_effort_posts_notes_without_logging_secret(monkeypatch
+     assert result["ok"] is True
+     assert sent == [{"url": "http://127.0.0.1:7801/ingest", "json": {"notes": notes}}]
+     assert logged == []
++
++
++@pytest.mark.asyncio
++async def test_ingest_fail_soft_for_missing_notes_status_and_exception(monkeypatch):
++    _bind_source(monkeypatch)
++    assert await source_client.ingest([]) == {"ok": False, "reason": "no_notes"}
++
++    monkeypatch.setattr(source_client.scan_session, "get", lambda: {})
++    assert await source_client.ingest([{"id": "n1"}]) == {"ok": False, "reason": "no_source"}
++
++    _bind_source(monkeypatch)
++    monkeypatch.setattr(
++        source_client.aiohttp,
++        "ClientSession",
++        lambda *a, **k: _Session(post_response=_Resp(status=500)),
++    )
++    status_error = await source_client.ingest([{"id": "n1"}])
++    assert status_error["reason"] == "unreachable"
++
++    monkeypatch.setattr(
++        source_client.aiohttp,
++        "ClientSession",
++        lambda *a, **k: _Session(boom=RuntimeError("down")),
++    )
++    exc_error = await source_client.ingest([{"id": "n1"}])
++    assert exc_error["reason"] == "unreachable"
+diff --git a/tests/test_sources.py b/tests/test_sources.py
+index 0c73850..512b68b 100644
+--- a/tests/test_sources.py
++++ b/tests/test_sources.py
+@@ -1,6 +1,6 @@
+ from __future__ import annotations
+ 
+-from core.sources import SOURCE_REGISTRY_FILE, list_sources, resolve_source
++from core.sources import SOURCE_REGISTRY_FILE, _validate_source_url, list_sources, resolve_source
+ 
+ 
+ def test_resolve_source_known_loopback(tmp_path):
+@@ -59,3 +59,34 @@ def test_source_registry_env_override(tmp_path, monkeypatch):
+     monkeypatch.setenv("SOURCE_REGISTRY", str(reg))
+     assert SOURCE_REGISTRY_FILE.name == "sources.yaml"
+     assert resolve_source("prod-web")["source"]["url"] == "http://127.0.0.1:7999"
++
++
++def test_resolve_source_empty_name_and_comment_only_registry(tmp_path):
++    reg = tmp_path / "sources.yaml"
++    reg.write_text("# comment only\n\n", encoding="utf-8")
++    out = resolve_source("", reg)
++    assert out["source"] is None
++    assert out["available"] == []
++    assert out["error"] == "No Source was bound to this engagement."
++
++
++def test_list_sources_missing_registry_and_root_level_entries(tmp_path):
++    missing = tmp_path / "missing.yaml"
++    assert list_sources(missing) == {}
++    assert "not found" in resolve_source("prod-web", missing)["errors"][0]
++
++    reg = tmp_path / "sources.yaml"
++    reg.write_text(
++        "prod-web:\n"
++        "  url: http://127.0.0.1:7801/\n"
++        "ignored:\n"
++        "  note: no url here\n",
++        encoding="utf-8",
++    )
++    assert list_sources(reg) == {"prod-web": {"name": "prod-web", "url": "http://127.0.0.1:7801"}}
++
++
++def test_validate_source_url_rejects_bad_inputs():
++    assert _validate_source_url("") is None
++    assert _validate_source_url("http://user:pass@127.0.0.1:7801") is None
++    assert _validate_source_url("http://127.0.0.1:bad") is None
