@@ -388,7 +388,8 @@ async def test_finding_schedules_source_writeback_after_persist_and_not_on_dupli
     })
     await asyncio.sleep(0)
     assert "Finding logged" in first
-    assert [note["id"] for note in seen] and seen[0]["id"].startswith("smith-")
+    assert [note["id"] for note in seen]
+    assert seen[0]["id"].startswith("smith-")
 
     dup = await _do_finding({
         "title": "SQLi in login",

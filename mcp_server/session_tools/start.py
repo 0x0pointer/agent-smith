@@ -35,16 +35,7 @@ def _start_response(cfg: dict, classification: dict, target: str, scan_mode: str
         else "Pentest (human-in-the-loop for exploitation decisions)"
     )
     first_move = _start_first_move(classification, target)
-    # Freshly minted in _do_start(); the token rides the URL *fragment* so it
-    # never hits an HTTP access log. Surface the whole link here so the operator
-    # can open the dashboard even if the agent runs report(action='dashboard')
-    # silently (the failure the operator hit: dashboard started, token never shown).
-    try:
-        from core import dashboard_auth
-        _tok = dashboard_auth.read_token()
-    except Exception:
-        _tok = None
-    dash_url = f"http://localhost:7777/#k={_tok}" if _tok else "http://localhost:7777/"
+    dash_url = _dashboard_url()
     lines = [
         "Scan started.",
         f"  Target: {target} | Depth: {cfg['depth_label']} | Mode: {mode_label} | Limits: {cost_str}/{time_str}/{call_limit_str}",
@@ -65,57 +56,7 @@ def _start_response(cfg: dict, classification: dict, target: str, scan_mode: str
         "  ⚠ AI-generated content may be incorrect. It should always be validated by a person.",
         "",
     ]
-    _ignored = cfg.get("ignored_limits")
-    if _ignored:
-        _parts = ", ".join(f"{k}={v}" for k, v in _ignored.items())
-        lines += [
-            f"  ⓘ IGNORED caller-supplied limit(s) [{_parts}] — depth '{depth}' runs until",
-            "    complete (no cost/time/call cap) by design, so these were dropped. This scan",
-            "    is UNCAPPED; end it with session(action='complete') or the dashboard. To bound",
-            "    it deliberately, re-start with options={'force_limits': true, 'max_time_minutes': N}.",
-            "",
-        ]
-    if scan_mode == "benchmark":
-        lines += [
-            "BENCHMARK MODE: On critical/high findings, do NOT pause — exploit the chain autonomously.",
-            "Demonstrate full impact: RCE → execute commands, SQLi → dump data, SSRF → pivot internally.",
-            "Document every step as a finding. Self-resolvable HIR pauses are auto-resolved in this mode.",
-            "",
-        ]
-    if depth == "danger" or scan_mode == "benchmark":
-        lines += [
-            "DEEP-PIVOT MODE: when SSRF/RCE/file-read reveals an INTERNAL host (RFC1918 10./172.16-31./",
-            "192.168., *.cluster.local, cloud IMDS, a pod IP), it is auto-promoted to known_assets and",
-            "becomes a per-host SCAN SURFACE — you CANNOT complete the scan while any discovered internal",
-            "host is unscanned. These hosts are NEW SURFACES WITHIN THIS SAME SCAN: do NOT call",
-            "session(action='start') for an internal host (that spawns a separate scan and drops the",
-            "depth) — register and test them here. For EACH internal host:",
-            "  1. tunnel in FIRST — a direct scan from Kali usually can't route to a cluster-internal IP.",
-            "     kali('chisel server …')+client, or kali('ssh -D 1080 user@PIVOT -N -f') + proxychains4.",
-            "  2. THROUGH the tunnel: naabu/nmap top-ports → httpx → nuclei against the host.",
-            "  3. if a web/API service is up: spider it + register endpoints host-qualified",
-            "     (report(action='coverage', data={path:'http://<host>:<port>/…', host:'<host>:<port>'})),",
-            "     then run /web-exploit · /api-security against them.",
-            "If a host is genuinely UNREACHABLE (no pivot foothold / network-isolated), document that as a",
-            "dead-end and move on — don't loop on it. Honor out_of_scope.",
-            "",
-        ]
-    prior_brief = _prior_findings_brief(target)
-    if prior_brief:
-        lines += [prior_brief, ""]
-    if is_resume:
-        lines += [
-            "RESUME DETECTED: existing scan state found for this target.",
-            "Recovery state follows — read it before issuing any tool calls:",
-            "",
-            _st._do_recovery(),
-            "",
-        ]
-    try:
-        from core.adjunction import anti_fp_digest
-        lines += [anti_fp_digest(), ""]
-    except Exception:
-        pass
+    lines += _optional_start_lines(cfg, depth, scan_mode, target, is_resume)
     lines += [
         "EXECUTE NOW (do not ask questions): first give the operator the DASHBOARD",
         "link shown above, then continue silently from here.",
@@ -145,6 +86,83 @@ def _start_response(cfg: dict, classification: dict, target: str, scan_mode: str
         "matrix is mostly untested.",
     ]
     return "\n".join(lines)
+
+
+def _optional_start_lines(cfg: dict, depth: str, scan_mode: str, target: str, is_resume: bool) -> list[str]:
+    lines: list[str] = []
+    ignored_limits = _ignored_limits_lines(cfg, depth)
+    if ignored_limits:
+        lines.extend(ignored_limits)
+    if scan_mode == "benchmark":
+        lines.extend(_benchmark_mode_lines())
+    if depth == "danger" or scan_mode == "benchmark":
+        lines.extend(_deep_pivot_lines())
+    prior_brief = _prior_findings_brief(target)
+    if prior_brief:
+        lines.extend([prior_brief, ""])
+    if is_resume:
+        lines.extend([
+            "RESUME DETECTED: existing scan state found for this target.",
+            "Recovery state follows — read it before issuing any tool calls:",
+            "",
+            _st._do_recovery(),
+            "",
+        ])
+    anti_fp_lines = _anti_fp_digest_lines()
+    if anti_fp_lines:
+        lines.extend(anti_fp_lines)
+    return lines
+
+
+def _ignored_limits_lines(cfg: dict, depth: str) -> list[str]:
+    ignored = cfg.get("ignored_limits")
+    if not ignored:
+        return []
+    parts = ", ".join(f"{k}={v}" for k, v in ignored.items())
+    return [
+        f"  ⓘ IGNORED caller-supplied limit(s) [{parts}] — depth '{depth}' runs until",
+        "    complete (no cost/time/call cap) by design, so these were dropped. This scan",
+        "    is UNCAPPED; end it with session(action='complete') or the dashboard. To bound",
+        "    it deliberately, re-start with options={'force_limits': true, 'max_time_minutes': N}.",
+        "",
+    ]
+
+
+def _benchmark_mode_lines() -> list[str]:
+    return [
+        "BENCHMARK MODE: On critical/high findings, do NOT pause — exploit the chain autonomously.",
+        "Demonstrate full impact: RCE → execute commands, SQLi → dump data, SSRF → pivot internally.",
+        "Document every step as a finding. Self-resolvable HIR pauses are auto-resolved in this mode.",
+        "",
+    ]
+
+
+def _deep_pivot_lines() -> list[str]:
+    return [
+        "DEEP-PIVOT MODE: when SSRF/RCE/file-read reveals an INTERNAL host (RFC1918 10./172.16-31./",
+        "192.168., *.cluster.local, cloud IMDS, a pod IP), it is auto-promoted to known_assets and",
+        "becomes a per-host SCAN SURFACE — you CANNOT complete the scan while any discovered internal",
+        "host is unscanned. These hosts are NEW SURFACES WITHIN THIS SAME SCAN: do NOT call",
+        "session(action='start') for an internal host (that spawns a separate scan and drops the",
+        "depth) — register and test them here. For EACH internal host:",
+        "  1. tunnel in FIRST — a direct scan from Kali usually can't route to a cluster-internal IP.",
+        "     kali('chisel server …')+client, or kali('ssh -D 1080 user@PIVOT -N -f') + proxychains4.",
+        "  2. THROUGH the tunnel: naabu/nmap top-ports → httpx → nuclei against the host.",
+        "  3. if a web/API service is up: spider it + register endpoints host-qualified",
+        "     (report(action='coverage', data={path:'http://<host>:<port>/…', host:'<host>:<port>'})),",
+        "     then run /web-exploit · /api-security against them.",
+        "If a host is genuinely UNREACHABLE (no pivot foothold / network-isolated), document that as a",
+        "dead-end and move on — don't loop on it. Honor out_of_scope.",
+        "",
+    ]
+
+
+def _anti_fp_digest_lines() -> list[str]:
+    try:
+        from core.adjunction import anti_fp_digest
+    except Exception:
+        return []
+    return [anti_fp_digest(), ""]
 
 
 # Reason string recorded on every steering directive cancelled at scan start.

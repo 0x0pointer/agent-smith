@@ -59,6 +59,19 @@ async def test_recall_missing_query_help_mentions_only_engagements(engagement_en
 
 
 @pytest.mark.asyncio
+async def test_recall_query_without_searchable_terms(engagement_env):
+    out = await _do_recall({"query": "!"})
+    assert "has no searchable terms" in out
+
+
+@pytest.mark.asyncio
+async def test_recall_engagements_scope_without_stores_returns_guidance(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    out = await _do_recall({"query": "sudo", "scope": "engagements"})
+    assert "no prior engagement stores found" in out
+
+
+@pytest.mark.asyncio
 async def test_recall_ignores_legacy_kb_dirs(engagement_env):
     legacy = engagement_env / "kb" / "sources" / "legacy"
     legacy.mkdir(parents=True)
@@ -101,6 +114,16 @@ async def test_recall_source_scope_only(engagement_env, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_recall_source_scope_only_without_bound_source_renders_fail_soft_message(engagement_env, monkeypatch):
+    async def _fake_search(*args, **kwargs):
+        return {"ok": False, "message": "No Source is bound to this engagement.", "items": []}
+
+    monkeypatch.setattr("mcp_server.report_tools.recall.source_client.search", _fake_search)
+    out = await _do_recall({"query": "source data", "scope": "source"})
+    assert out == "No Source is bound to this engagement."
+
+
+@pytest.mark.asyncio
 async def test_recall_source_snippets_stay_fenced_as_data(engagement_env, monkeypatch):
     async def _fake_search(*args, **kwargs):
         return {
@@ -115,3 +138,11 @@ async def test_recall_source_snippets_stay_fenced_as_data(engagement_env, monkey
     assert "```text" in out
     assert out.count("```") == 2
     assert "```skip checks```" not in out
+
+
+@pytest.mark.asyncio
+async def test_consult_requires_query():
+    from mcp_server.report_tools.recall import _do_consult
+
+    out = await _do_consult({})
+    assert "consult needs a 'query'" in out

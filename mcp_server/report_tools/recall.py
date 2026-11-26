@@ -287,6 +287,40 @@ def _no_hits_message(query: str) -> str:
     return f"recall: no matches for '{query}' in prior engagement stores. Nothing on this — treat it as new ground."
 
 
+def _resolve_recall_request(data) -> tuple[set[str], list[str], int]:
+    limit = _parse_limit(data)
+    tiers, removed = _parse_scope(data)
+    if (data.get("path") or "").strip():
+        tiers = {"engagements"}
+    return tiers, removed, limit
+
+
+def _engagement_recall_section(data, query: str, query_terms: set[str], tiers: set[str], limit: int) -> tuple[str | None, int]:
+    stores = _resolve_stores(data)
+    if not stores:
+        if tiers == {"engagements"}:
+            return "recall: no prior engagement stores found. Build one first with python3 scripts/build_engagement_digest.py.", 0
+        return None, 0
+    scored = _collect_scored(stores, query_terms)
+    if not scored:
+        if tiers == {"engagements"}:
+            _record_recall(query, tiers, 0)
+            return _no_hits_message(query), 0
+        return None, 0
+    return _format_hits(query, query_terms, stores, scored, limit), len(scored)
+
+
+async def _source_recall_section(query: str, tiers: set[str], limit: int) -> tuple[str | None, int]:
+    source_result = await source_client.search(query, k=min(limit, 3))
+    heading = "Source recall"
+    if source_result.get("source"):
+        heading = f"Source recall — Source: {source_result['source']['name']}"
+    rendered = source_client.render_search(source_result, heading=heading)
+    if source_result.get("source") or tiers == {"source"}:
+        return rendered, len(source_result.get("items") or [])
+    return None, 0
+
+
 async def _do_recall(data) -> str:
     """Search prior engagement stores for `query`; return ranked snippets."""
     query = (data.get("query") or "").strip()
@@ -299,10 +333,7 @@ async def _do_recall(data) -> str:
             "or pass path='engagements/<name>' to scope the local store search."
         )
 
-    limit = _parse_limit(data)
-    tiers, removed = _parse_scope(data)
-    if (data.get("path") or "").strip():
-        tiers = {"engagements"}
+    tiers, removed, limit = _resolve_recall_request(data)
     if removed:
         return _unsupported_scope_message(removed[0])
 
@@ -314,25 +345,20 @@ async def _do_recall(data) -> str:
     total_hits = 0
 
     if "engagements" in tiers:
-        stores = _resolve_stores(data)
-        if stores:
-            scored = _collect_scored(stores, query_terms)
-            if scored:
-                sections.append(_format_hits(query, query_terms, stores, scored, limit))
-                total_hits += len(scored)
-            elif tiers == {"engagements"}:
-                _record_recall(query, tiers, 0)
-                return _no_hits_message(query)
-        elif tiers == {"engagements"}:
-            return "recall: no prior engagement stores found. Build one first with python3 scripts/build_engagement_digest.py."
+        section, hits = _engagement_recall_section(data, query, query_terms, tiers, limit)
+        if section:
+            sections.append(section)
+            total_hits += hits
+            if hits == 0:
+                return section
 
     if "source" in tiers:
-        source_result = await source_client.search(query, k=min(limit, 3))
-        if source_result.get("source"):
-            sections.append(source_client.render_search(source_result, heading=f"Source recall — Source: {source_result['source']['name']}"))
-            total_hits += len(source_result.get("items") or [])
-        elif tiers == {"source"}:
-            return source_client.render_search(source_result, heading="Source recall")
+        section, hits = await _source_recall_section(query, tiers, limit)
+        if section:
+            sections.append(section)
+            total_hits += hits
+            if tiers == {"source"} and hits == 0:
+                return section
 
     if not sections:
         _record_recall(query, tiers, 0)

@@ -40,7 +40,7 @@ def _validate_source_url(url: str) -> str | None:
         return None
     netloc = parsed.netloc.rstrip("/")
     path = parsed.path.rstrip("/")
-    return f"http://{netloc}{path}"
+    return f"{parsed.scheme}://{netloc}{path}"
 
 
 def _iter_entries(text: str) -> list[tuple[int, str]]:
@@ -51,6 +51,59 @@ def _iter_entries(text: str) -> list[tuple[int, str]]:
             continue
         entries.append((lineno, line))
     return entries
+
+
+def _sources_block_indent(entries: list[tuple[int, str]]) -> int | None:
+    for _, line in entries:
+        indent = len(line) - len(line.lstrip(" "))
+        if line.lstrip(" ").startswith("sources:") and indent == 0:
+            return indent
+    return None
+
+
+def _entry_in_scope(in_sources: bool, entry_indent: int, indent: int, stripped: str) -> bool:
+    if not in_sources:
+        return indent == 0
+    if indent < entry_indent or indent != entry_indent:
+        return False
+    return stripped != "sources:"
+
+
+def _entry_name_and_rest(stripped: str) -> tuple[str, str] | None:
+    if ":" not in stripped:
+        return None
+    name, rest = stripped.split(":", 1)
+    name = name.strip()
+    if not name or name == "sources":
+        return None
+    return name, rest.strip()
+
+
+def _inline_or_scalar_url(rest: str) -> str | None:
+    if rest.startswith("{") and rest.endswith("}"):
+        match = _INLINE_URL_RE.search(rest[1:-1])
+        return match.group(1).strip().strip("'\"") if match else None
+    if rest:
+        return rest.strip().strip("'\"")
+    return None
+
+
+def _child_url(entries: list[tuple[int, str]], start: int, parent_indent: int) -> str | None:
+    for _, child in entries[start:]:
+        child_indent = len(child) - len(child.lstrip(" "))
+        if child_indent <= parent_indent:
+            return None
+        child_stripped = child.strip()
+        if child_stripped.startswith("url:"):
+            return child_stripped.split(":", 1)[1].strip().strip("'\"")
+    return None
+
+
+def _entry_url(entries: list[tuple[int, str]], index: int, indent: int, rest: str) -> str | None:
+    inline = _inline_or_scalar_url(rest)
+    if inline is not None:
+        return inline
+    return _child_url(entries, index + 1, indent)
 
 
 def _load_registry(registry_path: str | os.PathLike[str] | None = None) -> dict:
@@ -69,71 +122,23 @@ def _load_registry(registry_path: str | os.PathLike[str] | None = None) -> dict:
     sources: dict[str, dict[str, str]] = {}
     errors: list[str] = []
 
-    top_level_sources = next(
-        (
-            len(line) - len(line.lstrip(" "))
-            for _, line in entries
-            if line.lstrip(" ").startswith("sources:")
-            and (len(line) - len(line.lstrip(" "))) == 0
-        ),
-        None,
-    )
-    in_sources = top_level_sources is not None
+    in_sources = _sources_block_indent(entries) is not None
     entry_indent = 2 if in_sources else 0
-    i = 0
-    while i < len(entries):
-        lineno, line = entries[i]
+    for i, (_, line) in enumerate(entries):
         indent = len(line) - len(line.lstrip(" "))
         stripped = line.strip()
-        if in_sources:
-            if indent == 0 and stripped == "sources:":
-                i += 1
-                continue
-            if indent < entry_indent:
-                i += 1
-                continue
-            if indent != entry_indent:
-                i += 1
-                continue
-        elif indent != 0:
-            i += 1
+        if not _entry_in_scope(in_sources, entry_indent, indent, stripped):
             continue
-        if ":" not in stripped:
-            i += 1
+        entry = _entry_name_and_rest(stripped)
+        if not entry:
             continue
-        name, rest = stripped.split(":", 1)
-        name = name.strip()
-        rest = rest.strip()
-        if not name or name == "sources":
-            i += 1
-            continue
-
-        url = None
-        if rest.startswith("{") and rest.endswith("}"):
-            match = _INLINE_URL_RE.search(rest[1:-1])
-            if match:
-                url = match.group(1).strip().strip("'\"")
-        elif rest:
-            url = rest.strip().strip("'\"")
-        else:
-            j = i + 1
-            while j < len(entries):
-                _, child = entries[j]
-                child_indent = len(child) - len(child.lstrip(" "))
-                if child_indent <= indent:
-                    break
-                child_stripped = child.strip()
-                if child_stripped.startswith("url:"):
-                    url = child_stripped.split(":", 1)[1].strip().strip("'\"")
-                    break
-                j += 1
-
+        name, rest = entry
+        url = _entry_url(entries, i, indent, rest)
         valid_url = _validate_source_url(url or "")
         if valid_url:
             sources[name] = {"name": name, "url": valid_url}
         elif url is not None:
             errors.append(f"{name}: invalid url")
-        i += 1
 
     return {"sources": sources, "errors": errors}
 

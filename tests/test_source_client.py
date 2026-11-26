@@ -100,6 +100,20 @@ async def test_consult_no_bound_source(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_consult_empty_query_and_invalid_bound_source_fail_soft(monkeypatch):
+    _bind_source(monkeypatch)
+    empty = await source_client.search("")
+    assert empty["reason"] == "empty_query"
+    assert "non-empty query" in empty["message"]
+
+    monkeypatch.setattr(source_client.scan_session, "get", lambda: {
+        "source_instance": {"name": "prod-web", "url": "http://10.0.0.4:7801"},
+    })
+    invalid = await source_client.search("x")
+    assert invalid["reason"] == "no_source"
+
+
+@pytest.mark.asyncio
 async def test_source_timeout_bad_json_fail_soft(monkeypatch):
     _bind_source(monkeypatch)
     monkeypatch.setattr(source_client.aiohttp, "ClientSession", lambda *a, **k: _Session(boom=asyncio.TimeoutError()))
@@ -135,6 +149,52 @@ async def test_search_coerces_bad_k_without_raising(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_search_supports_items_key_string_hits_and_error_status(monkeypatch):
+    _bind_source(monkeypatch)
+    payload = {"items": ["remember this snippet"]}
+    seen: list[dict[str, object]] = []
+
+    class _CaptureSession(_Session):
+        def get(self, url, params=None):
+            seen.append({"url": url, "params": params})
+            return super().get(url, params=params)
+
+    monkeypatch.setattr(
+        source_client.aiohttp,
+        "ClientSession",
+        lambda *a, **k: _CaptureSession(response=_Resp(payload=payload)),
+    )
+    result = await source_client.search("x", k=99, mode="hybrid", path="notes", tags=["prod", "", "web"])
+    assert result["items"] == [{"label": "Source snippet", "snippet": "remember this snippet"}]
+    assert seen == [{
+        "url": "http://127.0.0.1:7801/search",
+        "params": {"q": "x", "k": 5, "mode": "hybrid", "path": "notes", "tags": "prod,web"},
+    }]
+
+    monkeypatch.setattr(
+        source_client.aiohttp,
+        "ClientSession",
+        lambda *a, **k: _Session(response=_Resp(status=503, payload={})),
+    )
+    failed = await source_client.search("x")
+    assert failed["reason"] == "unreachable"
+
+
+@pytest.mark.asyncio
+async def test_search_no_hits_and_render_fallback(monkeypatch):
+    _bind_source(monkeypatch)
+    monkeypatch.setattr(
+        source_client.aiohttp,
+        "ClientSession",
+        lambda *a, **k: _Session(response=_Resp(payload={"hits": [123, {"path": "x", "snippet": ""}]})),
+    )
+    result = await source_client.search("x")
+    assert result["reason"] == "no_hits"
+    assert "had no matches" in source_client.render_search(result)
+    assert source_client.render_search({"ok": True, "items": []}, heading="Custom") == "Custom: no matches."
+
+
+@pytest.mark.asyncio
 async def test_ingest_best_effort_posts_notes_without_logging_secret(monkeypatch):
     _bind_source(monkeypatch)
     sent: list[dict] = []
@@ -146,3 +206,29 @@ async def test_ingest_best_effort_posts_notes_without_logging_secret(monkeypatch
     assert result["ok"] is True
     assert sent == [{"url": "http://127.0.0.1:7801/ingest", "json": {"notes": notes}}]
     assert logged == []
+
+
+@pytest.mark.asyncio
+async def test_ingest_fail_soft_for_missing_notes_status_and_exception(monkeypatch):
+    _bind_source(monkeypatch)
+    assert await source_client.ingest([]) == {"ok": False, "reason": "no_notes"}
+
+    monkeypatch.setattr(source_client.scan_session, "get", lambda: {})
+    assert await source_client.ingest([{"id": "n1"}]) == {"ok": False, "reason": "no_source"}
+
+    _bind_source(monkeypatch)
+    monkeypatch.setattr(
+        source_client.aiohttp,
+        "ClientSession",
+        lambda *a, **k: _Session(post_response=_Resp(status=500)),
+    )
+    status_error = await source_client.ingest([{"id": "n1"}])
+    assert status_error["reason"] == "unreachable"
+
+    monkeypatch.setattr(
+        source_client.aiohttp,
+        "ClientSession",
+        lambda *a, **k: _Session(boom=RuntimeError("down")),
+    )
+    exc_error = await source_client.ingest([{"id": "n1"}])
+    assert exc_error["reason"] == "unreachable"

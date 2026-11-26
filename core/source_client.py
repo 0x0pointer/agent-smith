@@ -44,37 +44,48 @@ def _neutralize_fences(text: Any) -> str:
     return str(text or "").replace("`", "'")
 
 
+def _payload_items(payload: Any) -> Any:
+    if not isinstance(payload, dict):
+        return payload
+    for key in ("results", "items", "hits"):
+        items = payload.get(key)
+        if items is not None:
+            return items
+    return payload
+
+
+def _normalize_item(item: Any) -> dict[str, str] | None:
+    if isinstance(item, str):
+        label = "Source snippet"
+        snippet = item
+    elif isinstance(item, dict):
+        path = str(item.get("path") or item.get("source") or "").strip()
+        heading = str(item.get("heading") or item.get("title") or "").strip()
+        label = " › ".join(part for part in (path, heading) if part) or "Source snippet"
+        snippet = item.get("snippet") or item.get("text") or item.get("content") or ""
+    else:
+        return None
+    label = _cap(label, 120)
+    snippet = _cap(snippet, _MAX_SNIPPET_CHARS)
+    if not snippet:
+        return None
+    return {"label": label, "snippet": snippet}
+
+
 def _normalize_items(payload: Any) -> list[dict[str, str]]:
-    items = payload
-    if isinstance(payload, dict):
-        items = payload.get("results")
-        if items is None:
-            items = payload.get("items")
-        if items is None:
-            items = payload.get("hits")
+    items = _payload_items(payload)
     if not isinstance(items, list):
         return []
     out: list[dict[str, str]] = []
     total_chars = 0
     for item in items[:_MAX_RESULTS]:
-        if isinstance(item, str):
-            label = "Source snippet"
-            snippet = item
-        elif isinstance(item, dict):
-            path = str(item.get("path") or item.get("source") or "").strip()
-            heading = str(item.get("heading") or item.get("title") or "").strip()
-            label = " › ".join(p for p in (path, heading) if p) or "Source snippet"
-            snippet = item.get("snippet") or item.get("text") or item.get("content") or ""
-        else:
+        normalized = _normalize_item(item)
+        if not normalized:
             continue
-        label = _cap(label, 120)
-        snippet = _cap(snippet, _MAX_SNIPPET_CHARS)
-        if not snippet:
-            continue
-        total_chars += len(label) + len(snippet)
+        total_chars += len(normalized["label"]) + len(normalized["snippet"])
         if total_chars > _MAX_TOTAL_CHARS:
             break
-        out.append({"label": label, "snippet": snippet})
+        out.append(normalized)
     return out
 
 
@@ -95,28 +106,30 @@ async def search(query: str, k: int = 3, mode: str | None = None,
     if tags:
         params["tags"] = ",".join(str(tag).strip() for tag in tags if str(tag).strip())
     try:
-        async with aiohttp.ClientSession(timeout=_TIMEOUT) as client:
-            async with client.get(f"{source['url'].rstrip('/')}/search", params=params) as resp:
-                if resp.status >= 400:
-                    logger.note(f"Source search unavailable for {source['name']} (http {resp.status})")
-                    return {
-                        "ok": False,
-                        "reason": "unreachable",
-                        "message": f"Source '{source['name']}' is unavailable right now.",
-                        "items": [],
-                        "source": source,
-                    }
-                try:
-                    payload = await resp.json(content_type=None)
-                except Exception:
-                    logger.note(f"Source search invalid JSON for {source['name']}")
-                    return {
-                        "ok": False,
-                        "reason": "bad_json",
-                        "message": f"Source '{source['name']}' returned unreadable data.",
-                        "items": [],
-                        "source": source,
-                    }
+        async with aiohttp.ClientSession(timeout=_TIMEOUT) as client, client.get(
+            f"{source['url'].rstrip('/')}/search",
+            params=params,
+        ) as resp:
+            if resp.status >= 400:
+                logger.note(f"Source search unavailable for {source['name']} (http {resp.status})")
+                return {
+                    "ok": False,
+                    "reason": "unreachable",
+                    "message": f"Source '{source['name']}' is unavailable right now.",
+                    "items": [],
+                    "source": source,
+                }
+            try:
+                payload = await resp.json(content_type=None)
+            except Exception:
+                logger.note(f"Source search invalid JSON for {source['name']}")
+                return {
+                    "ok": False,
+                    "reason": "bad_json",
+                    "message": f"Source '{source['name']}' returned unreadable data.",
+                    "items": [],
+                    "source": source,
+                }
     except Exception as exc:  # noqa: BLE001
         logger.note(f"Source search unavailable for {source['name']} ({type(exc).__name__})")
         return {
@@ -159,12 +172,14 @@ async def ingest(notes: list[dict[str, Any]]) -> dict[str, Any]:
     if not source or not notes:
         return {"ok": False, "reason": "no_source" if not source else "no_notes"}
     try:
-        async with aiohttp.ClientSession(timeout=_TIMEOUT) as client:
-            async with client.post(f"{source['url'].rstrip('/')}/ingest", json={"notes": notes}) as resp:
-                if resp.status >= 400:
-                    logger.note(f"Source ingest unavailable for {source['name']} (http {resp.status})")
-                    return {"ok": False, "reason": "unreachable", "source": source}
-                return {"ok": True, "source": source, "count": len(notes)}
+        async with aiohttp.ClientSession(timeout=_TIMEOUT) as client, client.post(
+            f"{source['url'].rstrip('/')}/ingest",
+            json={"notes": notes},
+        ) as resp:
+            if resp.status >= 400:
+                logger.note(f"Source ingest unavailable for {source['name']} (http {resp.status})")
+                return {"ok": False, "reason": "unreachable", "source": source}
+            return {"ok": True, "source": source, "count": len(notes)}
     except Exception as exc:  # noqa: BLE001
         logger.note(f"Source ingest unavailable for {source['name']} ({type(exc).__name__})")
         return {"ok": False, "reason": "unreachable", "source": source}
