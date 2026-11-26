@@ -77,6 +77,11 @@ def test_start_writes_session_file(tmp_path, monkeypatch):
     assert data["target"] == "example.com"
 
 
+def test_start_stores_source_instance():
+    sess = core.session.start("example.com", source_instance={"name": "prod-web", "url": "http://127.0.0.1:7801"})
+    assert sess["source_instance"] == {"name": "prod-web", "url": "http://127.0.0.1:7801"}
+
+
 def test_start_unknown_depth_falls_back_to_standard():
     sess = core.session.start("example.com", depth="nonexistent")
     assert sess["limits"]["max_tool_calls"] == 25
@@ -161,6 +166,16 @@ def test_complete_sets_finished_timestamp():
 def test_complete_returns_empty_dict_when_no_session():
     result = core.session.complete()
     assert result == {}
+
+
+def test_terminal_complete_schedules_digest_writeback(monkeypatch):
+    import core.session.lifecycle as lc
+
+    seen = []
+    monkeypatch.setattr(lc, "_schedule_source_digest_writeback", lambda current: seen.append(current["id"]))
+    sess = core.session.start("example.com", source_instance={"name": "prod-web", "url": "http://127.0.0.1:7801"})
+    core.session.complete("all done")
+    assert seen == [sess["id"]]
 
 
 # ---------------------------------------------------------------------------

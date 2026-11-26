@@ -1041,6 +1041,21 @@ class TestDoComplete:
             or "complete" in result.lower()
         )
 
+    def test_no_blockers_schedule_source_digest_writeback(self, tmp_path, monkeypatch):
+        import core.session as scan_session
+        self._setup_session(tmp_path, monkeypatch, depth="standard")
+        cur = scan_session.get()
+        cur["source_instance"] = {"name": "prod-web", "url": "http://127.0.0.1:7801"}
+        scan_session._flush()
+        seen = []
+        monkeypatch.setattr("mcp_server.session_tools.complete._schedule_digest_writeback_best_effort",
+                            lambda: seen.append("scheduled"))
+        with patch("mcp_server.session_tools._effective_tools", return_value=set()), \
+             patch("mcp_server.session_tools._collect_completion_blockers", return_value=[]), \
+             patch("mcp_server.session_tools._record_metrics"):
+            _do_complete()
+        assert seen == ["scheduled"]
+
     def test_already_terminal_short_circuits_without_re_running_gate(self, tmp_path, monkeypatch):
         """Operator force-completed out-of-band (terminal status on disk). The
         agent's next complete() must acknowledge the scan is over and STOP —

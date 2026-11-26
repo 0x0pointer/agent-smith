@@ -131,6 +131,8 @@ from .skills import (
     _do_pre_chain,
     _manage_skill_gates,
     _do_dismiss_gate,
+    _do_use_source,
+    _do_set_skill_async,
     _do_set_skill,
     _enqueue_setup_gates,
     _do_set_step,
@@ -166,7 +168,7 @@ from .setup_gates import (
 async def session(action: str, options: dict | str | None = None, ctx: Context | None = None) -> str:
     """Scan lifecycle and infrastructure management.
 
-    action  : start | complete | status | recovery | artifact | qa_reply | set_skill | set_step | dismiss_gate | wishlist_add | wishlist_list | job_poll | job_list | start_kali | stop_kali | start_metasploit | stop_metasploit | pull_images | set_codebase
+    action  : start | complete | status | recovery | artifact | qa_reply | set_skill | use_source | set_step | dismiss_gate | wishlist_add | wishlist_list | job_poll | job_list | start_kali | stop_kali | start_metasploit | stop_metasploit | pull_images | set_codebase
 
     dismiss_gate options (close a PENDING skill-chain gate as a documented dead-end when
       its required skill genuinely cannot run on this target — a false-positive trigger or
@@ -189,7 +191,8 @@ async def session(action: str, options: dict | str | None = None, ctx: Context |
     start options:
       target, depth=standard (recon|standard|thorough|danger), scope=[],
       out_of_scope=[], max_cost_usd=, max_time_minutes=, max_tool_calls=,
-      model_profile=full (full|medium|small) — controls output verbosity
+      model_profile=full (full|medium|small) — controls output verbosity,
+      source= (optional Source registry name to bind to this engagement)
 
     complete options: notes=
 
@@ -223,6 +226,9 @@ async def session(action: str, options: dict | str | None = None, ctx: Context |
       skill= (name of the active skill, e.g. "pentester", "ai-redteam")
       reason= (why this skill was chosen — shown in logs)
       chained_from= (parent skill name when chaining, omit for first skill)
+
+    use_source options:
+      source= (registry name to bind, or blank string to clear the current binding)
 
     set_step options:
       step= (current workflow step, e.g. "5_nuclei_scan")
@@ -292,6 +298,8 @@ async def _dispatch_async_action(action: str, opts: dict) -> str | None:
         # (best-effort) before the completion gate evaluates coverage.
         await _autoclose_crosscutting_best_effort()
         return _do_complete()
+    if action == "set_skill":
+        return await _do_set_skill_async(opts)
     return None
 
 
@@ -301,12 +309,12 @@ def _dispatch_sync_action(action: str, opts: dict) -> str:
         return _do_start(opts)
     if action == "status":
         return _do_status()
-    if action == "set_skill":
-        return _do_set_skill(opts)
     if action == "set_step":
         return _do_set_step(opts)
     if action == "set_codebase":
         return _do_set_codebase(opts)
+    if action == "use_source":
+        return _do_use_source(opts)
     if action == "recovery":
         return _do_recovery()
     if action == "artifact":
@@ -337,4 +345,4 @@ def _dispatch_sync_action_extra(action: str, opts: dict) -> str:
     if action == "job_list":
         from mcp_server import jobs
         return jobs.list_response(opts)
-    return f"Unknown action '{action}'. Use: start, complete, status, qa_reply, recovery, artifact, pre_chain, set_skill, set_step, resume, dismiss_gate, wishlist_add, wishlist_list, setup_gate, start_kali, stop_kali, start_metasploit, stop_metasploit, start_mobsf, stop_mobsf, pull_images, set_codebase, oob_start, oob_mint, oob_poll, job_poll, job_list"
+    return f"Unknown action '{action}'. Use: start, complete, status, qa_reply, recovery, artifact, pre_chain, set_skill, use_source, set_step, resume, dismiss_gate, wishlist_add, wishlist_list, setup_gate, start_kali, stop_kali, start_metasploit, stop_metasploit, start_mobsf, stop_mobsf, pull_images, set_codebase, oob_start, oob_mint, oob_poll, job_poll, job_list"

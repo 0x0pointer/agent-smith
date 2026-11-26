@@ -1,6 +1,7 @@
 """session(action='start') — scan bootstrap + human-facing start message."""
 from core import logger as log
 from core import session as scan_session
+from core.sources import resolve_source
 from mcp_server._app import _session_tools_called
 
 import mcp_server.session_tools as _st
@@ -13,7 +14,7 @@ from .start_helpers import (
 
 
 def _start_response(cfg: dict, classification: dict, target: str, scan_mode: str,
-                    depth: str, is_resume: bool) -> str:
+                    depth: str, is_resume: bool, source_note: str = "") -> str:
     """Build the human-facing scan-start message (advisory routing + EXECUTE NOW)."""
     lim = cfg["limits"]
     cost_str = f"${lim['max_cost_usd']:.2f}" if lim['max_cost_usd'] is not None else "unlimited"
@@ -53,6 +54,7 @@ def _start_response(cfg: dict, classification: dict, target: str, scan_mode: str
         f"  Model profile: {cfg.get('model_profile', 'full')} "
         f"({cfg.get('model_profile_reason', 'default')}) — scopes context/output budgets. "
         f"Override with options={{model_profile: 'full|medium|small'}} or env SMITH_MODEL_PROFILE.",
+        *([source_note] if source_note else []),
         "",
         "  ┌─ DASHBOARD ─────────────────────────────────────────────────────────",
         f"  │  {dash_url}",
@@ -359,6 +361,10 @@ def _do_start(opts):
     is_resume = _reset_coverage_matrix(target, prev_target, has_data)
     depth = opts.get("depth", "standard")
     scan_mode = _resolve_scan_mode(opts)
+    source_resolution = resolve_source(opts.get("source", "")) if "source" in opts else {
+        "source": None, "available": [], "error": None, "errors": [],
+    }
+    source_note = _source_note(source_resolution, explicit="source" in opts)
     cfg = scan_session.start(
         target=target, depth=depth,
         scope=opts.get("scope"),
@@ -369,6 +375,7 @@ def _do_start(opts):
         skill=opts.get("skill"),
         model_profile=opts.get("model_profile"),  # None → auto-detect from env
         scan_mode=scan_mode,
+        source_instance=source_resolution.get("source"),
         force_limits=bool(opts.get("force_limits")),  # thorough/danger ignore caps unless set
     )
     _announce_dashboard_token()
@@ -390,4 +397,15 @@ def _do_start(opts):
     # ai-redteam scan into /web-exploit). Archive rather than delete.
     if not is_resume:
         _archive_qa_state()
-    return _start_response(cfg, classification, target, scan_mode, depth, is_resume)
+    return _start_response(cfg, classification, target, scan_mode, depth, is_resume, source_note)
+
+
+def _source_note(source_resolution: dict, explicit: bool) -> str:
+    source = source_resolution.get("source")
+    if source:
+        return f"  Source: {source['name']} ({source['url']})"
+    if not explicit:
+        return ""
+    available = source_resolution.get("available") or []
+    suffix = f" Available valid names: {', '.join(available)}." if available else " No valid Source names are configured."
+    return f"  Source: none bound. {source_resolution.get('error') or 'No Source was bound.'}{suffix}"

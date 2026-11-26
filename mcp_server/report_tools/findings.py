@@ -15,6 +15,7 @@ from ._common import (
 )
 from .gates import _auto_trigger_finding_gates
 from .adjudication import _coerce_finding_adjudication, _log_adjudication_verdict
+from core import source_client
 
 
 def _validate_trace_field(data: dict) -> str | None:
@@ -291,9 +292,28 @@ async def _do_finding(data):
     except Exception:
         pass
 
+    _schedule_source_finding_writeback(entry)
+
     # ── Auto-trigger gates based on finding content ──────────────────────────
     gates_triggered = _auto_trigger_finding_gates(title, severity, data.get("description", ""), data.get("cve", ""))
     return _finding_filed_message(entry, severity, title, linked_cell, gates_triggered, near)
+
+
+def _schedule_source_finding_writeback(entry: dict) -> None:
+    current = scan_session.get() or {}
+    if not current.get("source_instance"):
+        return
+    try:
+        from scripts.build_engagement_digest import project_notes
+
+        notes = project_notes(current, [entry], known_assets=current.get("known_assets"), kind="finding", finding=entry)
+        if not notes:
+            return
+        task = asyncio.create_task(source_client.ingest_best_effort(notes))
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
+    except Exception:
+        pass
 
 
 def _finding_filed_message(entry: dict, severity: str, title: str,

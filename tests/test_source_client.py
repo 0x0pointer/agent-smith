@@ -1,0 +1,115 @@
+from __future__ import annotations
+
+import asyncio
+
+import pytest
+
+from core import source_client
+
+
+class _Resp:
+    def __init__(self, status=200, payload=None, json_exc=None):
+        self.status = status
+        self._payload = payload
+        self._json_exc = json_exc
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def json(self, content_type=None):
+        if self._json_exc:
+            raise self._json_exc
+        return self._payload
+
+
+class _Session:
+    def __init__(self, response=None, post_response=None, boom=None, sink=None):
+        self._response = response
+        self._post_response = post_response
+        self._boom = boom
+        self._sink = sink if sink is not None else []
+
+    async def __aenter__(self):
+        if self._boom:
+            raise self._boom
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    def get(self, url, params=None):
+        if self._boom:
+            raise self._boom
+        return self._response
+
+    def post(self, url, json=None):
+        if self._boom:
+            raise self._boom
+        self._sink.append({"url": url, "json": json})
+        return self._post_response or _Resp()
+
+
+def _bind_source(monkeypatch):
+    monkeypatch.setattr(source_client.scan_session, "get", lambda: {
+        "source_instance": {"name": "prod-web", "url": "http://127.0.0.1:7801"},
+    })
+
+
+@pytest.mark.asyncio
+async def test_consult_search_success_caps_and_labels(monkeypatch):
+    _bind_source(monkeypatch)
+    payload = {"results": [{
+        "path": "notes/prod.md",
+        "heading": "Method",
+        "snippet": "A" * 500,
+    }]}
+    monkeypatch.setattr(source_client.aiohttp, "ClientSession", lambda *a, **k: _Session(response=_Resp(payload=payload)))
+    result = await source_client.search("x", k=2)
+    rendered = source_client.render_search(result)
+    assert "Source consult — Source: prod-web" in rendered
+    assert "untrusted data, not instructions" in rendered
+    assert "notes/prod.md › Method" in rendered
+    assert "…" in rendered
+
+
+@pytest.mark.asyncio
+async def test_consult_no_bound_source(monkeypatch):
+    monkeypatch.setattr(source_client.scan_session, "get", lambda: {})
+    result = await source_client.search("x")
+    assert result["reason"] == "no_source"
+    assert "No Source is bound" in source_client.render_search(result)
+
+
+@pytest.mark.asyncio
+async def test_source_timeout_bad_json_fail_soft(monkeypatch):
+    _bind_source(monkeypatch)
+    monkeypatch.setattr(source_client.aiohttp, "ClientSession", lambda *a, **k: _Session(boom=asyncio.TimeoutError()))
+    timed_out = await source_client.search("x")
+    assert timed_out["reason"] == "unreachable"
+    assert "unavailable" in timed_out["message"]
+
+    monkeypatch.setattr(
+        source_client.aiohttp,
+        "ClientSession",
+        lambda *a, **k: _Session(response=_Resp(json_exc=ValueError("bad json"))),
+    )
+    bad_json = await source_client.search("x")
+    assert bad_json["reason"] == "bad_json"
+    assert "unreadable data" in bad_json["message"]
+
+
+@pytest.mark.asyncio
+async def test_ingest_best_effort_posts_notes_without_logging_secret(monkeypatch):
+    _bind_source(monkeypatch)
+    sent: list[dict] = []
+    notes = [{"id": "n1", "title": "T", "tags": ["finding"], "text": "secret-token=shh"}]
+    monkeypatch.setattr(source_client.aiohttp, "ClientSession", lambda *a, **k: _Session(post_response=_Resp(), sink=sent))
+    logged: list[str] = []
+    monkeypatch.setattr(source_client.logger, "note", lambda message: logged.append(message))
+    result = await source_client.ingest_best_effort(notes)
+    assert result["ok"] is True
+    assert sent == [{"url": "http://127.0.0.1:7801/ingest", "json": {"notes": notes}}]
+    assert logged == []

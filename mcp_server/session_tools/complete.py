@@ -1,4 +1,5 @@
 """session(action='complete') — completion counters, thorough-depth gate, dispatch."""
+import asyncio
 import json
 
 from core import cost as cost_tracker
@@ -260,6 +261,7 @@ def _do_complete():
 
     _st._complete_attempts = 0
     _st._analysis_passes = 0
+    _schedule_digest_writeback_best_effort()
 
     # Only the human operator can mark a scan complete.
     # Smith passes all quality gates here — the scan is ready — but completion
@@ -299,6 +301,31 @@ def _do_complete():
         "EXECUTE NOW: call session(action='status') to check for pending QA alerts "
         "and steering directives, then act on them. Keep making tool calls."
     )
+
+
+def _schedule_digest_writeback_best_effort() -> None:
+    current = scan_session.get() or {}
+    if not current.get("source_instance"):
+        return
+    try:
+        from core.coverage import get_matrix
+        from core import source_client
+        from scripts.build_engagement_digest import project_notes
+
+        notes = project_notes(
+            current,
+            findings_store._load().get("findings", []),
+            known_assets=current.get("known_assets"),
+            coverage=get_matrix(),
+            kind="digest",
+        )
+        if not notes:
+            return
+        task = asyncio.create_task(source_client.ingest_best_effort(notes))
+        _st._background_tasks.add(task)
+        task.add_done_callback(_st._background_tasks.discard)
+    except Exception:
+        pass
 
 
 def _record_metrics(findings_data: dict, completion_blockers: list[str], force_completed: bool) -> None:

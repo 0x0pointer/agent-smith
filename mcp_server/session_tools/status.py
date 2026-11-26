@@ -130,6 +130,8 @@ def _build_status_base(
             f"If you lost context, re-invoke the /{current['skill']} skill "
             f"to reload its workflow.{step_msg}"
         )
+    if current.get("source_instance"):
+        result["source_instance"] = current["source_instance"]
     return result
 
 

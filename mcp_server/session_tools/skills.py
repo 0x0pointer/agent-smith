@@ -6,6 +6,8 @@ import os
 from core import cost as cost_tracker
 from core import findings as findings_store
 from core import logger as log
+from core import source_client
+from core.sources import resolve_source
 
 import mcp_server.session_tools as _st
 
@@ -243,6 +245,40 @@ def _do_set_skill(opts):
     if satisfied_gates:
         msg += f" (satisfied gate(s): {', '.join(satisfied_gates)})"
     return msg + setup_note + dash_note
+
+
+async def _do_set_skill_async(opts):
+    msg = _do_set_skill(opts)
+    current = _st.scan_session.get() or {}
+    if current.get("model_profile") not in ("full", "medium"):
+        return msg
+    if not current.get("source_instance"):
+        return msg
+    kind = ((current.get("classifier") or {}).get("kind") or current.get("target") or "target").strip()
+    result = await source_client.search(f"{opts.get('skill', '').strip()} methodology for {kind}", k=2)
+    if not result.get("source"):
+        return msg
+    block = source_client.render_search(result, heading=f"Methodology from {result['source']['name']}")
+    return f"{msg}\n\n{block}"
+
+
+def _do_use_source(opts):
+    current = _st.scan_session.get() or {}
+    if current.get("status") != "running":
+        return "No active running session — cannot change Source."
+    wanted = str(opts.get("source", ""))
+    if not wanted.strip():
+        current["source_instance"] = None
+        _st.scan_session._flush()
+        return "Source binding cleared."
+    resolved = resolve_source(wanted)
+    current["source_instance"] = resolved.get("source")
+    _st.scan_session._flush()
+    if resolved.get("source"):
+        return f"Source rebound: {resolved['source']['name']}"
+    available = resolved.get("available") or []
+    suffix = f" Available valid names: {', '.join(available)}." if available else " No valid Source names are configured."
+    return f"Source: none bound. {resolved.get('error') or 'No Source was bound.'}{suffix}"
 
 
 def _autostart_dashboard() -> str:

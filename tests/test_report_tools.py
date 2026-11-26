@@ -1,6 +1,7 @@
 """
 Tests for mcp_server.report_tools — update_finding, delete_finding, and finding actions.
 """
+import asyncio
 import json
 import pytest
 from unittest.mock import AsyncMock, patch
@@ -356,6 +357,49 @@ def test_loads_lenient_code_fence_and_prose():
     from mcp_server.report_tools import _loads_lenient
     assert _loads_lenient('```json\n{"a": 1}\n```')[0] == {"a": 1}
     assert _loads_lenient('here you go: {"a": 1} thanks')[0] == {"a": 1}
+
+
+@pytest.mark.asyncio
+async def test_report_consult_dispatch(monkeypatch):
+    monkeypatch.setattr("mcp_server.report_tools._do_consult", AsyncMock(return_value="consulted"))
+    out = await report("consult", {"query": "x"})
+    assert out == "consulted"
+
+
+@pytest.mark.asyncio
+async def test_finding_schedules_source_writeback_after_persist_and_not_on_duplicate(findings_file, monkeypatch):
+    import core.session as scan_session
+    scan_session.start("http://target.test", source_instance={"name": "prod-web", "url": "http://127.0.0.1:7801"})
+    seen = []
+
+    async def _fake_ingest(notes):
+        seen.extend(notes)
+        return {"ok": True}
+
+    monkeypatch.setattr("mcp_server.report_tools.findings.source_client.ingest_best_effort", _fake_ingest)
+    monkeypatch.setattr("core.quick_log.quick_log.append", AsyncMock(return_value=None))
+
+    first = await _do_finding({
+        "title": "SQLi in login",
+        "severity": "high",
+        "target": "http://target.test/login",
+        "description": "desc",
+        "evidence": "proof",
+    })
+    await asyncio.sleep(0)
+    assert "Finding logged" in first
+    assert [note["id"] for note in seen] and seen[0]["id"].startswith("smith-")
+
+    dup = await _do_finding({
+        "title": "SQLi in login",
+        "severity": "high",
+        "target": "http://target.test/login",
+        "description": "desc",
+        "evidence": "proof",
+    })
+    await asyncio.sleep(0)
+    assert "DUPLICATE" in dup
+    assert len(seen) == 1
 
 
 def test_loads_lenient_total_garbage_reports_error():

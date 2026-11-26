@@ -6,6 +6,7 @@ import json
 import os
 import re
 
+from core import source_client
 from core import session as scan_session
 from ._common import log
 
@@ -251,7 +252,7 @@ def _unsupported_scope_message(scope: str) -> str:
 def _parse_scope(data) -> tuple[set[str], list[str]]:
     raw = str(data.get("scope", "") or "").strip().lower()
     if not raw or raw == "all":
-        return {"engagements"}, []
+        return {"engagements", "source"}, []
     tiers: set[str] = set()
     removed: list[str] = []
     for tok in re.split(r"[+,|;]", raw):
@@ -260,6 +261,8 @@ def _parse_scope(data) -> tuple[set[str], list[str]]:
             continue
         if tok in ("engagements", "engagement", "stores", "prior"):
             tiers.add("engagements")
+        elif tok == "source":
+            tiers.add("source")
         else:
             removed.append(tok)
     return tiers or {"engagements"}, removed
@@ -291,8 +294,9 @@ async def _do_recall(data) -> str:
         return (
             "recall needs a 'query'. Example: report(action='recall', "
             "data={query:'sudo misconfig', scope:'engagements'}). This searches prior "
-            "engagement stores only. Omit 'path' to search every engagements/* store, "
-            "or pass path='engagements/<name>' to scope it."
+            "engagement stores and, when bound, the engagement's Source. Use "
+            "scope:'engagements' to exclude Source, scope:'source' for Source only, "
+            "or pass path='engagements/<name>' to scope the local store search."
         )
 
     limit = _parse_limit(data)
@@ -306,16 +310,42 @@ async def _do_recall(data) -> str:
     if not query_terms:
         return f"recall: '{query}' has no searchable terms."
 
-    stores = _resolve_stores(data)
-    if not stores:
-        return "recall: no prior engagement stores found. Build one first with python3 scripts/build_engagement_digest.py."
+    sections: list[str] = []
+    total_hits = 0
 
-    scored = _collect_scored(stores, query_terms)
-    if not scored:
+    if "engagements" in tiers:
+        stores = _resolve_stores(data)
+        if stores:
+            scored = _collect_scored(stores, query_terms)
+            if scored:
+                sections.append(_format_hits(query, query_terms, stores, scored, limit))
+                total_hits += len(scored)
+            elif tiers == {"engagements"}:
+                _record_recall(query, tiers, 0)
+                return _no_hits_message(query)
+        elif tiers == {"engagements"}:
+            return "recall: no prior engagement stores found. Build one first with python3 scripts/build_engagement_digest.py."
+
+    if "source" in tiers:
+        source_result = await source_client.search(query, k=min(limit, 3))
+        if source_result.get("source"):
+            sections.append(source_client.render_search(source_result, heading=f"Source recall — Source: {source_result['source']['name']}"))
+            total_hits += len(source_result.get("items") or [])
+        elif tiers == {"source"}:
+            return source_client.render_search(source_result, heading="Source recall")
+
+    if not sections:
         _record_recall(query, tiers, 0)
         return _no_hits_message(query)
 
-    out = _format_hits(query, query_terms, stores, scored, limit)
-    log.note(f"recall('{query}'): {len(scored)} hits across {len(stores)} store(s)")
-    _record_recall(query, tiers, len(scored))
-    return out
+    log.note(f"recall('{query}'): {total_hits} hits across tiers={sorted(tiers)}")
+    _record_recall(query, tiers, total_hits)
+    return "\n\n".join(sections)
+
+
+async def _do_consult(data) -> str:
+    query = (data.get("query") or "").strip()
+    if not query:
+        return "consult needs a 'query'. Example: report(action='consult', data={query:'auth flow', k:2})."
+    result = await source_client.search(query, k=data.get("k", 3))
+    return source_client.render_search(result)

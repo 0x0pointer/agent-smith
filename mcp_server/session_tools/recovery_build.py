@@ -78,6 +78,8 @@ def _build_recovery_result(
     }
     if auth_context:
         result["auth_context"] = auth_context
+    if current.get("source_instance"):
+        result["source_instance"] = current["source_instance"]
     if iter_status:
         result["iteration_progress"] = iter_status
 
