@@ -315,6 +315,8 @@ Read, in this order:
 - /tmp/fabro/pr.md - what the pull request is meant to do.
 - The change under repair: git diff origin/main
 
+METHOD: read .fabro/skills/verification-before-completion/SKILL.md and follow it. Every claim in your summary (a test passes, a failure is fixed, a regression test works) needs the output of a command you ran in this session after your last edit. For a regression test use its red-green pattern: see the test pass with the fix, see it fail without the fix, restore the fix. Where a check cannot run in this sandbox, say so instead of claiming it. If the file is missing in this checkout, continue without it.
+
 How to fix:
 - Find the cause of every reported failure and fix it. When a test and the code disagree, decide from /tmp/fabro/pr.md and the surrounding code which one is wrong, and fix that one. Never make a check pass by deleting, skipping or weakening a test, by loosening an assertion that expresses intended behaviour, or by silencing a rule (noqa, NOSONAR, type: ignore, pragma: no cover) without a reason stated in a comment.
 - For SonarCloud issues, fix the code the issue points at. For a failed coverage condition, add tests for the uncovered new code.
@@ -337,6 +339,8 @@ Read, in this order, whichever of these exist:
 - /tmp/fabro/ci-failures.md - the CI checks that failed on GitHub, which is what must be fixed. The files it names under /tmp/fabro/ci-logs/ hold the complete failure output and job log.
 - /tmp/fabro/pr.md - what the pull request is meant to do.
 Then inspect the pull request with: git diff origin/main
+
+METHOD: read .fabro/skills/verification-before-completion/SKILL.md and follow it. Every claim in your summary (a test passes, a failure is fixed, a regression test works) needs the output of a command you ran in this session after your last edit. For a regression test use its red-green pattern: see the test pass with the fix, see it fail without the fix, restore the fix. Where a check cannot run in this sandbox, say so instead of claiming it. If the file is missing in this checkout, continue without it.
 
 Resolve every failing local check and every failure from the CI output.
 
