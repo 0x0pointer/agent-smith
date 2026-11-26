@@ -952,7 +952,7 @@
     "kind": "running"
   },
   "status_updated_at": "2026-11-26T12:33:06.341558688Z",
-  "last_event_at": "2026-11-26T12:33:10.084410151Z",
+  "last_event_at": "2026-11-26T12:33:14.713122677Z",
   "pending_control": null,
   "checkpoints": [
     {
@@ -995,9 +995,9 @@
       "diff": {}
     },
     {
-      "seq": 0,
+      "seq": 29,
       "checkpoint": {
-        "timestamp": "2026-11-26T12:33:10.092886810Z",
+        "timestamp": "2026-11-26T12:33:14.711822947Z",
         "current_node": "check_issue",
         "completed_nodes": [
           "start",
@@ -1005,26 +1005,30 @@
         ],
         "node_retries": {},
         "context_values": {
-          "internal.thread_id": "start",
-          "internal.fidelity": "compact",
-          "failure_class": "deterministic",
-          "thread.start.current_node": "check_issue",
-          "internal.work_dir": "/workspace/agent-smith",
-          "internal.retry_count.start": 0,
-          "internal.retry_count.check_issue": 0,
-          "command.output": "blob://sha256/7c68e5d31cfa673dab066f9a77df5adf0bb5e505a395bea775d0632971dbba64",
-          "graph.goal": "Resolve the next maintainer-approved GitHub issue of 0x0pointer/agent-smith with a reviewed spec, code, and passing tests",
-          "internal.node_visit_count": 1,
-          "graph.max_node_visits": "30",
-          "outcome": "failed",
-          "failure_signature": "check_issue|deterministic|script failed with exit code: <n> ## output skipped issue <n> - already handled (label fabro-built) nothing to build: no open issue labelled fabro-approved is waiting (<n> checked). to build an issue again,remove its fabro-built or fabro-fa",
-          "current_node": "check_issue",
-          "graph.loop_restart_signature_limit": "10",
-          "graph.rankdir": "LR",
           "internal.run_id": "01M8BXGJBP8KR7PMQQYNXDZDNZ",
-          "graph.model_stylesheet": "\n            *       { model: gpt-5.4; reasoning_effort: medium; }\n            .strong { model: gpt-5.5; reasoning_effort: high; }\n        "
+          "graph.loop_restart_signature_limit": "10",
+          "graph.model_stylesheet": "\n            *       { model: gpt-5.4; reasoning_effort: medium; }\n            .strong { model: gpt-5.5; reasoning_effort: high; }\n        ",
+          "graph.rankdir": "LR",
+          "current_node": "check_issue",
+          "internal.fidelity": "compact",
+          "graph.goal": "Resolve the next maintainer-approved GitHub issue of 0x0pointer/agent-smith with a reviewed spec, code, and passing tests",
+          "command.output": "blob://sha256/7c68e5d31cfa673dab066f9a77df5adf0bb5e505a395bea775d0632971dbba64",
+          "internal.node_visit_count": 1,
+          "internal.work_dir": "/workspace/agent-smith",
+          "outcome": "failed",
+          "internal.retry_count.check_issue": 0,
+          "failure_class": "deterministic",
+          "graph.max_node_visits": "30",
+          "internal.retry_count.start": 0,
+          "internal.thread_id": "start",
+          "thread.start.current_node": "check_issue",
+          "failure_signature": "check_issue|deterministic|script failed with exit code: <n> ## output skipped issue <n> - already handled (label fabro-built) nothing to build: no open issue labelled fabro-approved is waiting (<n> checked). to build an issue again,remove its fabro-built or fabro-fa"
         },
         "node_outcomes": {
+          "start": {
+            "status": "succeeded",
+            "usage": null
+          },
           "check_issue": {
             "status": "failed",
             "context_updates": {
@@ -1041,22 +1045,64 @@
               "tool_time_ms": 1475,
               "active_time_ms": 1475
             }
-          },
-          "start": {
-            "status": "succeeded",
-            "usage": null
           }
         },
         "next_node_id": "exit",
+        "git_commit_sha": "cea197795022bd7ef4f6909ad4264cd7343b11dd",
+        "loop_failure_signatures": {
+          "check_issue|deterministic|script failed with exit code: <n> ## output skipped issue <n> - already handled (label fabro-built) nothing to build: no open issue labelled fabro-approved is waiting (<n> checked). to build an issue again,remove its fabro-built or fabro-fa": 1
+        },
         "node_visits": {
           "check_issue": 1,
           "start": 1
         }
       },
-      "diff": {}
+      "diff": {
+        "summary": {
+          "files_changed": 0,
+          "additions": 0,
+          "deletions": 0
+        }
+      }
     }
   ],
-  "conclusion": null,
+  "conclusion": {
+    "timestamp": "2026-11-26T12:33:14.747038052Z",
+    "status": "succeeded",
+    "timing": {
+      "wall_time_ms": 8377,
+      "inference_time_ms": 0,
+      "tool_time_ms": 1475,
+      "active_time_ms": 1475
+    },
+    "final_git_commit_sha": "cea197795022bd7ef4f6909ad4264cd7343b11dd",
+    "stages": [
+      {
+        "stage_id": "start",
+        "stage_label": "start",
+        "timing": {
+          "wall_time_ms": 0,
+          "inference_time_ms": 0,
+          "tool_time_ms": 0,
+          "active_time_ms": 0
+        },
+        "retries": 0
+      },
+      {
+        "stage_id": "check_issue",
+        "stage_label": "check_issue",
+        "timing": {
+          "wall_time_ms": 1483,
+          "inference_time_ms": 0,
+          "tool_time_ms": 1475,
+          "active_time_ms": 1475
+        },
+        "retries": 0
+      }
+    ],
+    "total_retries": 0,
+    "diff": {}
+  },
   "sandbox": {
     "kind": "ready",
     "plan": {
@@ -1083,6 +1129,40 @@
   "superseded_by": null,
   "pending_interviews": {},
   "stages": {
+    "exit@1": {
+      "first_event_seq": 32,
+      "prompt": null,
+      "response": null,
+      "completion": {
+        "outcome": "succeeded",
+        "notes": null,
+        "failure_reason": null,
+        "timestamp": "2026-11-26T12:33:14.713122677Z"
+      },
+      "provider_used": null,
+      "diff": null,
+      "script_invocation": null,
+      "script_timing": null,
+      "parallel_results": null,
+      "output": null,
+      "started_at": "2026-11-26T12:33:14.713092088Z",
+      "handler": "exit",
+      "timing": {
+        "wall_time_ms": 0,
+        "inference_time_ms": 0,
+        "tool_time_ms": 0,
+        "active_time_ms": 0
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "reasoning_tokens": 0,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0
+      },
+      "state": "succeeded"
+    },
     "start@1": {
       "first_event_seq": 17,
       "prompt": null,
@@ -1121,7 +1201,12 @@
       "first_event_seq": 21,
       "prompt": null,
       "response": null,
-      "completion": null,
+      "completion": {
+        "outcome": "failed",
+        "notes": null,
+        "failure_reason": "Script failed with exit code: 1\n\n## output\nskipped issue 300 - already handled (label fabro-built)\nNOTHING TO BUILD: no open issue labelled fabro-approved is waiting (1 checked).\nTo build an issue again, remove its fabro-built or fabro-failed label.\n",
+        "timestamp": "2026-11-26T12:33:10.086460571Z"
+      },
       "provider_used": null,
       "diff": null,
       "script_invocation": {
@@ -1145,6 +1230,12 @@
       "termination": "exited",
       "started_at": "2026-11-26T12:33:08.601127923Z",
       "handler": "command",
+      "timing": {
+        "wall_time_ms": 1483,
+        "inference_time_ms": 0,
+        "tool_time_ms": 1475,
+        "active_time_ms": 1475
+      },
       "usage": {
         "input_tokens": 0,
         "output_tokens": 0,
@@ -1153,7 +1244,7 @@
         "cache_read_tokens": 0,
         "cache_write_tokens": 0
       },
-      "state": "running"
+      "state": "failed"
     }
   }
 }
