@@ -1,0 +1,6 @@
+{
+  "outcome": "failed",
+  "notes": null,
+  "failure_reason": "Script failed with exit code: 1\n\n## output\nROUTE_implement (consecutive failed verifications: 1)\n# Fix this: automated verification failed at step: protected paths\n\nLast lines of output:\nPROTECTED FILES CHANGED - revert these:\n.env.example\n\nFull log: /tmp/fabro/verify.log\n\n",
+  "timestamp": "2026-11-26T11:32:11.415537129Z"
+}
