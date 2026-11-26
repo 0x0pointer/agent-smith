@@ -949,11 +949,10 @@
     "base_sha": "391a582d5c061e6d78bd8ec7a84d53e6466e8a43"
   },
   "status": {
-    "kind": "blocked",
-    "blocked_reason": "human_input_required"
+    "kind": "running"
   },
-  "status_updated_at": "2026-11-26T11:21:30.552776108Z",
-  "last_event_at": "2026-11-26T11:21:30.552776108Z",
+  "status_updated_at": "2026-11-26T11:23:08.124037272Z",
+  "last_event_at": "2026-11-26T11:32:05.744230043Z",
   "pending_control": null,
   "checkpoints": [
     {
@@ -1420,9 +1419,9 @@
       }
     },
     {
-      "seq": 0,
+      "seq": 201,
       "checkpoint": {
-        "timestamp": "2026-11-26T11:23:08.132516900Z",
+        "timestamp": "2026-11-26T11:23:13.170440132Z",
         "current_node": "approve",
         "completed_nodes": [
           "start",
@@ -1434,12 +1433,185 @@
         ],
         "node_retries": {},
         "context_values": {
+          "graph.model_stylesheet": "\n            *       { model: gpt-5.4; reasoning_effort: medium; }\n            .strong { model: gpt-5.5; reasoning_effort: high; }\n        ",
+          "internal.retry_count.start": 0,
+          "internal.retry_count.check_issue": 0,
+          "outcome": "succeeded",
+          "graph.rankdir": "LR",
+          "internal.retry_count.approve": 0,
+          "response.spec": "1. Intent\nAdd optional per-engagement Source memory binding to agent-smith. A scan can select a registered local Source instance; smith can consult it, `recall` can include it, medium/full skill selection gets one bounded methodology push, and findings/completion are mechanically written back as stable notes. All behavior is additive, bounded, local-only, and best-effort so an unconfigured or down Source never blocks a scan.\n\n2. Acceptance criteria\n1. With `SOURCE_REGISTRY` pointing at a registry containing `prod-web: http://127.0.0.1:<port>`, `session(action='start', options={target:'http://t', source:'prod-web'})` returns a start message naming `Source: prod-web`; `session.json`, `session(action='status')`, and `session(action='recovery')` expose `source_instance:{name:'prod-web', url:'http://127.0.0.1:<port>'}`.\n2. Unknown, blank, malformed, or non-loopback Source entries never block start; the response says no Source was bound and lists available valid names.\n3. `session(action='use_source', options={source:'name'})` rebinds the running engagement; `source:''` clears it. Both persist and are reflected by status/recovery.\n4. `report(action='consult', data={query:'x', k:2})` returns char-capped snippets from only the bound Source. With no binding or an unreachable Source it returns a clear no-source/unreachable message, not an exception.\n5. `report(action='recall', data={query:'x'})` still searches prior `engagements/*`; when Source is bound it also includes a labelled Source section. `scope:'engagements'` excludes Source; `scope:'source'` searches only Source. Legacy scopes (`kb`, `docs`, `nvd`, `wstg`, etc.) remain rejected.\n6. `session(action='set_skill', options={skill:'web-exploit', reason:'...'})` appends one bounded `Methodology from <source>` block only for `model_profile` `full` or `medium`; `small` produces no Source request/block.\n7. A successful `report(action='finding', ...)` posts one `POST /ingest` note with id `smith-<session_id>-finding-<finding_id>` and does not change the normal finding response text except for existing matrix/gate notes.\n8. When `session(action='complete')` reaches its existing human-signoff-held success path, and when `core.session.complete()` makes a terminal transition, Source receives/upserts `smith-<session_id>-digest` summarising target, scope, findings, endpoints, technologies, and auth assets. Blocked completion attempts do not ingest.\n9. Existing start/resume guards, dashboard token text, no-Source recall, finding dedup/trace validation, and `scripts/build_engagement_digest.py` CLI output keep working.\n\n3. Boundaries\nAlways use `core.paths.REPO_ROOT`, `core.logger.note`, `core.session._flush/load_from_disk`, existing `_background_tasks` for MCP fire-and-forget, `aiohttp` with short timeouts, and the current `scripts/build_engagement_digest.py` shaping style. Use stdlib parsing for a small YAML subset; add no dependency.\nNever implement the Source server, contact non-loopback URLs, change dashboard auth/completion gates, weaken legacy recall-scope rejection, or log/return raw ingest note bodies/secrets.\n\n4. Code map\n- `core/sources.py` (new): `SOURCE_REGISTRY_FILE`, `list_sources(registry_path=None)`, `resolve_source(name, registry_path=None)`; parse `sources.yaml`/`SOURCE_REGISTRY`, accept localhost HTTP only, return available names/errors. New tests.\n- `sources.yaml` (new): commented empty sample (`sources: {}`), no real targets.\n- `core/source_client.py` (new): `async search(query,k=3,mode=None,path=None,tags=None)`, `async ingest(notes)`, `ingest_best_effort(notes)`; read `scan_session.get()['source_instance']`, normalize Source JSON, cap output, fail-soft. New tests.\n- `core/session/lifecycle.py:start, complete`: accept/persist `source_instance`; terminal complete schedules digest ingest. Covered by `tests/test_session.py`.\n- `mcp_server/session_tools/start.py:_do_start,_start_response`: resolve `opts['source']`, pass to `scan_session.start`, show Source bound/warning.\n- `mcp_server/session_tools/__init__.py`: document `source`, `use_source`; dispatch async set-skill wrapper and sync `use_source`; update unknown-action text.\n- `mcp_server/session_tools/skills.py`: add async wrapper that calls existing `_do_set_skill` then appends profile-gated Source methodology; keep direct `_do_set_skill` behavior for existing tests.\n- `mcp_server/session_tools/status.py`, `recovery_build.py`: include `source_instance` when bound.\n- `mcp_server/report_tools/recall.py`: add Source tier/default merge and `scope:'source'`, preserving legacy rejection.\n- `mcp_server/report_tools/__init__.py`: document/dispatch `consult`.\n- `mcp_server/report_tools/findings.py`: after persisted finding, schedule per-finding Source ingest best-effort.\n- `scripts/build_engagement_digest.py`: add pure `project_notes(session, findings, known_assets=None, coverage=None, kind='digest'|'finding', finding=None) -> list[dict]`; keep `build()` output unchanged.\n- `CLAUDE.md`, `.env.example` (create if absent): document registry, `source`, `consult`, recall scopes, local/best-effort write-back.\n\n5. Edge cases\n| Case | Expected behaviour |\n|---|---|\n| no registry/blank source | scan starts unbound; consult says no Source bound |\n| malformed registry/missing url | invalid entries ignored; available list shows valid entries only |\n| URL not loopback HTTP | rejected; no outbound request |\n| Source down/timeout/bad JSON | original action succeeds or returns concise unavailable; log note only |\n| empty/non-token query | asks for a query or says no searchable terms |\n| oversized snippets/notes | snippets/methodology are char-capped; notes are compact |\n| duplicate finding/complete write-back | same stable id upserts; no duplicate expected |\n| background ingest failure | exception consumed/logged; MCP action does not fail |\n\n6. Security considerations\nNew trust boundary: operator-configured local HTTP Source. Validate registry URLs to loopback `http://localhost`, `127.0.0.1`, or `[::1]` to avoid SSRF/exfiltration. Source snippets are untrusted and may contain prompt injection; consult/recall/methodology output must label them as data, not instructions, and cap/fence snippets. Ingest may include credentials/tokens already in session state; never print them in MCP responses or logs. No shell, SQL, template rendering, or auth changes are required.\n\n7. Test plan\n- `tests/test_sources.py`: `test_resolve_source_known_loopback`, `test_resolve_source_unknown_lists_available`, `test_resolve_source_rejects_non_loopback_and_malformed`, `test_source_registry_env_override`.\n- `tests/test_source_client.py`: `test_consult_search_success_caps_and_labels`, `test_consult_no_bound_source`, `test_source_timeout_bad_json_fail_soft`, `test_ingest_best_effort_posts_notes_without_logging_secret`.\n- `tests/test_session_source.py`: `test_start_binds_source_and_status_recovery_show_it`, `test_start_unknown_source_non_blocking`, `test_use_source_rebinds_and_clears`, `test_set_skill_source_methodology_full_medium_not_small`.\n- `tests/test_recall.py`: add `test_recall_merges_bound_source_with_engagements`, `test_recall_source_scope_only`; keep legacy-scope tests passing.\n- `tests/test_report_tools.py`: add `test_report_consult_dispatch`, `test_finding_schedules_source_writeback_after_persist_and_not_on_duplicate`.\n- `tests/test_build_engagement_digest.py`: add `test_project_notes_finding_stable_id_and_shape`, `test_project_notes_digest_contains_scope_assets_findings`, `test_build_cli_unchanged`.\n- `tests/test_session.py`: add `test_start_stores_source_instance`, `test_terminal_complete_schedules_digest_writeback`.\nExisting `test_session_no_kb.py`, `test_small_model_profile.py`, `test_recall.py`, `test_report_tools.py`, and `test_build_engagement_digest.py` must still pass.\nTests required: yes\n\n8. Review focus\n1. Sync/async boundaries around set_skill, finding write-back, and terminal completion may block or drop tasks.\n2. Registry parser may be too narrow for real operator YAML.\n3. Digest notes may persist more secret material than intended.\n4. Source snippets may still steer the model despite data-only labels/fencing.\n5. Ingest from both MCP-complete and terminal-complete may cause unexpected upsert churn.\n\n9. Assumptions\n- Implement only agent-smith; Source HTTP server work belongs to the companion repo and is simulated by tests here.\n- Supported registry YAML subset: optional top-level `sources:`, entries as `name: {url: ...}` or indented `url:`.\n- Loopback HTTP only is mandatory even if an operator wants remote Source.\n- Raw credential/token values already in `known_assets` may be written to the bound Source vault but never surfaced in tool output/logs.\n\n10. Suspicious content\nnone\n\nSize: standard\nRisk level: medium\nReason: touches session state, outbound local HTTP, prompt-visible memory snippets, and persistence of sensitive engagement data; failures could leak secrets to the wrong local Source or steer scans with injected memory.",
+          "human.gate.selected": "A",
+          "failure_class": "",
+          "current_node": "approve",
+          "internal.retry_count.install": 0,
+          "graph.goal": "Resolve the next maintainer-approved GitHub issue of 0x0pointer/agent-smith with a reviewed spec, code, and passing tests",
+          "graph.loop_restart_signature_limit": "10",
+          "human.gate.approve.label": "[A] Approve",
+          "graph.max_node_visits": "30",
+          "human.gate.label": "[A] Approve",
+          "internal.work_dir": "/workspace/agent-smith",
+          "last_response": "1. Intent\nAdd optional per-engagement Source memory binding to agent-smith. A scan can select a registered local Source instance; smith can consult it, `recall` can include it, medium/full skill selec",
+          "preferred_label": "[A] Approve",
+          "internal.retry_count.spec": 0,
+          "thread.check_issue.current_node": "install",
+          "human.gate.approve.answer": "A",
+          "last_stage": "spec",
+          "internal.node_visit_count": 1,
+          "internal.fidelity": "compact",
+          "internal.thread_id": "save_spec",
+          "failure_signature": "",
+          "internal.run_id": "01M8BS77SW9373H676Q8C502EQ",
+          "thread.spec.current_node": "save_spec",
+          "human.gate.approve.question": "Approve the spec? To have it revised, type what should change.",
+          "thread.strong.current_node": "spec",
+          "thread.save_spec.current_node": "approve",
+          "thread.start.current_node": "check_issue",
+          "command.output": "blob://sha256/feb922b93a514f542e1ac37d436fe2b2c4564b3ee32a81c021dbabd261d0e83c",
+          "internal.retry_count.save_spec": 0
+        },
+        "node_outcomes": {
+          "save_spec": {
+            "status": "succeeded",
+            "context_updates": {
+              "command.output": "blob://sha256/feb922b93a514f542e1ac37d436fe2b2c4564b3ee32a81c021dbabd261d0e83c"
+            },
+            "notes": "Script completed: \nimport os, subprocess, sys\nD = '/tmp/fabro'\nNL = chr(10)\nNEEDED = ('acceptance criteria', 'risk level:', 'tests required:')\ndef read(path):\n    try:\n        with open(path) as f:\n            return f.read()\n    except OSError:\n        return ''\ndef write(path, text):\n    with open(path, 'w') as f:\n        f.write(text)\ndef missing(text):\n    return [n for n in NEEDED if n not in text.lower()]\ndef run(cmd):\n    p = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='replace')\n    return p.returncode, p.stdout\ndef repo_changes():\n    # The working tree against origin/main: this also covers what a\n    # checkpoint already committed. New files are listed separately.\n    rc1, tracked = run('git diff --name-only origin/main')\n    rc2, added = run('git ls-files --others --exclude-standard')\n    if rc1 != 0 or rc2 != 0:\n        return None\n    return sorted(set(l.strip() for l in (tracked + NL + added).splitlines() if l.strip()))\ndef send_back(reason):\n    try:\n        tries = int(read(D + '/spec_tries').strip() or 0) + 1\n    except ValueError:\n        tries = 3\n    write(D + '/spec_tries', str(tries))\n    print('ROUTE_spec' if tries < 3 else 'ROUTE_stop')\n    print('The spec was not accepted (attempt ' + str(tries) + ' of 3). ' + reason)\n    sys.exit(1)\nos.makedirs(D, exist_ok=True)\ntouched = repo_changes()\ndiscarded = ''\nif touched is None:\n    print('warning: could not compare the repository with origin/main, so changes made by the planner were not checked')\nelif touched:\n    run('git restore --source=origin/main --staged --worktree -- . && git clean -fdq')\n    left = repo_changes()\n    listed = ', '.join(touched[:20])\n    if left:\n        send_back('You changed files in the repository, which this step must not do, and they could not be put back: ' + ', '.join(left[:20]) + '. Restore them to their origin/main state, then deliver only the spec.')\n    discarded = 'You also changed files in the repository (' + listed + '). This step only writes the spec, so those changes were discarded; nothing is built before a maintainer approves the spec. '\n    print('DISCARDED ' + str(len(touched)) + ' repository file(s) the planner changed in the spec step: ' + listed)\nprinted = sys.stdin.read().strip()\non_disk = read(D + '/spec.md').strip()\nif printed and not missing(printed):\n    spec, source = printed, 'the text the planner printed'\nelif on_disk and not missing(on_disk):\n    spec, source = on_disk, 'the file the planner wrote'\nelse:\n    gaps = missing(printed or on_disk) if (printed or on_disk) else ['the whole spec: nothing was printed and /tmp/fabro/spec.md does not exist']\n    send_back(discarded + 'The spec is incomplete. Missing: ' + '; '.join(gaps))\n# spec.shown.md is the spec as it was last shown to the maintainer. This step\n# runs again after it only when they sent it back with feedback.\nif spec == read(D + '/spec.shown.md').strip():\n    send_back(discarded + 'A maintainer sent the spec back with feedback (human.gate.approve.answer in your context) and /tmp/fabro/spec.md came back unchanged. Revise the spec to follow that feedback, write it to /tmp/fabro/spec.md and print it.')\nwrite(D + '/spec.md', spec + NL)\nwrite(D + '/spec.shown.md', spec + NL)\nwrite(D + '/spec_tries', '0')\nprint('SPEC SAVED from ' + source + ': ' + str(len(spec.split())) + ' words')\nfor line in spec.splitlines():\n    low = line.strip().lstrip('#*- ').lower()\n    if low.startswith(('decision needed', 'behaviour removed', 'behavior removed', 'size:', 'risk level:', 'tests required:')):\n        print(line.strip()[:300].replace('ROUTE_', 'ROUTE-'))\n",
+            "usage": null,
+            "timing": {
+              "wall_time_ms": 0,
+              "inference_time_ms": 0,
+              "tool_time_ms": 299,
+              "active_time_ms": 299
+            }
+          },
+          "install": {
+            "status": "succeeded",
+            "context_updates": {
+              "command.output": "blob://sha256/12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126"
+            },
+            "notes": "Script completed: git submodule update -q --init --recursive && poetry install --with dev --no-interaction -q",
+            "usage": null,
+            "timing": {
+              "wall_time_ms": 0,
+              "inference_time_ms": 0,
+              "tool_time_ms": 6767,
+              "active_time_ms": 6767
+            }
+          },
+          "spec": {
+            "status": "succeeded",
+            "context_updates": {
+              "last_stage": "spec",
+              "last_response": "1. Intent\nAdd optional per-engagement Source memory binding to agent-smith. A scan can select a registered local Source instance; smith can consult it, `recall` can include it, medium/full skill selec",
+              "response.spec": "1. Intent\nAdd optional per-engagement Source memory binding to agent-smith. A scan can select a registered local Source instance; smith can consult it, `recall` can include it, medium/full skill selection gets one bounded methodology push, and findings/completion are mechanically written back as stable notes. All behavior is additive, bounded, local-only, and best-effort so an unconfigured or down Source never blocks a scan.\n\n2. Acceptance criteria\n1. With `SOURCE_REGISTRY` pointing at a registry containing `prod-web: http://127.0.0.1:<port>`, `session(action='start', options={target:'http://t', source:'prod-web'})` returns a start message naming `Source: prod-web`; `session.json`, `session(action='status')`, and `session(action='recovery')` expose `source_instance:{name:'prod-web', url:'http://127.0.0.1:<port>'}`.\n2. Unknown, blank, malformed, or non-loopback Source entries never block start; the response says no Source was bound and lists available valid names.\n3. `session(action='use_source', options={source:'name'})` rebinds the running engagement; `source:''` clears it. Both persist and are reflected by status/recovery.\n4. `report(action='consult', data={query:'x', k:2})` returns char-capped snippets from only the bound Source. With no binding or an unreachable Source it returns a clear no-source/unreachable message, not an exception.\n5. `report(action='recall', data={query:'x'})` still searches prior `engagements/*`; when Source is bound it also includes a labelled Source section. `scope:'engagements'` excludes Source; `scope:'source'` searches only Source. Legacy scopes (`kb`, `docs`, `nvd`, `wstg`, etc.) remain rejected.\n6. `session(action='set_skill', options={skill:'web-exploit', reason:'...'})` appends one bounded `Methodology from <source>` block only for `model_profile` `full` or `medium`; `small` produces no Source request/block.\n7. A successful `report(action='finding', ...)` posts one `POST /ingest` note with id `smith-<session_id>-finding-<finding_id>` and does not change the normal finding response text except for existing matrix/gate notes.\n8. When `session(action='complete')` reaches its existing human-signoff-held success path, and when `core.session.complete()` makes a terminal transition, Source receives/upserts `smith-<session_id>-digest` summarising target, scope, findings, endpoints, technologies, and auth assets. Blocked completion attempts do not ingest.\n9. Existing start/resume guards, dashboard token text, no-Source recall, finding dedup/trace validation, and `scripts/build_engagement_digest.py` CLI output keep working.\n\n3. Boundaries\nAlways use `core.paths.REPO_ROOT`, `core.logger.note`, `core.session._flush/load_from_disk`, existing `_background_tasks` for MCP fire-and-forget, `aiohttp` with short timeouts, and the current `scripts/build_engagement_digest.py` shaping style. Use stdlib parsing for a small YAML subset; add no dependency.\nNever implement the Source server, contact non-loopback URLs, change dashboard auth/completion gates, weaken legacy recall-scope rejection, or log/return raw ingest note bodies/secrets.\n\n4. Code map\n- `core/sources.py` (new): `SOURCE_REGISTRY_FILE`, `list_sources(registry_path=None)`, `resolve_source(name, registry_path=None)`; parse `sources.yaml`/`SOURCE_REGISTRY`, accept localhost HTTP only, return available names/errors. New tests.\n- `sources.yaml` (new): commented empty sample (`sources: {}`), no real targets.\n- `core/source_client.py` (new): `async search(query,k=3,mode=None,path=None,tags=None)`, `async ingest(notes)`, `ingest_best_effort(notes)`; read `scan_session.get()['source_instance']`, normalize Source JSON, cap output, fail-soft. New tests.\n- `core/session/lifecycle.py:start, complete`: accept/persist `source_instance`; terminal complete schedules digest ingest. Covered by `tests/test_session.py`.\n- `mcp_server/session_tools/start.py:_do_start,_start_response`: resolve `opts['source']`, pass to `scan_session.start`, show Source bound/warning.\n- `mcp_server/session_tools/__init__.py`: document `source`, `use_source`; dispatch async set-skill wrapper and sync `use_source`; update unknown-action text.\n- `mcp_server/session_tools/skills.py`: add async wrapper that calls existing `_do_set_skill` then appends profile-gated Source methodology; keep direct `_do_set_skill` behavior for existing tests.\n- `mcp_server/session_tools/status.py`, `recovery_build.py`: include `source_instance` when bound.\n- `mcp_server/report_tools/recall.py`: add Source tier/default merge and `scope:'source'`, preserving legacy rejection.\n- `mcp_server/report_tools/__init__.py`: document/dispatch `consult`.\n- `mcp_server/report_tools/findings.py`: after persisted finding, schedule per-finding Source ingest best-effort.\n- `scripts/build_engagement_digest.py`: add pure `project_notes(session, findings, known_assets=None, coverage=None, kind='digest'|'finding', finding=None) -> list[dict]`; keep `build()` output unchanged.\n- `CLAUDE.md`, `.env.example` (create if absent): document registry, `source`, `consult`, recall scopes, local/best-effort write-back.\n\n5. Edge cases\n| Case | Expected behaviour |\n|---|---|\n| no registry/blank source | scan starts unbound; consult says no Source bound |\n| malformed registry/missing url | invalid entries ignored; available list shows valid entries only |\n| URL not loopback HTTP | rejected; no outbound request |\n| Source down/timeout/bad JSON | original action succeeds or returns concise unavailable; log note only |\n| empty/non-token query | asks for a query or says no searchable terms |\n| oversized snippets/notes | snippets/methodology are char-capped; notes are compact |\n| duplicate finding/complete write-back | same stable id upserts; no duplicate expected |\n| background ingest failure | exception consumed/logged; MCP action does not fail |\n\n6. Security considerations\nNew trust boundary: operator-configured local HTTP Source. Validate registry URLs to loopback `http://localhost`, `127.0.0.1`, or `[::1]` to avoid SSRF/exfiltration. Source snippets are untrusted and may contain prompt injection; consult/recall/methodology output must label them as data, not instructions, and cap/fence snippets. Ingest may include credentials/tokens already in session state; never print them in MCP responses or logs. No shell, SQL, template rendering, or auth changes are required.\n\n7. Test plan\n- `tests/test_sources.py`: `test_resolve_source_known_loopback`, `test_resolve_source_unknown_lists_available`, `test_resolve_source_rejects_non_loopback_and_malformed`, `test_source_registry_env_override`.\n- `tests/test_source_client.py`: `test_consult_search_success_caps_and_labels`, `test_consult_no_bound_source`, `test_source_timeout_bad_json_fail_soft`, `test_ingest_best_effort_posts_notes_without_logging_secret`.\n- `tests/test_session_source.py`: `test_start_binds_source_and_status_recovery_show_it`, `test_start_unknown_source_non_blocking`, `test_use_source_rebinds_and_clears`, `test_set_skill_source_methodology_full_medium_not_small`.\n- `tests/test_recall.py`: add `test_recall_merges_bound_source_with_engagements`, `test_recall_source_scope_only`; keep legacy-scope tests passing.\n- `tests/test_report_tools.py`: add `test_report_consult_dispatch`, `test_finding_schedules_source_writeback_after_persist_and_not_on_duplicate`.\n- `tests/test_build_engagement_digest.py`: add `test_project_notes_finding_stable_id_and_shape`, `test_project_notes_digest_contains_scope_assets_findings`, `test_build_cli_unchanged`.\n- `tests/test_session.py`: add `test_start_stores_source_instance`, `test_terminal_complete_schedules_digest_writeback`.\nExisting `test_session_no_kb.py`, `test_small_model_profile.py`, `test_recall.py`, `test_report_tools.py`, and `test_build_engagement_digest.py` must still pass.\nTests required: yes\n\n8. Review focus\n1. Sync/async boundaries around set_skill, finding write-back, and terminal completion may block or drop tasks.\n2. Registry parser may be too narrow for real operator YAML.\n3. Digest notes may persist more secret material than intended.\n4. Source snippets may still steer the model despite data-only labels/fencing.\n5. Ingest from both MCP-complete and terminal-complete may cause unexpected upsert churn.\n\n9. Assumptions\n- Implement only agent-smith; Source HTTP server work belongs to the companion repo and is simulated by tests here.\n- Supported registry YAML subset: optional top-level `sources:`, entries as `name: {url: ...}` or indented `url:`.\n- Loopback HTTP only is mandatory even if an operator wants remote Source.\n- Raw credential/token values already in `known_assets` may be written to the bound Source vault but never surfaced in tool output/logs.\n\n10. Suspicious content\nnone\n\nSize: standard\nRisk level: medium\nReason: touches session state, outbound local HTTP, prompt-visible memory snippets, and persistence of sensitive engagement data; failures could leak secrets to the wrong local Source or steer scans with injected memory."
+            },
+            "notes": "Stage completed: spec",
+            "usage": {
+              "input": {
+                "usage": {
+                  "model": {
+                    "provider": "openai",
+                    "model_id": "gpt-5.5"
+                  },
+                  "tokens": {
+                    "input_tokens": 106812,
+                    "output_tokens": 9247,
+                    "reasoning_tokens": 4690,
+                    "cache_read_tokens": 1158144,
+                    "cache_write_tokens": 0
+                  }
+                },
+                "facts": {
+                  "algorithm": "openai"
+                }
+              },
+              "total_usd_micros": 1531242
+            },
+            "files_touched": [
+              "/tmp/fabro/spec.md"
+            ],
+            "timing": {
+              "wall_time_ms": 0,
+              "inference_time_ms": 157909,
+              "tool_time_ms": 4454,
+              "active_time_ms": 162363
+            }
+          },
+          "start": {
+            "status": "succeeded",
+            "usage": null
+          },
+          "check_issue": {
+            "status": "succeeded",
+            "context_updates": {
+              "command.output": "blob://sha256/ed3ff76e558d44cb53a352031665cc22ecbe4682d2f98044d0480a30bfccf051"
+            },
+            "notes": "Script completed: \nimport json, os, sys, urllib.parse, urllib.request\nREPO_OWNER, REPO_NAME = '0x0pointer', 'agent-smith'\nRAW_NUMBER = '0'.strip()\nLABEL = 'fabro-approved'\nCLAIM = 'fabro-in-progress'\nBUILT = 'fabro-built'\nFAILED = 'fabro-failed'\nMAINTAINERS = set(m.strip().lower() for m in 'RiieCco,blabla1337,JorgeCarvalhoPT'.split(',') if m.strip())\nclass Refused(Exception):\n    pass\ndef refuse(msg):\n    print('REFUSED: ' + msg)\n    sys.exit(1)\ntoken = os.environ.get('GITHUB_TOKEN')\nif not token:\n    refuse('no GITHUB_TOKEN in the sandbox, cannot verify approval')\nif not RAW_NUMBER.isdigit():\n    refuse('issue must be a number; 0 picks the oldest approved issue')\nNUMBER = int(RAW_NUMBER)\ndef send(url, body):\n    req = urllib.request.Request(url, data=json.dumps(body).encode(),\n        headers=dict(Authorization='Bearer ' + token, Accept='application/json'))\n    return json.load(urllib.request.urlopen(req, timeout=30))\ndef graphql(query, **variables):\n    reply = send('https://api.github.com/graphql',\n        dict(query=query, variables=dict(variables, o=REPO_OWNER, n=REPO_NAME)))\n    if reply.get('errors'):\n        refuse('GitHub API error: ' + json.dumps(reply['errors'])[:300])\n    return reply['data']['repository']\nISSUE_QUERY = '''\nquery($o: String!, $n: String!, $i: Int!) {\n  repository(owner: $o, name: $n) {\n    issue(number: $i) {\n      title\n      body\n      state\n      lastEditedAt\n      author { login }\n      labels(first: 50) { nodes { name } }\n      timelineItems(itemTypes: [LABELED_EVENT], last: 100) {\n        nodes { ... on LabeledEvent { createdAt actor { login } label { name } } }\n      }\n    }\n  }\n}\n'''\nLIST_QUERY = '''\nquery($o: String!, $n: String!, $l: String!) {\n  repository(owner: $o, name: $n) {\n    issues(first: 100, states: [OPEN], labels: [$l], orderBy: { field: CREATED_AT, direction: ASC }) {\n      nodes { number labels(first: 50) { nodes { name } } }\n    }\n  }\n}\n'''\ndef approved(number):\n    # The approval check itself. Raises Refused unless every condition holds.\n    issue = graphql(ISSUE_QUERY, i=number)['issue']\n    if issue is None:\n        raise Refused('issue not found (pull requests are not accepted)')\n    if issue['state'] != 'OPEN':\n        raise Refused('issue is not open')\n    if LABEL not in [l['name'] for l in issue['labels']['nodes']]:\n        raise Refused('issue does not carry the label ' + LABEL)\n    events = [e for e in issue['timelineItems']['nodes'] if e and e['label']['name'] == LABEL]\n    if not events:\n        raise Refused('no labelling event found for ' + LABEL)\n    last = events[-1]\n    actor = ((last.get('actor') or dict()).get('login') or '').lower()\n    if actor not in MAINTAINERS:\n        raise Refused('label was applied by ' + (actor or 'unknown') + ', who is not a listed maintainer')\n    edited = issue.get('lastEditedAt')\n    if edited and edited > last['createdAt']:\n        raise Refused('issue text was edited after approval; a maintainer must re-apply the label')\n    return issue, actor, last['createdAt']\ndef claim(number, labels):\n    # Mark the issue as being built. While it carries this label no run\n    # started without a number picks another issue: one build at a time.\n    base = 'https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/issues/' + str(number) + '/labels'\n    send(base, dict(labels=[CLAIM]))\n    for old in (BUILT, FAILED):\n        if old in labels:\n            try:\n                req = urllib.request.Request(base + '/' + urllib.parse.quote(old), method='DELETE',\n                    headers=dict(Authorization='Bearer ' + token, Accept='application/json'))\n                urllib.request.urlopen(req, timeout=30).read()\n            except Exception:\n                pass\nif NUMBER > 0:\n    # A specific issue was asked for (-I issue=<number>, or construct-build).\n    try:\n        issue, actor, when = approved(NUMBER)\n    except Refused as exc:\n        refuse(str(exc))\n    try:\n        claim(NUMBER, [l['name'] for l in issue['labels']['nodes']])\n    except Exception as exc:\n        print('warning: could not add the label ' + CLAIM + ' (' + type(exc).__name__ + ')')\nelse:\n    # No issue given (an automation run): take the oldest open, approved issue\n    # that no run has handled yet. Every candidate still has to pass the full\n    # approval check; one that fails is skipped, not built.\n    # One build at a time: nothing is picked while another issue is being built.\n    busy = [n['number'] for n in graphql(LIST_QUERY, l=CLAIM)['issues']['nodes']]\n    if busy:\n        print('WAITING: issue ' + str(busy[0]) + ' is still being built (label ' + CLAIM + '). One issue is built at a time.')\n        print('If no run is working on it any more, remove that label from the issue.')\n        sys.exit(1)\n    issue = None\n    candidates = graphql(LIST_QUERY, l=LABEL)['issues']['nodes']\n    for node in candidates:\n        number = node['number']\n        handled = [l['name'] for l in node['labels']['nodes'] if l['name'] in (BUILT, FAILED)]\n        if handled:\n            print('skipped issue', number, '- already handled (label ' + handled[0] + ')')\n            continue\n        try:\n            issue, actor, when = approved(number)\n        except Refused as exc:\n            print('skipped issue', number, '-', exc)\n            continue\n        NUMBER = number\n        break\n    if issue is None:\n        print('NOTHING TO BUILD: no open issue labelled ' + LABEL + ' is waiting (' + str(len(candidates)) + ' checked).')\n        print('To build an issue again, remove its ' + BUILT + ' or ' + FAILED + ' label.')\n        sys.exit(1)\n    try:\n        claim(NUMBER, [])\n    except Exception as exc:\n        refuse('could not add the label ' + CLAIM + ' to issue ' + str(NUMBER) + ' (' + type(exc).__name__ + '); not building it, because the next run would pick it again')\nos.makedirs('/tmp/fabro', exist_ok=True)\nwith open('/tmp/fabro/issue.md', 'w') as f:\n    f.write('# ' + issue['title'] + chr(10) + chr(10) + (issue['body'] or '') + chr(10))\nwith open('/tmp/fabro/issue_number', 'w') as f:\n    f.write(str(NUMBER))\nprint('APPROVED: issue', NUMBER, 'released by', actor, 'at', when)\nprint('title:', issue['title'])",
+            "usage": null,
+            "timing": {
+              "wall_time_ms": 0,
+              "inference_time_ms": 0,
+              "tool_time_ms": 3251,
+              "active_time_ms": 3251
+            }
+          },
+          "approve": {
+            "status": "succeeded",
+            "preferred_label": "[A] Approve",
+            "suggested_next_ids": [
+              "implement"
+            ],
+            "context_updates": {
+              "human.gate.approve.answer": "A",
+              "human.gate.selected": "A",
+              "human.gate.approve.label": "[A] Approve",
+              "human.gate.label": "[A] Approve",
+              "human.gate.approve.question": "Approve the spec? To have it revised, type what should change."
+            },
+            "usage": null
+          }
+        },
+        "next_node_id": "implement",
+        "git_commit_sha": "f4f7e2b889901fe2b7d26db10239ec8def004099",
+        "node_visits": {
+          "check_issue": 1,
+          "approve": 1,
+          "save_spec": 1,
+          "start": 1,
+          "install": 1,
+          "spec": 1
+        }
+      },
+      "diff": {
+        "summary": {
+          "files_changed": 0,
+          "additions": 0,
+          "deletions": 0
+        }
+      }
+    },
+    {
+      "seq": 0,
+      "checkpoint": {
+        "timestamp": "2026-11-26T11:32:05.763447864Z",
+        "current_node": "implement",
+        "completed_nodes": [
+          "start",
+          "check_issue",
+          "install",
+          "spec",
+          "save_spec",
+          "approve",
+          "implement"
+        ],
+        "node_retries": {},
+        "context_values": {
           "internal.run_id": "01M8BS77SW9373H676Q8C502EQ",
           "graph.rankdir": "LR",
           "graph.model_stylesheet": "\n            *       { model: gpt-5.4; reasoning_effort: medium; }\n            .strong { model: gpt-5.5; reasoning_effort: high; }\n        ",
           "internal.work_dir": "/workspace/agent-smith",
           "thread.check_issue.current_node": "install",
-          "last_response": "1. Intent\nAdd optional per-engagement Source memory binding to agent-smith. A scan can select a registered local Source instance; smith can consult it, `recall` can include it, medium/full skill selec",
+          "last_response": "Implemented per-engagement Source binding, consult/recall integration, profile-gated methodology pull, and best-effort finding/digest write-back.\n\nWhat changed\n- Added Source registry/client:\n  - `cor",
           "response.spec": "1. Intent\nAdd optional per-engagement Source memory binding to agent-smith. A scan can select a registered local Source instance; smith can consult it, `recall` can include it, medium/full skill selection gets one bounded methodology push, and findings/completion are mechanically written back as stable notes. All behavior is additive, bounded, local-only, and best-effort so an unconfigured or down Source never blocks a scan.\n\n2. Acceptance criteria\n1. With `SOURCE_REGISTRY` pointing at a registry containing `prod-web: http://127.0.0.1:<port>`, `session(action='start', options={target:'http://t', source:'prod-web'})` returns a start message naming `Source: prod-web`; `session.json`, `session(action='status')`, and `session(action='recovery')` expose `source_instance:{name:'prod-web', url:'http://127.0.0.1:<port>'}`.\n2. Unknown, blank, malformed, or non-loopback Source entries never block start; the response says no Source was bound and lists available valid names.\n3. `session(action='use_source', options={source:'name'})` rebinds the running engagement; `source:''` clears it. Both persist and are reflected by status/recovery.\n4. `report(action='consult', data={query:'x', k:2})` returns char-capped snippets from only the bound Source. With no binding or an unreachable Source it returns a clear no-source/unreachable message, not an exception.\n5. `report(action='recall', data={query:'x'})` still searches prior `engagements/*`; when Source is bound it also includes a labelled Source section. `scope:'engagements'` excludes Source; `scope:'source'` searches only Source. Legacy scopes (`kb`, `docs`, `nvd`, `wstg`, etc.) remain rejected.\n6. `session(action='set_skill', options={skill:'web-exploit', reason:'...'})` appends one bounded `Methodology from <source>` block only for `model_profile` `full` or `medium`; `small` produces no Source request/block.\n7. A successful `report(action='finding', ...)` posts one `POST /ingest` note with id `smith-<session_id>-finding-<finding_id>` and does not change the normal finding response text except for existing matrix/gate notes.\n8. When `session(action='complete')` reaches its existing human-signoff-held success path, and when `core.session.complete()` makes a terminal transition, Source receives/upserts `smith-<session_id>-digest` summarising target, scope, findings, endpoints, technologies, and auth assets. Blocked completion attempts do not ingest.\n9. Existing start/resume guards, dashboard token text, no-Source recall, finding dedup/trace validation, and `scripts/build_engagement_digest.py` CLI output keep working.\n\n3. Boundaries\nAlways use `core.paths.REPO_ROOT`, `core.logger.note`, `core.session._flush/load_from_disk`, existing `_background_tasks` for MCP fire-and-forget, `aiohttp` with short timeouts, and the current `scripts/build_engagement_digest.py` shaping style. Use stdlib parsing for a small YAML subset; add no dependency.\nNever implement the Source server, contact non-loopback URLs, change dashboard auth/completion gates, weaken legacy recall-scope rejection, or log/return raw ingest note bodies/secrets.\n\n4. Code map\n- `core/sources.py` (new): `SOURCE_REGISTRY_FILE`, `list_sources(registry_path=None)`, `resolve_source(name, registry_path=None)`; parse `sources.yaml`/`SOURCE_REGISTRY`, accept localhost HTTP only, return available names/errors. New tests.\n- `sources.yaml` (new): commented empty sample (`sources: {}`), no real targets.\n- `core/source_client.py` (new): `async search(query,k=3,mode=None,path=None,tags=None)`, `async ingest(notes)`, `ingest_best_effort(notes)`; read `scan_session.get()['source_instance']`, normalize Source JSON, cap output, fail-soft. New tests.\n- `core/session/lifecycle.py:start, complete`: accept/persist `source_instance`; terminal complete schedules digest ingest. Covered by `tests/test_session.py`.\n- `mcp_server/session_tools/start.py:_do_start,_start_response`: resolve `opts['source']`, pass to `scan_session.start`, show Source bound/warning.\n- `mcp_server/session_tools/__init__.py`: document `source`, `use_source`; dispatch async set-skill wrapper and sync `use_source`; update unknown-action text.\n- `mcp_server/session_tools/skills.py`: add async wrapper that calls existing `_do_set_skill` then appends profile-gated Source methodology; keep direct `_do_set_skill` behavior for existing tests.\n- `mcp_server/session_tools/status.py`, `recovery_build.py`: include `source_instance` when bound.\n- `mcp_server/report_tools/recall.py`: add Source tier/default merge and `scope:'source'`, preserving legacy rejection.\n- `mcp_server/report_tools/__init__.py`: document/dispatch `consult`.\n- `mcp_server/report_tools/findings.py`: after persisted finding, schedule per-finding Source ingest best-effort.\n- `scripts/build_engagement_digest.py`: add pure `project_notes(session, findings, known_assets=None, coverage=None, kind='digest'|'finding', finding=None) -> list[dict]`; keep `build()` output unchanged.\n- `CLAUDE.md`, `.env.example` (create if absent): document registry, `source`, `consult`, recall scopes, local/best-effort write-back.\n\n5. Edge cases\n| Case | Expected behaviour |\n|---|---|\n| no registry/blank source | scan starts unbound; consult says no Source bound |\n| malformed registry/missing url | invalid entries ignored; available list shows valid entries only |\n| URL not loopback HTTP | rejected; no outbound request |\n| Source down/timeout/bad JSON | original action succeeds or returns concise unavailable; log note only |\n| empty/non-token query | asks for a query or says no searchable terms |\n| oversized snippets/notes | snippets/methodology are char-capped; notes are compact |\n| duplicate finding/complete write-back | same stable id upserts; no duplicate expected |\n| background ingest failure | exception consumed/logged; MCP action does not fail |\n\n6. Security considerations\nNew trust boundary: operator-configured local HTTP Source. Validate registry URLs to loopback `http://localhost`, `127.0.0.1`, or `[::1]` to avoid SSRF/exfiltration. Source snippets are untrusted and may contain prompt injection; consult/recall/methodology output must label them as data, not instructions, and cap/fence snippets. Ingest may include credentials/tokens already in session state; never print them in MCP responses or logs. No shell, SQL, template rendering, or auth changes are required.\n\n7. Test plan\n- `tests/test_sources.py`: `test_resolve_source_known_loopback`, `test_resolve_source_unknown_lists_available`, `test_resolve_source_rejects_non_loopback_and_malformed`, `test_source_registry_env_override`.\n- `tests/test_source_client.py`: `test_consult_search_success_caps_and_labels`, `test_consult_no_bound_source`, `test_source_timeout_bad_json_fail_soft`, `test_ingest_best_effort_posts_notes_without_logging_secret`.\n- `tests/test_session_source.py`: `test_start_binds_source_and_status_recovery_show_it`, `test_start_unknown_source_non_blocking`, `test_use_source_rebinds_and_clears`, `test_set_skill_source_methodology_full_medium_not_small`.\n- `tests/test_recall.py`: add `test_recall_merges_bound_source_with_engagements`, `test_recall_source_scope_only`; keep legacy-scope tests passing.\n- `tests/test_report_tools.py`: add `test_report_consult_dispatch`, `test_finding_schedules_source_writeback_after_persist_and_not_on_duplicate`.\n- `tests/test_build_engagement_digest.py`: add `test_project_notes_finding_stable_id_and_shape`, `test_project_notes_digest_contains_scope_assets_findings`, `test_build_cli_unchanged`.\n- `tests/test_session.py`: add `test_start_stores_source_instance`, `test_terminal_complete_schedules_digest_writeback`.\nExisting `test_session_no_kb.py`, `test_small_model_profile.py`, `test_recall.py`, `test_report_tools.py`, and `test_build_engagement_digest.py` must still pass.\nTests required: yes\n\n8. Review focus\n1. Sync/async boundaries around set_skill, finding write-back, and terminal completion may block or drop tasks.\n2. Registry parser may be too narrow for real operator YAML.\n3. Digest notes may persist more secret material than intended.\n4. Source snippets may still steer the model despite data-only labels/fencing.\n5. Ingest from both MCP-complete and terminal-complete may cause unexpected upsert churn.\n\n9. Assumptions\n- Implement only agent-smith; Source HTTP server work belongs to the companion repo and is simulated by tests here.\n- Supported registry YAML subset: optional top-level `sources:`, entries as `name: {url: ...}` or indented `url:`.\n- Loopback HTTP only is mandatory even if an operator wants remote Source.\n- Raw credential/token values already in `known_assets` may be written to the bound Source vault but never surfaced in tool output/logs.\n\n10. Suspicious content\nnone\n\nSize: standard\nRisk level: medium\nReason: touches session state, outbound local HTTP, prompt-visible memory snippets, and persistence of sensitive engagement data; failures could leak secrets to the wrong local Source or steer scans with injected memory.",
           "thread.spec.current_node": "save_spec",
           "internal.retry_count.check_issue": 0,
@@ -1450,24 +1622,27 @@
           "human.gate.selected": "A",
           "failure_class": "",
           "human.gate.approve.question": "Approve the spec? To have it revised, type what should change.",
-          "internal.fidelity": "compact",
+          "internal.fidelity": "truncate",
+          "internal.retry_count.implement": 0,
           "internal.retry_count.approve": 0,
           "internal.retry_count.install": 0,
           "graph.max_node_visits": "30",
           "human.gate.label": "[A] Approve",
           "thread.strong.current_node": "spec",
-          "internal.thread_id": "save_spec",
+          "internal.thread_id": "approve",
           "thread.start.current_node": "check_issue",
           "human.gate.approve.label": "[A] Approve",
+          "thread.approve.current_node": "implement",
           "command.output": "blob://sha256/feb922b93a514f542e1ac37d436fe2b2c4564b3ee32a81c021dbabd261d0e83c",
           "preferred_label": "[A] Approve",
           "graph.loop_restart_signature_limit": "10",
           "graph.goal": "Resolve the next maintainer-approved GitHub issue of 0x0pointer/agent-smith with a reviewed spec, code, and passing tests",
-          "current_node": "approve",
+          "current_node": "implement",
           "internal.node_visit_count": 1,
           "internal.retry_count.start": 0,
           "failure_signature": "",
-          "last_stage": "spec",
+          "last_stage": "implement",
+          "response.implement": "Implemented per-engagement Source binding, consult/recall integration, profile-gated methodology pull, and best-effort finding/digest write-back.\n\nWhat changed\n- Added Source registry/client:\n  - `core/sources.py`\n  - `core/source_client.py`\n  - `sources.yaml`\n- Threaded `source_instance` through session start/status/recovery/use_source:\n  - `core/session/lifecycle.py`\n  - `mcp_server/session_tools/start.py`\n  - `mcp_server/session_tools/__init__.py`\n  - `mcp_server/session_tools/status.py`\n  - `mcp_server/session_tools/recovery_build.py`\n  - `mcp_server/session_tools/skills.py`\n  - `mcp_server/session_tools/complete.py`\n- Added explicit `report(action='consult')` and Source-aware `recall`:\n  - `mcp_server/report_tools/__init__.py`\n  - `mcp_server/report_tools/recall.py`\n- Added best-effort Source write-back:\n  - per finding in `mcp_server/report_tools/findings.py`\n  - on completion hold / terminal complete in `mcp_server/session_tools/complete.py` and `core/session/lifecycle.py`\n- Factored reusable note projection:\n  - `scripts/build_engagement_digest.py`\n- Documented Source usage:\n  - `CLAUDE.md`\n  - `.env.example`\n\nTest coverage by acceptance criterion\n1. Start binds Source and exposes it:\n   - `tests/test_session_source.py::test_start_binds_source_and_status_recovery_show_it`\n   - `tests/test_session.py::test_start_stores_source_instance`\n2. Unknown/blank/malformed/non-loopback never block start:\n   - `tests/test_sources.py::*`\n   - `tests/test_session_source.py::test_start_unknown_source_non_blocking`\n3. `use_source` rebinds/clears:\n   - `tests/test_session_source.py::test_use_source_rebinds_and_clears`\n4. `report(action='consult')` works and fail-softs:\n   - `tests/test_source_client.py::*`\n   - `tests/test_report_tools.py::test_report_consult_dispatch`\n5. `recall` merges engagements + Source / supports `scope:'source'`:\n   - `tests/test_recall.py::test_recall_merges_bound_source_with_engagements`\n   - `tests/test_recall.py::test_recall_source_scope_only`\n   - existing legacy-scope recall tests still pass\n6. `set_skill` Source methodology only on medium/full:\n   - `tests/test_session_source.py::test_set_skill_source_methodology_full_medium_not_small`\n   - existing `tests/test_session_no_kb.py::test_set_skill_has_no_recall_hint` still passes for direct `_do_set_skill`\n7. Finding write-back posts stable note without changing finding response flow:\n   - `tests/test_report_tools.py::test_finding_schedules_source_writeback_after_persist_and_not_on_duplicate`\n   - existing finding response tests still pass\n8. Completion write-back on held-success path and terminal transition:\n   - `tests/test_session_tools_helpers.py::TestDoComplete::test_no_blockers_schedule_source_digest_writeback`\n   - `tests/test_session.py::test_terminal_complete_schedules_digest_writeback`\n9. No regressions for existing behavior / CLI output unchanged:\n   - `tests/test_build_engagement_digest.py::test_build_cli_unchanged`\n   - full suite pass: `poetry run pytest -q`\n\nValidation run\n- Focused source/session/report/digest tests: passed\n- Full suite: `poetry run pytest -q` → passed\n\nNoticed, not touched\n- Existing test warnings remain (FastAPI/Starlette deprecations and some pre-existing async mock warnings).\n\nSTATUS: DONE",
           "outcome": "succeeded"
         },
         "node_outcomes": {
@@ -1538,10 +1713,6 @@
               "active_time_ms": 6767
             }
           },
-          "start": {
-            "status": "succeeded",
-            "usage": null
-          },
           "save_spec": {
             "status": "succeeded",
             "context_updates": {
@@ -1570,10 +1741,51 @@
               "human.gate.approve.question": "Approve the spec? To have it revised, type what should change."
             },
             "usage": null
+          },
+          "implement": {
+            "status": "succeeded",
+            "context_updates": {
+              "last_stage": "implement",
+              "last_response": "Implemented per-engagement Source binding, consult/recall integration, profile-gated methodology pull, and best-effort finding/digest write-back.\n\nWhat changed\n- Added Source registry/client:\n  - `cor",
+              "response.implement": "Implemented per-engagement Source binding, consult/recall integration, profile-gated methodology pull, and best-effort finding/digest write-back.\n\nWhat changed\n- Added Source registry/client:\n  - `core/sources.py`\n  - `core/source_client.py`\n  - `sources.yaml`\n- Threaded `source_instance` through session start/status/recovery/use_source:\n  - `core/session/lifecycle.py`\n  - `mcp_server/session_tools/start.py`\n  - `mcp_server/session_tools/__init__.py`\n  - `mcp_server/session_tools/status.py`\n  - `mcp_server/session_tools/recovery_build.py`\n  - `mcp_server/session_tools/skills.py`\n  - `mcp_server/session_tools/complete.py`\n- Added explicit `report(action='consult')` and Source-aware `recall`:\n  - `mcp_server/report_tools/__init__.py`\n  - `mcp_server/report_tools/recall.py`\n- Added best-effort Source write-back:\n  - per finding in `mcp_server/report_tools/findings.py`\n  - on completion hold / terminal complete in `mcp_server/session_tools/complete.py` and `core/session/lifecycle.py`\n- Factored reusable note projection:\n  - `scripts/build_engagement_digest.py`\n- Documented Source usage:\n  - `CLAUDE.md`\n  - `.env.example`\n\nTest coverage by acceptance criterion\n1. Start binds Source and exposes it:\n   - `tests/test_session_source.py::test_start_binds_source_and_status_recovery_show_it`\n   - `tests/test_session.py::test_start_stores_source_instance`\n2. Unknown/blank/malformed/non-loopback never block start:\n   - `tests/test_sources.py::*`\n   - `tests/test_session_source.py::test_start_unknown_source_non_blocking`\n3. `use_source` rebinds/clears:\n   - `tests/test_session_source.py::test_use_source_rebinds_and_clears`\n4. `report(action='consult')` works and fail-softs:\n   - `tests/test_source_client.py::*`\n   - `tests/test_report_tools.py::test_report_consult_dispatch`\n5. `recall` merges engagements + Source / supports `scope:'source'`:\n   - `tests/test_recall.py::test_recall_merges_bound_source_with_engagements`\n   - `tests/test_recall.py::test_recall_source_scope_only`\n   - existing legacy-scope recall tests still pass\n6. `set_skill` Source methodology only on medium/full:\n   - `tests/test_session_source.py::test_set_skill_source_methodology_full_medium_not_small`\n   - existing `tests/test_session_no_kb.py::test_set_skill_has_no_recall_hint` still passes for direct `_do_set_skill`\n7. Finding write-back posts stable note without changing finding response flow:\n   - `tests/test_report_tools.py::test_finding_schedules_source_writeback_after_persist_and_not_on_duplicate`\n   - existing finding response tests still pass\n8. Completion write-back on held-success path and terminal transition:\n   - `tests/test_session_tools_helpers.py::TestDoComplete::test_no_blockers_schedule_source_digest_writeback`\n   - `tests/test_session.py::test_terminal_complete_schedules_digest_writeback`\n9. No regressions for existing behavior / CLI output unchanged:\n   - `tests/test_build_engagement_digest.py::test_build_cli_unchanged`\n   - full suite pass: `poetry run pytest -q`\n\nValidation run\n- Focused source/session/report/digest tests: passed\n- Full suite: `poetry run pytest -q` → passed\n\nNoticed, not touched\n- Existing test warnings remain (FastAPI/Starlette deprecations and some pre-existing async mock warnings).\n\nSTATUS: DONE"
+            },
+            "notes": "Stage completed: implement",
+            "usage": {
+              "input": {
+                "usage": {
+                  "model": {
+                    "provider": "openai",
+                    "model_id": "gpt-5.4"
+                  },
+                  "tokens": {
+                    "input_tokens": 189628,
+                    "output_tokens": 24310,
+                    "reasoning_tokens": 12493,
+                    "cache_read_tokens": 4925440,
+                    "cache_write_tokens": 0
+                  }
+                },
+                "facts": {
+                  "algorithm": "openai"
+                }
+              },
+              "total_usd_micros": 2257475
+            },
+            "timing": {
+              "wall_time_ms": 0,
+              "inference_time_ms": 359186,
+              "tool_time_ms": 172351,
+              "active_time_ms": 531537
+            }
+          },
+          "start": {
+            "status": "succeeded",
+            "usage": null
           }
         },
-        "next_node_id": "implement",
+        "next_node_id": "verify",
         "node_visits": {
+          "implement": 1,
           "spec": 1,
           "approve": 1,
           "start": 1,
@@ -1610,29 +1822,7 @@
   },
   "pull_request": null,
   "superseded_by": null,
-  "pending_interviews": {
-    "01M8BSDN5RWBC9BKAD00NPEW70": {
-      "question": {
-        "id": "01M8BSDN5RWBC9BKAD00NPEW70",
-        "text": "Approve the spec? To have it revised, type what should change.",
-        "stage": "approve",
-        "question_type": "multiple_choice",
-        "options": [
-          {
-            "key": "A",
-            "label": "[A] Approve"
-          },
-          {
-            "key": "X",
-            "label": "[X] Reject"
-          }
-        ],
-        "allow_freeform": true,
-        "context_display": "1. Intent\nAdd optional per-engagement Source memory binding to agent-smith. A scan can select a registered local Source instance; smith can consult it, `recall` can include it, medium/full skill selection gets one bounded methodology push, and findings/completion are mechanically written back as stable notes. All behavior is additive, bounded, local-only, and best-effort so an unconfigured or down Source never blocks a scan.\n\n2. Acceptance criteria\n1. With `SOURCE_REGISTRY` pointing at a registry containing `prod-web: http://127.0.0.1:<port>`, `session(action='start', options={target:'http://t', source:'prod-web'})` returns a start message naming `Source: prod-web`; `session.json`, `session(action='status')`, and `session(action='recovery')` expose `source_instance:{name:'prod-web', url:'http://127.0.0.1:<port>'}`.\n2. Unknown, blank, malformed, or non-loopback Source entries never block start; the response says no Source was bound and lists available valid names.\n3. `session(action='use_source', options={source:'name'})` rebinds the running engagement; `source:''` clears it. Both persist and are reflected by status/recovery.\n4. `report(action='consult', data={query:'x', k:2})` returns char-capped snippets from only the bound Source. With no binding or an unreachable Source it returns a clear no-source/unreachable message, not an exception.\n5. `report(action='recall', data={query:'x'})` still searches prior `engagements/*`; when Source is bound it also includes a labelled Source section. `scope:'engagements'` excludes Source; `scope:'source'` searches only Source. Legacy scopes (`kb`, `docs`, `nvd`, `wstg`, etc.) remain rejected.\n6. `session(action='set_skill', options={skill:'web-exploit', reason:'...'})` appends one bounded `Methodology from <source>` block only for `model_profile` `full` or `medium`; `small` produces no Source request/block.\n7. A successful `report(action='finding', ...)` posts one `POST /ingest` note with id `smith-<session_id>-finding-<finding_id>` and does not change the normal finding response text except for existing matrix/gate notes.\n8. When `session(action='complete')` reaches its existing human-signoff-held success path, and when `core.session.complete()` makes a terminal transition, Source receives/upserts `smith-<session_id>-digest` summarising target, scope, findings, endpoints, technologies, and auth assets. Blocked completion attempts do not ingest.\n9. Existing start/resume guards, dashboard token text, no-Source recall, finding dedup/trace validation, and `scripts/build_engagement_digest.py` CLI output keep working.\n\n3. Boundaries\nAlways use `core.paths.REPO_ROOT`, `core.logger.note`, `core.session._flush/load_from_disk`, existing `_background_tasks` for MCP fire-and-forget, `aiohttp` with short timeouts, and the current `scripts/build_engagement_digest.py` shaping style. Use stdlib parsing for a small YAML subset; add no dependency.\nNever implement the Source server, contact non-loopback URLs, change dashboard auth/completion gates, weaken legacy recall-scope rejection, or log/return raw ingest note bodies/secrets.\n\n4. Code map\n- `core/sources.py` (new): `SOURCE_REGISTRY_FILE`, `list_sources(registry_path=None)`, `resolve_source(name, registry_path=None)`; parse `sources.yaml`/`SOURCE_REGISTRY`, accept localhost HTTP only, return available names/errors. New tests.\n- `sources.yaml` (new): commented empty sample (`sources: {}`), no real targets.\n- `core/source_client.py` (new): `async search(query,k=3,mode=None,path=None,tags=None)`, `async ingest(notes)`, `ingest_best_effort(notes)`; read `scan_session.get()['source_instance']`, normalize Source JSON, cap output, fail-soft. New tests.\n- `core/session/lifecycle.py:start, complete`: accept/persist `source_instance`; terminal complete schedules digest ingest. Covered by `tests/test_session.py`.\n- `mcp_server/session_tools/start.py:_do_start,_start_response`: resolve `opts['source']`, pass to `scan_session.start`, show Source bound/warning.\n- `mcp_server/session_tools/__init__.py`: document `source`, `use_source`; dispatch async set-skill wrapper and sync `use_source`; update unknown-action text.\n- `mcp_server/session_tools/skills.py`: add async wrapper that calls existing `_do_set_skill` then appends profile-gated Source methodology; keep direct `_do_set_skill` behavior for existing tests.\n- `mcp_server/session_tools/status.py`, `recovery_build.py`: include `source_instance` when bound.\n- `mcp_server/report_tools/recall.py`: add Source tier/default merge and `scope:'source'`, preserving legacy rejection.\n- `mcp_server/report_tools/__init__.py`: document/dispatch `consult`.\n- `mcp_server/report_tools/findings.py`: after persisted finding, schedule per-finding Source ingest best-effort.\n- `scripts/build_engagement_digest.py`: add pure `project_notes(session, findings, known_assets=None, coverage=None, kind='digest'|'finding', finding=None) -> list[dict]`; keep `build()` output unchanged.\n- `CLAUDE.md`, `.env.example` (create if absent): document registry, `source`, `consult`, recall scopes, local/best-effort write-back.\n\n5. Edge cases\n| Case | Expected behaviour |\n|---|---|\n| no registry/blank source | scan starts unbound; consult says no Source bound |\n| malformed registry/missing url | invalid entries ignored; available list shows valid entries only |\n| URL not loopback HTTP | rejected; no outbound request |\n| Source down/timeout/bad JSON | original action succeeds or returns concise unavailable; log note only |\n| empty/non-token query | asks for a query or says no searchable terms |\n| oversized snippets/notes | snippets/methodology are char-capped; notes are compact |\n| duplicate finding/complete write-back | same stable id upserts; no duplicate expected |\n| background ingest failure | exception consumed/logged; MCP action does not fail |\n\n6. Security considerations\nNew trust boundary: operator-configured local HTTP Source. Validate registry URLs to loopback `http://localhost`, `127.0.0.1`, or `[::1]` to avoid SSRF/exfiltration. Source snippets are untrusted and may contain prompt injection; consult/recall/methodology output must label them as data, not instructions, and cap/fence snippets. Ingest may include credentials/tokens already in session state; never print them in MCP responses or logs. No shell, SQL, template rendering, or auth changes are required.\n\n7. Test plan\n- `tests/test_sources.py`: `test_resolve_source_known_loopback`, `test_resolve_source_unknown_lists_available`, `test_resolve_source_rejects_non_loopback_and_malformed`, `test_source_registry_env_override`.\n- `tests/test_source_client.py`: `test_consult_search_success_caps_and_labels`, `test_consult_no_bound_source`, `test_source_timeout_bad_json_fail_soft`, `test_ingest_best_effort_posts_notes_without_logging_secret`.\n- `tests/test_session_source.py`: `test_start_binds_source_and_status_recovery_show_it`, `test_start_unknown_source_non_blocking`, `test_use_source_rebinds_and_clears`, `test_set_skill_source_methodology_full_medium_not_small`.\n- `tests/test_recall.py`: add `test_recall_merges_bound_source_with_engagements`, `test_recall_source_scope_only`; keep legacy-scope tests passing.\n- `tests/test_report_tools.py`: add `test_report_consult_dispatch`, `test_finding_schedules_source_writeback_after_persist_and_not_on_duplicate`.\n- `tests/test_build_engagement_digest.py`: add `test_project_notes_finding_stable_id_and_shape`, `test_project_notes_digest_contains_scope_assets_findings`, `test_build_cli_unchanged`.\n- `tests/test_session.py`: add `test_start_stores_source_instance`, `test_terminal_complete_schedules_digest_writeback`.\nExisting `test_session_no_kb.py`, `test_small_model_profile.py`, `test_recall.py`, `test_report_tools.py`, and `test_build_engagement_digest.py` must still pass.\nTests required: yes\n\n8. Review focus\n1. Sync/async boundaries around set_skill, finding write-back, and terminal completion may block or drop tasks.\n2. Registry parser may be too narrow for real operator YAML.\n3. Digest notes may persist more secret material than intended.\n4. Source snippets may still steer the model despite data-only labels/fencing.\n5. Ingest from both MCP-complete and terminal-complete may cause unexpected upsert churn.\n\n9. Assumptions\n- Implement only agent-smith; Source HTTP server work belongs to the companion repo and is simulated by tests here.\n- Supported registry YAML subset: optional top-level `sources:`, entries as `name: {url: ...}` or indented `url:`.\n- Loopback HTTP only is mandatory even if an operator wants remote Source.\n- Raw credential/token values already in `known_assets` may be written to the bound Source vault but never surfaced in tool output/logs.\n\n10. Suspicious content\nnone\n\nSize: standard\nRisk level: medium\nReason: touches session state, outbound local HTTP, prompt-visible memory snippets, and persistence of sensitive engagement data; failures could leak secrets to the wrong local Source or steer scans with injected memory."
-      },
-      "started_at": "2026-11-26T11:21:30.552133905Z"
-    }
-  },
+  "pending_interviews": {},
   "stages": {
     "install@1": {
       "first_event_seq": 32,
@@ -2006,7 +2196,12 @@
       "first_event_seq": 192,
       "prompt": null,
       "response": null,
-      "completion": null,
+      "completion": {
+        "outcome": "succeeded",
+        "notes": null,
+        "failure_reason": null,
+        "timestamp": "2026-11-26T11:23:08.124226456Z"
+      },
       "provider_used": null,
       "diff": null,
       "script_invocation": null,
@@ -2015,6 +2210,12 @@
       "output": null,
       "started_at": "2026-11-26T11:21:30.540868765Z",
       "handler": "human",
+      "timing": {
+        "wall_time_ms": 97583,
+        "inference_time_ms": 0,
+        "tool_time_ms": 0,
+        "active_time_ms": 0
+      },
       "usage": {
         "input_tokens": 0,
         "output_tokens": 0,
@@ -2022,6 +2223,206 @@
         "reasoning_tokens": 0,
         "cache_read_tokens": 0,
         "cache_write_tokens": 0
+      },
+      "state": "succeeded"
+    },
+    "implement@1": {
+      "first_event_seq": 204,
+      "prompt": null,
+      "response": null,
+      "completion": null,
+      "provider_used": {
+        "mode": "agent",
+        "provider": "openai",
+        "model": "gpt-5.4",
+        "reasoning_effort": "medium"
+      },
+      "diff": null,
+      "script_invocation": null,
+      "script_timing": null,
+      "parallel_results": null,
+      "output": null,
+      "started_at": "2026-11-26T11:23:13.222500566Z",
+      "handler": "agent",
+      "usage": {
+        "input_tokens": 189628,
+        "output_tokens": 24310,
+        "total_tokens": 5151871,
+        "reasoning_tokens": 12493,
+        "cache_read_tokens": 4925440,
+        "cache_write_tokens": 0
+      },
+      "model": {
+        "provider": "openai",
+        "model_id": "gpt-5.4-2026-03-05"
+      },
+      "permission_level": "full",
+      "agent_tools": [
+        {
+          "name": "apply_patch",
+          "description": "Use the `apply_patch` tool to edit files. This is a FREEFORM tool, so do not wrap the patch in JSON.",
+          "source": {
+            "kind": "native"
+          },
+          "category": "write",
+          "invoked": true
+        },
+        {
+          "name": "close_agent",
+          "description": "Close a running subagent that is no longer needed.",
+          "source": {
+            "kind": "native"
+          },
+          "category": "subagent",
+          "invoked": false
+        },
+        {
+          "name": "glob",
+          "description": "Find files by file names using a glob pattern. Use path to choose the search root. Prefer this over shell find or ls when locating repository files.",
+          "source": {
+            "kind": "native"
+          },
+          "category": "read",
+          "invoked": true
+        },
+        {
+          "name": "grep",
+          "description": "Search file contents with a regex pattern. Use path to choose the search root, glob_filter to limit matching files, case_insensitive for case folding, and max_results to cap output.",
+          "source": {
+            "kind": "native"
+          },
+          "category": "read",
+          "invoked": true
+        },
+        {
+          "name": "read_file",
+          "description": "Read files before editing them. Returns line-numbered text and supports offset/limit for large files. Use this instead of shell cat, head, tail, or sed when inspecting repository files.",
+          "source": {
+            "kind": "native"
+          },
+          "category": "read",
+          "invoked": true
+        },
+        {
+          "name": "request_user_input",
+          "description": "Ask the human one or more questions and wait for their answers before continuing this stage.",
+          "source": {
+            "kind": "native"
+          },
+          "category": "other",
+          "invoked": false
+        },
+        {
+          "name": "send_input",
+          "description": "Send a follow-up message to a running subagent when new information or corrected instructions are needed.",
+          "source": {
+            "kind": "native"
+          },
+          "category": "subagent",
+          "invoked": false
+        },
+        {
+          "name": "shell",
+          "description": "Execute shell commands for terminal operations, package managers, tests and builds. Use dedicated tools for file reads, file edits, filename searches, and content searches. Provide timeout_ms for long-running commands.",
+          "source": {
+            "kind": "native"
+          },
+          "category": "shell",
+          "invoked": true
+        },
+        {
+          "name": "spawn_agent",
+          "description": "Spawn a subagent for independent work or context isolation. Use it for tasks that can proceed separately, and avoid duplicating the same work in the parent session.",
+          "source": {
+            "kind": "native"
+          },
+          "category": "subagent",
+          "invoked": false
+        },
+        {
+          "name": "update_plan",
+          "description": "Update the multi-step plan for the current task. Submit the entire plan; existing steps are reconciled by exact step text.",
+          "source": {
+            "kind": "native"
+          },
+          "category": "other",
+          "invoked": false
+        },
+        {
+          "name": "wait",
+          "description": "Wait for a subagent to complete, then use the result to synthesize the outcome for the user.",
+          "source": {
+            "kind": "native"
+          },
+          "category": "subagent",
+          "invoked": false
+        },
+        {
+          "name": "web_fetch",
+          "description": "Fetch content from a URL that starts with http:// or https://. Pass a prompt to extract specific information or summarize the page; omit prompt to return the page content.",
+          "source": {
+            "kind": "native"
+          },
+          "category": "other",
+          "invoked": false
+        },
+        {
+          "name": "web_search",
+          "description": "Search the web using Brave Search when current external information is needed. Returns result titles, URLs, and descriptions; use web_fetch for a specific URL.",
+          "source": {
+            "kind": "native"
+          },
+          "category": "other",
+          "invoked": false
+        },
+        {
+          "name": "write_file",
+          "description": "Create new files, or overwrite an existing file only when replacement is explicitly intended. Prefer edit_file for targeted changes to existing files because write_file overwrites the full file content.",
+          "source": {
+            "kind": "native"
+          },
+          "category": "write",
+          "invoked": false
+        }
+      ],
+      "context_window": {
+        "provider": "openai",
+        "model": "gpt-5.4",
+        "context_window_tokens": 272000,
+        "input_tokens": 164978,
+        "usage_percent": 60.65367647058824,
+        "count_method": "response_usage_scaled_breakdown",
+        "staleness": "live",
+        "generated_at": "2026-11-26T11:32:05.744095996Z",
+        "event_seq": 402,
+        "breakdown": [
+          {
+            "category": "system_prompt",
+            "tokens": 843,
+            "usage_percent": 0.3099264705882353
+          },
+          {
+            "category": "tools",
+            "tokens": 1208,
+            "usage_percent": 0.4441176470588235
+          },
+          {
+            "category": "memory",
+            "tokens": 2888,
+            "usage_percent": 1.061764705882353
+          },
+          {
+            "category": "conversation",
+            "tokens": 160034,
+            "usage_percent": 58.836029411764706
+          },
+          {
+            "category": "other",
+            "tokens": 5,
+            "usage_percent": 0.001838235294117647
+          }
+        ],
+        "warnings": []
       },
       "state": "running"
     },
