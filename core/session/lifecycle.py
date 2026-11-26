@@ -18,6 +18,7 @@ import json
 import os
 import time
 import uuid
+import asyncio
 from datetime import datetime, timezone
 
 import core.session as _sess
@@ -62,6 +63,7 @@ def start(
     skill:            str   | None = None,
     model_profile:    str   | None = None,
     scan_mode:        str        = "pentest",
+    source_instance:  dict | None = None,
     force_limits:     bool       = False,
 ) -> dict:
     """scan_mode: "pentest" (default) — HIR pauses for human decisions on ambiguous situations.
@@ -185,6 +187,7 @@ def start(
         "model_profile": resolved_profile,
         "model_profile_reason": profile_reason,
         "scan_mode":     scan_mode,
+        "source_instance": source_instance,
         "tool_invocations": [],
         "known_assets": {
             "domains": [], "ips": [], "ports": [],
@@ -297,11 +300,39 @@ def complete(
         if stop_reason is not None:
             _sess._current["stop_reason"] = stop_reason
         _sess._flush()
+        _schedule_source_digest_writeback(_sess._current)
         # Scan ended (human complete or force-complete): snapshot the final findings into
         # the durable training bundle (self-contained), then tear down the RCE containers.
         snapshot_training_bundle()
         stop_pentest_containers()
     return _sess._current or {}
+
+
+def _schedule_source_digest_writeback(current: dict) -> None:
+    """Best-effort Source digest write-back for terminal session transitions."""
+    if not (current or {}).get("source_instance"):
+        return
+    try:
+        from core import coverage as _coverage
+        from core import findings as _findings
+        from core import source_client as _source_client
+        from scripts.build_engagement_digest import project_notes
+
+        notes = project_notes(
+            current,
+            _findings._load().get("findings", []),
+            known_assets=current.get("known_assets"),
+            coverage=_coverage.get_matrix(),
+            kind="digest",
+        )
+        if not notes:
+            return
+        try:
+            asyncio.get_running_loop().create_task(_source_client.ingest_best_effort(notes))
+        except RuntimeError:
+            asyncio.run(_source_client.ingest_best_effort(notes))
+    except Exception:
+        pass
 
 
 def set_triage_requested(value: bool = True) -> None:

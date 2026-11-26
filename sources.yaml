@@ -1,0 +1,3 @@
+# Local Source registry for per-engagement memory binding.
+# Each entry must point to a localhost HTTP Source instance.
+sources: {}

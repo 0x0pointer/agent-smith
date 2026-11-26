@@ -13,6 +13,7 @@ import pytest
 from unittest.mock import patch, MagicMock
 
 import mcp_server._app as _app
+import mcp_server.session_tools.start as start_mod
 from mcp_server.session_tools import (
     _has_ctf_flag,
     _effective_tools,
@@ -156,6 +157,57 @@ def test_do_start_lists_threat_modeling_skill(coverage_file):
     result = _do_start({"target": "example.com", "depth": "recon"})
     assert "/threat-modeling" in result
     assert "/threat-model" not in result.replace("/threat-modeling", "")
+
+
+def test_start_optional_lines_cover_ignored_limits_benchmark_resume(monkeypatch):
+    monkeypatch.setattr(start_mod, "_prior_findings_brief", lambda target: "prior finding summary")
+    monkeypatch.setattr(start_mod._st, "_do_recovery", lambda: "recovery text")
+    monkeypatch.setattr(start_mod, "_anti_fp_digest_lines", lambda: ["anti-fp summary", ""])
+    lines = start_mod._optional_start_lines(
+        {"ignored_limits": {"max_time_minutes": 5}},
+        depth="danger",
+        scan_mode="benchmark",
+        target="http://target",
+        is_resume=True,
+    )
+    text = "\n".join(lines)
+    assert "IGNORED caller-supplied limit(s)" in text
+    assert "BENCHMARK MODE" in text
+    assert "DEEP-PIVOT MODE" in text
+    assert "prior finding summary" in text
+    assert "recovery text" in text
+    assert "anti-fp summary" in text
+
+
+def test_dashboard_resume_and_running_scan_messages(monkeypatch):
+    monkeypatch.setattr(start_mod, "_dashboard_url", lambda: "http://localhost:7777/#k=test")
+    monkeypatch.setattr(start_mod._st, "_do_recovery", lambda: "resume payload")
+    resume = start_mod._resume_in_place_response(
+        {"target": "http://t", "depth": "danger", "scan_mode": "benchmark", "scan_phase": "B"}
+    )
+    refusal = start_mod._running_scan_refusal(
+        {"target": "http://t", "depth": "danger", "scan_phase": "B"},
+        "http://other",
+    )
+    assert "resume payload" in resume
+    assert "http://localhost:7777/#k=test" in resume
+    assert "REFUSED" in refusal
+    assert "force_restart" in refusal
+
+
+def test_do_start_resumes_same_target_and_refuses_different_target(monkeypatch):
+    monkeypatch.setattr(start_mod.scan_session, "get", lambda: {"status": "running"})
+    monkeypatch.setattr(start_mod.scan_session, "load_from_disk", lambda: None)
+    monkeypatch.setattr(start_mod.scan_session, "_reconcile_if_external_write", lambda: None)
+    monkeypatch.setattr(
+        start_mod.scan_session,
+        "resume_if_running",
+        lambda: {"target": "http://t", "depth": "standard", "scan_mode": "pentest", "scan_phase": "A"},
+    )
+    monkeypatch.setattr(start_mod, "_resume_in_place_response", lambda live: "resumed")
+    monkeypatch.setattr(start_mod, "_running_scan_refusal", lambda live, requested: f"refused:{requested}")
+    assert start_mod._do_start({"target": "http://t"}) == "resumed"
+    assert start_mod._do_start({"target": "http://other"}) == "refused:http://other"
 
 
 # ---------------------------------------------------------------------------
@@ -1040,6 +1092,21 @@ class TestDoComplete:
             or "sign-off" in result.lower()
             or "complete" in result.lower()
         )
+
+    def test_no_blockers_schedule_source_digest_writeback(self, tmp_path, monkeypatch):
+        import core.session as scan_session
+        self._setup_session(tmp_path, monkeypatch, depth="standard")
+        cur = scan_session.get()
+        cur["source_instance"] = {"name": "prod-web", "url": "http://127.0.0.1:7801"}
+        scan_session._flush()
+        seen = []
+        monkeypatch.setattr("mcp_server.session_tools.complete._schedule_digest_writeback_best_effort",
+                            lambda: seen.append("scheduled"))
+        with patch("mcp_server.session_tools._effective_tools", return_value=set()), \
+             patch("mcp_server.session_tools._collect_completion_blockers", return_value=[]), \
+             patch("mcp_server.session_tools._record_metrics"):
+            _do_complete()
+        assert seen == ["scheduled"]
 
     def test_already_terminal_short_circuits_without_re_running_gate(self, tmp_path, monkeypatch):
         """Operator force-completed out-of-band (terminal status on disk). The

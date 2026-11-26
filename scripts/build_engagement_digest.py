@@ -77,6 +77,113 @@ def _asset_counts(ka: dict) -> dict:
     return {k: (len(v) if isinstance(v, list) else v) for k, v in (ka or {}).items()}
 
 
+def _lines_from_known_assets(known_assets: dict) -> list[str]:
+    lines: list[str] = []
+    ka = known_assets or {}
+
+    def _append(kind, fmt=lambda x: str(x), label=None):
+        vals = ka.get(kind) or []
+        if not vals:
+            return
+        lines.append(f"- **{label or kind}** ({len(vals)}): " +
+                     ", ".join(fmt(v) for v in vals[:25]) + (" …" if len(vals) > 25 else ""))
+
+    _append("ips")
+    _append("domains")
+    _append("ports", lambda p: f"{p.get('host','')}:{p.get('port','')}/{p.get('service','')}" if isinstance(p, dict) else str(p))
+    _append("technologies")
+    _append("endpoints", lambda e: (e.get("path") if isinstance(e, dict) else str(e)))
+    _append("credentials", lambda c: (c.get("username") or c.get("user") or "unknown") if isinstance(c, dict) else str(c))
+    _append("auth_tokens", lambda t: (t.get("type") or "token") if isinstance(t, dict) else "token")
+    _append("auth_endpoints", lambda e: (f"{e.get('method','')} {e.get('path','')}" if isinstance(e, dict) else str(e)))
+    return lines
+
+
+def project_notes(session, findings, known_assets=None, coverage=None,
+                  kind: str = "digest", finding=None) -> list[dict]:
+    """Project the structured engagement state into stable Source note payloads."""
+    session = session or {}
+    known_assets = known_assets if known_assets is not None else (session.get("known_assets", {}) or {})
+    coverage = coverage or {"endpoints": [], "matrix": []}
+    session_id = session.get("id") or "unknown-session"
+    target = session.get("target") or "unknown-target"
+
+    if kind == "finding":
+        entry = finding or {}
+        fid = entry.get("id")
+        if not fid:
+            return []
+        lines = [
+            f"# Finding — {entry.get('title') or '(untitled)'}",
+            "",
+            f"- Target: {target}",
+            f"- Severity: {entry.get('severity') or 'unknown'}",
+            f"- Finding ID: {fid}",
+        ]
+        if entry.get("cve"):
+            lines.append(f"- CVE: {entry['cve']}")
+        if entry.get("description"):
+            lines += ["", "## Description", str(entry["description"]).strip()]
+        if entry.get("evidence"):
+            lines += ["", "## Evidence", str(entry["evidence"]).strip()]
+        return [{
+            "id": f"smith-{session_id}-finding-{fid}",
+            "title": f"smith finding: {entry.get('title') or fid}",
+            "tags": ["agent-smith", "finding", str(entry.get("severity") or "unknown").lower()],
+            "text": "\n".join(lines).strip() + "\n",
+        }]
+
+    endpoints = coverage.get("endpoints", []) or []
+    tech = known_assets.get("technologies", []) or []
+    scope = session.get("scope") or [target]
+    auth_assets = {
+        "credentials": [
+            {"username": c.get("username") or c.get("user") or "unknown", "source": c.get("source")}
+            for c in (known_assets.get("credentials") or []) if isinstance(c, dict)
+        ],
+        "auth_tokens": [
+            {"type": t.get("type") or "token", "role": t.get("role")}
+            for t in (known_assets.get("auth_tokens") or []) if isinstance(t, dict)
+        ],
+        "auth_endpoints": [
+            {"method": e.get("method"), "path": e.get("path")}
+            for e in (known_assets.get("auth_endpoints") or []) if isinstance(e, dict)
+        ],
+    }
+    lines = [
+        f"# Engagement digest — {target}",
+        "",
+        f"- Session ID: {session_id}",
+        f"- Status: {session.get('status') or 'unknown'}",
+        f"- Scope: {', '.join(str(s) for s in scope)}",
+        f"- Findings: {len(findings or [])}",
+        f"- Endpoints: {len(endpoints)}",
+        f"- Technologies: {', '.join(str(t) for t in tech[:20]) if tech else '(none recorded)'}",
+        "",
+        "## Findings",
+    ]
+    if findings:
+        for item in findings[:20]:
+            lines.append(f"- [{str(item.get('severity') or '?').upper()}] {item.get('title') or '(untitled)'}")
+    else:
+        lines.append("- (none recorded)")
+    lines += ["", "## Endpoints"]
+    if endpoints:
+        for endpoint in endpoints[:25]:
+            lines.append(f"- {endpoint.get('method', 'GET')} {endpoint.get('path', '')}".strip())
+    else:
+        lines.append("- (none recorded)")
+    lines += ["", "## Auth assets", "```", json.dumps(auth_assets, indent=2), "```", "", "## Known assets"]
+    asset_lines = _lines_from_known_assets(known_assets)
+    lines.extend(asset_lines or ["- (none recorded)"])
+    return [{
+        "id": f"smith-{session_id}-digest",
+        "title": f"smith digest: {target}",
+        "tags": ["agent-smith", "digest"],
+        "text": "\n".join(lines).strip() + "\n",
+    }]
+
+
 def build(session_path: str, coverage_path: str | None, findings_path: str | None,
           name: str | None, out_dir: str | None) -> str:
     session = _load_json(session_path) if os.path.exists(session_path) else {}
@@ -200,23 +307,9 @@ def build(session_path: str, coverage_path: str | None, findings_path: str | Non
     lines.append("")
 
     lines.append("## Known assets (reuse — do not re-discover)")
-    ka = known_assets
-    def _list(kind, fmt=lambda x: str(x)):
-        vals = ka.get(kind) or []
-        if not vals:
-            return
-        lines.append(f"- **{kind}** ({len(vals)}): " +
-                     ", ".join(fmt(v) for v in vals[:25]) + (" …" if len(vals) > 25 else ""))
-    _list("ips")
-    _list("domains")
-    _list("ports", lambda p: f"{p.get('host','')}:{p.get('port','')}/{p.get('service','')}" if isinstance(p, dict) else str(p))
-    _list("technologies")
-    _list("endpoints", lambda e: (e.get("path") if isinstance(e, dict) else str(e)))
-    _list("credentials", lambda c: (c.get("username", "?") if isinstance(c, dict) else str(c)))
-    _list("auth_tokens", lambda t: "token" )
-    _list("auth_endpoints", lambda e: (f"{e.get('method','')} {e.get('path','')}" if isinstance(e, dict) else str(e)))
-    if not any(ka.get(k) for k in ("ips", "domains", "ports", "technologies", "endpoints",
-                                   "credentials", "auth_tokens", "auth_endpoints")):
+    lines.extend(_lines_from_known_assets(known_assets))
+    if not any(known_assets.get(k) for k in ("ips", "domains", "ports", "technologies", "endpoints",
+                                    "credentials", "auth_tokens", "auth_endpoints")):
         lines.append("- (none recorded)")
     lines.append("")
 
