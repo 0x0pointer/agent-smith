@@ -616,7 +616,15 @@ Read, in this order, whichever of these exist:
 - /tmp/fabro/last-review.md - reviewer findings that must stay fixed.
 Then inspect the current change with: git diff origin/main
 
-METHOD: read .fabro/skills/verification-before-completion/SKILL.md and follow it. Every claim in your summary (a test passes, a failure is fixed, a regression test works) needs the output of a command you ran in this session after your last edit. For a regression test use its red-green pattern: see the test pass with the fix, see it fail without the fix, restore the fix. Where a check cannot run in this sandbox, say so instead of claiming it. If the file is missing in this checkout, continue without it.
+METHOD: read .fabro/skills/systematic-debugging/SKILL.md and .fabro/skills/verification-before-completion/SKILL.md before you change anything, and follow both skills. Apply them to this pipeline as follows. Where a skill and this prompt disagree, this prompt wins.
+- The failure to investigate is the one in /tmp/fabro/todo.md (full log in /tmp/fabro/verify.log). Phase 1 of systematic-debugging starts by reproducing it here and reading the whole error. Earlier fix attempts already failed, so the skill's rule for repeated failed fixes applies from the start.
+- No fix before the root cause: complete Phase 1 (root cause) and Phase 2 (compare with similar code in the repository that works) before you edit, then one hypothesis and the smallest change that tests it. If it does not hold, undo it before the next one.
+- Read root-cause-tracing.md in the same folder only when the error surfaces deep in a call stack. Read defense-in-depth.md only when the cause is a missing check at a boundary, and condition-based-waiting.md only when the failure depends on timing. Otherwise leave them.
+- Diagnostic output you add to find the cause is removed again before you finish.
+- Phase 4 asks for a failing test first: write the regression test, see it fail, then fix the cause.
+- There is nobody to discuss with. Where the skill says to stop after three failed fixes and question the architecture with your human partner, stop changing code and say so plainly in your summary: what you tried, why each attempt failed, and what you think is wrong with the approach. A maintainer then decides.
+- From verification-before-completion: every claim in your summary (a test passes, a failure is fixed, a regression test works) needs the output of a command you ran in this session after your last edit. For a regression test use its red-green pattern: see the test pass with the fix, see it fail without the fix, restore the fix. Where a check cannot run in this sandbox, say so instead of claiming it.
+- If a skill file is missing in this checkout, continue without it.
 
 Work in this order and do not skip ahead:
 1. Reproduce - run the failing test or command and read the whole error.
@@ -890,7 +898,13 @@ Read, in this order, whichever of these exist:
 - /tmp/fabro/last-review.md - reviewer findings that must stay fixed.
 Then inspect the current change with: git diff origin/main
 
-METHOD: read .fabro/skills/verification-before-completion/SKILL.md and follow it. Every claim in your summary (a test passes, a failure is fixed, a regression test works) needs the output of a command you ran in this session after your last edit. For a regression test use its red-green pattern: see the test pass with the fix, see it fail without the fix, restore the fix. Where a check cannot run in this sandbox, say so instead of claiming it. If the file is missing in this checkout, continue without it.
+METHOD: read .fabro/skills/test-driven-development/SKILL.md and .fabro/skills/verification-before-completion/SKILL.md, and follow both skills. When you write or change a test, also read writing-good-tests.md in the test-driven-development folder. Apply them to this pipeline as follows. Where a skill and this prompt disagree, this prompt wins.
+- For everything the feedback changes or adds, write or update the test first, run it and see it fail for the right reason, then change the code until it passes.
+- The skill's rule to delete code that was written before its test applies to code you write in this step. Do not delete the existing implementation because of it.
+- Test-driven development does not apply to changes that touch no Python code when the spec says 'Tests required: no'.
+- The commands in the skills are examples from other stacks. Use the test command named below.
+- The maintainer's feedback is the only human input there is. Where a skill says to ask your human partner, use step 4 below.
+- From verification-before-completion: every claim in your summary (a test passes, a failure is fixed, a regression test works) needs the output of a command you ran in this session after your last edit. For a regression test use its red-green pattern: see the test pass with the fix, see it fail without the fix, restore the fix. Where a check cannot run in this sandbox, say so instead of claiming it.
 
 Work in this order:
 1. Record - write the feedback, word for word, to /tmp/fabro/feedback.md, replacing an older one.

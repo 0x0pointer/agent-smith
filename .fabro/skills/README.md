@@ -12,9 +12,10 @@ verify step rejects any change under `.fabro/`.
 |---|---|---|
 | `spec-driven-development` | Write spec (standard changes) | addyosmani/agent-skills |
 | `planning-and-task-breakdown` | Write spec (standard changes) | addyosmani/agent-skills |
-| `test-driven-development` | Implement | obra/superpowers |
+| `test-driven-development` | Implement, Fix with maintainer feedback | obra/superpowers |
 | `incremental-implementation` | Implement (first pass, standard changes) | addyosmani/agent-skills |
-| `verification-before-completion` | Implement, every fix stage, both `fix-ci` stages | obra/superpowers |
+| `systematic-debugging` | Escalated fix, both `fix-ci` stages | obra/superpowers |
+| `verification-before-completion` | Every stage that changes code: Implement, all fix stages, both `fix-ci` stages | obra/superpowers |
 | `code-review-and-quality` | Review (standard reviewer) | addyosmani/agent-skills |
 | `differential-review` | Security review | trailofbits/skills |
 
@@ -64,19 +65,23 @@ a copy of the repository under `/tmp`.
 
 ## Skills from obra/superpowers
 
-`test-driven-development` (with `writing-good-tests.md`) and
-`verification-before-completion`.
+`test-driven-development` (with `writing-good-tests.md`),
+`systematic-debugging` and `verification-before-completion`.
 
 - Source: https://github.com/obra/superpowers/tree/main/skills
 - Copied from commit `22f0b463e7a5e579904dd6211a520321035526f7`, each folder
-  under `skills/` unchanged.
+  under `skills/` unchanged. From `systematic-debugging` only the Markdown
+  files are here: `find-polluter.sh` and `condition-based-waiting-example.ts`
+  are written for npm projects and are left out.
 - Author: Jesse Vincent. License: MIT; the upstream `LICENSE` file is in each
   folder.
 
 The stage prompts limit the rule "delete code written before its test" to
 code written in the same step, so a fix pass does not throw away the existing
 implementation, and exempt changes without Python code when the spec says
-`Tests required: no`.
+`Tests required: no`. `systematic-debugging` tells the agent to discuss the
+architecture with a person after three failed fixes; here it stops and says
+so in its summary, and the run goes to a maintainer.
 
 ## Not included
 

@@ -315,7 +315,15 @@ Read, in this order:
 - /tmp/fabro/pr.md - what the pull request is meant to do.
 - The change under repair: git diff origin/main
 
-METHOD: read .fabro/skills/verification-before-completion/SKILL.md and follow it. Every claim in your summary (a test passes, a failure is fixed, a regression test works) needs the output of a command you ran in this session after your last edit. For a regression test use its red-green pattern: see the test pass with the fix, see it fail without the fix, restore the fix. Where a check cannot run in this sandbox, say so instead of claiming it. If the file is missing in this checkout, continue without it.
+METHOD: read .fabro/skills/systematic-debugging/SKILL.md and .fabro/skills/verification-before-completion/SKILL.md before you change anything, and follow both skills. Apply them to this pipeline as follows. Where a skill and this prompt disagree, this prompt wins.
+- The failure to investigate is the one in /tmp/fabro/ci-failures.md. Phase 1 of systematic-debugging starts by reproducing it here and reading the whole error. A check that cannot run in this sandbox cannot be reproduced: for that one, Phase 1 is reading its complete output under /tmp/fabro/ci-logs/.
+- No fix before the root cause: complete Phase 1 (root cause) and Phase 2 (compare with similar code in the repository that works) before you edit, then one hypothesis and the smallest change that tests it. If it does not hold, undo it before the next one.
+- Read root-cause-tracing.md in the same folder only when the error surfaces deep in a call stack. Read defense-in-depth.md only when the cause is a missing check at a boundary, and condition-based-waiting.md only when the failure depends on timing. Otherwise leave them.
+- Diagnostic output you add to find the cause is removed again before you finish.
+- Phase 4 asks for a failing test first: write the regression test, see it fail, then fix the cause.
+- There is nobody to discuss with. Where the skill says to stop after three failed fixes and question the architecture with your human partner, stop changing code and say so plainly in your summary: what you tried, why each attempt failed, and what you think is wrong with the approach. A maintainer then decides.
+- From verification-before-completion: every claim in your summary (a test passes, a failure is fixed, a regression test works) needs the output of a command you ran in this session after your last edit. For a regression test use its red-green pattern: see the test pass with the fix, see it fail without the fix, restore the fix. Where a check cannot run in this sandbox, say so instead of claiming it.
+- If a skill file is missing in this checkout, continue without it.
 
 How to fix:
 - Find the cause of every reported failure and fix it. When a test and the code disagree, decide from /tmp/fabro/pr.md and the surrounding code which one is wrong, and fix that one. Never make a check pass by deleting, skipping or weakening a test, by loosening an assertion that expresses intended behaviour, or by silencing a rule (noqa, NOSONAR, type: ignore, pragma: no cover) without a reason stated in a comment.
@@ -340,7 +348,15 @@ Read, in this order, whichever of these exist:
 - /tmp/fabro/pr.md - what the pull request is meant to do.
 Then inspect the pull request with: git diff origin/main
 
-METHOD: read .fabro/skills/verification-before-completion/SKILL.md and follow it. Every claim in your summary (a test passes, a failure is fixed, a regression test works) needs the output of a command you ran in this session after your last edit. For a regression test use its red-green pattern: see the test pass with the fix, see it fail without the fix, restore the fix. Where a check cannot run in this sandbox, say so instead of claiming it. If the file is missing in this checkout, continue without it.
+METHOD: read .fabro/skills/systematic-debugging/SKILL.md and .fabro/skills/verification-before-completion/SKILL.md before you change anything, and follow both skills. Apply them to this pipeline as follows. Where a skill and this prompt disagree, this prompt wins.
+- The failure to investigate is the one in /tmp/fabro/verify-summary.md and /tmp/fabro/ci-failures.md. Phase 1 of systematic-debugging starts by reproducing it here and reading the whole error. An earlier fix attempt already failed, so do not repeat it. A check that cannot run in this sandbox cannot be reproduced: for that one, Phase 1 is reading its complete output under /tmp/fabro/ci-logs/.
+- No fix before the root cause: complete Phase 1 (root cause) and Phase 2 (compare with similar code in the repository that works) before you edit, then one hypothesis and the smallest change that tests it. If it does not hold, undo it before the next one.
+- Read root-cause-tracing.md in the same folder only when the error surfaces deep in a call stack. Read defense-in-depth.md only when the cause is a missing check at a boundary, and condition-based-waiting.md only when the failure depends on timing. Otherwise leave them.
+- Diagnostic output you add to find the cause is removed again before you finish.
+- Phase 4 asks for a failing test first: write the regression test, see it fail, then fix the cause.
+- There is nobody to discuss with. Where the skill says to stop after three failed fixes and question the architecture with your human partner, stop changing code and say so plainly in your summary: what you tried, why each attempt failed, and what you think is wrong with the approach. A maintainer then decides.
+- From verification-before-completion: every claim in your summary (a test passes, a failure is fixed, a regression test works) needs the output of a command you ran in this session after your last edit. For a regression test use its red-green pattern: see the test pass with the fix, see it fail without the fix, restore the fix. Where a check cannot run in this sandbox, say so instead of claiming it.
+- If a skill file is missing in this checkout, continue without it.
 
 Resolve every failing local check and every failure from the CI output.
 
