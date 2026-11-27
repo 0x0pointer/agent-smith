@@ -527,7 +527,7 @@
     "kind": "running"
   },
   "status_updated_at": "2026-11-27T11:44:37.222097388Z",
-  "last_event_at": "2026-11-27T11:54:44.983831277Z",
+  "last_event_at": "2026-11-27T11:54:49.992600437Z",
   "pending_control": null,
   "checkpoints": [
     {
@@ -842,9 +842,9 @@
       }
     },
     {
-      "seq": 0,
+      "seq": 244,
       "checkpoint": {
-        "timestamp": "2026-11-27T11:54:44.995447744Z",
+        "timestamp": "2026-11-27T11:54:49.970423227Z",
         "current_node": "verify",
         "completed_nodes": [
           "start",
@@ -855,32 +855,179 @@
         ],
         "node_retries": {},
         "context_values": {
-          "last_stage": "fix",
-          "internal.run_id": "01M8ED4GGTVE9X3C0GGGK81KRZ",
+          "thread.install.current_node": "fix",
+          "thread.start.current_node": "pick_pr",
+          "graph.rankdir": "LR",
+          "internal.thread_id": "fix",
+          "internal.retry_count.fix": 0,
+          "last_response": "Fixed the reported CI failures on this branch.\n\n- **CodeQL**\n  - **Cause:** `control_plane.orchestrator` embedded user-supplied run options directly into the spawned worker’s command-line prompt, an",
+          "graph.model_stylesheet": "\n            *       { model: gpt-5.4; reasoning_effort: medium; }\n            .strong { model: gpt-5.5; reasoning_effort: high; }\n        ",
+          "internal.retry_count.start": 0,
+          "internal.retry_count.install": 0,
+          "internal.work_dir": "/workspace/agent-smith",
+          "thread.pick_pr.current_node": "install",
           "response.fix": "Fixed the reported CI failures on this branch.\n\n- **CodeQL**\n  - **Cause:** `control_plane.orchestrator` embedded user-supplied run options directly into the spawned worker’s command-line prompt, and `/api/runs` routes returned raw `RuntimeError` text to clients.\n  - **Change:** wrote run start options to a per-run JSON file (`control_plane_start.json`) inside the run workdir and changed the worker prompt to reference that file instead of inlining target/scope data in argv. Also changed `core/api_server/routes/runs_routes.py` to mask runtime failures behind a generic `503 {\"error\": \"service unavailable\"}` response.\n  - **Regression coverage:** added tests for the bootstrap-file flow and for masked runtime errors on create/mint-token/stop routes.\n\n- **test**\n  - **Cause:** the new container isolation test assumed the Docker executable string would always be exactly `\"docker\"`, but production intentionally resolves an absolute path such as `/usr/bin/docker` on some hosts/CI runners.\n  - **Change:** made the test assert against `runner.docker_executable()` and explicitly simulate the absolute-path case.\n\nVerification run after the final edit:\n- `poetry run pytest tests/test_control_plane.py tests/test_runs_routes.py tests/test_container_isolation.py -q` → **37 passed**\n- `poetry run pytest -q` → **2813 passed, 22 skipped**",
+          "current_node": "verify",
+          "internal.retry_count.pick_pr": 0,
+          "thread.fix.current_node": "verify",
+          "internal.run_id": "01M8ED4GGTVE9X3C0GGGK81KRZ",
+          "internal.node_visit_count": 1,
+          "internal.retry_count.verify": 0,
+          "internal.fidelity": "compact",
+          "outcome": "succeeded",
+          "command.output": "blob://sha256/d10a639c39299c488d265c24c24b71f50570d02175da95a6d72426448f45087f",
+          "failure_class": "",
+          "failure_signature": "",
+          "graph.goal": "Fix the failed CI checks on a Fabro pull request of 0x0pointer/agent-smith and push the fix to the same branch",
+          "graph.max_node_visits": "12",
+          "last_stage": "fix"
+        },
+        "node_outcomes": {
+          "pick_pr": {
+            "status": "succeeded",
+            "context_updates": {
+              "command.output": "blob://sha256/ef3a55d47ba9203c045fbcb2b4e361449acc596dd087784c61f86bf3e6a09cf8"
+            },
+            "notes": "Script completed: \nimport json, os, re, subprocess, sys, urllib.error, urllib.parse, urllib.request\nOWNER, NAME = '0x0pointer', 'agent-smith'\nAPI = 'https://api.github.com/repos/' + OWNER + '/' + NAME\nRAW_PR = '0'.strip()\nAUTHORS = set(a.strip().lower() for a in '0x0pointerbot'.split(',') if a.strip())\nPREFIX = 'fabro/run/'\nMAX_ROUNDS = int('3')\nIGNORED = set(c.strip().lower() for c in 'notify'.split(',') if c.strip())\nSONAR = '0x0pointer_agent-smith'\nMARK = '<!-- fabro-fix-ci -->'\nFAILING = ('failure', 'timed_out', 'startup_failure')\nD = '/tmp/fabro'\nNL = chr(10)\nclass Skip(Exception):\n    pass\ndef refuse(msg):\n    print('REFUSED: ' + msg)\n    sys.exit(1)\ntoken = os.environ.get('GITHUB_TOKEN')\nif not token:\n    refuse('no GITHUB_TOKEN in the sandbox')\nif not RAW_PR.isdigit():\n    refuse('pr must be a number; 0 picks the oldest pull request with failed checks')\nPR = int(RAW_PR)\nif not AUTHORS or not PREFIX:\n    refuse('pr_authors and branch_prefix must be set')\ndef fetch(url, body=None, auth=True, raw=False, redirect=True):\n    headers = dict(Accept='application/vnd.github+json')\n    if auth:\n        headers['Authorization'] = 'Bearer ' + token\n    data = json.dumps(body).encode() if body is not None else None\n    req = urllib.request.Request(url, data=data, headers=headers)\n    opener = urllib.request.build_opener() if redirect else urllib.request.build_opener(NoRedirect)\n    with opener.open(req, timeout=60) as resp:\n        content = resp.read()\n    return content if raw else json.loads(content or b'null')\nclass NoRedirect(urllib.request.HTTPRedirectHandler):\n    def redirect_request(self, *args, **kwargs):\n        return None\ndef job_log(job_id):\n    # The log lives on a storage host behind a redirect that must not get our token.\n    url = API + '/actions/jobs/' + str(job_id) + '/logs'\n    try:\n        return fetch(url, raw=True, redirect=False).decode(errors='replace')\n    except urllib.error.HTTPError as exc:\n        location = exc.headers.get('Location')\n        if exc.code not in (301, 302, 303, 307, 308) or not location:\n            raise\n    req = urllib.request.Request(location)\n    with urllib.request.urlopen(req, timeout=60) as resp:\n        return resp.read().decode(errors='replace')\nANSI = re.compile(re.escape(chr(27) + '[') + '[0-9;]*[A-Za-z]')\nSTAMP = re.compile('^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z ?')\ndef excerpt(log, slug):\n    # Returns the part of a job log worth reading. The complete log and the\n    # complete failure output are saved next to it, untruncated.\n    lines = [STAMP.sub('', ANSI.sub('', l.lstrip(chr(65279)))) for l in log.splitlines()]\n    os.makedirs(D + '/ci-logs', exist_ok=True)\n    full_path = D + '/ci-logs/' + slug + '.log'\n    with open(full_path, 'w') as f:\n        f.write(NL.join(lines) + NL)\n    def first(needles, start=0):\n        for i in range(start, len(lines)):\n            if any(n in lines[i] for n in needles):\n                return i\n        return None\n    detail = first(('= FAILURES =', '= ERRORS ='))\n    summary = first(('short test summary info',))\n    error = first(('##[error]',))\n    parts = []\n    note = 'Complete job log: ' + full_path\n    if summary is not None:\n        tail = lines[summary:summary + 200]\n        stop = [i for i, l in enumerate(tail) if '##[error]' in l]\n        tail = tail[:stop[0] + 1] if stop else tail\n        parts.append(NL.join(l[:400] for l in tail))\n    if detail is not None:\n        end = first(('= warnings summary =', '= tests coverage =', 'short test summary info'), detail + 1)\n        block = lines[detail:end if end is not None else len(lines)]\n        fail_path = D + '/ci-logs/' + slug + '-failures.txt'\n        with open(fail_path, 'w') as f:\n            f.write(NL.join(block) + NL)\n        shown = NL.join(l[:3000] for l in block)\n        cut = len(shown) > 60000 or any(len(l) > 3000 for l in block)\n        parts.append(shown[:60000])\n        note = 'Complete failure output' + (' (the text above is cut)' if cut else '') + ': ' + fail_path + NL + note\n    if not parts:\n        if error is not None:\n            parts.append(NL.join(l[:3000] for l in lines[max(0, error - 150):error + 1]))\n        else:\n            parts.append(NL.join(l[:3000] for l in lines[-150:]))\n    return (NL + NL).join(parts) + NL + NL + note\ndef sonar_report(number, sha):\n    # Returns (text, needs_work) from SonarCloud's public API, or (None, False)\n    # when it has not analysed this pull request.\n    if not SONAR or SONAR.lower() == 'none':\n        return None, False\n    base = 'https://sonarcloud.io/api/'\n    key = urllib.parse.quote(SONAR)\n    scope = key + '&pullRequest=' + str(number)\n    out = []\n    try:\n        listed = fetch(base + 'project_pull_requests/list?project=' + key, auth=False).get('pullRequests', [])\n        mine = [p for p in listed if str(p.get('key')) == str(number)]\n        if not mine:\n            return None, False\n        analysed = str((mine[0].get('commit') or dict()).get('sha') or '')\n        if analysed and analysed != sha:\n            out.append('NOTE: SonarCloud last analysed commit ' + analysed[:8] + ', not the current ' + sha[:8]\n                + '. Findings below may already be fixed; check each against the current code.')\n    except Exception:\n        pass\n    status = None\n    try:\n        gate = fetch(base + 'qualitygates/project_status?projectKey=' + scope, auth=False)['projectStatus']\n        status = gate.get('status')\n        out.append('Quality gate: ' + str(status))\n        for c in gate.get('conditions', []):\n            if c.get('status') != 'OK':\n                out.append('- failed condition ' + str(c.get('metricKey')) + ': actual ' + str(c.get('actualValue')) + ', threshold ' + str(c.get('errorThreshold')))\n    except Exception as exc:\n        out.append('Quality gate could not be read (' + type(exc).__name__ + ')')\n    total = 0\n    try:\n        issues = []\n        for page in range(1, 6):\n            found = fetch(base + 'issues/search?componentKeys=' + scope + '&resolved=false&ps=100&p=' + str(page), auth=False)\n            total = int(found.get('total') or 0)\n            issues.extend(found.get('issues', []))\n            if len(issues) >= total or not found.get('issues'):\n                break\n        out.append('Open issues on this pull request: ' + str(total) + (' (first ' + str(len(issues)) + ' listed)' if len(issues) < total else ''))\n        for i in issues:\n            path = str(i.get('component', '')).split(':', 1)[-1]\n            out.append('- ' + path + ':' + str(i.get('line', '?')) + ' [' + str(i.get('type')) + ', ' + str(i.get('severity')) + ', ' + str(i.get('rule')) + '] ' + str(i.get('message', ''))[:500])\n    except Exception as exc:\n        out.append('Issues could not be read (' + type(exc).__name__ + ')')\n    spots = []\n    try:\n        spots = fetch(base + 'hotspots/search?projectKey=' + scope + '&status=TO_REVIEW&ps=100', auth=False).get('hotspots', [])\n        for h in spots:\n            path = str(h.get('component', '')).split(':', 1)[-1]\n            out.append('- security hotspot ' + path + ':' + str(h.get('line', '?')) + ' ' + str(h.get('message', ''))[:500])\n    except Exception:\n        pass\n    return NL.join(out), bool(total or spots or status not in (None, 'OK'))\ndef is_sonar(run):\n    return 'sonar' in ((run.get('app') or dict()).get('slug') or '').lower() or 'sonar' in run['name'].lower()\ndef describe(run, number, sha):\n    # Everything known about one failed check, as text for the fixing agent.\n    name = run['name']\n    app = ((run.get('app') or dict()).get('slug') or '').lower()\n    text = ['## Failed check: ' + name, '']\n    output = run.get('output') or dict()\n    if output.get('title'):\n        text.append('Title: ' + str(output['title'])[:300])\n    if is_sonar(run):\n        text.append(sonar_report(number, sha)[0] or 'SonarCloud has no analysis for this pull request. See ' + str(run.get('html_url')))\n    elif app == 'github-actions':\n        try:\n            slug = re.sub('[^A-Za-z0-9]+', '-', name).strip('-').lower() + '-' + str(run['id'])\n            text.append('Relevant part of the job log:' + NL + NL + excerpt(job_log(run['id']), slug))\n        except Exception as exc:\n            text.append('The job log could not be read (' + type(exc).__name__ + '). See ' + str(run.get('html_url')))\n    else:\n        if output.get('summary'):\n            text.append(str(output['summary'])[:3000])\n    try:\n        notes = fetch(API + '/check-runs/' + str(run['id']) + '/annotations?per_page=50')\n        notes = [a for a in notes if a.get('annotation_level') != 'notice'][:40]\n        if notes:\n            text.append(NL + 'Annotations:')\n            for a in notes:\n                text.append('- ' + str(a.get('path')) + ':' + str(a.get('start_line')) + ' ' + str(a.get('message', ''))[:300])\n    except Exception:\n        pass\n    return NL.join(text)\ndef qualify(pull):\n    # The gate. Raises Skip unless this pull request may be fixed now.\n    number, head = pull['number'], pull['head']\n    ref, sha = head['ref'], head['sha']\n    if pull.get('state') != 'open':\n        raise Skip('it is not open')\n    repo = ((head.get('repo') or dict()).get('full_name') or '').lower()\n    if repo != (OWNER + '/' + NAME).lower():\n        raise Skip('its branch is not in this repository')\n    if not ref.startswith(PREFIX):\n        raise Skip('its branch ' + ref + ' is not a fabro run branch')\n    author = ((pull.get('user') or dict()).get('login') or '').lower()\n    if author not in AUTHORS:\n        raise Skip('it was opened by ' + (author or 'unknown') + ', who is not listed in pr_authors')\n    runs = fetch(API + '/commits/' + sha + '/check-runs?per_page=100')['check_runs']\n    runs = [r for r in runs if r['name'].lower() not in IGNORED]\n    if not runs:\n        raise Skip('it has no checks yet')\n    if [r for r in runs if r['status'] != 'completed']:\n        raise Skip('its checks are still running')\n    failed = [r for r in runs if r.get('conclusion') in FAILING]\n    if not failed:\n        raise Skip('no check failed')\n    comments = fetch(API + '/issues/' + str(number) + '/comments?per_page=100')\n    mine = [c for c in comments if ((c.get('user') or dict()).get('login') or '').lower() in AUTHORS and MARK in (c.get('body') or '')]\n    if [c for c in mine if sha in c['body']]:\n        raise Skip('a fix run already handled commit ' + sha[:8])\n    if len(mine) >= MAX_ROUNDS:\n        raise Skip('it already had ' + str(len(mine)) + ' fix runs (max_rounds); it needs a human')\n    return failed, len(mine) + 1\ndef git(*args):\n    p = subprocess.run(('git',) + args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='replace')\n    if p.returncode != 0:\n        refuse('git ' + args[0] + ' failed: ' + p.stdout[-300:])\n    return p.stdout.strip()\nchosen = None\nif PR > 0:\n    pulls = [fetch(API + '/pulls/' + str(PR))]\nelse:\n    pulls = fetch(API + '/pulls?state=open&sort=created&direction=asc&per_page=100')\nfor pull in pulls:\n    try:\n        failed, round_no = qualify(pull)\n    except Skip as exc:\n        print('skipped pull request', pull['number'], '-', exc)\n        continue\n    chosen = pull\n    break\nif chosen is None:\n    print('NOTHING TO FIX: no pull request with failed checks is waiting (' + str(len(pulls)) + ' looked at).')\n    sys.exit(1)\nnumber, ref, sha = chosen['number'], chosen['head']['ref'], chosen['head']['sha']\nnames = ', '.join(r['name'] for r in failed)\nreport = '# Failed CI checks on pull request ' + str(number) + ' at commit ' + sha + NL + NL\nos.makedirs(D, exist_ok=True)\nreport += (NL + NL).join(describe(r, number, sha) for r in failed) + NL\nif not [r for r in failed if is_sonar(r)]:\n    # Sonar findings are worth fixing in the same round even when its own\n    # check did not fail (or did not run because an earlier step failed).\n    try:\n        sonar_text, needs_work = sonar_report(number, sha)\n    except Exception:\n        sonar_text, needs_work = None, False\n    if sonar_text and needs_work:\n        report += NL + '## SonarCloud findings (fix these in the same change)' + NL + NL + sonar_text + NL\n# Work on top of the pull request branch from here on.\ngit('fetch', '-q', 'origin', ref)\nif git('rev-parse', 'FETCH_HEAD') != sha:\n    refuse('the branch ' + ref + ' moved while this run was starting; try again')\ngit('reset', '-q', '--hard', sha)\nos.makedirs(D, exist_ok=True)\nfor stale in ('verify_fails', 'verify-summary.md'):\n    if os.path.exists(D + '/' + stale):\n        os.remove(D + '/' + stale)\nwith open(D + '/ci-failures.md', 'w') as f:\n    f.write(report[:150000])\nwith open(D + '/pr.md', 'w') as f:\n    f.write('# ' + str(chosen.get('title')) + NL + NL + (chosen.get('body') or '').split('### Fabro Details')[0][:6000] + NL)\nwith open(D + '/pr.json', 'w') as f:\n    json.dump(dict(number=number, ref=ref, sha=sha, round=round_no, checks=names), f)\n# Claim this commit last, so that a run which could not start leaves no trace.\ntry:\n    fetch(API + '/issues/' + str(number) + '/comments', body=dict(body=MARK + NL\n        + 'Fabro fix run ' + str(round_no) + ' of ' + str(MAX_ROUNDS) + ' started for commit ' + sha\n        + '. Failed checks: ' + names + '.'))\nexcept Exception as exc:\n    refuse('could not comment on pull request ' + str(number) + ' (' + type(exc).__name__ + '); not fixing it, because the next run would pick it again')\nprint('PICKED: pull request', number, 'branch', ref, 'commit', sha[:8], 'fix run', round_no, 'of', MAX_ROUNDS)\nprint('failed checks:', names)\nprint(report[:2500])",
+            "usage": null,
+            "timing": {
+              "wall_time_ms": 0,
+              "inference_time_ms": 0,
+              "tool_time_ms": 7328,
+              "active_time_ms": 7328
+            }
+          },
+          "fix": {
+            "status": "succeeded",
+            "context_updates": {
+              "last_stage": "fix",
+              "last_response": "Fixed the reported CI failures on this branch.\n\n- **CodeQL**\n  - **Cause:** `control_plane.orchestrator` embedded user-supplied run options directly into the spawned worker’s command-line prompt, an",
+              "response.fix": "Fixed the reported CI failures on this branch.\n\n- **CodeQL**\n  - **Cause:** `control_plane.orchestrator` embedded user-supplied run options directly into the spawned worker’s command-line prompt, and `/api/runs` routes returned raw `RuntimeError` text to clients.\n  - **Change:** wrote run start options to a per-run JSON file (`control_plane_start.json`) inside the run workdir and changed the worker prompt to reference that file instead of inlining target/scope data in argv. Also changed `core/api_server/routes/runs_routes.py` to mask runtime failures behind a generic `503 {\"error\": \"service unavailable\"}` response.\n  - **Regression coverage:** added tests for the bootstrap-file flow and for masked runtime errors on create/mint-token/stop routes.\n\n- **test**\n  - **Cause:** the new container isolation test assumed the Docker executable string would always be exactly `\"docker\"`, but production intentionally resolves an absolute path such as `/usr/bin/docker` on some hosts/CI runners.\n  - **Change:** made the test assert against `runner.docker_executable()` and explicitly simulate the absolute-path case.\n\nVerification run after the final edit:\n- `poetry run pytest tests/test_control_plane.py tests/test_runs_routes.py tests/test_container_isolation.py -q` → **37 passed**\n- `poetry run pytest -q` → **2813 passed, 22 skipped**"
+            },
+            "notes": "Stage completed: fix",
+            "usage": {
+              "input": {
+                "usage": {
+                  "model": {
+                    "provider": "openai",
+                    "model_id": "gpt-5.4"
+                  },
+                  "tokens": {
+                    "input_tokens": 116211,
+                    "output_tokens": 6325,
+                    "reasoning_tokens": 7377,
+                    "cache_read_tokens": 1924608,
+                    "cache_write_tokens": 0
+                  }
+                },
+                "facts": {
+                  "algorithm": "openai"
+                }
+              },
+              "total_usd_micros": 977209
+            },
+            "timing": {
+              "wall_time_ms": 0,
+              "inference_time_ms": 187352,
+              "tool_time_ms": 298228,
+              "active_time_ms": 485580
+            }
+          },
+          "install": {
+            "status": "succeeded",
+            "context_updates": {
+              "command.output": "blob://sha256/12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126"
+            },
+            "notes": "Script completed: git submodule update -q --init --recursive && poetry install --with dev --no-interaction -q",
+            "usage": null,
+            "timing": {
+              "wall_time_ms": 0,
+              "inference_time_ms": 0,
+              "tool_time_ms": 7264,
+              "active_time_ms": 7264
+            }
+          },
+          "start": {
+            "status": "succeeded",
+            "usage": null
+          },
+          "verify": {
+            "status": "succeeded",
+            "context_updates": {
+              "command.output": "blob://sha256/d10a639c39299c488d265c24c24b71f50570d02175da95a6d72426448f45087f"
+            },
+            "notes": "Script completed: \nimport json, os, shlex, subprocess, sys\nD = '/tmp/fabro'\nNL = chr(10)\nMAX_FIXES = int('2')\nINSTALL = '''git submodule update -q --init --recursive && poetry install --with dev --no-interaction -q'''.strip()\nLINT = '''none'''.strip()\nTESTS = '''poetry run pytest -q'''.strip()\nPREFIXES = tuple(p.strip() for p in '.github/,.fabro/,skills/,.env'.split(',') if p.strip())\nFILES = set(p.strip() for p in 'LICENSE,sonar-project.properties,.gitmodules,skills'.split(',') if p.strip())\ndef run(cmd):\n    p = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='replace')\n    return p.returncode, p.stdout\ndef read(path):\n    try:\n        with open(path) as f:\n            return f.read()\n    except OSError:\n        return ''\ndef write(path, text):\n    with open(path, 'w') as f:\n        f.write(text)\ntry:\n    BASE = json.loads(read(D + '/pr.json'))['sha']\nexcept Exception:\n    print('ROUTE_stop')\n    print('No pull request was picked in this run.')\n    sys.exit(1)\ndef changed_files():\n    rc1, tracked = run('git diff --name-only ' + shlex.quote(BASE))\n    rc2, others = run('git ls-files --others --exclude-standard')\n    if rc1 != 0 or rc2 != 0:\n        return None, tracked + others\n    return sorted(set(l.strip() for l in (tracked + NL + others).splitlines() if l.strip())), ''\nchanged, git_error = changed_files()\ndef guard():\n    if changed is None:\n        return False, 'Could not list changed files:' + NL + git_error\n    bad = [f for f in changed if f.startswith(PREFIXES) or f in FILES]\n    if bad:\n        return False, 'PROTECTED FILES CHANGED - revert these:' + NL + NL.join(bad)\n    if not changed:\n        return False, 'No files were changed, so the failed checks cannot have been fixed.'\n    return True, 'files changed by this run:' + NL + NL.join(changed)\ndef syntax():\n    py = [f for f in changed if f.endswith('.py') and os.path.exists(f)]\n    if not py:\n        return True, 'no python files changed'\n    rc, out = run(shlex.quote(sys.executable) + ' -m py_compile ' + ' '.join(shlex.quote(f) for f in py))\n    return rc == 0, out\ndef command(cmd):\n    def go():\n        rc, out = run(cmd)\n        return rc == 0, out\n    return go\nSTEPS = [\n    ('protected paths', guard),\n    ('syntax', syntax),\n    ('install', command(INSTALL)),\n] + ([] if LINT.lower() == 'none' else [('lint', command(LINT))]) + [\n    ('tests', command(TESTS)),\n]\nlog = []\nfailure = None\nfor name, step in STEPS:\n    ok, out = step()\n    log.append('===== ' + name + ': ' + ('ok' if ok else 'FAILED') + NL + out)\n    if not ok:\n        failure = (name, out)\n        break\nwrite(D + '/verify.log', (NL + NL).join(log) + NL)\nif failure is None:\n    if os.path.exists(D + '/verify-summary.md'):\n        os.remove(D + '/verify-summary.md')\n    print('VERIFIED: ' + ', '.join(name for name, _ in STEPS) + ' all passed')\n    sys.exit(0)\nname, out = failure\nlines = out.splitlines()\nfailing = [l for l in lines if l.startswith(('FAILED ', 'ERROR '))][:25]\nsummary = 'Local verification failed at step: ' + name + NL\nif failing:\n    summary += NL + 'Failing tests:' + NL + NL.join(failing) + NL\nsummary += NL + 'Last lines of output:' + NL + NL.join(lines[-30:]) + NL\nsummary += NL + 'Full log: /tmp/fabro/verify.log' + NL\nsummary = summary[-6000:]\nwrite(D + '/verify-summary.md', summary)\ntry:\n    fails = int(read(D + '/verify_fails').strip() or 0) + 1\nexcept ValueError:\n    fails = MAX_FIXES + 1\nwrite(D + '/verify_fails', str(fails))\nroute = 'ROUTE_deep' if fails <= MAX_FIXES else 'ROUTE_stop'\nprint(route + ' (failed local verifications: ' + str(fails) + ')')\nprint(summary.replace('ROUTE_', 'ROUTE-')[-3000:])\nsys.exit(1)",
+            "usage": null,
+            "timing": {
+              "wall_time_ms": 0,
+              "inference_time_ms": 0,
+              "tool_time_ms": 88251,
+              "active_time_ms": 88251
+            }
+          }
+        },
+        "next_node_id": "publish",
+        "git_commit_sha": "dd74e3df947b7a8cfa95f3b25d39c56c4c737f77",
+        "node_visits": {
+          "verify": 1,
+          "start": 1,
+          "install": 1,
+          "fix": 1,
+          "pick_pr": 1
+        }
+      },
+      "diff": {
+        "patch": "diff --git a/runs/run-09681b75/control_plane_start.json b/runs/run-09681b75/control_plane_start.json\nnew file mode 100644\nindex 0000000..c7fbab3\n--- /dev/null\n+++ b/runs/run-09681b75/control_plane_start.json\n@@ -0,0 +1 @@\n+{\"depth\": \"recon\", \"out_of_scope\": [], \"scope\": [\"https://a.example\"], \"target\": \"https://a.example\"}\n\\ No newline at end of file\ndiff --git a/runs/run-1a8f45d1/control_plane_start.json b/runs/run-1a8f45d1/control_plane_start.json\nnew file mode 100644\nindex 0000000..c7fbab3\n--- /dev/null\n+++ b/runs/run-1a8f45d1/control_plane_start.json\n@@ -0,0 +1 @@\n+{\"depth\": \"recon\", \"out_of_scope\": [], \"scope\": [\"https://a.example\"], \"target\": \"https://a.example\"}\n\\ No newline at end of file\ndiff --git a/runs/run-31e93d28/control_plane_start.json b/runs/run-31e93d28/control_plane_start.json\nnew file mode 100644\nindex 0000000..c7fbab3\n--- /dev/null\n+++ b/runs/run-31e93d28/control_plane_start.json\n@@ -0,0 +1 @@\n+{\"depth\": \"recon\", \"out_of_scope\": [], \"scope\": [\"https://a.example\"], \"target\": \"https://a.example\"}\n\\ No newline at end of file\ndiff --git a/runs/run-335a0287/control_plane_start.json b/runs/run-335a0287/control_plane_start.json\nnew file mode 100644\nindex 0000000..c7fbab3\n--- /dev/null\n+++ b/runs/run-335a0287/control_plane_start.json\n@@ -0,0 +1 @@\n+{\"depth\": \"recon\", \"out_of_scope\": [], \"scope\": [\"https://a.example\"], \"target\": \"https://a.example\"}\n\\ No newline at end of file\ndiff --git a/runs/run-45ea3e42/control_plane_start.json b/runs/run-45ea3e42/control_plane_start.json\nnew file mode 100644\nindex 0000000..4e3c7ba\n--- /dev/null\n+++ b/runs/run-45ea3e42/control_plane_start.json\n@@ -0,0 +1 @@\n+{\"depth\": \"recon\", \"out_of_scope\": [], \"scope\": [\"https://persist.example\"], \"target\": \"https://persist.example\"}\n\\ No newline at end of file\ndiff --git a/runs/run-510841d9/control_plane_start.json b/runs/run-510841d9/control_plane_start.json\nnew file mode 100644\nindex 0000000..5c724aa\n--- /dev/null\n+++ b/runs/run-510841d9/control_plane_start.json\n@@ -0,0 +1 @@\n+{\"depth\": \"recon\", \"out_of_scope\": [], \"scope\": [\"https://b.example\"], \"target\": \"https://b.example\"}\n\\ No newline at end of file\ndiff --git a/runs/run-63ade268/control_plane_start.json b/runs/run-63ade268/control_plane_start.json\nnew file mode 100644\nindex 0000000..c7fbab3\n--- /dev/null\n+++ b/runs/run-63ade268/control_plane_start.json\n@@ -0,0 +1 @@\n+{\"depth\": \"recon\", \"out_of_scope\": [], \"scope\": [\"https://a.example\"], \"target\": \"https://a.example\"}\n\\ No newline at end of file\ndiff --git a/runs/run-a44f229b/control_plane_start.json b/runs/run-a44f229b/control_plane_start.json\nnew file mode 100644\nindex 0000000..5c724aa\n--- /dev/null\n+++ b/runs/run-a44f229b/control_plane_start.json\n@@ -0,0 +1 @@\n+{\"depth\": \"recon\", \"out_of_scope\": [], \"scope\": [\"https://b.example\"], \"target\": \"https://b.example\"}\n\\ No newline at end of file\ndiff --git a/runs/run-c3d4fddb/control_plane_start.json b/runs/run-c3d4fddb/control_plane_start.json\nnew file mode 100644\nindex 0000000..c7fbab3\n--- /dev/null\n+++ b/runs/run-c3d4fddb/control_plane_start.json\n@@ -0,0 +1 @@\n+{\"depth\": \"recon\", \"out_of_scope\": [], \"scope\": [\"https://a.example\"], \"target\": \"https://a.example\"}\n\\ No newline at end of file\ndiff --git a/runs/run-e4e71765/control_plane_start.json b/runs/run-e4e71765/control_plane_start.json\nnew file mode 100644\nindex 0000000..5c724aa\n--- /dev/null\n+++ b/runs/run-e4e71765/control_plane_start.json\n@@ -0,0 +1 @@\n+{\"depth\": \"recon\", \"out_of_scope\": [], \"scope\": [\"https://b.example\"], \"target\": \"https://b.example\"}\n\\ No newline at end of file\ndiff --git a/runs/run-ee44397b/control_plane_start.json b/runs/run-ee44397b/control_plane_start.json\nnew file mode 100644\nindex 0000000..5c724aa\n--- /dev/null\n+++ b/runs/run-ee44397b/control_plane_start.json\n@@ -0,0 +1 @@\n+{\"depth\": \"recon\", \"out_of_scope\": [], \"scope\": [\"https://b.example\"], \"target\": \"https://b.example\"}\n\\ No newline at end of file\ndiff --git a/runs/run-f550b4f8/control_plane_start.json b/runs/run-f550b4f8/control_plane_start.json\nnew file mode 100644\nindex 0000000..c7fbab3\n--- /dev/null\n+++ b/runs/run-f550b4f8/control_plane_start.json\n@@ -0,0 +1 @@\n+{\"depth\": \"recon\", \"out_of_scope\": [], \"scope\": [\"https://a.example\"], \"target\": \"https://a.example\"}\n\\ No newline at end of file\n",
+        "summary": {
+          "files_changed": 112,
+          "additions": 3528,
+          "deletions": 353
+        }
+      }
+    },
+    {
+      "seq": 0,
+      "checkpoint": {
+        "timestamp": "2026-11-27T11:54:54.186057503Z",
+        "current_node": "publish",
+        "completed_nodes": [
+          "start",
+          "pick_pr",
+          "install",
+          "fix",
+          "verify",
+          "publish"
+        ],
+        "node_retries": {},
+        "context_values": {
+          "internal.retry_count.publish": 0,
           "internal.retry_count.start": 0,
           "thread.install.current_node": "fix",
-          "internal.fidelity": "compact",
           "thread.pick_pr.current_node": "install",
           "internal.node_visit_count": 1,
-          "internal.retry_count.fix": 0,
           "failure_class": "",
-          "internal.thread_id": "fix",
-          "current_node": "verify",
-          "outcome": "succeeded",
-          "graph.goal": "Fix the failed CI checks on a Fabro pull request of 0x0pointer/agent-smith and push the fix to the same branch",
+          "command.output": "blob://sha256/f21c3a57be6a8112f46a883947173de32b848fda7b4251287fd566623c94574c",
+          "thread.verify.current_node": "publish",
+          "thread.fix.current_node": "verify",
           "failure_signature": "",
           "internal.work_dir": "/workspace/agent-smith",
-          "graph.max_node_visits": "12",
-          "command.output": "blob://sha256/d10a639c39299c488d265c24c24b71f50570d02175da95a6d72426448f45087f",
           "internal.retry_count.pick_pr": 0,
-          "graph.model_stylesheet": "\n            *       { model: gpt-5.4; reasoning_effort: medium; }\n            .strong { model: gpt-5.5; reasoning_effort: high; }\n        ",
-          "thread.fix.current_node": "verify",
-          "internal.retry_count.verify": 0,
-          "last_response": "Fixed the reported CI failures on this branch.\n\n- **CodeQL**\n  - **Cause:** `control_plane.orchestrator` embedded user-supplied run options directly into the spawned worker’s command-line prompt, an",
           "graph.rankdir": "LR",
-          "thread.start.current_node": "pick_pr",
-          "internal.retry_count.install": 0
+          "internal.retry_count.install": 0,
+          "internal.run_id": "01M8ED4GGTVE9X3C0GGGK81KRZ",
+          "response.fix": "Fixed the reported CI failures on this branch.\n\n- **CodeQL**\n  - **Cause:** `control_plane.orchestrator` embedded user-supplied run options directly into the spawned worker’s command-line prompt, and `/api/runs` routes returned raw `RuntimeError` text to clients.\n  - **Change:** wrote run start options to a per-run JSON file (`control_plane_start.json`) inside the run workdir and changed the worker prompt to reference that file instead of inlining target/scope data in argv. Also changed `core/api_server/routes/runs_routes.py` to mask runtime failures behind a generic `503 {\"error\": \"service unavailable\"}` response.\n  - **Regression coverage:** added tests for the bootstrap-file flow and for masked runtime errors on create/mint-token/stop routes.\n\n- **test**\n  - **Cause:** the new container isolation test assumed the Docker executable string would always be exactly `\"docker\"`, but production intentionally resolves an absolute path such as `/usr/bin/docker` on some hosts/CI runners.\n  - **Change:** made the test assert against `runner.docker_executable()` and explicitly simulate the absolute-path case.\n\nVerification run after the final edit:\n- `poetry run pytest tests/test_control_plane.py tests/test_runs_routes.py tests/test_container_isolation.py -q` → **37 passed**\n- `poetry run pytest -q` → **2813 passed, 22 skipped**",
+          "internal.retry_count.fix": 0,
+          "internal.fidelity": "compact",
+          "internal.thread_id": "verify",
+          "current_node": "publish",
+          "outcome": "succeeded",
+          "graph.goal": "Fix the failed CI checks on a Fabro pull request of 0x0pointer/agent-smith and push the fix to the same branch",
+          "graph.max_node_visits": "12",
+          "internal.retry_count.verify": 0,
+          "graph.model_stylesheet": "\n            *       { model: gpt-5.4; reasoning_effort: medium; }\n            .strong { model: gpt-5.5; reasoning_effort: high; }\n        ",
+          "last_response": "Fixed the reported CI failures on this branch.\n\n- **CodeQL**\n  - **Cause:** `control_plane.orchestrator` embedded user-supplied run options directly into the spawned worker’s command-line prompt, an",
+          "last_stage": "fix",
+          "thread.start.current_node": "pick_pr"
         },
         "node_outcomes": {
           "verify": {
@@ -895,6 +1042,20 @@
               "inference_time_ms": 0,
               "tool_time_ms": 88251,
               "active_time_ms": 88251
+            }
+          },
+          "publish": {
+            "status": "succeeded",
+            "context_updates": {
+              "command.output": "blob://sha256/f21c3a57be6a8112f46a883947173de32b848fda7b4251287fd566623c94574c"
+            },
+            "notes": "Script completed: \nimport json, os, subprocess, sys, urllib.request\nOWNER, NAME = '0x0pointer', 'agent-smith'\nD = '/tmp/fabro'\nNL = chr(10)\ndef refuse(msg):\n    print('NOT PUSHED: ' + msg)\n    sys.exit(1)\ndef git(*args, check=True):\n    p = subprocess.run(('git',) + args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='replace')\n    if check and p.returncode != 0:\n        refuse('git ' + args[0] + ' failed: ' + p.stdout[-300:])\n    return p.returncode, p.stdout.strip()\ntry:\n    with open(D + '/pr.json') as f:\n        pr = json.load(f)\nexcept Exception:\n    refuse('no pull request was picked in this run')\nnumber, ref, sha = pr['number'], pr['ref'], pr['sha']\ngit('fetch', '-q', 'origin', ref)\nif git('rev-parse', 'FETCH_HEAD')[1] != sha:\n    refuse('the branch ' + ref + ' changed while this run was working; the fix was made for an older commit')\nif git('status', '--porcelain')[1]:\n    git('add', '-A')\n    git('-c', 'user.name=Fabro', '-c', 'user.email=noreply@fabro.sh', 'commit', '-q', '-m',\n        'Fix failed CI checks (' + str(pr.get('checks')) + ')')\nif git('merge-base', '--is-ancestor', sha, 'HEAD', check=False)[0] != 0:\n    refuse('the work is not based on the pull request branch')\nfiles = [l for l in git('diff', '--name-only', sha, 'HEAD')[1].splitlines() if l.strip()]\nif not files:\n    refuse('nothing changed, so there is nothing to push')\ngit('push', '-q', 'origin', 'HEAD:refs/heads/' + ref)\nhead = git('rev-parse', 'HEAD')[1]\nprint('PUSHED:', len(files), 'file(s) to', ref, '- pull request', number, 'is now at', head[:8])\nprint(NL.join(files))\ntoken = os.environ.get('GITHUB_TOKEN')\nbody = ('Fabro fix run ' + str(pr.get('round')) + ' pushed ' + head[:8] + ' for the failed checks (' + str(pr.get('checks')) + ').' + NL + NL\n    + 'Files changed:' + NL + NL.join('- ' + f for f in files[:50]) + NL + NL\n    + 'The local checks passed in the sandbox before pushing; CI on this pull request now runs everything.')\ntry:\n    req = urllib.request.Request('https://api.github.com/repos/' + OWNER + '/' + NAME + '/issues/' + str(number) + '/comments',\n        data=json.dumps(dict(body=body)).encode(),\n        headers=dict(Authorization='Bearer ' + str(token), Accept='application/vnd.github+json'))\n    urllib.request.urlopen(req, timeout=30).read()\nexcept Exception as exc:\n    print('warning: pushed, but could not comment on the pull request (' + type(exc).__name__ + ')')",
+            "usage": null,
+            "timing": {
+              "wall_time_ms": 0,
+              "inference_time_ms": 0,
+              "tool_time_ms": 4181,
+              "active_time_ms": 4181
             }
           },
           "install": {
@@ -966,13 +1127,14 @@
             }
           }
         },
-        "next_node_id": "publish",
+        "next_node_id": "exit",
         "node_visits": {
           "pick_pr": 1,
           "install": 1,
           "verify": 1,
           "fix": 1,
-          "start": 1
+          "start": 1,
+          "publish": 1
         }
       },
       "diff": {}
@@ -1336,6 +1498,34 @@
       },
       "state": "succeeded"
     },
+    "publish@1": {
+      "first_event_seq": 247,
+      "prompt": null,
+      "response": null,
+      "completion": null,
+      "provider_used": null,
+      "diff": null,
+      "script_invocation": {
+        "script": "\nimport json, os, subprocess, sys, urllib.request\nOWNER, NAME = '0x0pointer', 'agent-smith'\nD = '/tmp/fabro'\nNL = chr(10)\ndef refuse(msg):\n    print('NOT PUSHED: ' + msg)\n    sys.exit(1)\ndef git(*args, check=True):\n    p = subprocess.run(('git',) + args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='replace')\n    if check and p.returncode != 0:\n        refuse('git ' + args[0] + ' failed: ' + p.stdout[-300:])\n    return p.returncode, p.stdout.strip()\ntry:\n    with open(D + '/pr.json') as f:\n        pr = json.load(f)\nexcept Exception:\n    refuse('no pull request was picked in this run')\nnumber, ref, sha = pr['number'], pr['ref'], pr['sha']\ngit('fetch', '-q', 'origin', ref)\nif git('rev-parse', 'FETCH_HEAD')[1] != sha:\n    refuse('the branch ' + ref + ' changed while this run was working; the fix was made for an older commit')\nif git('status', '--porcelain')[1]:\n    git('add', '-A')\n    git('-c', 'user.name=Fabro', '-c', 'user.email=noreply@fabro.sh', 'commit', '-q', '-m',\n        'Fix failed CI checks (' + str(pr.get('checks')) + ')')\nif git('merge-base', '--is-ancestor', sha, 'HEAD', check=False)[0] != 0:\n    refuse('the work is not based on the pull request branch')\nfiles = [l for l in git('diff', '--name-only', sha, 'HEAD')[1].splitlines() if l.strip()]\nif not files:\n    refuse('nothing changed, so there is nothing to push')\ngit('push', '-q', 'origin', 'HEAD:refs/heads/' + ref)\nhead = git('rev-parse', 'HEAD')[1]\nprint('PUSHED:', len(files), 'file(s) to', ref, '- pull request', number, 'is now at', head[:8])\nprint(NL.join(files))\ntoken = os.environ.get('GITHUB_TOKEN')\nbody = ('Fabro fix run ' + str(pr.get('round')) + ' pushed ' + head[:8] + ' for the failed checks (' + str(pr.get('checks')) + ').' + NL + NL\n    + 'Files changed:' + NL + NL.join('- ' + f for f in files[:50]) + NL + NL\n    + 'The local checks passed in the sandbox before pushing; CI on this pull request now runs everything.')\ntry:\n    req = urllib.request.Request('https://api.github.com/repos/' + OWNER + '/' + NAME + '/issues/' + str(number) + '/comments',\n        data=json.dumps(dict(body=body)).encode(),\n        headers=dict(Authorization='Bearer ' + str(token), Accept='application/vnd.github+json'))\n    urllib.request.urlopen(req, timeout=30).read()\nexcept Exception as exc:\n    print('warning: pushed, but could not comment on the pull request (' + type(exc).__name__ + ')')",
+        "command": "exec 2>&1\npython3 -c \"\nimport json, os, subprocess, sys, urllib.request\nOWNER, NAME = '0x0pointer', 'agent-smith'\nD = '/tmp/fabro'\nNL = chr(10)\ndef refuse(msg):\n    print('NOT PUSHED: ' + msg)\n    sys.exit(1)\ndef git(*args, check=True):\n    p = subprocess.run(('git',) + args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='replace')\n    if check and p.returncode \"'!= 0:\n        refuse('\"'git ' + args[0] + ' failed: ' + p.stdout[-300:])\n    return p.returncode, p.stdout.strip()\ntry:\n    with open(D + '/pr.json') as f:\n        pr = json.load(f)\nexcept Exception:\n    refuse('no pull request was picked in this run')\nnumber, ref, sha = pr['number'], pr['ref'], pr['sha']\ngit('fetch', '-q', 'origin', ref)\nif git('rev-parse', 'FETCH_HEAD')[1] \"'!= sha:\n    refuse('\"'the branch ' + ref + ' changed while this run was working; the fix was made for an older commit')\nif git('status', '--porcelain')[1]:\n    git('add', '-A')\n    git('-c', 'user.name=Fabro', '-c', 'user.email=noreply@fabro.sh', 'commit', '-q', '-m',\n        'Fix failed CI checks (' + str(pr.get('checks')) + ')')\nif git('merge-base', '--is-ancestor', sha, 'HEAD', check=False)[0] \"'!= 0:\n    refuse('\"'the work is not based on the pull request branch')\nfiles = [l for l in git('diff', '--name-only', sha, 'HEAD')[1].splitlines() if l.strip()]\nif not files:\n    refuse('nothing changed, so there is nothing to push')\ngit('push', '-q', 'origin', 'HEAD:refs/heads/' + ref)\nhead = git('rev-parse', 'HEAD')[1]\nprint('PUSHED:', len(files), 'file(s) to', ref, '- pull request', number, 'is now at', head[:8])\nprint(NL.join(files))\ntoken = os.environ.get('GITHUB_TOKEN')\nbody = ('Fabro fix run ' + str(pr.get('round')) + ' pushed ' + head[:8] + ' for the failed checks (' + str(pr.get('checks')) + ').' + NL + NL\n    + 'Files changed:' + NL + NL.join('- ' + f for f in files[:50]) + NL + NL\n    + 'The local checks passed in the sandbox before pushing; CI on this pull request now runs everything.')\ntry:\n    req = urllib.request.Request('https://api.github.com/repos/' + OWNER + '/' + NAME + '/issues/' + str(number) + '/comments',\n        data=json.dumps(dict(body=body)).encode(),\n        headers=dict(Authorization='Bearer ' + str(token), Accept='application/vnd.github+json'))\n    urllib.request.urlopen(req, timeout=30).read()\nexcept Exception as exc:\n    print('warning: pushed, but could not comment on the pull request (' + type(exc).__name__ + ')')\"",
+        "language": "python",
+        "timeout_ms": 300000
+      },
+      "script_timing": null,
+      "parallel_results": null,
+      "output": null,
+      "started_at": "2026-11-27T11:54:49.988756534Z",
+      "handler": "command",
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "reasoning_tokens": 0,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0
+      },
+      "state": "running"
+    },
     "pick_pr@1": {
       "first_event_seq": 21,
       "prompt": null,
@@ -1389,7 +1579,12 @@
       "first_event_seq": 237,
       "prompt": null,
       "response": null,
-      "completion": null,
+      "completion": {
+        "outcome": "succeeded",
+        "notes": "Script completed: \nimport json, os, shlex, subprocess, sys\nD = '/tmp/fabro'\nNL = chr(10)\nMAX_FIXES = int('2')\nINSTALL = '''git submodule update -q --init --recursive && poetry install --with dev --no-interaction -q'''.strip()\nLINT = '''none'''.strip()\nTESTS = '''poetry run pytest -q'''.strip()\nPREFIXES = tuple(p.strip() for p in '.github/,.fabro/,skills/,.env'.split(',') if p.strip())\nFILES = set(p.strip() for p in 'LICENSE,sonar-project.properties,.gitmodules,skills'.split(',') if p.strip())\ndef run(cmd):\n    p = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='replace')\n    return p.returncode, p.stdout\ndef read(path):\n    try:\n        with open(path) as f:\n            return f.read()\n    except OSError:\n        return ''\ndef write(path, text):\n    with open(path, 'w') as f:\n        f.write(text)\ntry:\n    BASE = json.loads(read(D + '/pr.json'))['sha']\nexcept Exception:\n    print('ROUTE_stop')\n    print('No pull request was picked in this run.')\n    sys.exit(1)\ndef changed_files():\n    rc1, tracked = run('git diff --name-only ' + shlex.quote(BASE))\n    rc2, others = run('git ls-files --others --exclude-standard')\n    if rc1 != 0 or rc2 != 0:\n        return None, tracked + others\n    return sorted(set(l.strip() for l in (tracked + NL + others).splitlines() if l.strip())), ''\nchanged, git_error = changed_files()\ndef guard():\n    if changed is None:\n        return False, 'Could not list changed files:' + NL + git_error\n    bad = [f for f in changed if f.startswith(PREFIXES) or f in FILES]\n    if bad:\n        return False, 'PROTECTED FILES CHANGED - revert these:' + NL + NL.join(bad)\n    if not changed:\n        return False, 'No files were changed, so the failed checks cannot have been fixed.'\n    return True, 'files changed by this run:' + NL + NL.join(changed)\ndef syntax():\n    py = [f for f in changed if f.endswith('.py') and os.path.exists(f)]\n    if not py:\n        return True, 'no python files changed'\n    rc, out = run(shlex.quote(sys.executable) + ' -m py_compile ' + ' '.join(shlex.quote(f) for f in py))\n    return rc == 0, out\ndef command(cmd):\n    def go():\n        rc, out = run(cmd)\n        return rc == 0, out\n    return go\nSTEPS = [\n    ('protected paths', guard),\n    ('syntax', syntax),\n    ('install', command(INSTALL)),\n] + ([] if LINT.lower() == 'none' else [('lint', command(LINT))]) + [\n    ('tests', command(TESTS)),\n]\nlog = []\nfailure = None\nfor name, step in STEPS:\n    ok, out = step()\n    log.append('===== ' + name + ': ' + ('ok' if ok else 'FAILED') + NL + out)\n    if not ok:\n        failure = (name, out)\n        break\nwrite(D + '/verify.log', (NL + NL).join(log) + NL)\nif failure is None:\n    if os.path.exists(D + '/verify-summary.md'):\n        os.remove(D + '/verify-summary.md')\n    print('VERIFIED: ' + ', '.join(name for name, _ in STEPS) + ' all passed')\n    sys.exit(0)\nname, out = failure\nlines = out.splitlines()\nfailing = [l for l in lines if l.startswith(('FAILED ', 'ERROR '))][:25]\nsummary = 'Local verification failed at step: ' + name + NL\nif failing:\n    summary += NL + 'Failing tests:' + NL + NL.join(failing) + NL\nsummary += NL + 'Last lines of output:' + NL + NL.join(lines[-30:]) + NL\nsummary += NL + 'Full log: /tmp/fabro/verify.log' + NL\nsummary = summary[-6000:]\nwrite(D + '/verify-summary.md', summary)\ntry:\n    fails = int(read(D + '/verify_fails').strip() or 0) + 1\nexcept ValueError:\n    fails = MAX_FIXES + 1\nwrite(D + '/verify_fails', str(fails))\nroute = 'ROUTE_deep' if fails <= MAX_FIXES else 'ROUTE_stop'\nprint(route + ' (failed local verifications: ' + str(fails) + ')')\nprint(summary.replace('ROUTE_', 'ROUTE-')[-3000:])\nsys.exit(1)",
+        "failure_reason": null,
+        "timestamp": "2026-11-27T11:54:44.985488808Z"
+      },
       "provider_used": null,
       "diff": null,
       "script_invocation": {
@@ -1413,6 +1608,12 @@
       "termination": "exited",
       "started_at": "2026-11-27T11:53:16.714635773Z",
       "handler": "command",
+      "timing": {
+        "wall_time_ms": 88270,
+        "inference_time_ms": 0,
+        "tool_time_ms": 88251,
+        "active_time_ms": 88251
+      },
       "usage": {
         "input_tokens": 0,
         "output_tokens": 0,
@@ -1421,7 +1622,7 @@
         "cache_read_tokens": 0,
         "cache_write_tokens": 0
       },
-      "state": "running"
+      "state": "succeeded"
     }
   }
 }
