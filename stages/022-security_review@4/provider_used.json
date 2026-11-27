@@ -1,0 +1,6 @@
+{
+  "mode": "agent",
+  "provider": "openai",
+  "model": "gpt-5.5",
+  "reasoning_effort": "high"
+}
