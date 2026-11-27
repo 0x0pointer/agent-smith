@@ -952,7 +952,7 @@
     "kind": "running"
   },
   "status_updated_at": "2026-11-27T05:03:05.626465786Z",
-  "last_event_at": "2026-11-27T05:03:09.227512008Z",
+  "last_event_at": "2026-11-27T05:03:13.668724439Z",
   "pending_control": null,
   "checkpoints": [
     {
@@ -995,9 +995,9 @@
       "diff": {}
     },
     {
-      "seq": 0,
+      "seq": 29,
       "checkpoint": {
-        "timestamp": "2026-11-27T05:03:09.233796353Z",
+        "timestamp": "2026-11-27T05:03:13.668093188Z",
         "current_node": "check_issue",
         "completed_nodes": [
           "start",
@@ -1005,30 +1005,26 @@
         ],
         "node_retries": {},
         "context_values": {
+          "internal.work_dir": "/workspace/agent-smith",
+          "failure_signature": "check_issue|deterministic|script failed with exit code: <n> ## output nothing to build: no open issue labelled fabro-approved is waiting (<n> checked). to build an issue again,remove its fabro-built or fabro-failed label.",
+          "internal.fidelity": "compact",
+          "internal.run_id": "01M8DP5A016Z87Q4E1STPAY5VF",
+          "graph.max_node_visits": "30",
+          "internal.node_visit_count": 1,
+          "graph.loop_restart_signature_limit": "10",
+          "failure_class": "deterministic",
+          "internal.retry_count.start": 0,
           "current_node": "check_issue",
-          "outcome": "failed",
+          "command.output": "blob://sha256/921fc24a244a518c32777ec9c76ece9a4e2ca2669ad60b56424da90ae59876d4",
           "thread.start.current_node": "check_issue",
           "internal.retry_count.check_issue": 0,
-          "internal.fidelity": "compact",
           "internal.thread_id": "start",
-          "internal.node_visit_count": 1,
-          "failure_signature": "check_issue|deterministic|script failed with exit code: <n> ## output nothing to build: no open issue labelled fabro-approved is waiting (<n> checked). to build an issue again,remove its fabro-built or fabro-failed label.",
-          "graph.loop_restart_signature_limit": "10",
-          "graph.goal": "Resolve the next maintainer-approved GitHub issue of 0x0pointer/agent-smith with a reviewed spec, code, and passing tests",
           "graph.model_stylesheet": "\n            *       { model: gpt-5.4; reasoning_effort: medium; }\n            .strong { model: gpt-5.5; reasoning_effort: high; }\n        ",
-          "failure_class": "deterministic",
-          "internal.run_id": "01M8DP5A016Z87Q4E1STPAY5VF",
-          "internal.retry_count.start": 0,
-          "command.output": "blob://sha256/921fc24a244a518c32777ec9c76ece9a4e2ca2669ad60b56424da90ae59876d4",
-          "graph.max_node_visits": "30",
-          "internal.work_dir": "/workspace/agent-smith",
-          "graph.rankdir": "LR"
+          "outcome": "failed",
+          "graph.rankdir": "LR",
+          "graph.goal": "Resolve the next maintainer-approved GitHub issue of 0x0pointer/agent-smith with a reviewed spec, code, and passing tests"
         },
         "node_outcomes": {
-          "start": {
-            "status": "succeeded",
-            "usage": null
-          },
           "check_issue": {
             "status": "failed",
             "context_updates": {
@@ -1045,18 +1041,68 @@
               "tool_time_ms": 1201,
               "active_time_ms": 1201
             }
+          },
+          "start": {
+            "status": "succeeded",
+            "usage": null
           }
         },
         "next_node_id": "exit",
+        "git_commit_sha": "5133ea44bf4e06cba10c8599dabb81ac34d48566",
+        "loop_failure_signatures": {
+          "check_issue|deterministic|script failed with exit code: <n> ## output nothing to build: no open issue labelled fabro-approved is waiting (<n> checked). to build an issue again,remove its fabro-built or fabro-failed label.": 1
+        },
         "node_visits": {
-          "check_issue": 1,
-          "start": 1
+          "start": 1,
+          "check_issue": 1
         }
       },
-      "diff": {}
+      "diff": {
+        "summary": {
+          "files_changed": 0,
+          "additions": 0,
+          "deletions": 0
+        }
+      }
     }
   ],
-  "conclusion": null,
+  "conclusion": {
+    "timestamp": "2026-11-27T05:03:13.688404379Z",
+    "status": "succeeded",
+    "timing": {
+      "wall_time_ms": 8048,
+      "inference_time_ms": 0,
+      "tool_time_ms": 1201,
+      "active_time_ms": 1201
+    },
+    "final_git_commit_sha": "5133ea44bf4e06cba10c8599dabb81ac34d48566",
+    "stages": [
+      {
+        "stage_id": "start",
+        "stage_label": "start",
+        "timing": {
+          "wall_time_ms": 0,
+          "inference_time_ms": 0,
+          "tool_time_ms": 0,
+          "active_time_ms": 0
+        },
+        "retries": 0
+      },
+      {
+        "stage_id": "check_issue",
+        "stage_label": "check_issue",
+        "timing": {
+          "wall_time_ms": 1207,
+          "inference_time_ms": 0,
+          "tool_time_ms": 1201,
+          "active_time_ms": 1201
+        },
+        "retries": 0
+      }
+    ],
+    "total_retries": 0,
+    "diff": {}
+  },
   "sandbox": {
     "kind": "ready",
     "plan": {
@@ -1083,6 +1129,40 @@
   "superseded_by": null,
   "pending_interviews": {},
   "stages": {
+    "exit@1": {
+      "first_event_seq": 32,
+      "prompt": null,
+      "response": null,
+      "completion": {
+        "outcome": "succeeded",
+        "notes": null,
+        "failure_reason": null,
+        "timestamp": "2026-11-27T05:03:13.668724439Z"
+      },
+      "provider_used": null,
+      "diff": null,
+      "script_invocation": null,
+      "script_timing": null,
+      "parallel_results": null,
+      "output": null,
+      "started_at": "2026-11-27T05:03:13.668693228Z",
+      "handler": "exit",
+      "timing": {
+        "wall_time_ms": 0,
+        "inference_time_ms": 0,
+        "tool_time_ms": 0,
+        "active_time_ms": 0
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "reasoning_tokens": 0,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0
+      },
+      "state": "succeeded"
+    },
     "start@1": {
       "first_event_seq": 17,
       "prompt": null,
@@ -1121,7 +1201,12 @@
       "first_event_seq": 21,
       "prompt": null,
       "response": null,
-      "completion": null,
+      "completion": {
+        "outcome": "failed",
+        "notes": null,
+        "failure_reason": "Script failed with exit code: 1\n\n## output\nNOTHING TO BUILD: no open issue labelled fabro-approved is waiting (0 checked).\nTo build an issue again, remove its fabro-built or fabro-failed label.\n",
+        "timestamp": "2026-11-27T05:03:09.229770749Z"
+      },
       "provider_used": null,
       "diff": null,
       "script_invocation": {
@@ -1145,6 +1230,12 @@
       "termination": "exited",
       "started_at": "2026-11-27T05:03:08.020834540Z",
       "handler": "command",
+      "timing": {
+        "wall_time_ms": 1207,
+        "inference_time_ms": 0,
+        "tool_time_ms": 1201,
+        "active_time_ms": 1201
+      },
       "usage": {
         "input_tokens": 0,
         "output_tokens": 0,
@@ -1153,7 +1244,7 @@
         "cache_read_tokens": 0,
         "cache_write_tokens": 0
       },
-      "state": "running"
+      "state": "failed"
     }
   }
 }
