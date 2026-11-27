@@ -1,0 +1,912 @@
+diff --git a/.gitignore b/.gitignore
+index 3097797..7889d2c 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -64,6 +64,7 @@ pentest_metrics.jsonl
+ SECURITY-REVIEW.md
+ analysis/
+ run_2/
++runs/
+ 
+ # legacy local knowledge-base data from older installs; ignored if present, but
+ # runtime no longer depends on it.
+diff --git a/runs/run-015b7ad6/control_plane_start.json b/runs/run-015b7ad6/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-015b7ad6/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-03c2d9cf/control_plane_start.json b/runs/run-03c2d9cf/control_plane_start.json
+deleted file mode 100644
+index 5c724aa..0000000
+--- a/runs/run-03c2d9cf/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://b.example"], "target": "https://b.example"}
+\ No newline at end of file
+diff --git a/runs/run-052ff96e/control_plane_start.json b/runs/run-052ff96e/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-052ff96e/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-0721cead/control_plane_start.json b/runs/run-0721cead/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-0721cead/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-074a21bc/control_plane_start.json b/runs/run-074a21bc/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-074a21bc/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-07d4a9c2/control_plane_start.json b/runs/run-07d4a9c2/control_plane_start.json
+deleted file mode 100644
+index 5c724aa..0000000
+--- a/runs/run-07d4a9c2/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://b.example"], "target": "https://b.example"}
+\ No newline at end of file
+diff --git a/runs/run-09681b75/control_plane_start.json b/runs/run-09681b75/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-09681b75/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-0a470af8/control_plane_start.json b/runs/run-0a470af8/control_plane_start.json
+deleted file mode 100644
+index 4e3c7ba..0000000
+--- a/runs/run-0a470af8/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://persist.example"], "target": "https://persist.example"}
+\ No newline at end of file
+diff --git a/runs/run-0d821f43/control_plane_start.json b/runs/run-0d821f43/control_plane_start.json
+deleted file mode 100644
+index 5c724aa..0000000
+--- a/runs/run-0d821f43/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://b.example"], "target": "https://b.example"}
+\ No newline at end of file
+diff --git a/runs/run-0ec2e112/control_plane_start.json b/runs/run-0ec2e112/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-0ec2e112/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-12703b76/control_plane_start.json b/runs/run-12703b76/control_plane_start.json
+deleted file mode 100644
+index 5c724aa..0000000
+--- a/runs/run-12703b76/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://b.example"], "target": "https://b.example"}
+\ No newline at end of file
+diff --git a/runs/run-179853dc/control_plane_start.json b/runs/run-179853dc/control_plane_start.json
+deleted file mode 100644
+index 5c724aa..0000000
+--- a/runs/run-179853dc/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://b.example"], "target": "https://b.example"}
+\ No newline at end of file
+diff --git a/runs/run-193af49e/control_plane_start.json b/runs/run-193af49e/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-193af49e/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-1a8f45d1/control_plane_start.json b/runs/run-1a8f45d1/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-1a8f45d1/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-1c2c2097/control_plane_start.json b/runs/run-1c2c2097/control_plane_start.json
+deleted file mode 100644
+index 4e3c7ba..0000000
+--- a/runs/run-1c2c2097/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://persist.example"], "target": "https://persist.example"}
+\ No newline at end of file
+diff --git a/runs/run-208e351e/control_plane_start.json b/runs/run-208e351e/control_plane_start.json
+deleted file mode 100644
+index 5c724aa..0000000
+--- a/runs/run-208e351e/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://b.example"], "target": "https://b.example"}
+\ No newline at end of file
+diff --git a/runs/run-215e9f40/control_plane_start.json b/runs/run-215e9f40/control_plane_start.json
+deleted file mode 100644
+index 5c724aa..0000000
+--- a/runs/run-215e9f40/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://b.example"], "target": "https://b.example"}
+\ No newline at end of file
+diff --git a/runs/run-2820cf53/control_plane_start.json b/runs/run-2820cf53/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-2820cf53/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-30dbf30c/control_plane_start.json b/runs/run-30dbf30c/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-30dbf30c/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-30dcc63d/control_plane_start.json b/runs/run-30dcc63d/control_plane_start.json
+deleted file mode 100644
+index 5c724aa..0000000
+--- a/runs/run-30dcc63d/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://b.example"], "target": "https://b.example"}
+\ No newline at end of file
+diff --git a/runs/run-31e93d28/control_plane_start.json b/runs/run-31e93d28/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-31e93d28/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-335a0287/control_plane_start.json b/runs/run-335a0287/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-335a0287/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-357360d9/control_plane_start.json b/runs/run-357360d9/control_plane_start.json
+deleted file mode 100644
+index 4e3c7ba..0000000
+--- a/runs/run-357360d9/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://persist.example"], "target": "https://persist.example"}
+\ No newline at end of file
+diff --git a/runs/run-3bc26b5f/control_plane_start.json b/runs/run-3bc26b5f/control_plane_start.json
+deleted file mode 100644
+index 5c724aa..0000000
+--- a/runs/run-3bc26b5f/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://b.example"], "target": "https://b.example"}
+\ No newline at end of file
+diff --git a/runs/run-3c123c45/control_plane_start.json b/runs/run-3c123c45/control_plane_start.json
+deleted file mode 100644
+index 4e3c7ba..0000000
+--- a/runs/run-3c123c45/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://persist.example"], "target": "https://persist.example"}
+\ No newline at end of file
+diff --git a/runs/run-4486cd12/control_plane_start.json b/runs/run-4486cd12/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-4486cd12/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-458e7102/control_plane_start.json b/runs/run-458e7102/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-458e7102/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-45ea3e42/control_plane_start.json b/runs/run-45ea3e42/control_plane_start.json
+deleted file mode 100644
+index 4e3c7ba..0000000
+--- a/runs/run-45ea3e42/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://persist.example"], "target": "https://persist.example"}
+\ No newline at end of file
+diff --git a/runs/run-486b3bee/control_plane_start.json b/runs/run-486b3bee/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-486b3bee/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-4ec488b1/control_plane_start.json b/runs/run-4ec488b1/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-4ec488b1/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-510841d9/control_plane_start.json b/runs/run-510841d9/control_plane_start.json
+deleted file mode 100644
+index 5c724aa..0000000
+--- a/runs/run-510841d9/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://b.example"], "target": "https://b.example"}
+\ No newline at end of file
+diff --git a/runs/run-52069597/control_plane_start.json b/runs/run-52069597/control_plane_start.json
+deleted file mode 100644
+index 5c724aa..0000000
+--- a/runs/run-52069597/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://b.example"], "target": "https://b.example"}
+\ No newline at end of file
+diff --git a/runs/run-59b21168/control_plane_start.json b/runs/run-59b21168/control_plane_start.json
+deleted file mode 100644
+index 5c724aa..0000000
+--- a/runs/run-59b21168/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://b.example"], "target": "https://b.example"}
+\ No newline at end of file
+diff --git a/runs/run-62b1806f/control_plane_start.json b/runs/run-62b1806f/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-62b1806f/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-63ade268/control_plane_start.json b/runs/run-63ade268/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-63ade268/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-64a23cd0/control_plane_start.json b/runs/run-64a23cd0/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-64a23cd0/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-65344e3b/control_plane_start.json b/runs/run-65344e3b/control_plane_start.json
+deleted file mode 100644
+index 4e3c7ba..0000000
+--- a/runs/run-65344e3b/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://persist.example"], "target": "https://persist.example"}
+\ No newline at end of file
+diff --git a/runs/run-663a7d42/control_plane_start.json b/runs/run-663a7d42/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-663a7d42/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-69ccd403/control_plane_start.json b/runs/run-69ccd403/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-69ccd403/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-6b07d09e/control_plane_start.json b/runs/run-6b07d09e/control_plane_start.json
+deleted file mode 100644
+index 5c724aa..0000000
+--- a/runs/run-6b07d09e/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://b.example"], "target": "https://b.example"}
+\ No newline at end of file
+diff --git a/runs/run-7250d065/control_plane_start.json b/runs/run-7250d065/control_plane_start.json
+deleted file mode 100644
+index 5c724aa..0000000
+--- a/runs/run-7250d065/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://b.example"], "target": "https://b.example"}
+\ No newline at end of file
+diff --git a/runs/run-765f194c/control_plane_start.json b/runs/run-765f194c/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-765f194c/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-7d942508/control_plane_start.json b/runs/run-7d942508/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-7d942508/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-7e453f0b/control_plane_start.json b/runs/run-7e453f0b/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-7e453f0b/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-800ee99a/control_plane_start.json b/runs/run-800ee99a/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-800ee99a/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-81f1e36b/control_plane_start.json b/runs/run-81f1e36b/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-81f1e36b/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-83ec518a/control_plane_start.json b/runs/run-83ec518a/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-83ec518a/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-85ceaeac/control_plane_start.json b/runs/run-85ceaeac/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-85ceaeac/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-865caff5/control_plane_start.json b/runs/run-865caff5/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-865caff5/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-8742d47c/control_plane_start.json b/runs/run-8742d47c/control_plane_start.json
+deleted file mode 100644
+index 5c724aa..0000000
+--- a/runs/run-8742d47c/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://b.example"], "target": "https://b.example"}
+\ No newline at end of file
+diff --git a/runs/run-88bd42d6/control_plane_start.json b/runs/run-88bd42d6/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-88bd42d6/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-88d3c5bd/control_plane_start.json b/runs/run-88d3c5bd/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-88d3c5bd/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-91018340/control_plane_start.json b/runs/run-91018340/control_plane_start.json
+deleted file mode 100644
+index 5c724aa..0000000
+--- a/runs/run-91018340/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://b.example"], "target": "https://b.example"}
+\ No newline at end of file
+diff --git a/runs/run-9257bf8b/control_plane_start.json b/runs/run-9257bf8b/control_plane_start.json
+deleted file mode 100644
+index 5c724aa..0000000
+--- a/runs/run-9257bf8b/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://b.example"], "target": "https://b.example"}
+\ No newline at end of file
+diff --git a/runs/run-95ccb414/control_plane_start.json b/runs/run-95ccb414/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-95ccb414/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-98bf2c6a/control_plane_start.json b/runs/run-98bf2c6a/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-98bf2c6a/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-99266897/control_plane_start.json b/runs/run-99266897/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-99266897/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-9b4eed03/control_plane_start.json b/runs/run-9b4eed03/control_plane_start.json
+deleted file mode 100644
+index 5c724aa..0000000
+--- a/runs/run-9b4eed03/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://b.example"], "target": "https://b.example"}
+\ No newline at end of file
+diff --git a/runs/run-9de139bc/control_plane_start.json b/runs/run-9de139bc/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-9de139bc/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-9f230453/control_plane_start.json b/runs/run-9f230453/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-9f230453/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-9f313f2d/control_plane_start.json b/runs/run-9f313f2d/control_plane_start.json
+deleted file mode 100644
+index 5c724aa..0000000
+--- a/runs/run-9f313f2d/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://b.example"], "target": "https://b.example"}
+\ No newline at end of file
+diff --git a/runs/run-a03b78a3/control_plane_start.json b/runs/run-a03b78a3/control_plane_start.json
+deleted file mode 100644
+index 5c724aa..0000000
+--- a/runs/run-a03b78a3/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://b.example"], "target": "https://b.example"}
+\ No newline at end of file
+diff --git a/runs/run-a2ae6238/control_plane_start.json b/runs/run-a2ae6238/control_plane_start.json
+deleted file mode 100644
+index 5c724aa..0000000
+--- a/runs/run-a2ae6238/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://b.example"], "target": "https://b.example"}
+\ No newline at end of file
+diff --git a/runs/run-a44f229b/control_plane_start.json b/runs/run-a44f229b/control_plane_start.json
+deleted file mode 100644
+index 5c724aa..0000000
+--- a/runs/run-a44f229b/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://b.example"], "target": "https://b.example"}
+\ No newline at end of file
+diff --git a/runs/run-a5389bfd/control_plane_start.json b/runs/run-a5389bfd/control_plane_start.json
+deleted file mode 100644
+index 5c724aa..0000000
+--- a/runs/run-a5389bfd/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://b.example"], "target": "https://b.example"}
+\ No newline at end of file
+diff --git a/runs/run-a5c9c4c5/control_plane_start.json b/runs/run-a5c9c4c5/control_plane_start.json
+deleted file mode 100644
+index 5c724aa..0000000
+--- a/runs/run-a5c9c4c5/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://b.example"], "target": "https://b.example"}
+\ No newline at end of file
+diff --git a/runs/run-a5d521bd/control_plane_start.json b/runs/run-a5d521bd/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-a5d521bd/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-a8dd7efc/control_plane_start.json b/runs/run-a8dd7efc/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-a8dd7efc/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-aa68bce5/control_plane_start.json b/runs/run-aa68bce5/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-aa68bce5/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-acf506ab/control_plane_start.json b/runs/run-acf506ab/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-acf506ab/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-b0713045/control_plane_start.json b/runs/run-b0713045/control_plane_start.json
+deleted file mode 100644
+index 5c724aa..0000000
+--- a/runs/run-b0713045/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://b.example"], "target": "https://b.example"}
+\ No newline at end of file
+diff --git a/runs/run-b0c0128f/control_plane_start.json b/runs/run-b0c0128f/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-b0c0128f/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-b4236ce7/control_plane_start.json b/runs/run-b4236ce7/control_plane_start.json
+deleted file mode 100644
+index 5c724aa..0000000
+--- a/runs/run-b4236ce7/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://b.example"], "target": "https://b.example"}
+\ No newline at end of file
+diff --git a/runs/run-b4c3f7de/control_plane_start.json b/runs/run-b4c3f7de/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-b4c3f7de/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-b5bc5cbc/control_plane_start.json b/runs/run-b5bc5cbc/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-b5bc5cbc/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-b8ec09cf/control_plane_start.json b/runs/run-b8ec09cf/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-b8ec09cf/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-bea24fc6/control_plane_start.json b/runs/run-bea24fc6/control_plane_start.json
+deleted file mode 100644
+index 5c724aa..0000000
+--- a/runs/run-bea24fc6/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://b.example"], "target": "https://b.example"}
+\ No newline at end of file
+diff --git a/runs/run-c1525335/control_plane_start.json b/runs/run-c1525335/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-c1525335/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-c2c81a3c/control_plane_start.json b/runs/run-c2c81a3c/control_plane_start.json
+deleted file mode 100644
+index 5c724aa..0000000
+--- a/runs/run-c2c81a3c/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://b.example"], "target": "https://b.example"}
+\ No newline at end of file
+diff --git a/runs/run-c32b4b41/control_plane_start.json b/runs/run-c32b4b41/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-c32b4b41/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-c3b1508e/control_plane_start.json b/runs/run-c3b1508e/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-c3b1508e/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-c3c61a9c/control_plane_start.json b/runs/run-c3c61a9c/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-c3c61a9c/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-c3d4fddb/control_plane_start.json b/runs/run-c3d4fddb/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-c3d4fddb/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-c68b7c76/control_plane_start.json b/runs/run-c68b7c76/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-c68b7c76/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-c70e9b27/control_plane_start.json b/runs/run-c70e9b27/control_plane_start.json
+deleted file mode 100644
+index 5c724aa..0000000
+--- a/runs/run-c70e9b27/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://b.example"], "target": "https://b.example"}
+\ No newline at end of file
+diff --git a/runs/run-c72d2e3c/control_plane_start.json b/runs/run-c72d2e3c/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-c72d2e3c/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-c8fb3fba/control_plane_start.json b/runs/run-c8fb3fba/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-c8fb3fba/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-ca7af228/control_plane_start.json b/runs/run-ca7af228/control_plane_start.json
+deleted file mode 100644
+index 5c724aa..0000000
+--- a/runs/run-ca7af228/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://b.example"], "target": "https://b.example"}
+\ No newline at end of file
+diff --git a/runs/run-cc44f64f/control_plane_start.json b/runs/run-cc44f64f/control_plane_start.json
+deleted file mode 100644
+index 4e3c7ba..0000000
+--- a/runs/run-cc44f64f/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://persist.example"], "target": "https://persist.example"}
+\ No newline at end of file
+diff --git a/runs/run-ccdfb637/control_plane_start.json b/runs/run-ccdfb637/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-ccdfb637/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-cee8fdd6/control_plane_start.json b/runs/run-cee8fdd6/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-cee8fdd6/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-cf64cce4/control_plane_start.json b/runs/run-cf64cce4/control_plane_start.json
+deleted file mode 100644
+index 5c724aa..0000000
+--- a/runs/run-cf64cce4/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://b.example"], "target": "https://b.example"}
+\ No newline at end of file
+diff --git a/runs/run-context/control_plane_start.json b/runs/run-context/control_plane_start.json
+deleted file mode 100644
+index f995cef..0000000
+--- a/runs/run-context/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "thorough", "out_of_scope": ["https://target.example/admin"], "scope": ["https://target.example/app"], "target": "https://target.example"}
+\ No newline at end of file
+diff --git a/runs/run-d06bbcbb/control_plane_start.json b/runs/run-d06bbcbb/control_plane_start.json
+deleted file mode 100644
+index 4e3c7ba..0000000
+--- a/runs/run-d06bbcbb/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://persist.example"], "target": "https://persist.example"}
+\ No newline at end of file
+diff --git a/runs/run-d23093dd/control_plane_start.json b/runs/run-d23093dd/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-d23093dd/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-d238433c/control_plane_start.json b/runs/run-d238433c/control_plane_start.json
+deleted file mode 100644
+index 5c724aa..0000000
+--- a/runs/run-d238433c/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://b.example"], "target": "https://b.example"}
+\ No newline at end of file
+diff --git a/runs/run-da593c9c/control_plane_start.json b/runs/run-da593c9c/control_plane_start.json
+deleted file mode 100644
+index 4e3c7ba..0000000
+--- a/runs/run-da593c9c/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://persist.example"], "target": "https://persist.example"}
+\ No newline at end of file
+diff --git a/runs/run-dcb506c3/control_plane_start.json b/runs/run-dcb506c3/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-dcb506c3/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-de6d4b74/control_plane_start.json b/runs/run-de6d4b74/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-de6d4b74/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-e4e71765/control_plane_start.json b/runs/run-e4e71765/control_plane_start.json
+deleted file mode 100644
+index 5c724aa..0000000
+--- a/runs/run-e4e71765/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://b.example"], "target": "https://b.example"}
+\ No newline at end of file
+diff --git a/runs/run-ec1df38c/control_plane_start.json b/runs/run-ec1df38c/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-ec1df38c/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-ecb894f9/control_plane_start.json b/runs/run-ecb894f9/control_plane_start.json
+deleted file mode 100644
+index 5c724aa..0000000
+--- a/runs/run-ecb894f9/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://b.example"], "target": "https://b.example"}
+\ No newline at end of file
+diff --git a/runs/run-ee44397b/control_plane_start.json b/runs/run-ee44397b/control_plane_start.json
+deleted file mode 100644
+index 5c724aa..0000000
+--- a/runs/run-ee44397b/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://b.example"], "target": "https://b.example"}
+\ No newline at end of file
+diff --git a/runs/run-f1befec1/control_plane_start.json b/runs/run-f1befec1/control_plane_start.json
+deleted file mode 100644
+index 5c724aa..0000000
+--- a/runs/run-f1befec1/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://b.example"], "target": "https://b.example"}
+\ No newline at end of file
+diff --git a/runs/run-f47c936c/control_plane_start.json b/runs/run-f47c936c/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-f47c936c/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-f550b4f8/control_plane_start.json b/runs/run-f550b4f8/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-f550b4f8/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-f70c6082/control_plane_start.json b/runs/run-f70c6082/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-f70c6082/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-f89515cd/control_plane_start.json b/runs/run-f89515cd/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-f89515cd/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-fbb24858/control_plane_start.json b/runs/run-fbb24858/control_plane_start.json
+deleted file mode 100644
+index c7fbab3..0000000
+--- a/runs/run-fbb24858/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-same/control_plane_start.json b/runs/run-same/control_plane_start.json
+deleted file mode 100644
+index bfb98ae..0000000
+--- a/runs/run-same/control_plane_start.json
++++ /dev/null
+@@ -1 +0,0 @@
+-{"depth": "recon", "out_of_scope": [], "scope": ["https://original.example"], "target": "https://original.example"}
+\ No newline at end of file
+diff --git a/tests/test_paths.py b/tests/test_paths.py
+index 9bb1cd2..ed7a7bd 100644
+--- a/tests/test_paths.py
++++ b/tests/test_paths.py
+@@ -1,4 +1,5 @@
+ import importlib
++from pathlib import Path
+ 
+ import core.paths
+ 
+@@ -28,3 +29,9 @@ def test_default_paths_unchanged_without_env(monkeypatch):
+     assert paths.ARTIFACTS_DIR == paths.REPO_ROOT / "artifacts"
+     assert paths.POCS_DIR == paths.REPO_ROOT / "pocs"
+     assert paths.LOGS_DIR == paths.REPO_ROOT / "logs"
++
++
++def test_gitignore_covers_generated_run_workdirs():
++    entries = Path(".gitignore").read_text(encoding="utf-8").splitlines()
++
++    assert "runs/" in entries
