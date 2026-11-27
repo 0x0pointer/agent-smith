@@ -32,6 +32,8 @@ async def api_create_run(request: Request) -> JSONResponse:
         return JSONResponse({"error": "malformed json"}, status_code=400)
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
+    except orchestrator.RunIdCollisionError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=409)
     except RuntimeError as exc:
         return JSONResponse({"error": str(exc)}, status_code=503)
 

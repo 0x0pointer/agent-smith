@@ -1,13 +1,38 @@
-<!-- ── Tab: Sessions ─────────────────────────────────────────────────────── -->
-<!-- Lists every scan session — operator, watchdog-respawned, or implicit — from
-     /api/sessions (over the per-session smith-events streams, immune to the
-     session.json single-current clobber). Auto-started sessions are badged;
-     sessions new since the last view are highlighted (issue #187). -->
+<!-- ── Tab: Sessions / Runs ───────────────────────────────────────────────── -->
 <div id="tab-sessions" class="tab-content">
   <div class="tab-head">
-    <h2>Sessions</h2>
-    <p>Every scan session from this workspace, whatever started it. <span class="badge-auto">AUTO</span> marks a watchdog/auto-spawned session. A row highlighted is new since you last looked. Click a row to replay its reasoning in the Session Log.</p>
+    <h2>Runs</h2>
+    <p>Start isolated platform runs, list all persisted runs, and select a run token to scope the dashboard data tabs.</p>
   </div>
+
+  <form id="start-run-form" class="air-card" autocomplete="off">
+    <h3>Start Run</h3>
+    <label>
+      Target
+      <input id="start-run-target" name="target" type="text" placeholder="https://example.com" required>
+    </label>
+    <label>
+      Depth
+      <select id="start-run-depth" name="depth">
+        <option value="recon">Recon</option>
+        <option value="standard" selected>Standard</option>
+        <option value="thorough">Thorough</option>
+        <option value="danger">Danger</option>
+      </select>
+    </label>
+    <label>
+      Scope (one per line or comma-separated)
+      <textarea id="start-run-scope" name="scope" rows="3" placeholder="Defaults to target"></textarea>
+    </label>
+    <label>
+      Out of scope (one per line or comma-separated)
+      <textarea id="start-run-out-of-scope" name="out_of_scope" rows="3"></textarea>
+    </label>
+    <button type="submit">Start Run</button>
+    <span id="start-run-status" class="air-sub-note"></span>
+  </form>
+
   <div id="sessions-summary" class="air-sub-note"></div>
-  <div id="sessions-output"><div class="empty-placeholder">No sessions yet.</div></div>
+  <div id="runs-output"><div class="empty-placeholder">No runs yet.</div></div>
+  <div id="sessions-output" style="display:none"></div>
 </div>

@@ -104,6 +104,63 @@ def test_docker_failure_marks_failed_and_cleans(monkeypatch, tmp_path):
     assert rows[0]["status"] == "failed"
 
 
+def test_create_run_retries_generated_id_collision_before_side_effects(monkeypatch, tmp_path):
+    db_path = tmp_path / "runs.db"
+    monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")
+    new_run_id = MagicMock(return_value="run-same")
+    monkeypatch.setattr(orchestrator, "_new_run_id", new_run_id)
+
+    with patch("subprocess.Popen", return_value=MagicMock(pid=1111)):
+        original = orchestrator.create_run({"target": "https://original.example", "depth": "recon"})
+
+    with patch("subprocess.Popen") as popen:
+        with pytest.raises(orchestrator.RunIdCollisionError):
+            orchestrator.create_run({"target": "https://collision.example", "depth": "danger"})
+
+    rows = orchestrator.list_runs()
+    assert original["run_id"] == "run-same"
+    assert popen.call_count == 0
+    assert len(rows) == 1
+    assert rows[0]["run_id"] == "run-same"
+    assert rows[0]["target"] == "https://original.example"
+    assert rows[0]["depth"] == "recon"
+    assert new_run_id.call_count > 2
+
+
+def test_create_run_spawns_agent_driver_with_run_start_context(monkeypatch, tmp_path):
+    db_path = tmp_path / "runs.db"
+    monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")
+    monkeypatch.setattr(orchestrator, "_new_run_id", lambda: "run-context")
+
+    captured = {}
+
+    def _capture_popen(args, **kwargs):
+        captured["args"] = list(args)
+        captured["kwargs"] = kwargs
+        return MagicMock(pid=2222)
+
+    with patch("subprocess.Popen", side_effect=_capture_popen):
+        orchestrator.create_run({
+            "target": "https://target.example",
+            "depth": "thorough",
+            "scope": ["https://target.example/app"],
+            "out_of_scope": ["https://target.example/admin"],
+        })
+
+    env = captured["kwargs"]["env"]
+    argv_text = "\n".join(str(part) for part in captured["args"])
+    assert captured["args"][:3] != [orchestrator.sys.executable, "-m", "mcp_server"]
+    assert env["SMITH_RUN_ID"] == "run-context"
+    assert env["SMITH_WORKDIR"].endswith("/runs/run-context")
+    assert env["SMITH_RUN_TARGET"] == "https://target.example"
+    assert env["SMITH_RUN_DEPTH"] == "thorough"
+    assert "https://target.example/app" in env["SMITH_RUN_SCOPE"]
+    assert "https://target.example/admin" in env["SMITH_RUN_OUT_OF_SCOPE"]
+    assert "session(action='start'" in argv_text
+    assert "https://target.example" in argv_text
+    assert "thorough" in argv_text
+
+
 def test_stop_run_cleans_only_targeted_resources(monkeypatch, tmp_path):
     db_path = tmp_path / "runs.db"
     monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")

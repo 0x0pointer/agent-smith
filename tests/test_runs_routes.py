@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 from fastapi.testclient import TestClient
 
 import core.api_server as api_server
+from core import paths as core_paths
 import core.steering as steering_store
 import core.wishlist as wishlist_store
 from core.api_server import app
@@ -26,6 +27,26 @@ def _create_run(client: TestClient, operator_token: str, target: str) -> dict:
     return response.json()
 
 
+def _write_event_stream(events_dir, session_id: str, target: str, message: str) -> None:
+    events_dir.mkdir(parents=True, exist_ok=True)
+    (events_dir / f"{session_id}.jsonl").write_text(
+        json.dumps({
+            "event_id": f"evt-{session_id}",
+            "event_type": "note",
+            "sequence": 1,
+            "occurred_at": "2026-01-01T00:00:00Z",
+            "note": {"message": message},
+        }) + "\n",
+        encoding="utf-8",
+    )
+    bundle = events_dir / session_id
+    bundle.mkdir(parents=True, exist_ok=True)
+    (bundle / "meta.json").write_text(
+        json.dumps({"target": target, "started": "2026-01-01T00:00:00Z"}),
+        encoding="utf-8",
+    )
+
+
 def test_operator_token_can_create_and_stop(monkeypatch, tmp_path):
     db_path = tmp_path / "runs.db"
     monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")
@@ -46,6 +67,45 @@ def test_operator_token_can_create_and_stop(monkeypatch, tmp_path):
     assert listed.json()[0]["run_id"] == created["run_id"]
     assert stopped.status_code == 200
     assert stopped.json()["status"] == "stopped"
+
+
+def test_run_token_scopes_sessions_and_session_log_to_run_workdir(monkeypatch, tmp_path):
+    db_path = tmp_path / "runs.db"
+    monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")
+    monkeypatch.setenv("SMITH_DASHBOARD_AUTH", "1")
+    monkeypatch.delenv("SMITH_SINGLE_RUN", raising=False)
+
+    global_events = tmp_path / "global" / "logs" / "smith-events"
+    _write_event_stream(global_events, "sess-a", "https://global-a.example", "GLOBAL A LEAK")
+    _write_event_stream(global_events, "sess-b", "https://global-b.example", "GLOBAL B LEAK")
+    monkeypatch.setattr(core_paths, "SMITH_EVENTS_DIR", global_events)
+    monkeypatch.setattr(core_paths, "SESSION_FILE", tmp_path / "global" / "session.json")
+    core_paths.SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
+    core_paths.SESSION_FILE.write_text(json.dumps({"id": "sess-b", "status": "running"}))
+
+    run_a_workdir = tmp_path / "runs" / "run-a"
+    run_b_workdir = tmp_path / "runs" / "run-b"
+    _write_event_stream(run_a_workdir / "logs" / "smith-events", "sess-a", "https://a.example", "RUN A ONLY")
+    _write_event_stream(run_b_workdir / "logs" / "smith-events", "sess-b", "https://b.example", "RUN B ONLY")
+    (run_a_workdir / "session.json").write_text(json.dumps({"id": "sess-a", "status": "running"}))
+    (run_b_workdir / "session.json").write_text(json.dumps({"id": "sess-b", "status": "running"}))
+
+    repo = db_store.get_repository()
+    repo.upsert_run("run-a", {"run_id": "run-a", "target": "https://a.example", "status": "running"}, str(run_a_workdir))
+    repo.upsert_run("run-b", {"run_id": "run-b", "target": "https://b.example", "status": "running"}, str(run_b_workdir))
+    token_a = dashboard_auth.mint_run_token("run-a")
+    client = TestClient(app)
+
+    sessions = client.get("/api/sessions", headers=_headers(token_a))
+    log_a = client.get("/api/session-log", headers=_headers(token_a))
+    log_b = client.get("/api/session-log?session=sess-b", headers=_headers(token_a))
+
+    assert sessions.status_code == 200
+    assert [row["id"] for row in sessions.json()["sessions"]] == ["sess-a"]
+    assert log_a.status_code == 200
+    assert [row["id"] for row in log_a.json()["sessions"]] == ["sess-a"]
+    assert log_a.json()["events"][0]["payload"]["message"] == "RUN A ONLY"
+    assert log_b.status_code == 403
 
 
 def test_api_runs_list_persists_after_restart(monkeypatch, tmp_path):

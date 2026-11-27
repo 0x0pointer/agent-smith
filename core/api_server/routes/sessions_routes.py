@@ -13,7 +13,9 @@ mcp_server at import time).
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
+from fastapi import Request
 from fastapi.responses import JSONResponse
 
 from core import paths as _paths
@@ -23,6 +25,20 @@ from ._common import router
 _FINDING_SCAN_CAP = 20_000   # lines scanned to count findings when no snapshot exists
 
 
+def _run_paths(request: Request) -> tuple[Path, Path] | None:
+    run_id = getattr(request.state, "run_id", None)
+    if not run_id:
+        return _paths.SMITH_EVENTS_DIR, _paths.SESSION_FILE
+    from core import db as _db
+
+    row = _db.get_run(run_id)
+    workdir = (row or {}).get("workdir")
+    if not workdir:
+        return None
+    root = Path(workdir)
+    return root / "logs" / "smith-events", root / "session.json"
+
+
 def _read_json(path):
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -30,20 +46,20 @@ def _read_json(path):
         return None
 
 
-def _current_session() -> dict:
+def _current_session(session_file: Path) -> dict:
     """The live session.json {id, status} — the ONE session the clobber-prone
     current pointer names; every other session's status is inferred from its bundle."""
-    data = _read_json(_paths.SESSION_FILE) or {}
+    data = _read_json(session_file) or {}
     return {"id": data.get("id"), "status": data.get("status")}
 
 
-def _findings_count(stem: str) -> int:
+def _findings_count(stem: str, events_dir: Path) -> int:
     """Prefer the durable per-session snapshot (cheap, authoritative); else count
     `finding` events in the stream, bounded so a huge log can't stall the request."""
-    doc = _read_json(_paths.SMITH_EVENTS_DIR / stem / "findings.json")
+    doc = _read_json(events_dir / stem / "findings.json")
     if isinstance(doc, dict):
         return len(doc.get("findings") or [])
-    jl = _paths.SMITH_EVENTS_DIR / f"{stem}.jsonl"
+    jl = events_dir / f"{stem}.jsonl"
     n = 0
     try:
         with jl.open(encoding="utf-8") as f:
@@ -57,9 +73,9 @@ def _findings_count(stem: str) -> int:
     return n
 
 
-def _session_row(stem: str, current: dict) -> dict:
-    meta = _read_json(_paths.SMITH_EVENTS_DIR / stem / "meta.json") or {}
-    jl = _paths.SMITH_EVENTS_DIR / f"{stem}.jsonl"
+def _session_row(stem: str, current: dict, events_dir: Path) -> dict:
+    meta = _read_json(events_dir / stem / "meta.json") or {}
+    jl = events_dir / f"{stem}.jsonl"
     try:
         last_activity = jl.stat().st_mtime if jl.exists() else None
     except OSError:
@@ -68,7 +84,7 @@ def _session_row(stem: str, current: dict) -> dict:
     # snapshot marks a finished one; otherwise it's a past/backgrounded session.
     if stem == current.get("id"):
         status = current.get("status") or "running"
-    elif (_paths.SMITH_EVENTS_DIR / stem / "findings.json").exists():
+    elif (events_dir / stem / "findings.json").exists():
         status = "complete"
     else:
         status = "inactive"
@@ -80,17 +96,20 @@ def _session_row(stem: str, current: dict) -> dict:
         "origin": origin,
         "auto_started": origin != "operator",
         "status": status,
-        "findings": _findings_count(stem),
+        "findings": _findings_count(stem, events_dir),
         "scan_phase": meta.get("scan_phase"),
         "last_activity": last_activity,
     }
 
 
 @router.get("/api/sessions")
-async def api_sessions() -> JSONResponse:
+async def api_sessions(request: Request) -> JSONResponse:
     """List every scan session newest-first, with origin/status/findings so the
     dashboard can badge auto-started ones and switch between concurrent sessions."""
-    events_dir = _paths.SMITH_EVENTS_DIR
+    scoped_paths = _run_paths(request)
+    if scoped_paths is None:
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    events_dir, session_file = scoped_paths
     try:
         streams = sorted(
             events_dir.glob("*.jsonl"),   # *.jsonl only — the dir also holds per-session bundle subdirs
@@ -99,6 +118,6 @@ async def api_sessions() -> JSONResponse:
         ) if events_dir.exists() else []
     except OSError:
         streams = []
-    current = _current_session()
-    rows = [_session_row(p.stem, current) for p in streams]
+    current = _current_session(session_file)
+    rows = [_session_row(p.stem, current, events_dir) for p in streams]
     return JSONResponse({"sessions": rows, "current": current.get("id"), "count": len(rows)})

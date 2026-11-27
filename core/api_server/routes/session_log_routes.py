@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import json
 from collections import deque
+from pathlib import Path
 
+from fastapi import Request
 from fastapi.responses import JSONResponse
 
 from core import paths as _paths
@@ -27,13 +29,26 @@ _DEFAULT_TYPES = {"note", "decision", "action", "result", "finding", "coverage_t
 _MAX_EVENTS = 5000
 
 
-def _session_label(stem: str) -> dict:
+def _run_events_dir(request: Request) -> Path | None:
+    run_id = getattr(request.state, "run_id", None)
+    if not run_id:
+        return _paths.SMITH_EVENTS_DIR
+    from core import db as _db
+
+    row = _db.get_run(run_id)
+    workdir = (row or {}).get("workdir")
+    if not workdir:
+        return None
+    return Path(workdir) / "logs" / "smith-events"
+
+
+def _session_label(stem: str, events_dir: Path) -> dict:
     """Dropdown label for a session id, enriched from its durable meta.json subdir
     (logs/smith-events/<id>/meta.json) when present; falls back to the bare id (a
     decision/note-only stream has a .jsonl but no meta.json)."""
     info = {"id": stem, "target": None, "started": None}
     try:
-        meta = _paths.SMITH_EVENTS_DIR / stem / "meta.json"
+        meta = events_dir / stem / "meta.json"
         if meta.exists():
             m = json.loads(meta.read_text(encoding="utf-8"))
             info["target"] = m.get("target")
@@ -44,15 +59,17 @@ def _session_label(stem: str) -> dict:
 
 
 @router.get("/api/session-log")
-async def api_session_log(session: str = "", limit: int = _MAX_EVENTS) -> JSONResponse:
+async def api_session_log(request: Request, session: str = "", limit: int = _MAX_EVENTS) -> JSONResponse:
     """List reasoning-stream sessions and replay one.
 
     ``session`` — the engagement id to replay; defaults to the newest by file mtime
     (session ids are random uuid4, so filename order is meaningless). Resolved against a
-    trusted glob by stem — never built from the raw query param (path-traversal safety,
-    mirroring /api/logs).
-    """
-    events_dir = _paths.SMITH_EVENTS_DIR
+     trusted glob by stem — never built from the raw query param (path-traversal safety,
+     mirroring /api/logs).
+     """
+    events_dir = _run_events_dir(request)
+    if events_dir is None:
+        return JSONResponse({"error": "forbidden"}, status_code=403)
     try:
         streams = sorted(
             events_dir.glob("*.jsonl"),  # *.jsonl only — the dir also holds per-session bundle subdirs
@@ -62,7 +79,7 @@ async def api_session_log(session: str = "", limit: int = _MAX_EVENTS) -> JSONRe
     except OSError:
         streams = []
 
-    sessions = [_session_label(p.stem) for p in streams]
+    sessions = [_session_label(p.stem, events_dir) for p in streams]
 
     if not streams:
         return JSONResponse({"session": None, "sessions": [], "events": [],
@@ -71,8 +88,10 @@ async def api_session_log(session: str = "", limit: int = _MAX_EVENTS) -> JSONRe
     if session:
         target = next((p for p in streams if p.stem == session), None)
         if target is None:
+            status = 403 if getattr(request.state, "run_id", None) else 200
             return JSONResponse({"session": None, "sessions": sessions, "events": [],
-                                 "truncated": False, "count": 0, "error": "invalid session"})
+                                 "truncated": False, "count": 0, "error": "invalid session"},
+                                status_code=status)
     else:
         target = streams[0]  # newest by mtime
 

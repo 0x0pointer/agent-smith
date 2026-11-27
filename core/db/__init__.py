@@ -67,3 +67,10 @@ def list_runs() -> list[dict]:
     if repo is None:
         return []
     return repo.list_runs()
+
+
+def get_run(run_id: str) -> dict | None:
+    repo = get_repository()
+    if repo is None:
+        return None
+    return repo.get_run(run_id)

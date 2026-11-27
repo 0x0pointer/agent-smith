@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import signal
@@ -24,6 +25,12 @@ _LIST_ENTRY_MAX_LENGTH = 512
 _DEFAULT_DATABASE_URL = "postgresql+psycopg://smith:smith@127.0.0.1:55432/agent_smith"
 _CONTROL_PLANE_PORT = 7777
 _COMPOSE_FILE = _paths.REPO_ROOT / "docker-compose.yml"
+_RUN_ID_ATTEMPTS = 5
+_KNOWN_AGENT_CLIENTS = {"claude", "opencode", "codex"}
+
+
+class RunIdCollisionError(RuntimeError):
+    pass
 
 
 def _dashboard_base_url() -> str:
@@ -77,16 +84,71 @@ def _validate(payload: object) -> tuple[str, str, list[str], list[str]]:
 
 
 def _workdir_for(run_id: str) -> Path:
-    path = Path(_paths.RUNTIME_ROOT) / "runs" / run_id
+    path = _workdir_path_for(run_id)
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
-def _spawn_worker(run_id: str, workdir: Path) -> int:
+def _workdir_path_for(run_id: str) -> Path:
+    return Path(_paths.RUNTIME_ROOT) / "runs" / run_id
+
+
+def _initial_run_prompt(target: str, depth: str, scope: list[str], out_of_scope: list[str]) -> str:
+    options = {
+        "target": target,
+        "depth": depth,
+        "scope": scope,
+        "out_of_scope": out_of_scope,
+    }
+    return (
+        "Start a new agent-smith pentest run from the dashboard control plane. "
+        f"First call session(action='start', options={json.dumps(options, sort_keys=True)}). "
+        "Then call session(action='status') and continue autonomously with the next recommended "
+        "tool call until the scan is complete or genuinely blocked."
+    )
+
+
+def _agent_client() -> str:
+    client = os.environ.get("SMITH_WORKER_CLIENT", "").strip().lower() or "claude"
+    return client if client in _KNOWN_AGENT_CLIENTS else "claude"
+
+
+def _agent_spawn_args(client: str, prompt: str) -> list[str]:
+    from core.api_server.smith.spawn import _build_spawn_args
+
+    return _build_spawn_args(client, client, None, prompt)
+
+
+def _spawn_worker(
+    run_id: str,
+    workdir: Path,
+    target: str,
+    depth: str,
+    scope: list[str],
+    out_of_scope: list[str],
+) -> int:
     env = os.environ.copy()
     env["SMITH_RUN_ID"] = run_id
     env["SMITH_WORKDIR"] = str(workdir)
-    proc = subprocess.Popen([sys.executable, "-m", "mcp_server"], env=env)
+    env["SMITH_RUN_TARGET"] = target
+    env["SMITH_RUN_DEPTH"] = depth
+    env["SMITH_RUN_SCOPE"] = json.dumps(scope)
+    env["SMITH_RUN_OUT_OF_SCOPE"] = json.dumps(out_of_scope)
+    env.setdefault("SMITH_SESSION_ORIGIN", "operator")
+    logs_dir = workdir / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    prompt = _initial_run_prompt(target, depth, scope, out_of_scope)
+    args = _agent_spawn_args(_agent_client(), prompt)
+    spawn_kwargs = {
+        "cwd": str(_paths.REPO_ROOT),
+        "env": env,
+        "start_new_session": sys.platform != "win32",
+    }
+    if sys.platform == "win32":
+        spawn_kwargs.pop("start_new_session", None)
+        spawn_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+    with (logs_dir / "worker.log").open("a", encoding="utf-8") as log_fh:
+        proc = subprocess.Popen(args, stdout=log_fh, stderr=log_fh, **spawn_kwargs)
     return int(getattr(proc, "pid", 0) or 0)
 
 
@@ -241,22 +303,41 @@ def create_run(payload: object) -> dict:
     if repo is None:
         raise RuntimeError("database unavailable")
 
-    run_id = _new_run_id()
-    workdir = _workdir_for(run_id)
+    run_id = ""
+    workdir = Path()
+    session_doc: dict | None = None
+    for _ in range(_RUN_ID_ATTEMPTS):
+        candidate = _new_run_id()
+        candidate_workdir = _workdir_path_for(candidate)
+        candidate_doc = {
+            "run_id": candidate,
+            "target": target,
+            "depth": depth,
+            "scope": scope or [target],
+            "out_of_scope": out_of_scope,
+            "status": "starting",
+            "workdir": str(candidate_workdir),
+        }
+        if repo.create_run(candidate, candidate_doc, str(candidate_workdir)):
+            run_id = candidate
+            workdir = _workdir_for(run_id)
+            session_doc = candidate_doc
+            break
+    if session_doc is None:
+        raise RunIdCollisionError("could not allocate unique run id")
+
     token = dashboard_auth.mint_run_token(run_id)
-    session_doc = {
-        "run_id": run_id,
-        "target": target,
-        "depth": depth,
-        "scope": scope or [target],
-        "out_of_scope": out_of_scope,
-        "status": "running",
-        "workdir": str(workdir),
-    }
-    repo.upsert_run(run_id, session_doc, str(workdir))
+    session_doc["status"] = "running"
     repo.save_snapshot(run_id, "session", session_doc)
     try:
-        worker_pid = _spawn_worker(run_id, workdir)
+        worker_pid = _spawn_worker(
+            run_id,
+            workdir,
+            target,
+            depth,
+            scope or [target],
+            out_of_scope,
+        )
         session_doc["worker_pid"] = worker_pid
         repo.upsert_run(run_id, session_doc, str(workdir))
         repo.save_snapshot(run_id, "session", session_doc)

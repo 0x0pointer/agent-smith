@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import create_engine, select
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import IntegrityError
 
 from .schema import dashboard_tokens, metadata, run_snapshots, runs
 
@@ -18,9 +19,9 @@ class DatabaseRepository:
     def _now() -> str:
         return datetime.now(timezone.utc).isoformat()
 
-    def upsert_run(self, run_id: str, payload: dict, workdir: str) -> None:
+    def _run_row(self, run_id: str, payload: dict, workdir: str) -> dict:
         now = self._now()
-        row = {
+        return {
             "run_id": run_id,
             "target": str(payload.get("target") or ""),
             "status": str(payload.get("status") or ""),
@@ -30,6 +31,23 @@ class DatabaseRepository:
             "created_at": str(payload.get("started") or now),
             "updated_at": now,
         }
+
+    def create_run(self, run_id: str, payload: dict, workdir: str) -> bool:
+        row = self._run_row(run_id, payload, workdir)
+        try:
+            with self._engine.begin() as conn:
+                conn.execute(runs.insert().values(**row))
+            return True
+        except IntegrityError:
+            return False
+
+    def get_run(self, run_id: str) -> dict | None:
+        with self._engine.begin() as conn:
+            row = conn.execute(select(runs).where(runs.c.run_id == run_id)).mappings().first()
+        return dict(row) if row else None
+
+    def upsert_run(self, run_id: str, payload: dict, workdir: str) -> None:
+        row = self._run_row(run_id, payload, workdir)
         with self._engine.begin() as conn:
             existing = conn.execute(
                 select(runs.c.run_id).where(runs.c.run_id == run_id)
