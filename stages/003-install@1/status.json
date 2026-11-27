@@ -1,0 +1,6 @@
+{
+  "outcome": "succeeded",
+  "notes": "Script completed: git submodule update -q --init --recursive && poetry install --with dev --no-interaction -q",
+  "failure_reason": null,
+  "timestamp": "2026-11-27T08:45:23.696252384Z"
+}

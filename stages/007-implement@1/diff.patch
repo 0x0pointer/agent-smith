@@ -1,0 +1,2244 @@
+diff --git a/control_plane/__init__.py b/control_plane/__init__.py
+new file mode 100644
+index 0000000..7a41a2e
+--- /dev/null
++++ b/control_plane/__init__.py
+@@ -0,0 +1 @@
++from .orchestrator import create_run, list_runs, stop_run
+diff --git a/control_plane/orchestrator.py b/control_plane/orchestrator.py
+new file mode 100644
+index 0000000..fb86694
+--- /dev/null
++++ b/control_plane/orchestrator.py
+@@ -0,0 +1,119 @@
++from __future__ import annotations
++
++import os
++import shutil
++import subprocess
++import uuid
++from pathlib import Path
++
++from core import dashboard_auth
++from core import db as _db
++from core import paths as _paths
++
++_DEPTHS = {"recon", "standard", "thorough", "danger"}
++
++
++def _dashboard_base_url() -> str:
++    return "http://127.0.0.1:7777"
++
++
++def _new_run_id() -> str:
++    return f"run-{uuid.uuid4().hex[:8]}"
++
++
++def _validate(payload: dict) -> tuple[str, str]:
++    target = str(payload.get("target") or "").strip()
++    depth = str(payload.get("depth") or "standard").strip() or "standard"
++    if not target:
++        raise ValueError("target required")
++    if depth not in _DEPTHS:
++        raise ValueError("invalid depth")
++    return target, depth
++
++
++def _workdir_for(run_id: str) -> Path:
++    path = Path(_paths.RUNTIME_ROOT) / "runs" / run_id
++    path.mkdir(parents=True, exist_ok=True)
++    return path
++
++
++def _spawn_worker(run_id: str, workdir: Path) -> int:
++    env = os.environ.copy()
++    env["SMITH_RUN_ID"] = run_id
++    env["SMITH_WORKDIR"] = str(workdir)
++    proc = subprocess.Popen(["python", "-m", "mcp_server"], env=env)
++    return int(getattr(proc, "pid", 0) or 0)
++
++
++def create_run(payload: dict) -> dict:
++    target, depth = _validate(payload)
++    run_id = _new_run_id()
++    workdir = _workdir_for(run_id)
++    token = dashboard_auth.mint_run_token(run_id)
++    session_doc = {
++        "run_id": run_id,
++        "target": target,
++        "depth": depth,
++        "status": "running",
++        "workdir": str(workdir),
++    }
++    repo = _db.get_repository()
++    if repo is None:
++        raise RuntimeError("database unavailable")
++    repo.upsert_run(run_id, session_doc, str(workdir))
++    repo.save_snapshot(run_id, "session", session_doc)
++    try:
++        _spawn_worker(run_id, workdir)
++    except Exception:
++        session_doc["status"] = "failed"
++        repo.upsert_run(run_id, session_doc, str(workdir))
++        repo.save_snapshot(run_id, "session", session_doc)
++        shutil.rmtree(workdir, ignore_errors=True)
++        raise
++    return {
++        "run_id": run_id,
++        "status": "running",
++        "dashboard_url": f"{_dashboard_base_url()}/#k={token}",
++        "token": token,
++    }
++
++
++def list_runs() -> list[dict]:
++    rows = _db.list_runs()
++    return [
++        {
++            "run_id": row.get("run_id"),
++            "target": row.get("target"),
++            "status": row.get("status"),
++            "depth": row.get("depth"),
++            "workdir": row.get("workdir"),
++        }
++        for row in rows
++    ]
++
++
++def stop_run(run_id: str) -> dict:
++    repo = _db.get_repository()
++    if repo is None:
++        raise RuntimeError("database unavailable")
++    session_doc = repo.load_snapshot(run_id, "session") or {"run_id": run_id}
++    session_doc["status"] = "stopped"
++    repo.upsert_run(run_id, session_doc, session_doc.get("workdir", ""))
++    repo.save_snapshot(run_id, "session", session_doc)
++    return {"run_id": run_id, "status": "stopped"}
++
++
++def start_control_plane() -> dict:
++    return {"status": "started", "database": bool(_db.get_repository()), "dashboard_url": _dashboard_base_url()}
++
++
++def stop_control_plane() -> dict:
++    return {"status": "stopped"}
++
++
++def control_plane_status() -> dict:
++    return {
++        "database": "healthy" if _db.get_repository() else "unavailable",
++        "dashboard": "running",
++        "orchestrator": "running",
++    }
+diff --git a/core/api_server/__init__.py b/core/api_server/__init__.py
+index 5920185..6f6de85 100644
+--- a/core/api_server/__init__.py
++++ b/core/api_server/__init__.py
+@@ -100,14 +100,22 @@ async def _require_dashboard_token(request: Request, call_next):
+     """
+     path = request.url.path
+     auth_on = os.environ.get("SMITH_DASHBOARD_AUTH", "1").lower() not in ("0", "false", "no")
++    request.state.run_id = None
++    request.state.role = None
+     if auth_on and path.startswith("/api/"):
+         from core import dashboard_auth
+-        token = dashboard_auth.read_token()
+-        if token:  # a session is active → require the bearer token
+-            hdr = request.headers.get("authorization", "")
+-            supplied = hdr[7:].strip() if hdr[:7].lower() == "bearer " else ""
+-            if not dashboard_auth.verify(supplied):
+-                return JSONResponse({"error": "unauthorized"}, status_code=401)
++        hdr = request.headers.get("authorization", "")
++        supplied = hdr[7:].strip() if hdr[:7].lower() == "bearer " else ""
++        meta = dashboard_auth.verify_bearer(supplied)
++        if meta:
++            request.state.run_id = meta.get("run_id") or None
++            request.state.role = meta.get("role") or None
++        else:
++            token = dashboard_auth.read_token()
++            if token:  # a session is active → require the bearer token
++                if not dashboard_auth.verify(supplied):
++                    return JSONResponse({"error": "unauthorized"}, status_code=401)
++                request.state.role = "operator"
+     resp = await call_next(request)
+     # Force the browser to REVALIDATE dashboard assets on every load instead of
+     # serving a heuristically-cached stale copy. Without this, the un-versioned
+diff --git a/core/api_server/routes/__init__.py b/core/api_server/routes/__init__.py
+index 5ff30ef..149b26f 100644
+--- a/core/api_server/routes/__init__.py
++++ b/core/api_server/routes/__init__.py
+@@ -31,6 +31,7 @@ from . import ai_redteam_routes  # noqa: E402,F401
+ from . import session_log_routes  # noqa: E402,F401
+ from . import sessions_routes  # noqa: E402,F401
+ from . import skill_usage_routes  # noqa: E402,F401
++from . import runs_routes  # noqa: E402,F401
+ 
+ # Re-export handler functions for consumers/tests that import them by name.
+ from .dashboard_routes import (  # noqa: E402,F401
+@@ -80,6 +81,7 @@ from .smith_routes import (  # noqa: E402,F401
+ from .ai_redteam_routes import api_ai_redteam  # noqa: E402,F401
+ from .session_log_routes import api_session_log  # noqa: E402,F401
+ from .sessions_routes import api_sessions  # noqa: E402,F401
++from .runs_routes import api_runs, api_create_run, api_stop_run  # noqa: E402,F401
+ from .skill_usage_routes import api_skill_usage  # noqa: E402,F401
+ from .misc_routes import (  # noqa: E402,F401
+     api_qa,
+diff --git a/core/api_server/routes/findings_routes.py b/core/api_server/routes/findings_routes.py
+index 7a2f3b2..6bc8a07 100644
+--- a/core/api_server/routes/findings_routes.py
++++ b/core/api_server/routes/findings_routes.py
+@@ -15,9 +15,19 @@ _log = logging.getLogger(__name__)
+ 
+ # ── Read APIs ───────────────────────────────────────────────────────────────
+ 
++def _scoped_data(request: Request, kind: str, path):
++    run_id = getattr(request.state, "run_id", None)
++    if run_id:
++        from core import db as _db
++        data = _db.load_snapshot(kind, run_id=run_id)
++        if isinstance(data, dict):
++            return data
++    return _api._read_json(path)
++
++
+ @router.get("/api/findings")
+-async def api_findings() -> JSONResponse:
+-    data = _api._read_json(_api._FINDINGS_FILE)
++async def api_findings(request: Request) -> JSONResponse:
++    data = _scoped_data(request, "findings", _api._FINDINGS_FILE)
+     # Render diagram + exploit-chain SVGs server-side so the topology tab matches
+     # the threat-model theme.
+     from ..mermaid import sanitize_mermaid
+@@ -73,8 +83,8 @@ async def api_finding(finding_id: str) -> JSONResponse:
+ 
+ 
+ @router.get("/api/session")
+-async def api_session() -> JSONResponse:
+-    data = _api._read_json(_api._SESSION_FILE)
++async def api_session(request: Request) -> JSONResponse:
++    data = _scoped_data(request, "session", _api._SESSION_FILE)
+     # Self-heal the triage banner + expose the live pending count so the dashboard
+     # can show progress (and a "stalled" warning if Smith goes idle mid-pass).
+     if isinstance(data, dict) and data.get("triage_requested"):
+@@ -126,13 +136,13 @@ async def api_session() -> JSONResponse:
+ 
+ 
+ @router.get("/api/cost")
+-async def api_cost() -> JSONResponse:
+-    return JSONResponse(_api._read_json(_api._COST_FILE))
++async def api_cost(request: Request) -> JSONResponse:
++    return JSONResponse(_scoped_data(request, "cost", _api._COST_FILE))
+ 
+ 
+ @router.get("/api/coverage")
+-async def api_coverage() -> JSONResponse:
+-    return JSONResponse(_api._read_json(_api._COVERAGE_FILE))
++async def api_coverage(request: Request) -> JSONResponse:
++    return JSONResponse(_scoped_data(request, "coverage", _api._COVERAGE_FILE))
+ 
+ 
+ @router.get("/api/graph")
+diff --git a/core/api_server/routes/runs_routes.py b/core/api_server/routes/runs_routes.py
+new file mode 100644
+index 0000000..fac0d9f
+--- /dev/null
++++ b/core/api_server/routes/runs_routes.py
+@@ -0,0 +1,44 @@
++from __future__ import annotations
++
++from fastapi import Request
++from fastapi.responses import JSONResponse
++
++from control_plane import orchestrator
++
++from ._common import router
++
++
++def _is_operator(request: Request) -> bool:
++    return getattr(request.state, "role", "") == "operator"
++
++
++@router.get("/api/runs")
++async def api_runs(request: Request) -> JSONResponse:
++    if not _is_operator(request):
++        return JSONResponse({"error": "forbidden"}, status_code=403)
++    return JSONResponse(orchestrator.list_runs())
++
++
++@router.post("/api/runs")
++async def api_create_run(request: Request) -> JSONResponse:
++    if not _is_operator(request):
++        return JSONResponse({"error": "forbidden"}, status_code=403)
++    try:
++        body = await request.json()
++        return JSONResponse(orchestrator.create_run(body))
++    except ValueError as exc:
++        return JSONResponse({"error": str(exc)}, status_code=400)
++    except RuntimeError as exc:
++        return JSONResponse({"error": str(exc)}, status_code=503)
++
++
++@router.post("/api/runs/{run_id}/stop")
++async def api_stop_run(run_id: str, request: Request) -> JSONResponse:
++    role = getattr(request.state, "role", "")
++    token_run_id = getattr(request.state, "run_id", "")
++    if role != "operator" and token_run_id != run_id:
++        return JSONResponse({"error": "forbidden"}, status_code=403)
++    try:
++        return JSONResponse(orchestrator.stop_run(run_id))
++    except RuntimeError as exc:
++        return JSONResponse({"error": str(exc)}, status_code=503)
+diff --git a/core/cost.py b/core/cost.py
+index bb4d34b..7a5db66 100644
+--- a/core/cost.py
++++ b/core/cost.py
+@@ -29,6 +29,7 @@ from __future__ import annotations
+ import json
+ import uuid
+ from datetime import datetime, timezone
++from core import db as _db
+ from core import paths as _paths
+ from core import store as _store
+ 
+@@ -126,7 +127,12 @@ def flush() -> None:
+ 
+ 
+ def _flush() -> None:
+-    _store.save(_COST_FILE, get_summary())
++    summary = get_summary()
++    _store.save(_COST_FILE, summary)
++    try:
++        _db.persist_snapshot("cost", summary)
++    except Exception:
++        pass
+ 
+ 
+ def _load_from_file() -> None:
+@@ -141,8 +147,11 @@ def _load_from_file() -> None:
+     global _session_start, _calls
+     try:
+         if not _COST_FILE.exists():
+-            return
+-        data = json.loads(_COST_FILE.read_text())
++            data = _db.load_snapshot("cost")
++            if not isinstance(data, dict):
++                return
++        else:
++            data = json.loads(_COST_FILE.read_text())
+         breakdown = data.get("breakdown", [])
+         if breakdown:
+             _session_start = data.get("session_started", _session_start)
+diff --git a/core/coverage/__init__.py b/core/coverage/__init__.py
+index 69b6586..61f26e6 100644
+--- a/core/coverage/__init__.py
++++ b/core/coverage/__init__.py
+@@ -52,7 +52,9 @@ import json
+ from datetime import datetime, timezone
+ from pathlib import Path
+ 
++from core import db as _db
+ from core import paths as _paths
++from core import run_context as _run_context
+ from core import store as _store
+ 
+ COVERAGE_FILE  = _paths.COVERAGE_FILE
+@@ -76,11 +78,21 @@ ADDRESSED_STATUSES: frozenset[str] = frozenset({"tested_clean", "vulnerable", "n
+ # ---------------------------------------------------------------------------
+ 
+ def _load() -> dict:
++    file_data = None
+     if COVERAGE_FILE.exists():
+         try:
+-            return json.loads(COVERAGE_FILE.read_text())
++            data = json.loads(COVERAGE_FILE.read_text())
++            if ((data.get("meta") or {}).get("run_id") in (None, _run_context.run_id())):
++                return data
++            file_data = data
+         except Exception:
+             pass
++    repo = _db.get_repository()
++    cached = _db.load_snapshot("coverage")
++    if isinstance(cached, dict):
++        return cached
++    if isinstance(file_data, dict) and repo is None:
++        return file_data
+     return {
+         "meta": {
+             "created": datetime.now(timezone.utc).isoformat(),
+@@ -97,7 +109,13 @@ def _load() -> dict:
+ 
+ 
+ def _save(data: dict) -> None:
++    data.setdefault("meta", {})
++    data["meta"]["run_id"] = _run_context.run_id()
+     _store.save(COVERAGE_FILE, data)
++    try:
++        _db.persist_snapshot("coverage", data)
++    except Exception:
++        pass
+ 
+ 
+ def _recount(data: dict) -> None:
+diff --git a/core/dashboard_auth.py b/core/dashboard_auth.py
+index 7dc6448..9b80449 100644
+--- a/core/dashboard_auth.py
++++ b/core/dashboard_auth.py
+@@ -32,9 +32,11 @@ handled separately by output escaping + sanitization in the dashboard JS.
+ """
+ from __future__ import annotations
+ 
++import hashlib
+ import hmac
+ import os
+ 
++from core import db as _db
+ from core import paths as _paths
+ 
+ 
+@@ -67,6 +69,28 @@ def mint_token() -> str:
+     return token
+ 
+ 
++def _hash_token(token: str) -> str:
++    return hashlib.sha256(token.encode("utf-8")).hexdigest()
++
++
++def _mint_db_token(run_id: str, role: str) -> str:
++    import secrets
++
++    token = secrets.token_urlsafe(32)
++    repo = _db.get_repository()
++    if repo is not None:
++        repo.save_dashboard_token(_hash_token(token), run_id, role)
++    return token
++
++
++def mint_run_token(run_id: str) -> str:
++    return _mint_db_token(run_id, "run")
++
++
++def mint_operator_token() -> str:
++    return _mint_db_token("", "operator")
++
++
+ def read_token() -> str | None:
+     """Return the current session token, or None if none has been minted."""
+     try:
+@@ -84,6 +108,16 @@ def verify(supplied: str | None) -> bool:
+     return hmac.compare_digest(supplied, token)
+ 
+ 
++def verify_bearer(supplied: str | None) -> dict | None:
++    repo = _db.get_repository()
++    if repo is None or not supplied:
++        return None
++    row = repo.lookup_dashboard_token(_hash_token(supplied))
++    if not row:
++        return None
++    return {"run_id": row.get("run_id", ""), "role": row.get("role", "run")}
++
++
+ def clear() -> None:
+     """Remove the token file (e.g. on scan clear)."""
+     try:
+diff --git a/core/db/__init__.py b/core/db/__init__.py
+new file mode 100644
+index 0000000..2e4e826
+--- /dev/null
++++ b/core/db/__init__.py
+@@ -0,0 +1,69 @@
++from __future__ import annotations
++
++import os
++
++from core import run_context
++
++from .repository import DatabaseRepository
++
++_cached_repo: DatabaseRepository | None = None
++_cached_url: str | None = None
++
++
++def database_enabled() -> bool:
++    if os.environ.get("SMITH_SINGLE_RUN", "").strip().lower() in ("1", "true", "yes"):
++        return False
++    return bool(os.environ.get("SMITH_DATABASE_URL", "").strip())
++
++
++def get_repository() -> DatabaseRepository | None:
++    global _cached_repo, _cached_url
++    if not database_enabled():
++        _cached_repo = None
++        _cached_url = None
++        return None
++    url = os.environ.get("SMITH_DATABASE_URL", "").strip()
++    if not url:
++        return None
++    try:
++        if _cached_repo is None or _cached_url != url:
++            _cached_repo = DatabaseRepository(url)
++            _cached_url = url
++    except Exception:
++        _cached_repo = None
++        _cached_url = None
++        return None
++    return _cached_repo
++
++
++def persist_session(payload: dict) -> None:
++    repo = get_repository()
++    if repo is None:
++        return
++    run_id = run_context.run_id()
++    repo.upsert_run(run_id, payload, run_context.workdir())
++    repo.save_snapshot(run_id, "session", payload)
++
++
++def persist_snapshot(kind: str, payload: dict) -> None:
++    repo = get_repository()
++    if repo is None:
++        return
++    repo.save_snapshot(run_context.run_id(), kind, payload)
++
++
++def load_snapshot(kind: str, run_id: str | None = None) -> dict | None:
++    repo = get_repository()
++    if repo is None:
++        return None
++    try:
++        return repo.load_snapshot(run_id or run_context.run_id(), kind)
++    except Exception:
++        return None
++
++
++def list_runs() -> list[dict]:
++    repo = get_repository()
++    if repo is None:
++        return []
++    return repo.list_runs()
+diff --git a/core/db/repository.py b/core/db/repository.py
+new file mode 100644
+index 0000000..fe158f7
+--- /dev/null
++++ b/core/db/repository.py
+@@ -0,0 +1,103 @@
++from __future__ import annotations
++
++import json
++from datetime import datetime, timezone
++
++from sqlalchemy import create_engine, select
++from sqlalchemy.engine import Engine
++
++from .schema import dashboard_tokens, metadata, run_snapshots, runs
++
++
++class DatabaseRepository:
++    def __init__(self, url: str):
++        self._engine: Engine = create_engine(url, future=True)
++        metadata.create_all(self._engine)
++
++    @staticmethod
++    def _now() -> str:
++        return datetime.now(timezone.utc).isoformat()
++
++    def upsert_run(self, run_id: str, payload: dict, workdir: str) -> None:
++        now = self._now()
++        row = {
++            "run_id": run_id,
++            "target": str(payload.get("target") or ""),
++            "status": str(payload.get("status") or ""),
++            "depth": str(payload.get("depth") or ""),
++            "workdir": workdir,
++            "payload_json": json.dumps(payload),
++            "created_at": str(payload.get("started") or now),
++            "updated_at": now,
++        }
++        with self._engine.begin() as conn:
++            existing = conn.execute(
++                select(runs.c.run_id).where(runs.c.run_id == run_id)
++            ).first()
++            if existing:
++                conn.execute(
++                    runs.update().where(runs.c.run_id == run_id).values(**row)
++                )
++            else:
++                conn.execute(runs.insert().values(**row))
++
++    def save_snapshot(self, run_id: str, kind: str, payload: dict) -> None:
++        row = {
++            "run_id": run_id,
++            "kind": kind,
++            "payload_json": json.dumps(payload),
++            "updated_at": self._now(),
++        }
++        with self._engine.begin() as conn:
++            existing = conn.execute(
++                select(run_snapshots.c.run_id).where(
++                    (run_snapshots.c.run_id == run_id)
++                    & (run_snapshots.c.kind == kind)
++                )
++            ).first()
++            if existing:
++                conn.execute(
++                    run_snapshots.update().where(
++                        (run_snapshots.c.run_id == run_id)
++                        & (run_snapshots.c.kind == kind)
++                    ).values(**row)
++                )
++            else:
++                conn.execute(run_snapshots.insert().values(**row))
++
++    def load_snapshot(self, run_id: str, kind: str) -> dict | None:
++        with self._engine.begin() as conn:
++            row = conn.execute(
++                select(run_snapshots.c.payload_json).where(
++                    (run_snapshots.c.run_id == run_id)
++                    & (run_snapshots.c.kind == kind)
++                )
++            ).first()
++        if not row:
++            return None
++        return json.loads(row[0])
++
++    def list_runs(self) -> list[dict]:
++        with self._engine.begin() as conn:
++            rows = conn.execute(select(runs).order_by(runs.c.updated_at.desc())).mappings().all()
++        return [dict(row) for row in rows]
++
++    def save_dashboard_token(self, token_hash: str, run_id: str, role: str) -> None:
++        row = {
++            "token_hash": token_hash,
++            "run_id": run_id,
++            "role": role,
++            "created_at": self._now(),
++        }
++        with self._engine.begin() as conn:
++            conn.execute(
++                dashboard_tokens.delete().where(dashboard_tokens.c.token_hash == token_hash)
++            )
++            conn.execute(dashboard_tokens.insert().values(**row))
++
++    def lookup_dashboard_token(self, token_hash: str) -> dict | None:
++        with self._engine.begin() as conn:
++            row = conn.execute(
++                select(dashboard_tokens).where(dashboard_tokens.c.token_hash == token_hash)
++            ).mappings().first()
++        return dict(row) if row else None
+diff --git a/core/db/schema.py b/core/db/schema.py
+new file mode 100644
+index 0000000..e7b7c22
+--- /dev/null
++++ b/core/db/schema.py
+@@ -0,0 +1,36 @@
++from __future__ import annotations
++
++from sqlalchemy import Column, MetaData, Table, Text
++
++metadata = MetaData()
++
++runs = Table(
++    "runs",
++    metadata,
++    Column("run_id", Text, primary_key=True),
++    Column("target", Text, nullable=False, default=""),
++    Column("status", Text, nullable=False, default=""),
++    Column("depth", Text, nullable=False, default=""),
++    Column("workdir", Text, nullable=False, default=""),
++    Column("payload_json", Text, nullable=False, default="{}"),
++    Column("created_at", Text, nullable=False, default=""),
++    Column("updated_at", Text, nullable=False, default=""),
++)
++
++run_snapshots = Table(
++    "run_snapshots",
++    metadata,
++    Column("run_id", Text, primary_key=True),
++    Column("kind", Text, primary_key=True),
++    Column("payload_json", Text, nullable=False, default="{}"),
++    Column("updated_at", Text, nullable=False, default=""),
++)
++
++dashboard_tokens = Table(
++    "dashboard_tokens",
++    metadata,
++    Column("token_hash", Text, primary_key=True),
++    Column("run_id", Text, nullable=False, default=""),
++    Column("role", Text, nullable=False, default="run"),
++    Column("created_at", Text, nullable=False, default=""),
++)
+diff --git a/core/findings.py b/core/findings.py
+index 080d75b..364ca30 100644
+--- a/core/findings.py
++++ b/core/findings.py
+@@ -36,7 +36,9 @@ import asyncio
+ import json
+ import uuid
+ from datetime import datetime, timezone
++from core import db as _db
+ from core import paths as _paths
++from core import run_context as _run_context
+ from core import store as _store
+ 
+ FINDINGS_FILE = _paths.FINDINGS_FILE
+@@ -49,11 +51,21 @@ _lock = asyncio.Lock()
+ # ---------------------------------------------------------------------------
+ 
+ def _load() -> dict:
++    file_data = None
+     if FINDINGS_FILE.exists():
+         try:
+-            return json.loads(FINDINGS_FILE.read_text())
++            data = json.loads(FINDINGS_FILE.read_text())
++            if ((data.get("meta") or {}).get("run_id") in (None, _run_context.run_id())):
++                return data
++            file_data = data
+         except Exception:
+             pass
++    repo = _db.get_repository()
++    cached = _db.load_snapshot("findings")
++    if isinstance(cached, dict):
++        return cached
++    if isinstance(file_data, dict) and repo is None:
++        return file_data
+     return {
+         "meta":     {"created": datetime.now(timezone.utc).isoformat(), "target": ""},
+         "findings": [],
+@@ -63,7 +75,13 @@ def _load() -> dict:
+ 
+ 
+ def _save(data: dict) -> None:
++    data.setdefault("meta", {})
++    data["meta"]["run_id"] = _run_context.run_id()
+     _store.save(FINDINGS_FILE, data)
++    try:
++        _db.persist_snapshot("findings", data)
++    except Exception:
++        pass
+     # AS-REPUD: write a detached HMAC signature so post-hoc edits to the signed
+     # deliverable are detectable (verify via core.integrity.verify_file). Best-effort.
+     try:
+diff --git a/core/paths.py b/core/paths.py
+index 7ebcde5..7b0447d 100644
+--- a/core/paths.py
++++ b/core/paths.py
+@@ -19,34 +19,36 @@ depend on it without creating an import cycle.
+ """
+ from __future__ import annotations
+ 
++import os
+ from pathlib import Path
+ 
+ # core/paths.py → one parent up is core/, two is the repo root. Resolved so
+ # every consumer derives the same canonical absolute path.
+ REPO_ROOT = Path(__file__).parent.parent.resolve()
++RUNTIME_ROOT = Path(os.environ.get("SMITH_WORKDIR", "")).expanduser().resolve() if os.environ.get("SMITH_WORKDIR") else REPO_ROOT
+ 
+ # ── State / output files (repo root) ──────────────────────────────────────────
+-SESSION_FILE     = REPO_ROOT / "session.json"
+-FINDINGS_FILE    = REPO_ROOT / "findings.json"
+-COVERAGE_FILE    = REPO_ROOT / "coverage_matrix.json"
+-AI_REDTEAM_FILE  = REPO_ROOT / "ai_redteam.json"
+-QA_STATE_FILE    = REPO_ROOT / "qa_state.json"
+-STEERING_FILE    = REPO_ROOT / "steering_queue.json"
+-WISHLIST_FILE    = REPO_ROOT / "wishlist_queue.json"
+-QUICK_LOG_FILE        = REPO_ROOT / "quick_log.json"
+-ADJUDICATION_LOG_FILE = REPO_ROOT / "adjudication_log.jsonl"
+-COST_FILE        = REPO_ROOT / "session_cost.json"
+-METRICS_FILE     = REPO_ROOT / "pentest_metrics.jsonl"
++SESSION_FILE     = RUNTIME_ROOT / "session.json"
++FINDINGS_FILE    = RUNTIME_ROOT / "findings.json"
++COVERAGE_FILE    = RUNTIME_ROOT / "coverage_matrix.json"
++AI_REDTEAM_FILE  = RUNTIME_ROOT / "ai_redteam.json"
++QA_STATE_FILE    = RUNTIME_ROOT / "qa_state.json"
++STEERING_FILE    = RUNTIME_ROOT / "steering_queue.json"
++WISHLIST_FILE    = RUNTIME_ROOT / "wishlist_queue.json"
++QUICK_LOG_FILE        = RUNTIME_ROOT / "quick_log.json"
++ADJUDICATION_LOG_FILE = RUNTIME_ROOT / "adjudication_log.jsonl"
++COST_FILE        = RUNTIME_ROOT / "session_cost.json"
++METRICS_FILE     = RUNTIME_ROOT / "pentest_metrics.jsonl"
+ 
+ # ── Directories ───────────────────────────────────────────────────────────────
+-LOGS_DIR         = REPO_ROOT / "logs"
++LOGS_DIR         = RUNTIME_ROOT / "logs"
+ SMITH_EVENTS_DIR = LOGS_DIR / "smith-events"  # per-session reasoning/event streams (<engagement_id>.jsonl)
+ JOBS_DIR         = LOGS_DIR / "jobs"          # background-job registry (one <job_id>.json per job, gitignored)
+-ARTIFACTS_DIR    = REPO_ROOT / "artifacts"
++ARTIFACTS_DIR    = RUNTIME_ROOT / "artifacts"
+ TEMPLATES_DIR    = REPO_ROOT / "templates"
+ DASHBOARD_DIR    = REPO_ROOT / "dashboard"
+ THREAT_MODEL_DIR = REPO_ROOT / "threat-model"
+-POCS_DIR         = REPO_ROOT / "pocs"
++POCS_DIR         = RUNTIME_ROOT / "pocs"
+ 
+ # ── Files within logs/ ────────────────────────────────────────────────────────
+ SMITH_PID_FILE       = LOGS_DIR / "smith.pid"
+diff --git a/core/run_context.py b/core/run_context.py
+new file mode 100644
+index 0000000..4b34464
+--- /dev/null
++++ b/core/run_context.py
+@@ -0,0 +1,42 @@
++from __future__ import annotations
++
++import os
++import re
++
++from core import paths as _paths
++
++_DEFAULT_RUN_ID = "single-run"
++_RUN_ID_RE = re.compile(r"[^a-z0-9-]+")
++
++
++def sanitize_run_id(value: str | None) -> str:
++    raw = str(value or "").strip().lower().replace("_", "-")
++    cleaned = _RUN_ID_RE.sub("-", raw).strip("-")
++    return cleaned[:48] or _DEFAULT_RUN_ID
++
++
++def run_id() -> str:
++    return sanitize_run_id(os.environ.get("SMITH_RUN_ID"))
++
++
++def has_explicit_run_id() -> bool:
++    return bool(str(os.environ.get("SMITH_RUN_ID") or "").strip())
++
++
++def multi_run_mode() -> bool:
++    if os.environ.get("SMITH_SINGLE_RUN", "").strip().lower() in ("1", "true", "yes"):
++        return False
++    return has_explicit_run_id()
++
++
++def workdir() -> str:
++    return str(_paths.RUNTIME_ROOT)
++
++
++def docker_network_name() -> str:
++    return f"smith-run-{run_id()}"
++
++
++def container_name(tool: str) -> str:
++    safe_tool = sanitize_run_id(tool)
++    return f"smith-{safe_tool}-{run_id()}"
+diff --git a/core/session/lifecycle.py b/core/session/lifecycle.py
+index 8b28f73..db7460a 100644
+--- a/core/session/lifecycle.py
++++ b/core/session/lifecycle.py
+@@ -23,6 +23,7 @@ from datetime import datetime, timezone
+ 
+ import core.session as _sess
+ from core import cost as cost_tracker
++from core import run_context
+ 
+ 
+ def _parse_lhost(raw: str) -> tuple[str, int]:
+@@ -147,6 +148,7 @@ def start(
+ 
+     _sess._current = {
+         "id":           str(uuid.uuid4()),
++        "run_id":       run_context.run_id(),
+         "target":       target,
+         "depth":        depth,
+         "depth_label":  preset["label"],
+@@ -252,12 +254,10 @@ def stop_pentest_containers() -> None:
+     try:
+         import subprocess
+         from tools.docker_cli import docker_executable
+-        from tools.kali_runner import KALI_CONTAINER
+-        from tools.metasploit_runner import MSF_CONTAINER
+-        from tools.mobsf_runner import MOBSF_CONTAINER
++        from tools import kali_runner, metasploit_runner, mobsf_runner
+         subprocess.run(
+             [docker_executable(), "stop", "-t", "3",
+-             KALI_CONTAINER, MSF_CONTAINER, MOBSF_CONTAINER],
++             kali_runner.container_name(), metasploit_runner.container_name(), mobsf_runner.container_name()],
+             capture_output=True, timeout=40, check=False,
+         )
+     except Exception:
+@@ -454,10 +454,22 @@ def load_from_disk(force: bool = False) -> dict | None:
+                 pass
+         elif _sess._last_local_write_mtime > 0:
+             _sess._current = None
++        elif _sess._current is None:
++            try:
++                from core import db as _db
++                _sess._current = _db.load_snapshot("session")
++            except Exception:
++                pass
+         return _sess._current
+     if _sess._current is None and _sess._SESSION_FILE.exists():
+         try:
+             _sess._current = json.loads(_sess._SESSION_FILE.read_text(encoding="utf-8"))
+         except Exception:
+             pass
++    elif _sess._current is None:
++        try:
++            from core import db as _db
++            _sess._current = _db.load_snapshot("session")
++        except Exception:
++            pass
+     return _sess._current
+diff --git a/core/session/persistence.py b/core/session/persistence.py
+index 6ba2b39..299a1fb 100644
+--- a/core/session/persistence.py
++++ b/core/session/persistence.py
+@@ -20,6 +20,7 @@ import json
+ from datetime import datetime, timezone
+ 
+ import core.session as _sess
++from core import db as _db
+ from core import store as _store
+ 
+ 
+@@ -128,6 +129,10 @@ def _flush() -> None:
+                 _sess._last_local_write_mtime = disk_mtime
+                 return
+     _store.save(_sess._SESSION_FILE, _sess._current)
++    try:
++        _db.persist_session(_sess._current)
++    except Exception:
++        pass
+     try:
+         _sess._last_local_write_mtime = _sess._SESSION_FILE.stat().st_mtime
+     except OSError:
+diff --git a/core/steering.py b/core/steering.py
+index c0d807f..f7c7b57 100644
+--- a/core/steering.py
++++ b/core/steering.py
+@@ -21,6 +21,7 @@ import json
+ import uuid
+ from dataclasses import asdict, dataclass, field
+ from datetime import datetime, timezone
++from core import db as _db
+ from core import paths as _paths
+ from core import store as _store
+ 
+@@ -61,11 +62,15 @@ class SteeringQueue:
+                 return json.loads(_STEERING_FILE.read_text(encoding="utf-8")).get("directives", [])
+         except Exception:
+             pass
++        cached = _db.load_snapshot("steering")
++        if isinstance(cached, dict):
++            return cached.get("directives", [])
+         return []
+ 
+     def _save(self, directives: list[dict]) -> None:
+         try:
+             _store.save(_STEERING_FILE, {"directives": directives})
++            _db.persist_snapshot("steering", {"directives": directives})
+         except Exception:
+             pass
+ 
+diff --git a/core/wishlist.py b/core/wishlist.py
+index cccd586..9bc9b1a 100644
+--- a/core/wishlist.py
++++ b/core/wishlist.py
+@@ -27,6 +27,7 @@ import uuid
+ from dataclasses import dataclass, field
+ from datetime import datetime, timezone
+ 
++from core import db as _db
+ from core import paths as _paths
+ from core import store as _store
+ 
+@@ -58,11 +59,15 @@ class WishlistQueue:
+                 return json.loads(_WISHLIST_FILE.read_text(encoding="utf-8")).get("items", [])
+         except Exception:
+             pass
++        cached = _db.load_snapshot("wishlist")
++        if isinstance(cached, dict):
++            return cached.get("items", [])
+         return []
+ 
+     def _save(self, items: list[dict]) -> None:
+         try:
+             _store.save(_WISHLIST_FILE, {"items": items})
++            _db.persist_snapshot("wishlist", {"items": items})
+         except Exception:
+             pass
+ 
+diff --git a/mcp_server/http_tools.py b/mcp_server/http_tools.py
+index a29023b..fdd1e62 100644
+--- a/mcp_server/http_tools.py
++++ b/mcp_server/http_tools.py
+@@ -3,11 +3,11 @@ Consolidated HTTP tool — replaces http_request and save_poc from exploitation.
+ """
+ import asyncio
+ import json
+-import os
+ from typing import Any
+ 
+ from core import cost as cost_tracker
+ from core import logger as log
++from core import paths as _paths
+ from mcp_server._app import mcp, _ensure_dict, _record
+ 
+ # Inline response body shown in the result/cost/log (the envelope itself only
+@@ -35,8 +35,10 @@ def _write_text(path: str, content: str) -> None:
+ def _load_artifact_payload(artifact_id: str) -> str | None:
+     """Read a stored payload artifact's bytes (issue #252), or None if missing."""
+     try:
+-        from mcp_server.scan_engine.artifacts import _ARTIFACTS_DIR
+-        f = _ARTIFACTS_DIR / f"{artifact_id}.txt"
++        from mcp_server.scan_engine import artifacts as _artifacts
++
++        artifacts_dir = getattr(_artifacts, "_ARTIFACTS_DIR", _paths.ARTIFACTS_DIR)
++        f = artifacts_dir / f"{artifact_id}.txt"
+         return f.read_text(encoding="utf-8") if f.exists() else None
+     except Exception:
+         return None
+@@ -209,22 +211,22 @@ async def _do_save_poc(url, method, headers, body, opts):
+         lines.append(body)
+     raw = "\r\n".join(lines)
+ 
+-    pocs_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "pocs")
+-    os.makedirs(pocs_dir, exist_ok=True)
++    pocs_dir = _paths.POCS_DIR
++    pocs_dir.mkdir(parents=True, exist_ok=True)
+     safe_title = "".join(c if c.isalnum() or c in "-_" else "_" for c in title)
+     timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+-    filepath = os.path.join(pocs_dir, f"{timestamp}_{safe_title}.http")
++    filepath = pocs_dir / f"{timestamp}_{safe_title}.http"
+ 
+     poc_content = (f"# {notes}\n\n" if notes else "") + raw
+-    await asyncio.to_thread(_write_text, filepath, poc_content)
++    await asyncio.to_thread(_write_text, str(filepath), poc_content)
+ 
+     linked = False
+     if finding_id:
+         from core import findings as findings_store
+-        linked = await findings_store.link_poc(finding_id, filepath)
++        linked = await findings_store.link_poc(finding_id, str(filepath))
+ 
+     result = json.dumps({
+-        "saved":      filepath,
++        "saved":      str(filepath),
+         "linked_to":  finding_id if linked else None,
+         "hint":       "Open Burp Repeater and paste this file to load the request",
+     })
+diff --git a/mcp_server/scan_engine/artifacts.py b/mcp_server/scan_engine/artifacts.py
+index b6b5f16..091b37f 100644
+--- a/mcp_server/scan_engine/artifacts.py
++++ b/mcp_server/scan_engine/artifacts.py
+@@ -7,12 +7,12 @@ full audit trail. Retrieval is bounded: callers specify a mode and max_chars.
+ from __future__ import annotations
+ 
+ import json
+-import os
+ import uuid
+ from datetime import datetime, timezone
+-from pathlib import Path
+ 
+-_ARTIFACTS_DIR = Path(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))) / "artifacts"
++from core import paths as _paths
++
++_ARTIFACTS_DIR = _paths.ARTIFACTS_DIR
+ 
+ 
+ def _ensure_dir() -> Path:
+diff --git a/mcp_server/session_tools/containers.py b/mcp_server/session_tools/containers.py
+index 09a14d7..95827a8 100644
+--- a/mcp_server/session_tools/containers.py
++++ b/mcp_server/session_tools/containers.py
+@@ -9,7 +9,7 @@ async def _do_start_kali():
+     log.tool_call("start_kali", {})
+     ok, msg = await kali_runner.ensure_running()
+     result = (
+-        f"Kali container ready at {kali_runner.KALI_API} ({msg})"
++        f"Kali container ready at {kali_runner.api_url()} ({msg})"
+         if ok else f"Failed to start Kali container: {msg}"
+     )
+     log.tool_result("start_kali", result)
+@@ -29,7 +29,7 @@ async def _do_start_metasploit():
+     log.tool_call("start_metasploit", {})
+     ok, msg = await metasploit_runner.ensure_running()
+     result = (
+-        f"Metasploit container ready at {metasploit_runner.MSF_API} ({msg})"
++        f"Metasploit container ready at {metasploit_runner.api_url()} ({msg})"
+         if ok else f"Failed to start Metasploit container: {msg}"
+     )
+     log.tool_result("start_metasploit", result)
+@@ -49,7 +49,7 @@ async def _do_start_mobsf():
+     log.tool_call("start_mobsf", {})
+     ok, msg = await mobsf_runner.ensure_running()
+     result = (
+-        f"MobSF container ready at {mobsf_runner.MOBSF_API} ({msg}) — "
++        f"MobSF container ready at {mobsf_runner.api_url()} ({msg}) — "
+         f"run scan(tool='mobsf', target='/path/app.apk')."
+         if ok else f"Failed to start MobSF container: {msg}"
+     )
+diff --git a/poetry.lock b/poetry.lock
+index bf76348..3816c91 100644
+--- a/poetry.lock
++++ b/poetry.lock
+@@ -1,4 +1,4 @@
+-# This file is automatically @generated by Poetry 2.5.1 and should not be changed by hand.
++# This file is automatically @generated by Poetry 2.1.3 and should not be changed by hand.
+ 
+ [[package]]
+ name = "aiohappyeyeballs"
+@@ -1194,7 +1194,7 @@ files = [
+ 
+ [package.dependencies]
+ attrs = ">=22.2.0"
+-jsonschema-specifications = ">=2023.3.6"
++jsonschema-specifications = ">=2023.03.6"
+ referencing = ">=0.28.4"
+ rpds-py = ">=0.25.0"
+ 
+@@ -1770,6 +1770,108 @@ files = [
+ dev = ["abi3audit", "black", "check-manifest", "colorama ; os_name == \"nt\"", "coverage", "packaging", "psleak", "pylint", "pyperf", "pypinfo", "pyreadline3 ; os_name == \"nt\"", "pytest", "pytest-cov", "pytest-instafail", "pytest-xdist", "pywin32 ; os_name == \"nt\" and implementation_name != \"pypy\"", "requests", "rstcheck", "ruff", "setuptools", "sphinx", "sphinx_rtd_theme", "toml-sort", "twine", "validate-pyproject[all]", "virtualenv", "vulture", "wheel", "wheel ; os_name == \"nt\" and implementation_name != \"pypy\"", "wmi ; os_name == \"nt\" and implementation_name != \"pypy\""]
+ test = ["psleak", "pytest", "pytest-instafail", "pytest-xdist", "pywin32 ; os_name == \"nt\" and implementation_name != \"pypy\"", "setuptools", "wheel ; os_name == \"nt\" and implementation_name != \"pypy\"", "wmi ; os_name == \"nt\" and implementation_name != \"pypy\""]
+ 
++[[package]]
++name = "psycopg"
++version = "3.3.9"
++description = "PostgreSQL database adapter for Python"
++optional = false
++python-versions = ">=3.10"
++groups = ["main"]
++files = [
++    {file = "psycopg-3.3.9-py3-none-any.whl", hash = "sha256:d2d7d04a1ce6dab4f5b27316bea3b52585cafa2f2d631e5b09dd69823f5c26f6"},
++    {file = "psycopg-3.3.9.tar.gz", hash = "sha256:87c1d85c3e0e88e811d3c0b3808f947bd967c6faf34af6cd86fd021f77793d6c"},
++]
++
++[package.dependencies]
++psycopg-binary = {version = "3.3.9", optional = true, markers = "implementation_name != \"pypy\" and extra == \"binary\""}
++typing-extensions = {version = ">=4.6", markers = "python_version < \"3.13\""}
++tzdata = {version = "*", markers = "sys_platform == \"win32\""}
++
++[package.extras]
++binary = ["psycopg-binary (==3.3.9) ; implementation_name != \"pypy\""]
++c = ["psycopg-c (==3.3.9) ; implementation_name != \"pypy\""]
++dev = ["ast-comments (>=1.1.2)", "black (>=26.1.0)", "codespell (>=2.2)", "cython-lint (>=0.21)", "dnspython (>=2.1)", "flake8 (>=4.0)", "isort-psycopg (>=0.0.3)", "isort[colors] (>=6.0)", "mypy (>=2.1.0)", "pre-commit (>=4.0.1)", "types-setuptools (>=57.4)", "types-shapely (>=2.0)", "wheel (>=0.37)"]
++docs = ["Sphinx (>=9.1)", "furo (==2025.12.19)", "sphinx-autobuild (>=2025.8.25)", "sphinx-autodoc-typehints (>=3.10.2)"]
++pool = ["psycopg-pool"]
++test = ["anyio (>=4.0)", "mypy (>=2.1.0) ; implementation_name != \"pypy\"", "pproxy (>=2.7)", "pytest (>=6.2.5)", "pytest-cov (>=3.0)", "pytest-randomly (>=3.5)"]
++
++[[package]]
++name = "psycopg-binary"
++version = "3.3.9"
++description = "PostgreSQL database adapter for Python -- C optimisation distribution"
++optional = false
++python-versions = ">=3.10"
++groups = ["main"]
++markers = "implementation_name != \"pypy\""
++files = [
++    {file = "psycopg_binary-3.3.9-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:49fc0189d72ceba21853d3d35aa65801b44758350416cdf7ee9f884aa8fafa51"},
++    {file = "psycopg_binary-3.3.9-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:509affcdeeafd86077bdf037aa40e809989b935708e902613cd67f317c55fec6"},
++    {file = "psycopg_binary-3.3.9-cp310-cp310-manylinux2014_ppc64le.manylinux_2_17_ppc64le.whl", hash = "sha256:ee2ec04c3cca2e6b989020233c81b5d6c61034ccd10ca0311a85796a189884db"},
++    {file = "psycopg_binary-3.3.9-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:b36b1f1488843301af90a25b135dd4373a9835c4df185e564f14e6565220c353"},
++    {file = "psycopg_binary-3.3.9-cp310-cp310-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:fc256b0baa9786b732bf824dde7bf4bb16ab36642913c342d955c57b7b7e8c24"},
++    {file = "psycopg_binary-3.3.9-cp310-cp310-manylinux_2_38_riscv64.manylinux_2_39_riscv64.whl", hash = "sha256:a4abac9935ddf96baa19b831473cc4f4020e073750a5c3b4bfa2f14649ee8578"},
++    {file = "psycopg_binary-3.3.9-cp310-cp310-musllinux_1_2_aarch64.whl", hash = "sha256:721cddea84b6da23937e80814589fdc5c25bf674f63146ce2463438798b51df8"},
++    {file = "psycopg_binary-3.3.9-cp310-cp310-musllinux_1_2_ppc64le.whl", hash = "sha256:b6733e1cd8ab3f1c256eb16e90cada43087beaec63411b6857000e8ad4759dbf"},
++    {file = "psycopg_binary-3.3.9-cp310-cp310-musllinux_1_2_riscv64.whl", hash = "sha256:3c223b8e8040e05ad9f8f2af33c7f21f3ad907a17bdf69c79c97a71e69c9cc84"},
++    {file = "psycopg_binary-3.3.9-cp310-cp310-musllinux_1_2_x86_64.whl", hash = "sha256:d7b911f2b0244f76c562492ec3628a2cde7f6f3e648da5ff3ae0ee2ecd056d8b"},
++    {file = "psycopg_binary-3.3.9-cp310-cp310-win_amd64.whl", hash = "sha256:7e7869bbefeefb9e621f3a8c86cd7b50bc0bf24e94b53091e2305d1d99a5b23b"},
++    {file = "psycopg_binary-3.3.9-cp311-cp311-macosx_10_9_x86_64.whl", hash = "sha256:96ef179795a800f7b8dc7c4abd14ab322cc4986726cfa6dabff552c3e16e446d"},
++    {file = "psycopg_binary-3.3.9-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:4c064e4d9f5c6a59b975c6d7f6e2f03cab164359cfd3a592817db97f8b0f463a"},
++    {file = "psycopg_binary-3.3.9-cp311-cp311-manylinux2014_ppc64le.manylinux_2_17_ppc64le.whl", hash = "sha256:79071f66f484d682b420f08386e835060b2338f23236d918a01a60281a807d3b"},
++    {file = "psycopg_binary-3.3.9-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:0953c1b94c73f97efce5b8fb1dad85cf5e4085b94902e439e27e6805ebc8be99"},
++    {file = "psycopg_binary-3.3.9-cp311-cp311-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:9f6f4108a2e1d55303dfbb41d0f3b16a0aac95232a24ac8eb3df03f56fcb83aa"},
++    {file = "psycopg_binary-3.3.9-cp311-cp311-manylinux_2_38_riscv64.manylinux_2_39_riscv64.whl", hash = "sha256:8fee8337812241ce26c6e16f73b2a20e94db643312c6901c00b57a0b2e203e6d"},
++    {file = "psycopg_binary-3.3.9-cp311-cp311-musllinux_1_2_aarch64.whl", hash = "sha256:c3dc32af4bed2339bac8110a2c5d65e23fe25d922e075f191e41f2b3a61adc0f"},
++    {file = "psycopg_binary-3.3.9-cp311-cp311-musllinux_1_2_ppc64le.whl", hash = "sha256:5bd2e0315dd43b8bb28f4c124f91d9a8eb866d04bd66899ae5d82086f36ac0c2"},
++    {file = "psycopg_binary-3.3.9-cp311-cp311-musllinux_1_2_riscv64.whl", hash = "sha256:87e5b145e1363aa6bad904c430e18c3434e7b61565197d71d42157e3084fd9b0"},
++    {file = "psycopg_binary-3.3.9-cp311-cp311-musllinux_1_2_x86_64.whl", hash = "sha256:b2582957ef09a0315fab23cab6ff6445ad73b850bd951a936abec58cb2f3f86e"},
++    {file = "psycopg_binary-3.3.9-cp311-cp311-win_amd64.whl", hash = "sha256:75dc9ebbad779969174e59422c71444c2bd8d0362d5758a7b6f500eff11aa4ac"},
++    {file = "psycopg_binary-3.3.9-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:fcdb76adaab57fdd5b789b13b20699bffaf17000a4bbc0527327581cfdd55e3d"},
++    {file = "psycopg_binary-3.3.9-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:08689018e9169ca8e6769f5b3f2ce748442bda95b5f1ec260995a8ff63e6d6a4"},
++    {file = "psycopg_binary-3.3.9-cp312-cp312-manylinux2014_ppc64le.manylinux_2_17_ppc64le.whl", hash = "sha256:e7e2e3543ac17cf5bb3eaf738606fc52bcedf993500b9fc8c55a4475a3731ef9"},
++    {file = "psycopg_binary-3.3.9-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:a99f0b9a19ed7a56bf5d6776456b8f15f5364db8853b0f5d184db394a45c391d"},
++    {file = "psycopg_binary-3.3.9-cp312-cp312-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:b081348d8992af26e9b252f04876c286428418a6b7845d8d4caae2044b259668"},
++    {file = "psycopg_binary-3.3.9-cp312-cp312-manylinux_2_38_riscv64.manylinux_2_39_riscv64.whl", hash = "sha256:66b20619acbd434e4e46d734a915768a1192db09754c2ad041d391d72f30e5eb"},
++    {file = "psycopg_binary-3.3.9-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:b7c4b2039d82f635311e41e7d392ff1bddd94a2447f9668c6531489cc86a8ce2"},
++    {file = "psycopg_binary-3.3.9-cp312-cp312-musllinux_1_2_ppc64le.whl", hash = "sha256:3efe96cd98081b755ee3b0a50f2d35d9af55cb1ba462440a41048b9e7c6b9caa"},
++    {file = "psycopg_binary-3.3.9-cp312-cp312-musllinux_1_2_riscv64.whl", hash = "sha256:80ce081d2512ced75f1ca08ff80257a1288a3555079c5fa622164a0f9ed6533a"},
++    {file = "psycopg_binary-3.3.9-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:30a95cb2b00b94b4ec4fd5d41de047598c60e0db26fd43bd9154152cc380b282"},
++    {file = "psycopg_binary-3.3.9-cp312-cp312-win_amd64.whl", hash = "sha256:1ce1a6f04211626ca1a3deadee560235e8686e3888fb18f78d2be3e83bceabc4"},
++    {file = "psycopg_binary-3.3.9-cp313-cp313-macosx_10_13_x86_64.whl", hash = "sha256:b98ecad106cd48998517e03aaee56f9d88f8857e043b8e3dbc2aa7facd475db6"},
++    {file = "psycopg_binary-3.3.9-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:e835af41e74176041d2290b167af92b74793b916ca3413598c39b535dd3674a5"},
++    {file = "psycopg_binary-3.3.9-cp313-cp313-manylinux2014_ppc64le.manylinux_2_17_ppc64le.whl", hash = "sha256:4b44a09bb7c92666aec8a00d5d390ff6f4e573d345ccde0f71b45597511449fb"},
++    {file = "psycopg_binary-3.3.9-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:180e4a99904d7a77f826fbb6dd16834bb3313675d8a6f055e39742fda00c33dc"},
++    {file = "psycopg_binary-3.3.9-cp313-cp313-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:366e2021a785afed9154f83f64793f662348a9ef244fef9779175c0906e8aacc"},
++    {file = "psycopg_binary-3.3.9-cp313-cp313-manylinux_2_38_riscv64.manylinux_2_39_riscv64.whl", hash = "sha256:13bfe814718c8a1b9b656c0d754962e0027cc3e43630661825fe197babc99320"},
++    {file = "psycopg_binary-3.3.9-cp313-cp313-musllinux_1_2_aarch64.whl", hash = "sha256:a0ed63b05046bc40d76109d95c757d3eac38488b17c68ae9e8160040d0ed0f89"},
++    {file = "psycopg_binary-3.3.9-cp313-cp313-musllinux_1_2_ppc64le.whl", hash = "sha256:f85821eba1f8c27e080eba955eb9dddaa638f61e363b4f3b2266bd9ec4ff73bd"},
++    {file = "psycopg_binary-3.3.9-cp313-cp313-musllinux_1_2_riscv64.whl", hash = "sha256:eb74f5299501f83f3ad7b8e99405ca451b77c74d65767bac7f46d22c4e9411ae"},
++    {file = "psycopg_binary-3.3.9-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:14666a85aa330058929e4abedd940f754f0e5589efae6366d95c513288856fb5"},
++    {file = "psycopg_binary-3.3.9-cp313-cp313-win_amd64.whl", hash = "sha256:417c3fe0ac2079a82a8c72ba214a65c66c22036a5d2d8c24c77c5708a58938b9"},
++    {file = "psycopg_binary-3.3.9-cp314-cp314-macosx_10_15_x86_64.whl", hash = "sha256:6bc7e10d05f236f53b184d9592e8f3d22587bc2e7b964fea9f5d0de2b1142fe5"},
++    {file = "psycopg_binary-3.3.9-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:e853041acf10de2dcb595167138dc9fc27de293d67caa1d80ed282ec27a28e87"},
++    {file = "psycopg_binary-3.3.9-cp314-cp314-manylinux2014_ppc64le.manylinux_2_17_ppc64le.whl", hash = "sha256:c25fa1ee28f8fd73aecc5e8612ab9e5700682e8e23f9422437a1617016029934"},
++    {file = "psycopg_binary-3.3.9-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:4992acd5a7479013d52615b8c23fdce9bc22f3cacbfb1007fa474e6b5ebe94c7"},
++    {file = "psycopg_binary-3.3.9-cp314-cp314-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:eed1ac135d652e4454777afb4e4bb52cf88520bbfa2f30ae83066cd4df656697"},
++    {file = "psycopg_binary-3.3.9-cp314-cp314-manylinux_2_38_riscv64.manylinux_2_39_riscv64.whl", hash = "sha256:85b3892dbc4f5fb21880f82e3aed7329be6bee39fb58a0f059cbb1d0a382e98b"},
++    {file = "psycopg_binary-3.3.9-cp314-cp314-musllinux_1_2_aarch64.whl", hash = "sha256:4ba688a9402e3cc9d425e6ad20f97b96698f59f867279c265c1d0ca6df9dad57"},
++    {file = "psycopg_binary-3.3.9-cp314-cp314-musllinux_1_2_ppc64le.whl", hash = "sha256:300bd86d4b81d297e204a8ba223f54ec09a4b54fd069c32a74bf75b42860703f"},
++    {file = "psycopg_binary-3.3.9-cp314-cp314-musllinux_1_2_riscv64.whl", hash = "sha256:e01a4f4fd0e4beee23af30517123bdde838d53c3ac0ae594da019e36b3adabda"},
++    {file = "psycopg_binary-3.3.9-cp314-cp314-musllinux_1_2_x86_64.whl", hash = "sha256:5117a4745b3b850872140d3a66a8d83c55801916ae6e3cf502af0a794f64f9b7"},
++    {file = "psycopg_binary-3.3.9-cp314-cp314-win_amd64.whl", hash = "sha256:109c5df5b0e5117e01a42d3b56a2f4ccd5431bd54d25efdfc89df095ac9f9605"},
++    {file = "psycopg_binary-3.3.9-cp315-cp315-macosx_10_15_x86_64.whl", hash = "sha256:0b513957b283d181ed04961567b9893cae79309e23655d54c91cb8781ad81fc5"},
++    {file = "psycopg_binary-3.3.9-cp315-cp315-macosx_11_0_arm64.whl", hash = "sha256:a9ee20e3b314c1f36ec13093f1ea46161704a7304a6c334396318d36416bd330"},
++    {file = "psycopg_binary-3.3.9-cp315-cp315-manylinux2014_ppc64le.manylinux_2_17_ppc64le.whl", hash = "sha256:0793764fac48b5f0bf4d7154e38c60def4fa0cce16caa60b737f770bd29016ac"},
++    {file = "psycopg_binary-3.3.9-cp315-cp315-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:e51c7c493f07b51be56875cfa8a7674824749fa1cda3515339ca64e628f1b992"},
++    {file = "psycopg_binary-3.3.9-cp315-cp315-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:e5af7a6d4ca7781c03f9f628ef83ff739de8a7e7e0ffe4b6e7a8c274caea6f81"},
++    {file = "psycopg_binary-3.3.9-cp315-cp315-manylinux_2_38_riscv64.manylinux_2_39_riscv64.whl", hash = "sha256:e047c843fb5cd3c9ebc370bf9a9394cb97feb71b678f07f58419de6d1c6cb5a5"},
++    {file = "psycopg_binary-3.3.9-cp315-cp315-musllinux_1_2_aarch64.whl", hash = "sha256:9452241b4684a6321c8e047f4b31a029823fafceddb0809827ec1d506784a3cd"},
++    {file = "psycopg_binary-3.3.9-cp315-cp315-musllinux_1_2_ppc64le.whl", hash = "sha256:9926a6f98fbfbb47ad34fab6151d5e6de917d640a07e78cf07a91005593f7c65"},
++    {file = "psycopg_binary-3.3.9-cp315-cp315-musllinux_1_2_riscv64.whl", hash = "sha256:0f049ea20c87608eab3df8f055e8e29743a7af42f5e3e1bdb653611194fa64eb"},
++    {file = "psycopg_binary-3.3.9-cp315-cp315-musllinux_1_2_x86_64.whl", hash = "sha256:6ab13f8174a0a63d0b9ec39ac27dd129a4d78f22099f146455b5c3a73957cfb2"},
++    {file = "psycopg_binary-3.3.9-cp315-cp315-win_amd64.whl", hash = "sha256:d5281f3453caebc911b2c5553398d59e217a8101f6b2596311256ba3772167fb"},
++]
++
+ [[package]]
+ name = "pycparser"
+ version = "3.0"
+@@ -2642,6 +2744,119 @@ files = [
+     {file = "shellingham-1.5.4.tar.gz", hash = "sha256:8dbca0739d487e5bd35ab3ca4b36e11c4078f3a234bfce294b0a0291363404de"},
+ ]
+ 
++[[package]]
++name = "sqlalchemy"
++version = "2.1.9"
++description = "Database Abstraction Library"
++optional = false
++python-versions = ">=3.11"
++groups = ["main"]
++files = [
++    {file = "sqlalchemy-2.1.9-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:ed8ac76df0b6a03a9ac76dadc0d242eb47774d2f27458b35ac6a3597886177ac"},
++    {file = "sqlalchemy-2.1.9-cp311-cp311-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:ca4819ce57c6f520026ef603c954e13f34cc029c17a6bae9b4d01154535ccb2d"},
++    {file = "sqlalchemy-2.1.9-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:3a24b459e52b3ac138f6a05e99a4bd0589443a1ae18041a59c1cfdee12134a2b"},
++    {file = "sqlalchemy-2.1.9-cp311-cp311-manylinux_2_31_riscv64.manylinux_2_39_riscv64.whl", hash = "sha256:f5e3be1ad5277ce9215e32b235271a97970b449f30277851c20a5a7cdea23ff7"},
++    {file = "sqlalchemy-2.1.9-cp311-cp311-musllinux_1_2_aarch64.whl", hash = "sha256:1329560cc12ce4f345aa0e925df1bf0bc4a521a34f20f97cf9ec732f12b62bef"},
++    {file = "sqlalchemy-2.1.9-cp311-cp311-musllinux_1_2_riscv64.whl", hash = "sha256:7d87e6efad46a57f8fc38866dda15e5696565cf8aa4f7d2fbff5a19856923e4d"},
++    {file = "sqlalchemy-2.1.9-cp311-cp311-musllinux_1_2_x86_64.whl", hash = "sha256:9322b7e32ed3151031f28e5cdbc562d0daa947cec84fc4ecbbdee7d27ca2d906"},
++    {file = "sqlalchemy-2.1.9-cp311-cp311-win32.whl", hash = "sha256:0b44f50bd32fac29e12fce362f37a8b7e8f1e4d0dea02dcc837f00b5238ef5fc"},
++    {file = "sqlalchemy-2.1.9-cp311-cp311-win_amd64.whl", hash = "sha256:a5e474bbfdf98c01e17e625954759f6237f0394af18bae7c0bc742151aca507a"},
++    {file = "sqlalchemy-2.1.9-cp311-cp311-win_arm64.whl", hash = "sha256:0c133621f738fb04bb9ce4f019c9626d61dfd29c8c54af23259bc3e54802dfd3"},
++    {file = "sqlalchemy-2.1.9-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:b142698c27f862694f0d37c17d7e90064f3bbc7606185ce30e58bf347c356fb8"},
++    {file = "sqlalchemy-2.1.9-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:43f06bc438916c29b1eb7b16b4041a4112fb6b88dd90489b48aff5126ecd2fcf"},
++    {file = "sqlalchemy-2.1.9-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:fcff5267a11d865efaff9ffc37ba3c8eab775bb4f4880a957c13dd7e63df5469"},
++    {file = "sqlalchemy-2.1.9-cp312-cp312-manylinux_2_31_riscv64.manylinux_2_39_riscv64.whl", hash = "sha256:1067003a2ae897c38600a54cb0ed9672780705c96d2002599844c782a87388f9"},
++    {file = "sqlalchemy-2.1.9-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:3df67abfb222f9865fe529b987458e4cc20f546dab8f0110db22ca7782538ce4"},
++    {file = "sqlalchemy-2.1.9-cp312-cp312-musllinux_1_2_riscv64.whl", hash = "sha256:c752098e3c5d8b452628dd87868d4232ac2e1eb893d413a3dcb951dfc44e43c7"},
++    {file = "sqlalchemy-2.1.9-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:3c05f8823fa9e1d09f8c3751adb26c830b3416726210a0e9242b6638c2bdd3dd"},
++    {file = "sqlalchemy-2.1.9-cp312-cp312-win32.whl", hash = "sha256:5ce2535f442a5aa018c3be5a5dc7521d4a23f712e0caba17b621339901771042"},
++    {file = "sqlalchemy-2.1.9-cp312-cp312-win_amd64.whl", hash = "sha256:c75ef03c2ad895480748a081a968314e5e6f1f6a48b3cc65c6d664fdfc5110e8"},
++    {file = "sqlalchemy-2.1.9-cp312-cp312-win_arm64.whl", hash = "sha256:ec9224840e51d03d28ec1e55a01b01b114fa44c0e113deab6d46fb39492e8523"},
++    {file = "sqlalchemy-2.1.9-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:21ac08d200391224caf30d7af1ab613ec9ad3a1e0a26c31a299c7698d6a10160"},
++    {file = "sqlalchemy-2.1.9-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:3c0b5ae779051e98a1d1b614fa8f73c973f7ce65ad6ea2411b916e304da02652"},
++    {file = "sqlalchemy-2.1.9-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:15fb00f016b72e4e89bff3cd3b71f95012882aa5493c6c8c92a46d40714fa0dc"},
++    {file = "sqlalchemy-2.1.9-cp313-cp313-manylinux_2_31_riscv64.manylinux_2_39_riscv64.whl", hash = "sha256:ad7eab72de4b3b6d5b87beb532e28e0fa8272069cb71d68eb43a633c52da76f2"},
++    {file = "sqlalchemy-2.1.9-cp313-cp313-musllinux_1_2_aarch64.whl", hash = "sha256:35c888a3a48addf18475966c06695cf93ae921e5cbf7444cac6fb7f96d86fb9f"},
++    {file = "sqlalchemy-2.1.9-cp313-cp313-musllinux_1_2_riscv64.whl", hash = "sha256:65db26ed0e2b33b2ffdee9ddee217ce909b172f8a2b93d7c4eaa99f7460886b3"},
++    {file = "sqlalchemy-2.1.9-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:5aaa251aacbe1e44aa8db5945e9b723df26143910864fce7a3aeb930047bd439"},
++    {file = "sqlalchemy-2.1.9-cp313-cp313-win32.whl", hash = "sha256:6aa5d70f1dcdeb73ef56ea8fd442f997baa4b0cd17f810c0df1d5a28ca96e257"},
++    {file = "sqlalchemy-2.1.9-cp313-cp313-win_amd64.whl", hash = "sha256:7fa9e073eaabcd9286fd60ec587a9e0d7a2ff10136056df954c50639815785c6"},
++    {file = "sqlalchemy-2.1.9-cp313-cp313-win_arm64.whl", hash = "sha256:c3f64ba66781c76c22e092188ac138a25b046ddf55bb5bd341722bb5e787f8cd"},
++    {file = "sqlalchemy-2.1.9-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:aa5497a470a3e10b2e1fadf6813bd8edabfaff14a64b03244585927f3f9fcd03"},
++    {file = "sqlalchemy-2.1.9-cp314-cp314-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:291a98eda626118253d325019f8b48f9ffbee91c7028fb76604da434bb1a7fae"},
++    {file = "sqlalchemy-2.1.9-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:0b6a25e87f313154e639632fdee02311c9b855ea957dc1a2c9e91ef1bd9b96cd"},
++    {file = "sqlalchemy-2.1.9-cp314-cp314-manylinux_2_31_riscv64.manylinux_2_39_riscv64.whl", hash = "sha256:1c25b817d2a71a21467c6a14bcf8f875a680e7a5a040a82f732e19571db74e20"},
++    {file = "sqlalchemy-2.1.9-cp314-cp314-musllinux_1_2_aarch64.whl", hash = "sha256:3196a027c0505f6069966169c436ec98b0f26263df394086ce30481de02ad166"},
++    {file = "sqlalchemy-2.1.9-cp314-cp314-musllinux_1_2_riscv64.whl", hash = "sha256:33f72d808b15daca5c236911559220e2a7fa31327a549bc31888ccb9a6761c4c"},
++    {file = "sqlalchemy-2.1.9-cp314-cp314-musllinux_1_2_x86_64.whl", hash = "sha256:41d80583158f9322003269660181196f08d357dca5fd160bc75898e16e5cf930"},
++    {file = "sqlalchemy-2.1.9-cp314-cp314-win32.whl", hash = "sha256:165ce424cd48f761da91aaabdb858ba523399a708f70bcce6f90e0f8209df119"},
++    {file = "sqlalchemy-2.1.9-cp314-cp314-win_amd64.whl", hash = "sha256:4790b72d53f7e38465d27733e33136cf63c5e68c6b3d2b231c771f4bbd0f4cef"},
++    {file = "sqlalchemy-2.1.9-cp314-cp314-win_arm64.whl", hash = "sha256:e285d6cf781fb70359113707d72c48bd6ed42fbd7d6bfc092d0c60c58a51ecf0"},
++    {file = "sqlalchemy-2.1.9-cp314-cp314t-macosx_11_0_arm64.whl", hash = "sha256:f54e630683df1548cadbd764ed0ba3bc0b7818ee90c1eca1c988dba4113fb33d"},
++    {file = "sqlalchemy-2.1.9-cp314-cp314t-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:28c86f96f35b456c5e011797b727e7c42a4b862c8e14f9d2666638afb3a450b8"},
++    {file = "sqlalchemy-2.1.9-cp314-cp314t-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:f0d2193cd3e9ce0d28671ad00474bb2a6d30afa37578f90670e64ffe67726c12"},
++    {file = "sqlalchemy-2.1.9-cp314-cp314t-manylinux_2_31_riscv64.manylinux_2_39_riscv64.whl", hash = "sha256:26785148cdd107fcd247675eb04d156fc8e73a564e8000676b977ba6587e0894"},
++    {file = "sqlalchemy-2.1.9-cp314-cp314t-musllinux_1_2_aarch64.whl", hash = "sha256:525684729a2143c43ed5516f1e51cd434e73c5672a32112112cb9adb25fc6608"},
++    {file = "sqlalchemy-2.1.9-cp314-cp314t-musllinux_1_2_riscv64.whl", hash = "sha256:832ef6152ce2a21ad40ed4581d90cd57defcfbc4028cede11d6509989484b173"},
++    {file = "sqlalchemy-2.1.9-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:fead94f45b0f7fe21fad9725a4c935722acefb3d4da175562b02fc630044e4d3"},
++    {file = "sqlalchemy-2.1.9-cp314-cp314t-win32.whl", hash = "sha256:2aa3c04ce13d0066595bcfa4fb743ae20ed9e0b6ef4d95cfd116ffd79511c54b"},
++    {file = "sqlalchemy-2.1.9-cp314-cp314t-win_amd64.whl", hash = "sha256:aa51a902e2ce569ab97a9462bfd9237bd4d8c266ab75a259819d17e27e93bae3"},
++    {file = "sqlalchemy-2.1.9-cp314-cp314t-win_arm64.whl", hash = "sha256:a34db4877c03138d12488b36a5935485bfb9de618eeb75248ffcc3ee87a1509b"},
++    {file = "sqlalchemy-2.1.9-cp315-cp315-macosx_11_0_arm64.whl", hash = "sha256:ccdfb9948e7636f10a8269cb38c24d89c18d86f0f453877e6982ae346c61860f"},
++    {file = "sqlalchemy-2.1.9-cp315-cp315-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:1fe87d8319f8169b937621e21637dc3a34f69c1ad2c060088839c228ddc08455"},
++    {file = "sqlalchemy-2.1.9-cp315-cp315-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:cc6abcaa02c3efcd369ef33dc6e05a1c028338beda0af96f6ef776faa0fd06bb"},
++    {file = "sqlalchemy-2.1.9-cp315-cp315-manylinux_2_31_riscv64.manylinux_2_39_riscv64.whl", hash = "sha256:2a88a1084e7968ad4abc7feba09258ff3eeb3e8f67cc79d2a06103afaa39554b"},
++    {file = "sqlalchemy-2.1.9-cp315-cp315-musllinux_1_2_aarch64.whl", hash = "sha256:dd84494baba79f6689cb413b0e6b2251dcc33fa1e0ad1ccc896078009929e525"},
++    {file = "sqlalchemy-2.1.9-cp315-cp315-musllinux_1_2_riscv64.whl", hash = "sha256:2fa4d3726e4e72706d93b137637fbdc43f868e938cbcb36c338d2c97ea0dc106"},
++    {file = "sqlalchemy-2.1.9-cp315-cp315-musllinux_1_2_x86_64.whl", hash = "sha256:150ddf9a2a54cae9f3d44b32b8cbe5c2bcbf32b34a9f421c1a2a5c08242c4d1f"},
++    {file = "sqlalchemy-2.1.9-cp315-cp315-win32.whl", hash = "sha256:88dff46df7c8661f507052e15b24ec66938ca532e64098e1e65a8c6221fd9a5d"},
++    {file = "sqlalchemy-2.1.9-cp315-cp315-win_amd64.whl", hash = "sha256:270316120e888b117a396f09401bff0517a2c66fe367f07a82133b661d29fcca"},
++    {file = "sqlalchemy-2.1.9-cp315-cp315-win_arm64.whl", hash = "sha256:4f14a26742437f50c188f41611a07e5f205eb336c502033a16b92c2713c14876"},
++    {file = "sqlalchemy-2.1.9-cp315-cp315t-macosx_11_0_arm64.whl", hash = "sha256:941a86634943cd820b0bf90ba9a0556d62993a2a7f3b446bca2c6afba27471ca"},
++    {file = "sqlalchemy-2.1.9-cp315-cp315t-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:d31cdf9e0b6d4c5cb2ed30131c85be50ec1a74143e4fdeb4f961ffdf64d5b483"},
++    {file = "sqlalchemy-2.1.9-cp315-cp315t-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:5d49ca5a67876b07551ea7aed7d20ef1af424cfc53edefa488c130605d586ba9"},
++    {file = "sqlalchemy-2.1.9-cp315-cp315t-manylinux_2_31_riscv64.manylinux_2_39_riscv64.whl", hash = "sha256:fa03eb713c7a67a09d4c53f0ce3acaf6452b6fd3e9358014045082bbb120400f"},
++    {file = "sqlalchemy-2.1.9-cp315-cp315t-musllinux_1_2_aarch64.whl", hash = "sha256:0970970fe6bc64e1718d85acf45a32728e5d33817de4c89a8bf6d5b3a3fa4f4d"},
++    {file = "sqlalchemy-2.1.9-cp315-cp315t-musllinux_1_2_riscv64.whl", hash = "sha256:7dcbcdb1e478b9483c0bfa37d45ddd458f2f8ecc01e42e8822912e6830bfbe73"},
++    {file = "sqlalchemy-2.1.9-cp315-cp315t-musllinux_1_2_x86_64.whl", hash = "sha256:31b560adf8163528d6400ddb41ad5437315dae024fdb164e2a9fc19f5291f74f"},
++    {file = "sqlalchemy-2.1.9-cp315-cp315t-win32.whl", hash = "sha256:a6f231831edf7d51b22187078c161c853fbb07e89886c7de8f2e1c2ef83c80e9"},
++    {file = "sqlalchemy-2.1.9-cp315-cp315t-win_amd64.whl", hash = "sha256:65b8257c62c6151f8c5f03680fe6e470153a94c92196e9e5d00be3f1510edae3"},
++    {file = "sqlalchemy-2.1.9-cp315-cp315t-win_arm64.whl", hash = "sha256:c7d8e10c1f9b82c21be141a21f3fb94469eec820d946c14544e0734de42e7614"},
++    {file = "sqlalchemy-2.1.9-py3-none-any.whl", hash = "sha256:449fed5c2caa3b278cc57499d09db001fb3f28dc7f18affc48142aee4dcc0cdf"},
++    {file = "sqlalchemy-2.1.9.tar.gz", hash = "sha256:d700a8b2edfb26282a470333d6bc4a454c4acda4d201a3bea7b72fa76c217d28"},
++]
++
++[package.dependencies]
++typing-extensions = ">=4.6.0"
++
++[package.extras]
++aiomysql = ["aiomysql", "sqlalchemy[asyncio]"]
++aioodbc = ["aioodbc", "sqlalchemy[asyncio]"]
++aiosqlite = ["aiosqlite", "sqlalchemy[asyncio]"]
++asyncio = ["greenlet (>=1)"]
++asyncmy = ["asyncmy (>=0.2.12)", "sqlalchemy[asyncio]"]
++cymysql = ["cymysql"]
++mariadb-connector = ["mariadb (>=1.0.1,!=1.1.2,!=1.1.5,!=1.1.10)"]
++mssql = ["pyodbc"]
++mssql-pymssql = ["pymssql"]
++mssql-pyodbc = ["pyodbc"]
++mssql-python = ["mssql-python (>=1.9.0)"]
++mypy = ["mypy (>=2.4)", "types-greenlet (>=2)"]
++mysql = ["mysqlclient (>=1.4.0)"]
++mysql-connector = ["mysql-connector-python"]
++oracle = ["oracledb (>=2.0.1)"]
++oracle-cxoracle = ["cx_oracle (>=8)"]
++oracle-oracledb = ["oracledb (>=2.0.1)"]
++postgresql = ["psycopg (>=3.0.7,!=3.1.15)"]
++postgresql-asyncpg = ["asyncpg", "sqlalchemy[asyncio]"]
++postgresql-pg8000 = ["pg8000 (>=1.29.3)"]
++postgresql-psycopg = ["psycopg (>=3.0.7,!=3.1.15)"]
++postgresql-psycopg2binary = ["psycopg2-binary"]
++postgresql-psycopg2cffi = ["psycopg2cffi"]
++postgresql-psycopgbinary = ["psycopg[binary] (>=3.0.7,!=3.1.15)"]
++pymysql = ["pymysql"]
++sqlcipher = ["sqlcipher3_binary"]
++
+ [[package]]
+ name = "sse-starlette"
+ version = "3.3.2"
+@@ -2729,6 +2944,19 @@ files = [
+ [package.dependencies]
+ typing-extensions = ">=4.12.0"
+ 
++[[package]]
++name = "tzdata"
++version = "2026.6"
++description = "Provider of IANA time zone data"
++optional = false
++python-versions = ">=2"
++groups = ["main"]
++markers = "sys_platform == \"win32\""
++files = [
++    {file = "tzdata-2026.6-py2.py3-none-any.whl", hash = "sha256:0a10eec6e13ef16b627fabed9a5f2ba61a62b1c67f327305f4e7e412a70b4aec"},
++    {file = "tzdata-2026.6.tar.gz", hash = "sha256:85d2cd9c09f81f0bb29db27759fc83af4f1e620efb814f8c5bf8b4cc4feece6d"},
++]
++
+ [[package]]
+ name = "urllib3"
+ version = "2.8.0"
+@@ -3190,4 +3418,4 @@ monitoring = ["sentry-sdk"]
+ [metadata]
+ lock-version = "2.1"
+ python-versions = "^3.11"
+-content-hash = "e6b2f2f82cf7de81ebe9db022b42fbbe0ca0a81ce787f694fae5f44614dec192"
++content-hash = "a024cb722a2450cb2d5e8a9091a397e921faba449a1ab5bd4998dc8efdd4f774"
+diff --git a/pyproject.toml b/pyproject.toml
+index 5686096..6fbdf51 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -5,6 +5,9 @@ description = "Claude-orchestrated lightweight penetration testing agent"
+ authors = []
+ package-mode = false
+ 
++[tool.poetry.scripts]
++smith = "smith_cli:main"
++
+ [tool.poetry.dependencies]
+ python = "^3.11"
+ aiohttp = ">=3.14.3"
+@@ -22,6 +25,8 @@ cryptography = ">=50.0.0"
+ python-multipart = ">=0.0.32"
+ sentry-sdk = {version = "==2.54.0", optional = true}
+ psutil = ">=5.9"
++sqlalchemy = ">=2.0,<3.0"
++psycopg = {version = ">=3.2", extras = ["binary"]}
+ 
+ [tool.poetry.extras]
+ monitoring = ["sentry-sdk"]
+diff --git a/smith_cli.py b/smith_cli.py
+new file mode 100644
+index 0000000..2b50f3d
+--- /dev/null
++++ b/smith_cli.py
+@@ -0,0 +1,27 @@
++from __future__ import annotations
++
++import argparse
++import json
++
++from control_plane import orchestrator
++
++
++def main(argv: list[str] | None = None) -> int:
++    parser = argparse.ArgumentParser(prog="smith")
++    sub = parser.add_subparsers(dest="command", required=True)
++    sub.add_parser("start")
++    sub.add_parser("stop")
++    sub.add_parser("status")
++    args = parser.parse_args(argv)
++
++    if args.command == "start":
++        print(json.dumps(orchestrator.start_control_plane()))
++    elif args.command == "stop":
++        print(json.dumps(orchestrator.stop_control_plane()))
++    else:
++        print(json.dumps(orchestrator.control_plane_status()))
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/tests/test_container_isolation.py b/tests/test_container_isolation.py
+new file mode 100644
+index 0000000..41ebabd
+--- /dev/null
++++ b/tests/test_container_isolation.py
+@@ -0,0 +1,65 @@
++import core.session.lifecycle as lifecycle
++from tools import kali_runner, metasploit_runner, mobsf_runner
++
++
++def test_kali_run_uses_run_scoped_name_network_and_ephemeral_port(monkeypatch):
++    monkeypatch.setenv("SMITH_RUN_ID", "Run A")
++    monkeypatch.delenv("SMITH_SINGLE_RUN", raising=False)
++
++    kali_runner.remember_api_port(41001)
++
++    assert kali_runner.container_name() == "smith-kali-run-a"
++    assert kali_runner.network_name() == "smith-run-run-a"
++    assert kali_runner.api_publish_arg() == "127.0.0.1::5000"
++    assert kali_runner.api_url() == "http://127.0.0.1:41001"
++
++
++def test_two_run_apis_do_not_collide(monkeypatch):
++    monkeypatch.delenv("SMITH_SINGLE_RUN", raising=False)
++
++    monkeypatch.setenv("SMITH_RUN_ID", "run-a")
++    kali_runner.remember_api_port(41001)
++    metasploit_runner.remember_api_port(41002)
++    mobsf_runner.remember_api_port(41003)
++    urls_a = {
++        kali_runner.api_url(),
++        metasploit_runner.api_url(),
++        mobsf_runner.api_url(),
++    }
++
++    monkeypatch.setenv("SMITH_RUN_ID", "run-b")
++    kali_runner.remember_api_port(42001)
++    metasploit_runner.remember_api_port(42002)
++    mobsf_runner.remember_api_port(42003)
++    urls_b = {
++        kali_runner.api_url(),
++        metasploit_runner.api_url(),
++        mobsf_runner.api_url(),
++    }
++
++    assert urls_a.isdisjoint(urls_b)
++    assert kali_runner.container_name() == "smith-kali-run-b"
++    assert metasploit_runner.container_name() == "smith-metasploit-run-b"
++    assert mobsf_runner.container_name() == "smith-mobsf-run-b"
++
++
++def test_stop_only_current_run_containers(monkeypatch):
++    seen = {}
++
++    def _fake_run(argv, **kwargs):
++        seen["argv"] = argv
++        class _Proc:
++            returncode = 0
++        return _Proc()
++
++    monkeypatch.delenv("SMITH_KEEP_CONTAINERS", raising=False)
++    monkeypatch.delenv("SMITH_SINGLE_RUN", raising=False)
++    monkeypatch.setenv("SMITH_RUN_ID", "run-a")
++    monkeypatch.setattr("subprocess.run", _fake_run)
++
++    lifecycle.stop_pentest_containers()
++
++    assert "smith-kali-run-a" in seen["argv"]
++    assert "smith-metasploit-run-a" in seen["argv"]
++    assert "smith-mobsf-run-a" in seen["argv"]
++    assert "smith-kali-run-b" not in seen["argv"]
+diff --git a/tests/test_control_plane.py b/tests/test_control_plane.py
+new file mode 100644
+index 0000000..6117f86
+--- /dev/null
++++ b/tests/test_control_plane.py
+@@ -0,0 +1,52 @@
++from unittest.mock import MagicMock, patch
++
++import pytest
++
++from control_plane import orchestrator
++from core import db as db_store
++
++
++def test_create_run_inserts_row_and_starts_worker(monkeypatch, tmp_path):
++    db_path = tmp_path / "runs.db"
++    monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")
++
++    with patch("subprocess.Popen", return_value=MagicMock(pid=4321)):
++        created = orchestrator.create_run({"target": "https://a.example", "depth": "recon"})
++
++    listed = orchestrator.list_runs()
++    assert created["run_id"].startswith("run-")
++    assert listed[0]["run_id"] == created["run_id"]
++    assert listed[0]["status"] == "running"
++
++
++def test_concurrent_create_two_runs(monkeypatch, tmp_path):
++    db_path = tmp_path / "runs.db"
++    monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")
++
++    with patch("subprocess.Popen", side_effect=[MagicMock(pid=1), MagicMock(pid=2)]):
++        run_a = orchestrator.create_run({"target": "https://a.example", "depth": "recon"})
++        run_b = orchestrator.create_run({"target": "https://b.example", "depth": "recon"})
++
++    rows = orchestrator.list_runs()
++    assert run_a["run_id"] != run_b["run_id"]
++    assert {row["run_id"] for row in rows} == {run_a["run_id"], run_b["run_id"]}
++
++
++def test_create_run_validation_400(monkeypatch, tmp_path):
++    db_path = tmp_path / "runs.db"
++    monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")
++
++    with pytest.raises(ValueError):
++        orchestrator.create_run({"target": "", "depth": "bogus"})
++
++
++def test_docker_failure_marks_failed_and_cleans(monkeypatch, tmp_path):
++    db_path = tmp_path / "runs.db"
++    monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")
++
++    with patch("subprocess.Popen", side_effect=OSError("docker failed")):
++        with pytest.raises(OSError):
++            orchestrator.create_run({"target": "https://broken.example", "depth": "recon"})
++
++    rows = orchestrator.list_runs()
++    assert rows[0]["status"] == "failed"
+diff --git a/tests/test_dashboard_auth.py b/tests/test_dashboard_auth.py
+index fb52be7..87fe78b 100644
+--- a/tests/test_dashboard_auth.py
++++ b/tests/test_dashboard_auth.py
+@@ -6,6 +6,7 @@ other API tests can hit /api/* without a header; here we re-enable it via
+ SMITH_DASHBOARD_AUTH=1 and exercise the real behaviour.
+ """
+ import pytest
++import sqlite3
+ from fastapi.testclient import TestClient
+ 
+ from core.api_server import app
+@@ -67,3 +68,22 @@ def test_token_file_is_0600(token_file):
+     # On POSIX the file must not be group/world readable.
+     if os.name == "posix":
+         assert mode & 0o077 == 0, oct(mode)
++
++
++def test_db_tokens_store_hashes_and_scope_run_ids(monkeypatch, tmp_path):
++    db_path = tmp_path / "auth.db"
++    monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")
++    monkeypatch.delenv("SMITH_SINGLE_RUN", raising=False)
++
++    token = dashboard_auth.mint_run_token("run-a")
++    meta = dashboard_auth.verify_bearer(token)
++
++    with sqlite3.connect(db_path) as conn:
++        row = conn.execute(
++            "select run_id, role, token_hash from dashboard_tokens"
++        ).fetchone()
++
++    assert meta == {"run_id": "run-a", "role": "run"}
++    assert row[0] == "run-a"
++    assert row[1] == "run"
++    assert row[2] != token
+diff --git a/tests/test_db_repository.py b/tests/test_db_repository.py
+new file mode 100644
+index 0000000..ba5c247
+--- /dev/null
++++ b/tests/test_db_repository.py
+@@ -0,0 +1,112 @@
++import json
++import sqlite3
++
++import pytest
++
++import core.coverage
++import core.findings
++import core.session
++
++
++def _fetch_payload(db_path, run_id: str, kind: str) -> dict:
++    with sqlite3.connect(db_path) as conn:
++        row = conn.execute(
++            "select payload_json from run_snapshots where run_id = ? and kind = ?",
++            (run_id, kind),
++        ).fetchone()
++    assert row is not None
++    return json.loads(row[0])
++
++
++@pytest.mark.asyncio
++async def test_session_findings_coverage_round_trip_by_run_id(
++    monkeypatch, tmp_path, findings_file, coverage_file
++):
++    db_path = tmp_path / "smith.db"
++    monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")
++
++    monkeypatch.setenv("SMITH_RUN_ID", "run-a")
++    core.session.start("https://a.example")
++    await core.findings.add_finding(
++        title="SQLi",
++        severity="high",
++        target="https://a.example/login",
++        description="Login bypass",
++        evidence="' OR 1=1--",
++    )
++    await core.coverage.add_endpoint(
++        path="/login",
++        method="POST",
++        params=[{"name": "username", "type": "body_form", "value_hint": ""}],
++    )
++
++    monkeypatch.setenv("SMITH_RUN_ID", "run-b")
++    monkeypatch.setattr(core.session, "_current", None)
++    core.session.start("https://b.example")
++    await core.findings.add_finding(
++        title="XSS",
++        severity="medium",
++        target="https://b.example/search",
++        description="Reflected XSS",
++        evidence="<script>alert(1)</script>",
++    )
++    await core.coverage.add_endpoint(
++        path="/search",
++        method="GET",
++        params=[{"name": "q", "type": "query", "value_hint": ""}],
++    )
++
++    with sqlite3.connect(db_path) as conn:
++        runs = conn.execute(
++            "select run_id, target, status from runs order by run_id"
++        ).fetchall()
++
++    assert runs == [
++        ("run-a", "https://a.example", "running"),
++        ("run-b", "https://b.example", "running"),
++    ]
++    assert _fetch_payload(db_path, "run-a", "findings")["findings"][0]["title"] == "SQLi"
++    assert _fetch_payload(db_path, "run-b", "findings")["findings"][0]["title"] == "XSS"
++    assert _fetch_payload(db_path, "run-a", "coverage")["endpoints"][0]["path"] == "/login"
++    assert _fetch_payload(db_path, "run-b", "coverage")["endpoints"][0]["path"] == "/search"
++
++
++@pytest.mark.asyncio
++async def test_json_cache_survives_db_disabled(monkeypatch, findings_file):
++    monkeypatch.delenv("SMITH_DATABASE_URL", raising=False)
++    monkeypatch.setenv("SMITH_SINGLE_RUN", "1")
++
++    monkeypatch.setenv("SMITH_RUN_ID", "run-a")
++    await core.findings.add_finding(
++        title="SQLi",
++        severity="high",
++        target="https://a.example/login",
++        description="Login bypass",
++        evidence="' OR 1=1--",
++    )
++
++    monkeypatch.setenv("SMITH_RUN_ID", "run-b")
++
++    data = core.findings._load()
++
++    assert data["findings"][0]["title"] == "SQLi"
++
++
++@pytest.mark.asyncio
++async def test_db_error_does_not_truncate_cache(monkeypatch, findings_file):
++    monkeypatch.setenv("SMITH_DATABASE_URL", "postgresql+nosuchdriver://broken")
++    monkeypatch.setenv("SMITH_RUN_ID", "run-a")
++
++    await core.findings.add_finding(
++        title="XSS",
++        severity="medium",
++        target="https://example.test/search",
++        description="Reflected XSS",
++        evidence="<script>alert(1)</script>",
++    )
++
++    monkeypatch.setenv("SMITH_RUN_ID", "run-b")
++
++    data = core.findings._load()
++
++    assert data["findings"][0]["title"] == "XSS"
+diff --git a/tests/test_paths.py b/tests/test_paths.py
+new file mode 100644
+index 0000000..9bb1cd2
+--- /dev/null
++++ b/tests/test_paths.py
+@@ -0,0 +1,30 @@
++import importlib
++
++import core.paths
++
++
++def test_smith_workdir_rehomes_runtime_state_only(monkeypatch, tmp_path):
++    monkeypatch.setenv("SMITH_WORKDIR", str(tmp_path))
++
++    paths = importlib.reload(core.paths)
++
++    assert paths.SESSION_FILE == tmp_path / "session.json"
++    assert paths.FINDINGS_FILE == tmp_path / "findings.json"
++    assert paths.ARTIFACTS_DIR == tmp_path / "artifacts"
++    assert paths.POCS_DIR == tmp_path / "pocs"
++    assert paths.LOGS_DIR == tmp_path / "logs"
++    assert paths.TEMPLATES_DIR == paths.REPO_ROOT / "templates"
++    assert paths.DASHBOARD_DIR == paths.REPO_ROOT / "dashboard"
++    assert paths.THREAT_MODEL_DIR == paths.REPO_ROOT / "threat-model"
++
++
++def test_default_paths_unchanged_without_env(monkeypatch):
++    monkeypatch.delenv("SMITH_WORKDIR", raising=False)
++
++    paths = importlib.reload(core.paths)
++
++    assert paths.SESSION_FILE == paths.REPO_ROOT / "session.json"
++    assert paths.FINDINGS_FILE == paths.REPO_ROOT / "findings.json"
++    assert paths.ARTIFACTS_DIR == paths.REPO_ROOT / "artifacts"
++    assert paths.POCS_DIR == paths.REPO_ROOT / "pocs"
++    assert paths.LOGS_DIR == paths.REPO_ROOT / "logs"
+diff --git a/tests/test_runs_routes.py b/tests/test_runs_routes.py
+new file mode 100644
+index 0000000..4598b82
+--- /dev/null
++++ b/tests/test_runs_routes.py
+@@ -0,0 +1,102 @@
++import sqlite3
++from unittest.mock import MagicMock, patch
++
++from fastapi.testclient import TestClient
++
++from core.api_server import app
++from core import dashboard_auth
++from core import db as db_store
++
++
++def _headers(token: str) -> dict[str, str]:
++    return {"Authorization": f"Bearer {token}"}
++
++
++def _create_run(client: TestClient, operator_token: str, target: str) -> dict:
++    with patch("subprocess.Popen", return_value=MagicMock(pid=1234)):
++        response = client.post(
++            "/api/runs",
++            json={"target": target, "depth": "recon"},
++            headers=_headers(operator_token),
++        )
++    assert response.status_code == 200
++    return response.json()
++
++
++def test_operator_token_can_create_and_stop(monkeypatch, tmp_path):
++    db_path = tmp_path / "runs.db"
++    monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")
++    monkeypatch.setenv("SMITH_DASHBOARD_AUTH", "1")
++    monkeypatch.delenv("SMITH_SINGLE_RUN", raising=False)
++
++    client = TestClient(app)
++    operator_token = dashboard_auth.mint_operator_token()
++
++    created = _create_run(client, operator_token, "https://a.example")
++    listed = client.get("/api/runs", headers=_headers(operator_token))
++    stopped = client.post(f"/api/runs/{created['run_id']}/stop", headers=_headers(operator_token))
++
++    assert created["status"] == "running"
++    assert created["token"]
++    assert "#k=" in created["dashboard_url"]
++    assert listed.status_code == 200
++    assert listed.json()[0]["run_id"] == created["run_id"]
++    assert stopped.status_code == 200
++    assert stopped.json()["status"] == "stopped"
++
++
++def test_api_runs_list_persists_after_restart(monkeypatch, tmp_path):
++    db_path = tmp_path / "runs.db"
++    monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")
++    monkeypatch.setenv("SMITH_DASHBOARD_AUTH", "1")
++    monkeypatch.delenv("SMITH_SINGLE_RUN", raising=False)
++
++    operator_token = dashboard_auth.mint_operator_token()
++    first_client = TestClient(app)
++    created = _create_run(first_client, operator_token, "https://persist.example")
++
++    second_client = TestClient(app)
++    listed = second_client.get("/api/runs", headers=_headers(operator_token))
++
++    assert listed.status_code == 200
++    assert [row["run_id"] for row in listed.json()] == [created["run_id"]]
++
++
++def test_run_token_scopes_existing_tabs(monkeypatch, tmp_path):
++    db_path = tmp_path / "runs.db"
++    monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")
++    monkeypatch.setenv("SMITH_DASHBOARD_AUTH", "1")
++    monkeypatch.delenv("SMITH_SINGLE_RUN", raising=False)
++
++    client = TestClient(app)
++    operator_token = dashboard_auth.mint_operator_token()
++    run_a = _create_run(client, operator_token, "https://a.example")
++    run_b = _create_run(client, operator_token, "https://b.example")
++
++    repo = db_store.get_repository()
++    repo.save_snapshot(run_a["run_id"], "findings", {"findings": [{"title": "SQLi A"}]})
++    repo.save_snapshot(run_a["run_id"], "session", {"target": "https://a.example", "status": "running"})
++    repo.save_snapshot(run_b["run_id"], "findings", {"findings": [{"title": "XSS B"}]})
++    repo.save_snapshot(run_b["run_id"], "session", {"target": "https://b.example", "status": "running"})
++
++    findings_a = client.get("/api/findings", headers=_headers(run_a["token"]))
++    session_b = client.get("/api/session", headers=_headers(run_b["token"]))
++
++    assert findings_a.json()["findings"][0]["title"] == "SQLi A"
++    assert session_b.json()["target"] == "https://b.example"
++
++
++def test_cross_run_token_rejected(monkeypatch, tmp_path):
++    db_path = tmp_path / "runs.db"
++    monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")
++    monkeypatch.setenv("SMITH_DASHBOARD_AUTH", "1")
++    monkeypatch.delenv("SMITH_SINGLE_RUN", raising=False)
++
++    client = TestClient(app)
++    operator_token = dashboard_auth.mint_operator_token()
++    run_a = _create_run(client, operator_token, "https://a.example")
++    run_b = _create_run(client, operator_token, "https://b.example")
++
++    response = client.post(f"/api/runs/{run_b['run_id']}/stop", headers=_headers(run_a["token"]))
++
++    assert response.status_code == 403
+diff --git a/tests/test_smith_cli.py b/tests/test_smith_cli.py
+new file mode 100644
+index 0000000..b4aa572
+--- /dev/null
++++ b/tests/test_smith_cli.py
+@@ -0,0 +1,31 @@
++import json
++
++import smith_cli
++
++
++def test_smith_start_prints_started(monkeypatch, capsys):
++    monkeypatch.setattr(
++        "control_plane.orchestrator.start_control_plane",
++        lambda: {"status": "started", "dashboard_url": "http://127.0.0.1:7777"},
++    )
++    assert smith_cli.main(["start"]) == 0
++    assert json.loads(capsys.readouterr().out)["status"] == "started"
++
++
++def test_smith_status_prints_health(monkeypatch, capsys):
++    monkeypatch.setattr(
++        "control_plane.orchestrator.control_plane_status",
++        lambda: {"database": "healthy", "dashboard": "running", "orchestrator": "running"},
++    )
++    assert smith_cli.main(["status"]) == 0
++    body = json.loads(capsys.readouterr().out)
++    assert body["database"] == "healthy"
++
++
++def test_smith_stop_prints_stopped(monkeypatch, capsys):
++    monkeypatch.setattr(
++        "control_plane.orchestrator.stop_control_plane",
++        lambda: {"status": "stopped"},
++    )
++    assert smith_cli.main(["stop"]) == 0
++    assert json.loads(capsys.readouterr().out)["status"] == "stopped"
+diff --git a/tools/kali_runner.py b/tools/kali_runner.py
+index 4e4d03f..44fd05d 100644
+--- a/tools/kali_runner.py
++++ b/tools/kali_runner.py
+@@ -15,6 +15,7 @@ import asyncio
+ import os
+ import shlex
+ 
++from core import run_context as _run_context
+ from tools.docker_cli import docker_executable
+ 
+ KALI_IMAGE     = "pentest-agent/kali-mcp"
+@@ -38,6 +39,64 @@ _TOKEN_FILE = _REPO_ROOT / "logs" / ".kali_api_token"
+ # kali-server-mcp runs loopback-only inside the container on this port; only the
+ # in-container guard (published on :5000) can reach it.
+ _KALI_UPSTREAM_PORT = "5555"
++_RUN_API_PORTS: dict[str, int] = {}
++
++
++def container_name() -> str:
++    return _run_context.container_name("kali") if _run_context.multi_run_mode() else KALI_CONTAINER
++
++
++def network_name() -> str:
++    return _run_context.docker_network_name() if _run_context.multi_run_mode() else "smith"
++
++
++def remember_api_port(port: int) -> None:
++    _RUN_API_PORTS[_run_context.run_id()] = int(port)
++
++
++def api_publish_arg() -> str:
++    return "127.0.0.1::5000" if _run_context.multi_run_mode() else f"127.0.0.1:{KALI_PORT}:5000"
++
++
++def api_url() -> str:
++    if _run_context.multi_run_mode():
++        port = _RUN_API_PORTS.get(_run_context.run_id(), KALI_PORT)
++        return f"http://127.0.0.1:{port}"
++    return KALI_API
++
++
++async def _ensure_network() -> None:
++    if not _run_context.multi_run_mode():
++        return
++    inspect_proc = await asyncio.create_subprocess_exec(
++        docker_executable(), "network", "inspect", network_name(),
++        stdout=asyncio.subprocess.DEVNULL,
++        stderr=asyncio.subprocess.DEVNULL,
++    )
++    await inspect_proc.wait()
++    if inspect_proc.returncode == 0:
++        return
++    create_proc = await asyncio.create_subprocess_exec(
++        docker_executable(), "network", "create", network_name(),
++        stdout=asyncio.subprocess.DEVNULL,
++        stderr=asyncio.subprocess.DEVNULL,
++    )
++    await create_proc.wait()
++
++
++async def _discover_host_port(container_port: int, default_port: int) -> int:
++    if not _run_context.multi_run_mode():
++        return default_port
++    proc = await asyncio.create_subprocess_exec(
++        docker_executable(), "port", container_name(), f"{container_port}/tcp",
++        stdout=asyncio.subprocess.PIPE,
++        stderr=asyncio.subprocess.DEVNULL,
++    )
++    stdout, _ = await proc.communicate()
++    try:
++        return int(stdout.decode().strip().rsplit(":", 1)[1])
++    except Exception:
++        return default_port
+ 
+ 
+ def _kali_token() -> str:
+@@ -77,7 +136,7 @@ async def image_exists() -> bool:
+ 
+ async def container_running() -> bool:
+     proc = await asyncio.create_subprocess_exec(
+-        docker_executable(), "inspect", "--format={{.State.Running}}", KALI_CONTAINER,
++        docker_executable(), "inspect", "--format={{.State.Running}}", container_name(),
+         stdout=asyncio.subprocess.PIPE,
+         stderr=asyncio.subprocess.DEVNULL,
+     )
+@@ -121,6 +180,7 @@ async def ensure_running() -> tuple[bool, str]:
+                 f"Image '{KALI_IMAGE}' not found. Build it first:\n"
+                 f"  docker build -t {KALI_IMAGE} ./tools/kali/"
+             )
++        await _ensure_network()
+ 
+         # Forward AI API keys into the container (see _forward_ai_keys).
+         env_flags: list[str] = _forward_ai_keys(os.environ)
+@@ -142,11 +202,11 @@ async def ensure_running() -> tuple[bool, str]:
+         def _run_argv(extra: list[str]) -> list[str]:
+             return [
+                 docker_executable(), "run", "-d",
+-                "--name", KALI_CONTAINER,
++                "--name", container_name(),
+                 # SECURITY: publish the command API to LOOPBACK ONLY. It is unauthenticated
+                 # root RCE — on 0.0.0.0 any host on the LAN could drive it. The MCP reaches it
+                 # at localhost:5001; the LAN cannot.
+-                "-p", f"127.0.0.1:{KALI_PORT}:5000",
++                "-p", api_publish_arg(),
+                 # Tunnel/listener ports stay on 0.0.0.0 — targets must reach them for
+                 # reverse tunnels / file transfer during a pentest (that is their purpose).
+                 "-p", "1080:1080",          # SOCKS5 proxy (chisel reverse tunnel)
+@@ -159,6 +219,7 @@ async def ensure_running() -> tuple[bool, str]:
+                 "--cap-add=NET_ADMIN",
+                 "--device=/dev/net/tun:/dev/net/tun",
+                 "--add-host=host.docker.internal:host-gateway",
++                *(["--network", network_name()] if _run_context.multi_run_mode() else []),
+                 # Front the API with the loopback auth guard (token + Host allowlist) so a local
+                 # process or a DNS-rebinding page that reaches loopback still can't drive it. The
+                 # guard is MOUNTED so this is live without an image rebuild; the Dockerfile bakes
+@@ -201,13 +262,14 @@ async def ensure_running() -> tuple[bool, str]:
+             rc, err = await _docker_run(_run_argv([]))
+         if rc != 0:
+             return False, f"docker run failed: {err}"
++        remember_api_port(await _discover_host_port(5000, KALI_PORT))
+ 
+     # Poll /health until the Flask server is ready (up to 30 s)
+     for _ in range(30):
+         try:
+             async with aiohttp.ClientSession() as s:
+                 async with s.get(
+-                    f"{KALI_API}/health",
++                    f"{api_url()}/health",
+                     headers={"X-Kali-Token": _kali_token()},
+                     timeout=aiohttp.ClientTimeout(total=1),
+                 ) as r:
+@@ -229,7 +291,7 @@ async def _seed_curl_defaults() -> None:
+     bakes the same file for clean rebuilds. Best-effort — never fail container startup."""
+     try:
+         proc = await asyncio.create_subprocess_exec(
+-            docker_executable(), "exec", KALI_CONTAINER, "sh", "-c",
++            docker_executable(), "exec", container_name(), "sh", "-c",
+             "printf 'connect-timeout = 5\\nmax-time = 30\\n' > /root/.curlrc",
+             stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+         )
+@@ -247,7 +309,7 @@ async def _register_scanner_ips() -> None:
+     Best-effort; a failure here never affects Kali startup or promotion correctness."""
+     try:
+         proc = await asyncio.create_subprocess_exec(
+-            docker_executable(), "exec", KALI_CONTAINER, "hostname", "-I",
++            docker_executable(), "exec", container_name(), "hostname", "-I",
+             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+         )
+         out, _ = await proc.communicate()
+@@ -261,13 +323,13 @@ async def _register_scanner_ips() -> None:
+ 
+ async def stop() -> str:
+     proc = await asyncio.create_subprocess_exec(
+-        docker_executable(), "stop", KALI_CONTAINER,
++        docker_executable(), "stop", container_name(),
+         stdout=asyncio.subprocess.DEVNULL,
+         stderr=asyncio.subprocess.PIPE,
+     )
+     _, stderr = await proc.communicate()
+     if proc.returncode == 0:
+-        return f"Container '{KALI_CONTAINER}' stopped."
++        return f"Container '{container_name()}' stopped."
+     return f"Could not stop container: {stderr.decode().strip()}"
+ 
+ 
+@@ -368,7 +430,7 @@ async def exec_command(command: str, timeout: int = 600, proxy: str | None = Non
+     try:
+         async with aiohttp.ClientSession() as session:
+             async with session.post(
+-                f"{KALI_API}/api/command",
++                f"{api_url()}/api/command",
+                 json={"command": command, "timeout": timeout},
+                 headers={"X-Kali-Token": _kali_token()},
+                 timeout=aiohttp.ClientTimeout(total=timeout + 30),
+diff --git a/tools/metasploit_runner.py b/tools/metasploit_runner.py
+index b6f609a..1afe969 100644
+--- a/tools/metasploit_runner.py
++++ b/tools/metasploit_runner.py
+@@ -15,6 +15,7 @@ from __future__ import annotations
+ import asyncio
+ import os
+ 
++from core import run_context as _run_context
+ from tools.docker_cli import docker_executable
+ 
+ MSF_IMAGE     = "pentest-agent/metasploit"
+@@ -31,6 +32,21 @@ import secrets as _secrets
+ _REPO_ROOT = _pathlib.Path(__file__).resolve().parents[1]
+ _SERVER_SRC = _REPO_ROOT / "tools" / "metasploit" / "server.py"
+ _SECRET_FILE = _REPO_ROOT / "logs" / ".msf_api_secret"
++_RUN_API_PORTS: dict[str, int] = {}
++
++
++def container_name() -> str:
++    return _run_context.container_name("metasploit") if _run_context.multi_run_mode() else MSF_CONTAINER
++
++
++def remember_api_port(port: int) -> None:
++    _RUN_API_PORTS[_run_context.run_id()] = int(port)
++
++
++def api_url() -> str:
++    if _run_context.multi_run_mode():
++        return f"http://127.0.0.1:{_RUN_API_PORTS.get(_run_context.run_id(), MSF_PORT)}"
++    return MSF_API
+ 
+ 
+ def _msf_secret() -> str:
+@@ -70,7 +86,7 @@ async def image_exists() -> bool:
+ 
+ async def container_running() -> bool:
+     proc = await asyncio.create_subprocess_exec(
+-        docker_executable(), "inspect", "--format={{.State.Running}}", MSF_CONTAINER,
++        docker_executable(), "inspect", "--format={{.State.Running}}", container_name(),
+         stdout=asyncio.subprocess.PIPE,
+         stderr=asyncio.subprocess.DEVNULL,
+     )
+@@ -102,10 +118,10 @@ async def ensure_running() -> tuple[bool, str]:
+         _secret = _msf_secret()
+         proc = await asyncio.create_subprocess_exec(
+             docker_executable(), "run", "-d",
+-            "--name", MSF_CONTAINER,
++            "--name", container_name(),
+             # SECURITY: the command API is unauthenticated root RCE — publish it to LOOPBACK
+             # ONLY (was 0.0.0.0). The MCP reaches it at localhost:5002; the LAN cannot.
+-            "-p", f"127.0.0.1:{MSF_PORT}:5000",
++            "-p", "127.0.0.1::5000" if _run_context.multi_run_mode() else f"127.0.0.1:{MSF_PORT}:5000",
+             # Handler/proxy ports stay on 0.0.0.0 — payloads/targets must reach them.
+             "-p", "4444:4444",          # meterpreter handler
+             "-p", "4445:4445",          # secondary handler
+@@ -125,13 +141,14 @@ async def ensure_running() -> tuple[bool, str]:
+         _, stderr = await proc.communicate()
+         if proc.returncode != 0:
+             return False, f"docker run failed: {stderr.decode().strip()}"
++        remember_api_port(MSF_PORT)
+ 
+     # Poll /health until the server is ready (up to 60 s — MSF is slow to start)
+     for _ in range(60):
+         try:
+             async with aiohttp.ClientSession() as s:
+                 async with s.get(
+-                    f"{MSF_API}/health",
++                    f"{api_url()}/health",
+                     headers={"X-API-Secret": _msf_secret()},
+                     timeout=aiohttp.ClientTimeout(total=2),
+                 ) as r:
+@@ -146,13 +163,13 @@ async def ensure_running() -> tuple[bool, str]:
+ 
+ async def stop() -> str:
+     proc = await asyncio.create_subprocess_exec(
+-        docker_executable(), "stop", MSF_CONTAINER,
++        docker_executable(), "stop", container_name(),
+         stdout=asyncio.subprocess.DEVNULL,
+         stderr=asyncio.subprocess.PIPE,
+     )
+     _, stderr = await proc.communicate()
+     if proc.returncode == 0:
+-        return f"Container '{MSF_CONTAINER}' stopped."
++        return f"Container '{container_name()}' stopped."
+     return f"Could not stop container: {stderr.decode().strip()}"
+ 
+ 
+@@ -182,7 +199,7 @@ async def exec_command(command: str, timeout: int = 900) -> str:  # NOSONAR
+     try:
+         async with aiohttp.ClientSession() as session:
+             async with session.post(
+-                f"{MSF_API}/api/command",
++                f"{api_url()}/api/command",
+                 json={"command": command},
+                 headers={"X-API-Secret": _msf_secret()},
+                 timeout=aiohttp.ClientTimeout(total=timeout + 5),
+diff --git a/tools/mobsf_runner.py b/tools/mobsf_runner.py
+index e4068e7..9330228 100644
+--- a/tools/mobsf_runner.py
++++ b/tools/mobsf_runner.py
+@@ -22,6 +22,7 @@ import asyncio
+ import os
+ 
+ from core import paths as _paths
++from core import run_context as _run_context
+ from tools.docker_cli import docker_executable
+ 
+ # Use the official MobSF image directly — we don't customise it, so there's no
+@@ -70,6 +71,21 @@ API_KEY = _resolve_api_key()
+ SCAN_TIMEOUT = int(os.environ.get("SMITH_MOBSF_SCAN_TIMEOUT", "600"))
+ 
+ _start_lock = asyncio.Lock()
++_RUN_API_PORTS: dict[str, int] = {}
++
++
++def container_name() -> str:
++    return _run_context.container_name("mobsf") if _run_context.multi_run_mode() else MOBSF_CONTAINER
++
++
++def remember_api_port(port: int) -> None:
++    _RUN_API_PORTS[_run_context.run_id()] = int(port)
++
++
++def api_url() -> str:
++    if _run_context.multi_run_mode():
++        return f"http://127.0.0.1:{_RUN_API_PORTS.get(_run_context.run_id(), MOBSF_PORT)}"
++    return MOBSF_API
+ 
+ 
+ def _read_bytes(path: str) -> bytes:
+@@ -94,7 +110,7 @@ async def image_exists() -> bool:
+ 
+ async def container_running() -> bool:
+     proc = await asyncio.create_subprocess_exec(
+-        docker_executable(), "inspect", "--format={{.State.Running}}", MOBSF_CONTAINER,
++        docker_executable(), "inspect", "--format={{.State.Running}}", container_name(),
+         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+     )
+     stdout, _ = await proc.communicate()
+@@ -127,8 +143,8 @@ async def ensure_running() -> tuple[bool, str]:
+                 )
+         proc = await asyncio.create_subprocess_exec(
+             docker_executable(), "run", "-d",
+-            "--name", MOBSF_CONTAINER,
+-            "-p", f"{MOBSF_PORT}:8000",
++            "--name", container_name(),
++            "-p", f"127.0.0.1::{8000}" if _run_context.multi_run_mode() else f"{MOBSF_PORT}:8000",
+             "-e", f"MOBSF_API_KEY={API_KEY}",
+             "--rm",
+             MOBSF_IMAGE,
+@@ -137,12 +153,13 @@ async def ensure_running() -> tuple[bool, str]:
+         _, stderr = await proc.communicate()
+         if proc.returncode != 0:
+             return False, f"docker run failed: {stderr.decode().strip()}"
++        remember_api_port(MOBSF_PORT)
+ 
+     # Poll the MobSF home page until Django is serving (up to 90 s — slow boot).
+     for _ in range(90):
+         try:
+             async with aiohttp.ClientSession() as s:
+-                async with s.get(MOBSF_API + "/", timeout=aiohttp.ClientTimeout(total=2)) as r:
++                async with s.get(api_url() + "/", timeout=aiohttp.ClientTimeout(total=2)) as r:
+                     if r.status == 200:
+                         return True, "started"
+         except Exception:
+@@ -153,12 +170,12 @@ async def ensure_running() -> tuple[bool, str]:
+ 
+ async def stop() -> str:
+     proc = await asyncio.create_subprocess_exec(
+-        docker_executable(), "stop", MOBSF_CONTAINER,
++        docker_executable(), "stop", container_name(),
+         stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+     )
+     _, stderr = await proc.communicate()
+     if proc.returncode == 0:
+-        return f"Container '{MOBSF_CONTAINER}' stopped."
++        return f"Container '{container_name()}' stopped."
+     return f"Could not stop container: {stderr.decode().strip()}"
+ 
+ 
+@@ -199,7 +216,7 @@ async def analyze(file_path: str) -> dict:
+             form.add_field("file", file_bytes,
+                            filename=os.path.basename(file_path),
+                            content_type="application/octet-stream")
+-            async with session.post(MOBSF_API + "/api/v1/upload", data=form,
++            async with session.post(api_url() + "/api/v1/upload", data=form,
+                                     timeout=aiohttp.ClientTimeout(total=120)) as r:
+                 if r.status == 401:
+                     return {"ok": False, "error": "MobSF 401 — API key rejected"}
+@@ -209,13 +226,13 @@ async def analyze(file_path: str) -> dict:
+                 return {"ok": False, "error": f"upload failed: {up}"}
+ 
+             # 2. run the scan (blocking; can take minutes on a large binary)
+-            async with session.post(MOBSF_API + "/api/v1/scan",
++            async with session.post(api_url() + "/api/v1/scan",
+                                     data={"hash": file_hash},
+                                     timeout=aiohttp.ClientTimeout(total=SCAN_TIMEOUT)) as r:
+                 await r.read()  # ensure the scan completes before we fetch the report
+ 
+             # 3. fetch the structured JSON report
+-            async with session.post(MOBSF_API + "/api/v1/report_json",
++            async with session.post(api_url() + "/api/v1/report_json",
+                                     data={"hash": file_hash},
+                                     timeout=aiohttp.ClientTimeout(total=120)) as r:
+                 report = await r.json()
