@@ -259,11 +259,17 @@ class QADaemon:
             "smith_actions": smith_actions,
         })
 
-        _store.save(_qa._QA_STATE_FILE, {
+        qa_state = {
             "ts":      datetime.now(timezone.utc).isoformat(),
             "alerts":  final_alerts,
             "history": history[-20:],
-        }, indent=None)
+        }
+        _store.save(_qa._QA_STATE_FILE, qa_state, indent=None)
+        try:
+            from core import db as _db
+            _db.persist_snapshot("qa", qa_state)
+        except Exception:
+            pass
 
         _log.info("QA Daemon: %d alert(s) written", len(final_alerts))
 

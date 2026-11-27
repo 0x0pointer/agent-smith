@@ -77,6 +77,20 @@ def _patch_subprocess(monkeypatch, port_map, run_calls):
     monkeypatch.setattr("asyncio.create_subprocess_exec", _fake_exec)
 
 
+def _patch_already_running_subprocess(monkeypatch, port_map, calls):
+    async def _fake_exec(*argv, **kwargs):
+        argv = list(argv)
+        calls.append(argv)
+        if argv[1:3] == ["inspect", "--format={{.State.Running}}"]:
+            return _FakeProc(returncode=0, stdout=b"true")
+        if argv[1] == "port":
+            key = (argv[2], argv[3])
+            return _FakeProc(returncode=0, stdout=f"127.0.0.1:{port_map[key]}".encode())
+        return _FakeProc(returncode=0)
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", _fake_exec)
+
+
 async def _noop_async():
     return None
 
@@ -187,3 +201,39 @@ def test_stop_only_current_run_containers(monkeypatch):
     assert "smith-metasploit-run-a" in seen["argv"]
     assert "smith-mobsf-run-a" in seen["argv"]
     assert "smith-kali-run-b" not in seen["argv"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("runner", "container", "container_port", "expected_url"),
+    [
+        (kali_runner, "smith-kali-run-restart", "5000/tcp", "http://127.0.0.1:43101"),
+        (metasploit_runner, "smith-metasploit-run-restart", "5000/tcp", "http://127.0.0.1:43102"),
+        (mobsf_runner, "smith-mobsf-run-restart", "8000/tcp", "http://127.0.0.1:43103"),
+    ],
+)
+async def test_already_running_multi_run_container_rediscovers_api_port_after_restart(
+    monkeypatch, runner, container, container_port, expected_url
+):
+    monkeypatch.setenv("SMITH_RUN_ID", "run-restart")
+    monkeypatch.delenv("SMITH_SINGLE_RUN", raising=False)
+    runner._RUN_API_PORTS.clear()
+    calls = []
+    _patch_already_running_subprocess(
+        monkeypatch,
+        {
+            ("smith-kali-run-restart", "5000/tcp"): 43101,
+            ("smith-metasploit-run-restart", "5000/tcp"): 43102,
+            ("smith-mobsf-run-restart", "8000/tcp"): 43103,
+        },
+        calls,
+    )
+
+    ok, msg = await runner.ensure_running()
+
+    assert ok is True
+    assert msg == "already running"
+    assert runner.api_url() == expected_url
+    assert [call for call in calls if call[1] == "port"] == [
+        ["docker", "port", container, container_port]
+    ]

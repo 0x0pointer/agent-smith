@@ -78,8 +78,9 @@ def _mint_db_token(run_id: str, role: str) -> str:
 
     token = secrets.token_urlsafe(32)
     repo = _db.get_repository()
-    if repo is not None:
-        repo.save_dashboard_token(_hash_token(token), run_id, role)
+    if repo is None:
+        raise RuntimeError("database unavailable")
+    repo.save_dashboard_token(_hash_token(token), run_id, role)
     return token
 
 

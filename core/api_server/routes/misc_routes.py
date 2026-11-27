@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 
+from fastapi import Request
 from fastapi.responses import JSONResponse
 
 import core.api_server as _api
@@ -16,12 +17,22 @@ _log = logging.getLogger(__name__)
 # ── QA / steering / metrics / logs ──────────────────────────────────────────
 
 @router.get("/api/qa")
-async def api_qa() -> JSONResponse:
+async def api_qa(request: Request) -> JSONResponse:
+    run_id = getattr(request.state, "run_id", None)
+    if run_id:
+        from core import db as _db
+        data = _db.load_snapshot("qa", run_id=run_id)
+        return JSONResponse(data if isinstance(data, dict) else {"alerts": [], "history": []})
     return JSONResponse(_api._read_json(_api._QA_STATE_FILE))
 
 
 @router.get("/api/steering")
-async def api_steering() -> JSONResponse:
+async def api_steering(request: Request) -> JSONResponse:
+    run_id = getattr(request.state, "run_id", None)
+    if run_id:
+        from core import db as _db
+        data = _db.load_snapshot("steering", run_id=run_id)
+        return JSONResponse(data if isinstance(data, dict) else {"directives": []})
     return JSONResponse(_api._read_json(_api._STEERING_FILE))
 
 

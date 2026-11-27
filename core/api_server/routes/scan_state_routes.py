@@ -213,6 +213,7 @@ async def api_steer(request: Request) -> JSONResponse:
         message = str(body.get("message", "")).strip()
         if not message:
             return JSONResponse({"ok": False, "error": "message required"}, status_code=400)
+        run_id = getattr(request.state, "run_id", None) or None
         # Operator phase-advance via typed steer ("advance to phase B", "next phase") — handle it
         # deterministically server-side (don't route it through the model) so the phase moves NOW.
         is_phase, target = _parse_phase_steer(message)
@@ -231,6 +232,7 @@ async def api_steer(request: Request) -> JSONResponse:
             skill=None,
             trigger="HUMAN_STEER",
             force=True,  # human instructions always go through — never deduped
+            run_id=run_id,
         )
         return JSONResponse({"ok": True})
     except Exception:

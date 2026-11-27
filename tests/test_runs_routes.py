@@ -1,7 +1,11 @@
+import json
 from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
 
+import core.api_server as api_server
+import core.steering as steering_store
+import core.wishlist as wishlist_store
 from core.api_server import app
 from core import dashboard_auth
 from core import db as db_store
@@ -138,3 +142,215 @@ def test_run_token_scopes_finding_detail_patch_and_delete(monkeypatch, tmp_path)
     assert run_a_snapshot["findings"] == []
     assert run_a_snapshot["archived"][0]["title"] == "SQLi A fixed scope"
     assert run_b_snapshot["findings"][0]["title"] == "SQLi B"
+
+
+def test_run_token_without_snapshot_does_not_fallback_to_global_findings(monkeypatch, tmp_path):
+    db_path = tmp_path / "runs.db"
+    global_findings = tmp_path / "findings.json"
+    global_findings.write_text(json.dumps({
+        "findings": [{"id": "global", "title": "GLOBAL LEAK"}],
+        "diagrams": [],
+        "chains": [],
+        "meta": {},
+    }))
+    monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")
+    monkeypatch.setenv("SMITH_DASHBOARD_AUTH", "1")
+    monkeypatch.delenv("SMITH_SINGLE_RUN", raising=False)
+    monkeypatch.setattr(api_server, "_FINDINGS_FILE", global_findings)
+
+    token = dashboard_auth.mint_run_token("run-a")
+    response = TestClient(app).get("/api/findings", headers=_headers(token))
+
+    assert response.status_code == 200
+    assert response.json().get("findings") == []
+
+
+def test_run_token_scopes_wishlist_qa_and_steering_reads(monkeypatch, tmp_path):
+    db_path = tmp_path / "runs.db"
+    monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")
+    monkeypatch.setenv("SMITH_DASHBOARD_AUTH", "1")
+    monkeypatch.delenv("SMITH_SINGLE_RUN", raising=False)
+    monkeypatch.setattr(wishlist_store, "_WISHLIST_FILE", tmp_path / "wishlist_queue.json")
+    monkeypatch.setattr(steering_store, "_STEERING_FILE", tmp_path / "steering_queue.json")
+    monkeypatch.setattr(api_server, "_QA_STATE_FILE", tmp_path / "qa_state.json")
+    monkeypatch.setattr(api_server, "_STEERING_FILE", tmp_path / "steering_queue.json")
+    wishlist_store._WISHLIST_FILE.write_text(json.dumps({"items": [{"need": "GLOBAL"}]}))
+    steering_store._STEERING_FILE.write_text(json.dumps({"directives": [{"message": "GLOBAL"}]}))
+    api_server._QA_STATE_FILE.write_text(json.dumps({"alerts": [{"message": "GLOBAL"}]}))
+
+    token_a = dashboard_auth.mint_run_token("run-a")
+    repo = db_store.get_repository()
+    repo.save_snapshot("run-a", "wishlist", {"items": [{"id": "wish-a", "need": "A"}]})
+    repo.save_snapshot("run-a", "qa", {"alerts": [{"message": "QA A"}]})
+    repo.save_snapshot("run-a", "steering", {"directives": [{"id": "steer-a", "message": "STEER A"}]})
+    repo.save_snapshot("run-b", "wishlist", {"items": [{"id": "wish-b", "need": "B"}]})
+    repo.save_snapshot("run-b", "qa", {"alerts": [{"message": "QA B"}]})
+    repo.save_snapshot("run-b", "steering", {"directives": [{"id": "steer-b", "message": "STEER B"}]})
+
+    client = TestClient(app)
+    wishlist = client.get("/api/wishlist", headers=_headers(token_a))
+    qa = client.get("/api/qa", headers=_headers(token_a))
+    steering = client.get("/api/steering", headers=_headers(token_a))
+
+    assert wishlist.json()["items"] == [{"id": "wish-a", "need": "A"}]
+    assert qa.json()["alerts"] == [{"message": "QA A"}]
+    assert steering.json()["directives"] == [{"id": "steer-a", "message": "STEER A"}]
+
+
+def test_run_token_steer_writes_only_authenticated_run(monkeypatch, tmp_path):
+    db_path = tmp_path / "runs.db"
+    monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")
+    monkeypatch.setenv("SMITH_DASHBOARD_AUTH", "1")
+    monkeypatch.delenv("SMITH_SINGLE_RUN", raising=False)
+    monkeypatch.setattr(steering_store, "_STEERING_FILE", tmp_path / "steering_queue.json")
+
+    token_a = dashboard_auth.mint_run_token("run-a")
+    response = TestClient(app).post(
+        "/api/steer",
+        json={"message": "stay in run a"},
+        headers=_headers(token_a),
+    )
+
+    repo = db_store.get_repository()
+    run_a = repo.load_snapshot("run-a", "steering")
+    run_b = repo.load_snapshot("run-b", "steering")
+    assert response.status_code == 200
+    assert run_a["directives"][0]["message"] == "HUMAN INSTRUCTION: stay in run a"
+    assert run_b is None
+    assert not steering_store._STEERING_FILE.exists()
+
+
+def test_run_token_wishlist_fulfill_updates_only_authenticated_run(monkeypatch, tmp_path):
+    db_path = tmp_path / "runs.db"
+    monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")
+    monkeypatch.setenv("SMITH_DASHBOARD_AUTH", "1")
+    monkeypatch.delenv("SMITH_SINGLE_RUN", raising=False)
+    monkeypatch.setattr(wishlist_store, "_WISHLIST_FILE", tmp_path / "wishlist_queue.json")
+    monkeypatch.setattr(steering_store, "_STEERING_FILE", tmp_path / "steering_queue.json")
+
+    token_a = dashboard_auth.mint_run_token("run-a")
+    repo = db_store.get_repository()
+    open_item = {
+        "id": "wish-shared",
+        "need": "creds",
+        "status": "open",
+        "blocking_cell_ids": ["cell-a"],
+    }
+    repo.save_snapshot("run-a", "wishlist", {"items": [dict(open_item)]})
+    repo.save_snapshot("run-b", "wishlist", {"items": [dict(open_item)]})
+
+    response = TestClient(app).post(
+        "/api/wishlist/wish-shared/fulfill",
+        json={"note": "use creds"},
+        headers=_headers(token_a),
+    )
+
+    run_a_wishlist = repo.load_snapshot("run-a", "wishlist")
+    run_b_wishlist = repo.load_snapshot("run-b", "wishlist")
+    run_a_steering = repo.load_snapshot("run-a", "steering")
+    assert response.status_code == 200
+    assert run_a_wishlist["items"][0]["status"] == "fulfilled"
+    assert run_b_wishlist["items"][0]["status"] == "open"
+    assert "WISHLIST FULFILLED" in run_a_steering["directives"][0]["message"]
+
+
+def test_run_token_triage_start_and_cancel_update_only_authenticated_run(monkeypatch, tmp_path):
+    db_path = tmp_path / "runs.db"
+    monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")
+    monkeypatch.setenv("SMITH_DASHBOARD_AUTH", "1")
+    monkeypatch.delenv("SMITH_SINGLE_RUN", raising=False)
+    monkeypatch.setattr(steering_store, "_STEERING_FILE", tmp_path / "steering_queue.json")
+
+    token_a = dashboard_auth.mint_run_token("run-a")
+    repo = db_store.get_repository()
+    repo.save_snapshot("run-a", "session", {"run_id": "run-a", "target": "https://a.example", "status": "running"})
+    repo.save_snapshot("run-b", "session", {"run_id": "run-b", "target": "https://b.example", "status": "running"})
+    repo.save_snapshot("run-a", "findings", {"findings": [{"id": "finding-a"}]})
+    repo.save_snapshot("run-b", "findings", {"findings": [{"id": "finding-b"}]})
+
+    client = TestClient(app)
+    with (
+        patch("core.adjunction.pending_findings", return_value=[{"id": "finding-a"}]),
+        patch("core.adjunction.directive.build_adjudication_directive", return_value="ADJUDICATE A"),
+        patch("core.adjunction.log.log_directive"),
+    ):
+        started = client.post("/api/triage", headers=_headers(token_a))
+    cancelled = client.post("/api/triage-cancel", headers=_headers(token_a))
+
+    run_a_session = repo.load_snapshot("run-a", "session")
+    run_b_session = repo.load_snapshot("run-b", "session")
+    run_a_steering = repo.load_snapshot("run-a", "steering")
+    run_b_steering = repo.load_snapshot("run-b", "steering")
+    assert started.status_code == 200
+    assert started.json()["status"] == "triaging"
+    assert cancelled.status_code == 200
+    assert run_a_session["triage_requested"] is False
+    assert "triage_requested" not in run_b_session
+    assert run_a_steering["directives"][0]["status"] == "acknowledged"
+    assert run_b_steering is None
+    assert not steering_store._STEERING_FILE.exists()
+
+
+def test_run_token_session_triage_self_heal_uses_run_snapshots_only(monkeypatch, tmp_path):
+    db_path = tmp_path / "runs.db"
+    global_findings = tmp_path / "findings.json"
+    global_findings.write_text(json.dumps({
+        "findings": [{"id": "global", "severity": "high", "title": "GLOBAL PENDING"}],
+        "diagrams": [],
+        "chains": [],
+        "meta": {},
+    }))
+    monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")
+    monkeypatch.setenv("SMITH_DASHBOARD_AUTH", "1")
+    monkeypatch.delenv("SMITH_SINGLE_RUN", raising=False)
+    import core.findings as findings_store
+
+    monkeypatch.setattr(findings_store, "FINDINGS_FILE", global_findings)
+    monkeypatch.setattr(steering_store, "_STEERING_FILE", tmp_path / "steering_queue.json")
+
+    token_a = dashboard_auth.mint_run_token("run-a")
+    repo = db_store.get_repository()
+    repo.save_snapshot("run-a", "session", {
+        "run_id": "run-a",
+        "target": "https://a.example",
+        "status": "running",
+        "triage_requested": True,
+    })
+    repo.save_snapshot("run-a", "findings", {
+        "findings": [{
+            "id": "finding-a",
+            "severity": "high",
+            "adjudication": {"reproducible": False, "rationale": "reviewed"},
+        }],
+    })
+    repo.save_snapshot("run-a", "steering", {
+        "directives": [{
+            "id": "steer-a",
+            "ts": "now",
+            "code": "RESUME_REQUIRED",
+            "priority": "high",
+            "message": "triage",
+            "skill": None,
+            "trigger": "TRIAGE_ADJUDICATION",
+            "status": "pending",
+        }]
+    })
+    repo.save_snapshot("run-b", "session", {
+        "run_id": "run-b",
+        "target": "https://b.example",
+        "status": "running",
+        "triage_requested": True,
+    })
+
+    response = TestClient(app).get("/api/session", headers=_headers(token_a))
+
+    run_a_session = repo.load_snapshot("run-a", "session")
+    run_b_session = repo.load_snapshot("run-b", "session")
+    run_a_steering = repo.load_snapshot("run-a", "steering")
+    assert response.status_code == 200
+    assert response.json()["target"] == "https://a.example"
+    assert response.json()["pending_adjudication"] == 0
+    assert "triage_requested" not in run_a_session
+    assert run_b_session["triage_requested"] is True
+    assert run_a_steering["directives"][0]["status"] == "acknowledged"
+    assert not steering_store._STEERING_FILE.exists()

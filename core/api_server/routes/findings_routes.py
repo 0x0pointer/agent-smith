@@ -15,6 +15,18 @@ _log = logging.getLogger(__name__)
 
 # ── Read APIs ───────────────────────────────────────────────────────────────
 
+def _empty_scoped_data(kind: str) -> dict:
+    if kind == "findings":
+        return {"meta": {}, "findings": [], "diagrams": [], "chains": [], "archived": []}
+    if kind == "coverage":
+        return {"endpoints": [], "cells": []}
+    if kind == "cost":
+        return {}
+    if kind == "session":
+        return {}
+    return {}
+
+
 def _scoped_data(request: Request, kind: str, path):
     run_id = getattr(request.state, "run_id", None)
     if run_id:
@@ -22,6 +34,7 @@ def _scoped_data(request: Request, kind: str, path):
         data = _db.load_snapshot(kind, run_id=run_id)
         if isinstance(data, dict):
             return data
+        return _empty_scoped_data(kind)
     return _api._read_json(path)
 
 
@@ -87,6 +100,49 @@ async def api_session(request: Request) -> JSONResponse:
     data = _scoped_data(request, "session", _api._SESSION_FILE)
     # Self-heal the triage banner + expose the live pending count so the dashboard
     # can show progress (and a "stalled" warning if Smith goes idle mid-pass).
+    run_id = getattr(request.state, "run_id", None)
+    if run_id and isinstance(data, dict) and data.get("triage_requested"):
+        try:
+            import time
+            from core import db as _db
+            from core.adjunction import pending_findings
+
+            repo = _db.get_repository()
+            if repo is None:
+                return JSONResponse(data)
+            findings_data = repo.load_snapshot(run_id, "findings") or {"findings": []}
+            pending = pending_findings(findings_data)
+            data["pending_adjudication"] = len(pending)
+            if not pending:
+                for key in (
+                    "triage_requested",
+                    "triage_requested_at",
+                    "triage_progress_at",
+                    "triage_pending_last",
+                ):
+                    data.pop(key, None)
+                repo.upsert_run(run_id, data, data.get("workdir", ""))
+                repo.save_snapshot(run_id, "session", data)
+                try:
+                    from core.steering import steering_queue
+                    steering_queue.cancel_by_trigger(
+                        "TRIAGE_ADJUDICATION", "all findings adjudicated", run_id=run_id
+                    )
+                except Exception:
+                    pass
+            else:
+                last = data.get("triage_pending_last")
+                if last is None or len(pending) < last:
+                    data["triage_pending_last"] = len(pending)
+                    data["triage_progress_at"] = time.time()
+                    repo.upsert_run(run_id, data, data.get("workdir", ""))
+                    repo.save_snapshot(run_id, "session", data)
+                progressed_at = data.get("triage_progress_at") or data.get("triage_requested_at")
+                if progressed_at:
+                    data["triage_idle_s"] = int(time.time() - progressed_at)
+        except Exception:
+            pass
+        return JSONResponse(data)
     if isinstance(data, dict) and data.get("triage_requested"):
         try:
             import time

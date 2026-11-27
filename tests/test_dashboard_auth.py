@@ -89,6 +89,15 @@ def test_db_tokens_store_hashes_and_scope_run_ids(monkeypatch, tmp_path):
     assert row[2] != token
 
 
+def test_db_token_minting_fails_closed_when_token_cannot_be_persisted(monkeypatch):
+    monkeypatch.setenv("SMITH_DATABASE_URL", "sqlite:////unavailable/auth.db")
+    monkeypatch.delenv("SMITH_SINGLE_RUN", raising=False)
+    monkeypatch.setattr("core.db.get_repository", lambda: None)
+
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        dashboard_auth.mint_operator_token()
+
+
 def test_db_mode_api_401_without_any_bearer(monkeypatch, tmp_path):
     db_path = tmp_path / "auth.db"
     monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")

@@ -149,6 +149,8 @@ async def ensure_running() -> tuple[bool, str]:
 
     async with _start_lock:
         if await container_running():
+            if _run_context.multi_run_mode() and _run_context.run_id() not in _RUN_API_PORTS:
+                remember_api_port(await _discover_host_port(5000, MSF_PORT))
             return True, "already running"
 
         if not await image_exists():

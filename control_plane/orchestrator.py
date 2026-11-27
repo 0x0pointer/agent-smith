@@ -23,7 +23,6 @@ _LIST_MAX_ITEMS = 128
 _LIST_ENTRY_MAX_LENGTH = 512
 _DEFAULT_DATABASE_URL = "postgresql+psycopg://smith:smith@127.0.0.1:55432/agent_smith"
 _CONTROL_PLANE_PORT = 7777
-_ORCHESTRATOR_PID_FILE = _paths.LOGS_DIR / "orchestrator.pid"
 _COMPOSE_FILE = _paths.REPO_ROOT / "docker-compose.yml"
 
 
@@ -167,21 +166,6 @@ def _start_dashboard() -> int:
     return pid
 
 
-def _start_orchestrator_marker() -> int:
-    existing = _read_pid_file(_ORCHESTRATOR_PID_FILE)
-    if _pid_alive(existing):
-        return existing or 0
-    proc = subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(10**6)"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
-    pid = int(getattr(proc, "pid", 0) or 0)
-    _write_pid_file(_ORCHESTRATOR_PID_FILE, pid)
-    return pid
-
-
 def _compose_cmd(*args: str) -> list[str]:
     return [docker_executable(), "compose", "-f", str(_COMPOSE_FILE), *args]
 
@@ -226,6 +210,29 @@ def _wait_for_dashboard(timeout_s: float = 5.0) -> bool:
             return True
         time.sleep(0.1)
     return _dashboard_healthy()
+
+
+def _wait_for_database(timeout_s: float = 15.0) -> bool:
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        if _db.get_repository() is not None:
+            return True
+        time.sleep(0.2)
+    return _db.get_repository() is not None
+
+
+def _orchestrator_healthy() -> bool:
+    status, _ = _read_json(f"{_dashboard_base_url()}/api/runs")
+    return status in {200, 401, 403}
+
+
+def _wait_for_orchestrator(timeout_s: float = 5.0) -> bool:
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        if _orchestrator_healthy():
+            return True
+        time.sleep(0.1)
+    return _orchestrator_healthy()
 
 
 def create_run(payload: object) -> dict:
@@ -353,15 +360,32 @@ def stop_run(run_id: str) -> dict:
 
 def start_control_plane() -> dict:
     status = _start_database()
-    operator_token = dashboard_auth.mint_operator_token()
+    if not _wait_for_database():
+        return {
+            "status": "unhealthy",
+            "database": "unavailable",
+            "dashboard": "stopped",
+            "orchestrator": "stopped",
+            "dashboard_url": _dashboard_base_url(),
+        }
+    try:
+        operator_token = dashboard_auth.mint_operator_token()
+    except RuntimeError:
+        return {
+            "status": "unhealthy",
+            "database": "unavailable",
+            "dashboard": "stopped",
+            "orchestrator": "stopped",
+            "dashboard_url": _dashboard_base_url(),
+        }
     dashboard_pid = _start_dashboard()
-    orchestrator_pid = _start_orchestrator_marker()
     dashboard_ok = bool(dashboard_pid) and _wait_for_dashboard()
+    orchestrator_ok = dashboard_ok and _wait_for_orchestrator()
     return {
-        "status": "started",
+        "status": "started" if dashboard_ok and orchestrator_ok else "unhealthy",
         "database": status["database"],
         "dashboard": "running" if dashboard_ok else "failed",
-        "orchestrator": "running" if orchestrator_pid else "failed",
+        "orchestrator": "running" if orchestrator_ok else "failed",
         "dashboard_url": _dashboard_base_url(),
         "operator_token": operator_token,
     }
@@ -369,11 +393,8 @@ def start_control_plane() -> dict:
 
 def stop_control_plane() -> dict:
     dashboard_pid = _read_pid_file(_paths.DASHBOARD_PID_FILE)
-    orchestrator_pid = _read_pid_file(_ORCHESTRATOR_PID_FILE)
     _terminate_pid(dashboard_pid)
-    _terminate_pid(orchestrator_pid)
     _paths.DASHBOARD_PID_FILE.unlink(missing_ok=True)
-    _ORCHESTRATOR_PID_FILE.unlink(missing_ok=True)
     _stop_database()
     return {"status": "stopped"}
 
@@ -381,10 +402,11 @@ def stop_control_plane() -> dict:
 def control_plane_status() -> dict:
     repo = _db.get_repository()
     dashboard_pid = _read_pid_file(_paths.DASHBOARD_PID_FILE)
-    orchestrator_pid = _read_pid_file(_ORCHESTRATOR_PID_FILE)
+    dashboard_ok = _pid_alive(dashboard_pid) and _dashboard_healthy()
+    orchestrator_ok = dashboard_ok and _orchestrator_healthy()
     return {
         "database": "healthy" if repo else "unavailable",
-        "dashboard": "running" if _pid_alive(dashboard_pid) and _dashboard_healthy() else "stopped",
-        "orchestrator": "running" if _pid_alive(orchestrator_pid) else "stopped",
-        "api": "healthy" if _pid_alive(dashboard_pid) and _dashboard_healthy() else "unavailable",
+        "dashboard": "running" if dashboard_ok else "stopped",
+        "orchestrator": "running" if orchestrator_ok else "stopped",
+        "api": "healthy" if dashboard_ok and orchestrator_ok else "unavailable",
     }

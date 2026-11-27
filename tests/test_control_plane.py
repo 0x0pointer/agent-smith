@@ -124,9 +124,10 @@ def test_stop_run_cleans_only_targeted_resources(monkeypatch, tmp_path):
 
 def test_start_control_plane_starts_services_and_returns_operator_token(monkeypatch):
     monkeypatch.setattr("control_plane.orchestrator._start_database", lambda: {"database": "healthy"})
+    monkeypatch.setattr("control_plane.orchestrator._wait_for_database", lambda timeout_s=15.0: True)
     monkeypatch.setattr("control_plane.orchestrator._start_dashboard", lambda: 101)
-    monkeypatch.setattr("control_plane.orchestrator._start_orchestrator_marker", lambda: 202)
     monkeypatch.setattr("control_plane.orchestrator._wait_for_dashboard", lambda timeout_s=5.0: True)
+    monkeypatch.setattr("control_plane.orchestrator._wait_for_orchestrator", lambda timeout_s=5.0: True)
     monkeypatch.setattr("core.dashboard_auth.mint_operator_token", lambda: "operator-token")
 
     started = orchestrator.start_control_plane()
@@ -141,11 +142,26 @@ def test_start_control_plane_starts_services_and_returns_operator_token(monkeypa
     }
 
 
+def test_start_control_plane_reports_unhealthy_without_minting_when_database_not_ready(monkeypatch):
+    monkeypatch.setattr("control_plane.orchestrator._start_database", lambda: {"database": "healthy"})
+    monkeypatch.setattr("control_plane.orchestrator._wait_for_database", lambda timeout_s=15.0: False)
+    mint = MagicMock(return_value="operator-token")
+    monkeypatch.setattr("core.dashboard_auth.mint_operator_token", mint)
+
+    started = orchestrator.start_control_plane()
+
+    assert started["status"] == "unhealthy"
+    assert started["database"] == "unavailable"
+    assert "operator_token" not in started
+    assert mint.call_count == 0
+
+
 def test_control_plane_status_reflects_real_health(monkeypatch):
     monkeypatch.setattr("core.db.get_repository", lambda: object())
-    monkeypatch.setattr("control_plane.orchestrator._read_pid_file", lambda path: 123 if "dashboard" in str(path) else 456)
-    monkeypatch.setattr("control_plane.orchestrator._pid_alive", lambda pid: pid in {123, 456})
+    monkeypatch.setattr("control_plane.orchestrator._read_pid_file", lambda path: 123)
+    monkeypatch.setattr("control_plane.orchestrator._pid_alive", lambda pid: pid == 123)
     monkeypatch.setattr("control_plane.orchestrator._dashboard_healthy", lambda: True)
+    monkeypatch.setattr("control_plane.orchestrator._orchestrator_healthy", lambda: True)
 
     status = orchestrator.control_plane_status()
 
@@ -157,8 +173,21 @@ def test_control_plane_status_reflects_real_health(monkeypatch):
     }
 
 
+def test_control_plane_status_does_not_report_orchestrator_running_from_marker_pid(monkeypatch):
+    monkeypatch.setattr("core.db.get_repository", lambda: object())
+    monkeypatch.setattr("control_plane.orchestrator._read_pid_file", lambda path: 456)
+    monkeypatch.setattr("control_plane.orchestrator._pid_alive", lambda pid: True)
+    monkeypatch.setattr("control_plane.orchestrator._dashboard_healthy", lambda: False)
+    monkeypatch.setattr("control_plane.orchestrator._orchestrator_healthy", lambda: False)
+
+    status = orchestrator.control_plane_status()
+
+    assert status["orchestrator"] == "stopped"
+    assert status["api"] == "unavailable"
+
+
 def test_stop_control_plane_terminates_services(monkeypatch):
-    monkeypatch.setattr("control_plane.orchestrator._read_pid_file", lambda path: 123 if "dashboard" in str(path) else 456)
+    monkeypatch.setattr("control_plane.orchestrator._read_pid_file", lambda path: 123)
     with (
         patch("control_plane.orchestrator._terminate_pid") as terminate,
         patch("control_plane.orchestrator._stop_database") as stop_db,
@@ -168,6 +197,5 @@ def test_stop_control_plane_terminates_services(monkeypatch):
 
     assert stopped == {"status": "stopped"}
     assert terminate.call_args_list[0].args == (123,)
-    assert terminate.call_args_list[1].args == (456,)
     assert stop_db.call_count == 1
-    assert unlink.call_count == 2
+    assert unlink.call_count == 1
