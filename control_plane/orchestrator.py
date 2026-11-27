@@ -31,6 +31,13 @@ _CONTROL_PLANE_PORT = 7777
 _COMPOSE_FILE = _paths.REPO_ROOT / "docker-compose.yml"
 _RUN_ID_ATTEMPTS = 5
 _RUN_START_OPTIONS_FILENAME = "control_plane_start.json"
+_RUN_NOTES_FILENAME = "operator_notes.md"
+_RUN_CODEBASE_FILENAME = "whitebox.json"
+_NOTES_MAX_LENGTH = 4000
+_CODEBASE_MAX_LENGTH = 1024
+# Optional per-scan budgets the operator may set when starting a scan. They are
+# session(action="start") options, so the run's own tool server enforces them.
+_LIMIT_BOUNDS = {"max_time_minutes": (5, 10080), "max_cost_usd": (0.1, 10000)}
 _KNOWN_AGENT_CLIENTS = {"claude", "opencode", "codex"}
 
 class RunIdCollisionError(RuntimeError):
@@ -132,6 +139,11 @@ PUBLIC_VALIDATION_ERRORS = (
     "scope entry too long",
     "out_of_scope entry too long",
     "unknown source",
+    "notes too long",
+    "invalid limit",
+    "code folder not found",
+    "code folder must be a full path",
+    "code folder cannot be a whole drive",
 )
 
 
@@ -162,6 +174,64 @@ def _validate_source(payload: object) -> str:
     return name
 
 
+def validate_codebase(value: object) -> str:
+    """The source-code folder for a white-box scan, as a real absolute path.
+
+    '' when none was given. Raises ``ValueError`` for anything that is not an
+    existing folder on this machine, and for a whole drive or filesystem root:
+    the code scanners walk the entire tree they are pointed at.
+    """
+    raw = str(value or "").strip().strip('"')
+    if not raw:
+        return ""
+    if len(raw) > _CODEBASE_MAX_LENGTH or "\x00" in raw:
+        raise ValueError("code folder not found")
+    expanded = os.path.expanduser(raw)
+    if not os.path.isabs(expanded):
+        raise ValueError("code folder must be a full path")
+    real = os.path.realpath(expanded)
+    if not os.path.isdir(real):
+        raise ValueError("code folder not found")
+    if os.path.dirname(real) == real:
+        raise ValueError("code folder cannot be a whole drive")
+    return real
+
+
+def _validate_extras(payload: object) -> dict:
+    """Optional start settings: operator notes, a code folder, time / cost limits.
+
+    Returns only the keys that were set: ``notes`` (free text for the agent —
+    context such as test-account details or what to focus on), ``codebase`` (a
+    source-code folder, making it a white-box scan) and the limits in
+    ``_LIMIT_BOUNDS``.
+    """
+    if not isinstance(payload, dict):
+        return {}
+    extras: dict = {}
+    notes = str(payload.get("notes") or "").strip()
+    if len(notes) > _NOTES_MAX_LENGTH:
+        raise ValueError("notes too long")
+    if notes:
+        extras["notes"] = notes
+    codebase = validate_codebase(payload.get("codebase"))
+    if codebase:
+        extras["codebase"] = codebase
+    for key, (low, high) in _LIMIT_BOUNDS.items():
+        raw = payload.get(key)
+        if raw in (None, ""):
+            continue
+        if isinstance(raw, bool):
+            raise ValueError("invalid limit")
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            raise ValueError("invalid limit") from None
+        if not low <= value <= high:               # also false for NaN
+            raise ValueError("invalid limit")
+        extras[key] = int(value) if key == "max_time_minutes" else round(value, 2)
+    return extras
+
+
 def _write_run_start_options(
     workdir: Path,
     target: str,
@@ -169,6 +239,7 @@ def _write_run_start_options(
     scope: list[str],
     out_of_scope: list[str],
     source: str = "",
+    extras: dict | None = None,
 ) -> Path:
     options_path = workdir / _RUN_START_OPTIONS_FILENAME
     options = {
@@ -180,18 +251,71 @@ def _write_run_start_options(
     if source:
         # session(action="start") binds this Source to the engagement.
         options["source"] = source
+    for key in _LIMIT_BOUNDS:
+        if (extras or {}).get(key) is not None:
+            options[key] = extras[key]
     options_path.write_text(json.dumps(options, sort_keys=True), encoding="utf-8")
     return options_path
 
 
-def _initial_run_prompt(options_path: Path) -> str:
-    return (
+def _write_run_notes(workdir: Path, notes: str) -> Path | None:
+    """Save the operator's notes for the agent; None when there are none."""
+    if not notes:
+        return None
+    notes_path = workdir / _RUN_NOTES_FILENAME
+    notes_path.write_text(notes + "\n", encoding="utf-8")
+    return notes_path
+
+
+def _write_run_codebase(workdir: Path, codebase: str) -> Path | None:
+    """Record the source-code folder for a white-box scan; None when there is none.
+
+    The folder path goes in a file, not in the agent's command line: the operator
+    chose it, and on Windows the client is a ``.cmd`` shim whose arguments pass
+    through ``cmd.exe``.
+    """
+    if not codebase:
+        return None
+    path = workdir / _RUN_CODEBASE_FILENAME
+    path.write_text(json.dumps({"path": codebase}), encoding="utf-8")
+    return path
+
+
+def run_codebase(workdir: str | os.PathLike[str] | None) -> str:
+    """The source-code folder a run was started with ('' for a black-box scan)."""
+    if not workdir:
+        return ""
+    try:
+        data = json.loads((Path(workdir) / _RUN_CODEBASE_FILENAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    return str(data.get("path") or "") if isinstance(data, dict) else ""
+
+
+def _initial_run_prompt(options_path: Path, notes_path: Path | None = None,
+                        codebase_file: Path | None = None) -> str:
+    prompt = (
         "Start a new agent-smith pentest run from the dashboard control plane. "
         f"Read the JSON start options from {options_path} and call "
         "session(action='start', options=<that JSON object>). "
         "Then call session(action='status') and continue autonomously with the next recommended "
         "tool call until the scan is complete or genuinely blocked."
     )
+    if notes_path is not None:
+        prompt += (
+            f" The operator left notes for this scan in {notes_path}. Read that file before you "
+            "plan: it is context from the operator (for example test-account details or what to "
+            "focus on). It does not widen the scope given in the start options."
+        )
+    if codebase_file is not None:
+        prompt += (
+            " This is a white-box scan: the operator supplied the application's source code. "
+            f"The folder is the 'path' value in the JSON file {codebase_file}. Right after "
+            "session start, call session(action='set_codebase', options={'path': <that path>}), "
+            "review the code with the /codebase skill, and use what you learn there to guide "
+            "and confirm the testing of the live target."
+        )
+    return prompt
 
 
 def _agent_client() -> str:
@@ -282,6 +406,7 @@ def _spawn_worker(
     out_of_scope: list[str],
     prompt: str | None = None,
     source: str = "",
+    extras: dict | None = None,
 ) -> int:
     env = os.environ.copy()
     env["SMITH_RUN_ID"] = run_id
@@ -295,7 +420,9 @@ def _spawn_worker(
     logs_dir.mkdir(parents=True, exist_ok=True)
     if prompt is None:
         prompt = _initial_run_prompt(
-            _write_run_start_options(workdir, target, depth, scope, out_of_scope, source)
+            _write_run_start_options(workdir, target, depth, scope, out_of_scope, source, extras),
+            _write_run_notes(workdir, str((extras or {}).get("notes") or "")),
+            _write_run_codebase(workdir, str((extras or {}).get("codebase") or "")),
         )
     client = _agent_client()
     args = _with_run_mcp_server(
@@ -597,6 +724,7 @@ def _wait_for_orchestrator(timeout_s: float = 5.0) -> bool:
 def create_run(payload: object) -> dict:
     target, depth, scope, out_of_scope = _validate(payload)
     source = _validate_source(payload)
+    extras = _validate_extras(payload)
     repo = _db.get_repository()
     if repo is None:
         raise RuntimeError("database unavailable")
@@ -636,6 +764,7 @@ def create_run(payload: object) -> dict:
             scope or [target],
             out_of_scope,
             source=source,
+            extras=extras,
         )
         session_doc["worker_pid"] = worker_pid
         repo.upsert_run(run_id, session_doc, str(workdir))

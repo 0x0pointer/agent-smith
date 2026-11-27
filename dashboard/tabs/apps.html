@@ -1,0 +1,15 @@
+<!-- ── Tab: Apps (platform) ─────────────────────────────────────────────────── -->
+<!-- One card per application (scans grouped by target host): when it was last
+     tested, what is open on it, and a one-click re-scan with the same settings.
+     Rendered by platform.js from GET /api/platform/overview. -->
+<div id="tab-apps" class="tab-content tab-platform">
+  <div class="tab-head pf-head-row">
+    <div>
+      <h2>Apps</h2>
+      <p>Each app you have tested, with its scan history and open findings. Scans of the same host are grouped together.</p>
+    </div>
+    <input id="pf-apps-q" class="pf-search" type="search" placeholder="Filter apps…"
+           aria-label="Filter apps" autocomplete="off" spellcheck="false">
+  </div>
+  <div id="pf-apps-output" class="pf-app-grid"><div class="empty-placeholder">Loading…</div></div>
+</div>

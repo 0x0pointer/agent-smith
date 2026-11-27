@@ -33,7 +33,7 @@ def test_new_scan_is_reachable_from_every_tab():
 
     # The dialog must sit OUTSIDE the tab container: a <dialog> inside a hidden
     # (display:none) tab cannot render, so the rail button would do nothing.
-    tab_end = markup.index("</div>\n\n<!-- New Scan dialog")
+    tab_end = markup.index("</div>\n\n<!-- New Scan wizard")
     assert markup.index('<dialog id="start-run-dialog"') > tab_end
     assert markup.index('id="start-run-form"') > markup.index('<dialog id="start-run-dialog"')
 
@@ -68,18 +68,25 @@ def test_scan_bar_offers_switcher_and_new_scan_above_every_tab():
     assert "function _renderScanSwitcher" in script
 
 
-def test_landing_page_gates_other_tabs_until_a_scan_is_selected():
-    markup = (REPO_ROOT / "dashboard" / "tabs" / "sessions.html").read_text(encoding="utf-8")
+def test_scan_pages_are_gated_until_a_scan_is_open_but_platform_pages_are_not():
     script = (REPO_ROOT / "dashboard" / "js" / "sessions.js").read_text(encoding="utf-8")
     css = (REPO_ROOT / "dashboard" / "css" / "dashboard.css").read_text(encoding="utf-8")
+    common = (REPO_ROOT / "dashboard" / "js" / "common.js").read_text(encoding="utf-8")
 
-    # Inline home for the start form on the landing page.
-    assert 'id="start-run-inline-slot"' in markup
-    assert "function _placeStartRunForm" in script
-    # Gating is driven by one body class and enforced in switchTab.
+    # Gating is driven by one body class and enforced in switchTab; the pages
+    # about all scans stay reachable, the pages of one scan fall back to Home.
     assert "'scan-gated'" in script
-    assert "if (_cpGated && name !== 'sessions')" in script
-    assert "body.scan-gated .main > *:not(#scan-bar):not(#tab-sessions):not(dialog)" in css
+    assert "const _PLATFORM_TABS = ['home', 'sessions', 'all-findings', 'apps', 'knowledge'];" in script
+    assert "if (_cpGated && !_isPlatformTab(name))" in script
+    assert "body.scan-gated .main > *:not(#scan-bar):not(.tab-platform):not(dialog)" in css
+    assert 'body.scan-gated .rail-section[data-group="primary"]' in css
+    # Every platform page carries the class the gate exempts.
+    for tab in ("home", "sessions", "all-findings", "apps", "knowledge"):
+        markup = (REPO_ROOT / "dashboard" / "tabs" / f"{tab}.html").read_text(encoding="utf-8")
+        assert f'<div id="tab-{tab}" class="tab-content tab-platform">' in markup
+        assert f"'{tab}'" in common[common.index("const TAB_NAMES"):common.index("function switchTab")]
+    # A platform page hides the open scan's command panel.
+    assert "'on-platform-tab'" in common and "body.on-platform-tab #cmd-center" in css
     # Only platform mode gates; classic single-run dashboards stay open.
     assert "/api/control-plane" in script
     assert "if (!_platformMode()) {" in script
@@ -121,26 +128,48 @@ def _read(*parts: str) -> str:
     return (REPO_ROOT / "dashboard").joinpath(*parts).read_text(encoding="utf-8")
 
 
-def test_start_form_keeps_target_and_depth_visible():
-    """Target and depth are the two required choices; only scope is optional."""
+def test_new_scan_wizard_asks_for_target_then_depth_and_keeps_the_rest_optional():
+    """Four short steps: only the target is required, depth has a safe default,
+    and nothing starts until the operator confirms they are authorized."""
     markup = _read("tabs", "sessions.html")
-    advanced = markup[markup.index('<details class="scan-advanced">'):markup.index("</details>")]
+    platform = _read("js", "platform.js")
+    script = _read("js", "sessions.js")
 
-    assert 'id="start-run-target"' not in advanced
-    assert 'id="start-run-depth"' not in advanced
-    assert markup.index('id="start-run-depth"') < markup.index('<details class="scan-advanced">')
-    assert 'id="start-run-scope"' in advanced
-    assert 'id="start-run-out-of-scope"' in advanced
+    def step(n):
+        start = markup.index(f'<section class="wiz-step" data-step="{n}"')
+        return markup[start:markup.index("</section>", start)]
+
+    assert 'id="start-run-target"' in step(1) and "required" in step(1)
+    assert 'id="start-run-depth" name="depth" type="hidden" value="standard"' in step(2)
+    assert [d for d in ("recon", "standard", "thorough", "danger") if f'data-depth="{d}"' in step(2)] == \
+        ["recon", "standard", "thorough", "danger"]
+    for optional in ("start-run-codebase", "start-run-notes", "start-run-scope", "start-run-out-of-scope",
+                     "start-run-time-limit", "start-run-cost-limit", "start-run-source"):
+        assert f'id="{optional}"' in step(3)
+    assert 'id="wiz-review"' in step(4) and 'id="wiz-authorized"' in step(4)
+
+    # The request is only sent from the last step with the box ticked.
+    assert "function wizardCanSubmit" in platform and "function wizardReset" in platform
+    assert "if (typeof wizardCanSubmit === 'function' && !wizardCanSubmit()) return;" in script
+    for field in ("body.codebase", "body.notes", "body.max_time_minutes", "body.max_cost_usd"):
+        assert field in script
 
 
-def test_rail_has_four_primary_pages_and_tabs_switch_by_id():
+def test_rail_has_platform_pages_then_the_open_scans_pages_and_tabs_switch_by_id():
     index = _read("index.html")
     common = _read("js", "common.js")
+    platform = index[index.index('id="rail-items-platform"'):index.index('id="rail-scan"')]
     primary = index[index.index('id="rail-items-primary"'):index.index('data-group="more"')]
 
-    assert [t for t in ("findings", "coverage", "activity", "sessions") if f'id="tab-btn-{t}"' in primary] == \
-        ["findings", "coverage", "activity", "sessions"]
-    assert primary.count('class="tab-btn') == 4
+    # Pages about all scans come first...
+    assert [t for t in ("home", "sessions", "all-findings", "apps", "knowledge") if f'id="tab-btn-{t}"' in platform] == \
+        ["home", "sessions", "all-findings", "apps", "knowledge"]
+    assert platform.count('class="tab-btn') == 5
+    # ...then the three main pages of the open scan.
+    assert [t for t in ("findings", "coverage", "activity") if f'id="tab-btn-{t}"' in primary] == \
+        ["findings", "coverage", "activity"]
+    assert primary.count('class="tab-btn') == 3
+    assert index.index('id="rail-items-platform"') < index.index('id="rail-scan-name"') < index.index('id="rail-items-primary"')
     # Every tab partial still has a rail button (nothing became unreachable).
     for tab in ("topology", "components", "ai-redteam", "skills", "world-model", "threat-model",
                 "metrics", "setup-gates", "logs", "session-log"):
@@ -208,3 +237,86 @@ def test_remembered_scan_tokens_are_verified_before_use():
 
     assert "_probeToken(cached)" in token_fn
     assert "_forgetRunToken(runId)" in token_fn
+
+
+def test_platform_pages_read_cross_scan_data_with_the_operator_token():
+    platform = _read("js", "platform.js")
+    index = _read("index.html")
+
+    for endpoint in ("/api/platform/overview", "/api/platform/findings"):
+        assert endpoint in platform
+    assert "/api/knowledge" in _read("js", "knowledge.js")
+    # The page's default token may be scoped to the open scan.
+    assert "_headersFor(_operatorToken())" in platform
+    assert index.index("/static/js/sessions.js") < index.index("/static/js/platform.js") \
+        < index.index("/static/js/knowledge.js") < index.index("/static/js/main.js")
+    for include in ("tabs/home.html", "tabs/all-findings.html", "tabs/apps.html", "tabs/knowledge.html"):
+        assert "{% include '" + include + "' %}" in index
+
+
+def test_platform_pages_never_put_scan_or_note_text_into_markup_or_handlers_unescaped():
+    import re
+
+    platform = _read("js", "platform.js")
+    knowledge = _read("js", "knowledge.js")
+
+    # IDs travel in data-* attributes and clicks are delegated.
+    assert "onclick=" not in platform and "onclick=" not in knowledge
+    assert "data-pf-action" in platform and "document.addEventListener('click', _pfOnClick)" in platform
+    assert "page.addEventListener('click', _kbOnClick)" in knowledge
+    # Vault notes and AI answers are rendered as Markdown only through the sanitizer.
+    assert "sanitizeHtml(marked.parse(String(text || '')))" in knowledge
+    assert knowledge.count("marked.parse(") == 1
+    assert not re.search(r"innerHTML\s*=\s*marked", platform + knowledge)
+    platform = platform + knowledge
+    # Every interpolation into a template literal's markup is escaped or a known-safe helper.
+    unsafe = [m for m in re.findall(r"\$\{([^}]+)\}", platform)
+              if re.match(r"\s*(f|r|a|h|s|n|run|x)\.(title|target|run_target|app|path|heading|text|name|url|cve|summary)\s*$", m)]
+    assert unsafe == []
+
+
+def test_all_findings_export_neutralises_spreadsheet_formulas():
+    platform = _read("js", "platform.js")
+    cell = platform[platform.index("function _pfCsvCell"):platform.index("function _pfExportFindings")]
+
+    assert "/^[=+\\-@\\t\\r]/" in cell and '"\'" + s' in cell
+
+
+def test_knowledge_page_is_a_workspace_with_notes_reader_map_and_brain():
+    markup = _read("tabs", "knowledge.html")
+    knowledge = _read("js", "knowledge.js")
+
+    # Three columns: notes, reader/map, brain.
+    for part in ('class="kb-col kb-nav"', 'class="kb-col kb-center"', 'class="kb-col kb-brain"'):
+        assert part in markup
+    assert markup.index("kb-col kb-nav") < markup.index("kb-col kb-center") < markup.index("kb-col kb-brain")
+    for control in ("kb-tree", "kb-q", "kb-view", "kb-map-canvas", "kb-chat", "kb-ask-q", "kb-ask-note"):
+        assert f'id="{control}"' in markup
+    assert 'data-kb-view="read"' in markup and 'data-kb-view="map"' in markup
+    for endpoint in ("'/notes'", "'/graph'", "'/ask'", "'/note?path='", "'/search?"):
+        assert endpoint in knowledge
+    # Answers cite their notes, and citations open the note they point at.
+    assert "function _kbLinkCitations" in knowledge and "function _kbLinkNotes" in knowledge
+    # A citation or note link is built with DOM calls, never by string concatenation into markup.
+    cite = knowledge[knowledge.index("function _kbLinkCitations"):knowledge.index("function _kbSourcesHtml")]
+    assert "innerHTML" not in cite and "document.createElement('button')" in cite
+
+
+def test_wizard_takes_a_source_code_folder_through_a_server_side_folder_picker():
+    """A web page cannot read a folder's path from the browser's own dialog, so
+    the wizard browses folders on the platform's machine and checks the choice."""
+    markup = _read("tabs", "sessions.html")
+    platform = _read("js", "platform.js")
+
+    start = markup.index('<section class="wiz-step" data-step="3"')
+    details = markup[start:markup.index("</section>", start)]
+    # The folder is the first thing asked in Details, with Browse next to it.
+    assert details.index('id="start-run-codebase"') < details.index('id="start-run-notes"')
+    for control in ("wiz-code-browse", "wiz-code-status", "wiz-browser", "wiz-browser-list", "wiz-browser-use"):
+        assert f'id="{control}"' in details
+    assert 'type="file"' not in details
+    assert "/api/fs/folders" in platform
+    # Leaving Details checks the folder; a bad one keeps the operator on the step.
+    nxt = platform[platform.index("async function wizardNext"):platform.index("function wizardBack")]
+    assert "if (!(await _wizCheckCode())) return;" in nxt
+    assert "['Source code', _wizVal('start-run-codebase')" in platform

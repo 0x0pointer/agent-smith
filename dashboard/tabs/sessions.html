@@ -1,23 +1,20 @@
-<!-- ── Tab: Scans (control-plane runs) ─────────────────────────────────────── -->
-<!-- Doubles as the LANDING PAGE: in platform mode with no scan selected the body
-     carries .scan-gated, every other tab is locked, and this tab shows the start
-     form inline above the list of existing scans (see sessions.js). -->
-<div id="tab-sessions" class="tab-content">
-  <!-- Landing-only: start a scan. sessions.js moves #start-run-form in here. -->
-  <section class="scan-landing" aria-labelledby="scan-landing-title">
-    <div class="tab-head">
-      <h2 id="scan-landing-title">Start a scan</h2>
-      <p id="scan-landing-hint" class="scan-landing-hint">Start a new scan or open an existing one below. The other pages unlock once a scan is selected.</p>
-    </div>
-    <div id="start-run-inline-slot" class="scan-inline air-card"></div>
+<!-- ── Tab: Scans (platform) ────────────────────────────────────────────────── -->
+<!-- Every instance of Smith: the ones working now as live cards (platform.js,
+     from GET /api/platform/overview), and the full history as a filterable
+     table (sessions.js, from GET /api/runs). -->
+<div id="tab-sessions" class="tab-content tab-platform">
+  <div class="tab-head">
+    <h2>Scans</h2>
+    <p>Every scan started from this platform. Open one to see its findings, coverage and logs.</p>
+  </div>
+
+  <section class="pf-live" aria-labelledby="pf-live-title">
+    <h3 id="pf-live-title" class="pf-section-title">Active <span id="pf-live-count" class="pf-count"></span></h3>
+    <div id="pf-live-cards" class="pf-run-grid"><div class="empty-placeholder">Loading…</div></div>
   </section>
 
   <div id="runs-list-block">
-    <div class="tab-head">
-      <h2 class="scans-title-normal">Scans</h2>
-      <h2 class="scans-title-landing">Or open an existing scan</h2>
-      <p class="scans-title-normal">Every scan started from this dashboard. Select one to scope the other pages to it.</p>
-    </div>
+    <h3 class="pf-section-title">History</h3>
 
     <!-- Filter bar. Static markup (only the table below is re-rendered on each
          poll) so typing in the search box never loses focus. -->
@@ -53,66 +50,163 @@
   </div>
 </div>
 
-<!-- New Scan dialog. Lives OUTSIDE #tab-sessions: a <dialog> inside a hidden
-     (display:none) tab would not render, and the top bar's "New Scan" button must
-     work from any tab. The form's default home is the dialog; on the landing
-     page sessions.js moves it into #start-run-inline-slot. -->
-<dialog id="start-run-dialog" class="scan-dialog" aria-labelledby="start-run-title">
+<!-- New Scan wizard. Lives OUTSIDE #tab-sessions: a <dialog> inside a hidden
+     (display:none) tab would not render, and "New scan" must work from any page.
+     Four short steps (wizard logic in platform.js; the request is built and sent
+     by startRunFromForm() in sessions.js):
+       1 Target → 2 Depth → 3 Details (all optional) → 4 Review -->
+<dialog id="start-run-dialog" class="scan-dialog wiz-dialog" aria-labelledby="start-run-title">
   <div class="scan-dialog-head">
-    <h3 id="start-run-title">New Scan</h3>
+    <h3 id="start-run-title">New scan</h3>
     <button type="button" class="scan-dialog-close" onclick="closeNewScanDialog()" aria-label="Close">✕</button>
   </div>
-  <div id="start-run-dialog-slot">
-    <form id="start-run-form" class="scan-form" autocomplete="off">
+  <ol class="wiz-steps" id="wiz-steps" aria-label="Steps">
+    <li data-step="1"><span class="wiz-num">1</span>Target</li>
+    <li data-step="2"><span class="wiz-num">2</span>Depth</li>
+    <li data-step="3"><span class="wiz-num">3</span>Details</li>
+    <li data-step="4"><span class="wiz-num">4</span>Review</li>
+  </ol>
+  <form id="start-run-form" class="scan-form wiz-form" autocomplete="off" novalidate>
+
+    <!-- Step 1 — Target -->
+    <section class="wiz-step" data-step="1">
+      <h4>What should Smith test?</h4>
       <label class="scan-field">
         <span>Target</span>
-        <input id="start-run-target" name="target" type="text" placeholder="https://example.com" required>
+        <input id="start-run-target" name="target" type="text" placeholder="https://example.com" required spellcheck="false">
       </label>
-      <label class="scan-field">
-        <span>Depth</span>
-        <select id="start-run-depth" name="depth" required>
-          <option value="recon">Recon — discovery only, no exploitation</option>
-          <option value="standard" selected>Standard — recommended</option>
-          <option value="thorough">Thorough — slower, more passes</option>
-          <option value="danger">Danger — destructive tests allowed</option>
-        </select>
-      </label>
-      <!-- Target and depth are the two required choices and stay visible.
-           Scope is optional (it defaults to the target), so it sits here. -->
-      <details class="scan-advanced">
-        <summary>Advanced options <span class="scan-advanced-hint">scope, out of scope, source</span></summary>
-        <label class="scan-field">
-          <span>Scope <em>one per line or comma-separated — defaults to the target</em></span>
-          <textarea id="start-run-scope" name="scope" rows="3"></textarea>
-        </label>
-        <label class="scan-field">
-          <span>Out of scope <em>optional</em></span>
-          <textarea id="start-run-out-of-scope" name="out_of_scope" rows="2"></textarea>
-        </label>
-        <div class="scan-field">
-          <span class="scan-field-label">
-            <label for="start-run-source">Source <em>optional</em></label>
-            <!-- Explainer: shown on hover and on keyboard focus. -->
-            <button type="button" class="help-tip" aria-label="What is a Source?" aria-describedby="start-run-source-help">?</button>
-            <span class="help-tip-text" id="start-run-source-help" role="tooltip">
-              A Source is a knowledge base running on this machine: a vector-embedding store of testing
-              methodology and of what earlier engagements found. If you bind one, Smith searches it during the
-              scan for relevant techniques and prior results, and writes what it learns back to it.
-              Without a Source the scan starts from scratch. Sources are registered in <code>sources.yaml</code>.
-            </span>
-          </span>
-          <select id="start-run-source" name="source">
-            <option value="">None</option>
-          </select>
-          <span class="scan-field-hint" id="start-run-source-hint"></span>
-        </div>
-      </details>
-      <p class="scan-dialog-note">Only scan targets you are authorized to test.</p>
-      <div class="scan-dialog-actions">
-        <span id="start-run-status" class="scan-dialog-status" role="status"></span>
-        <button type="button" class="btn btn-secondary scan-cancel-btn" onclick="closeNewScanDialog()">Cancel</button>
-        <button type="submit" class="btn btn-primary">Start Scan</button>
+      <p class="scan-field-hint">A website or API address, a domain, or an IP address. Smith tests this target and nothing else unless you widen the scope in step 3.</p>
+      <div id="wiz-recent" class="wiz-recent" hidden>
+        <span class="wiz-recent-label">Tested before</span>
+        <div id="wiz-recent-chips" class="wiz-recent-chips"></div>
       </div>
-    </form>
-  </div>
+    </section>
+
+    <!-- Step 2 — Depth. The cards drive the hidden #start-run-depth value. -->
+    <section class="wiz-step" data-step="2" hidden>
+      <h4>How deep should it go?</h4>
+      <input id="start-run-depth" name="depth" type="hidden" value="standard">
+      <div class="wiz-depths" role="radiogroup" aria-label="Depth">
+        <button type="button" class="wiz-depth" role="radio" aria-checked="false" data-depth="recon">
+          <span class="wiz-depth-name">Recon</span>
+          <span class="wiz-depth-time">about 15 min</span>
+          <span class="wiz-depth-desc">Maps what is there: open ports, subdomains, live pages. No attacks are attempted.</span>
+        </button>
+        <button type="button" class="wiz-depth" role="radio" aria-checked="true" data-depth="standard">
+          <span class="wiz-depth-name">Standard <em>recommended</em></span>
+          <span class="wiz-depth-time">about 45 min</span>
+          <span class="wiz-depth-desc">Recon, then a scan for known vulnerabilities and hidden pages. A good first look at any app.</span>
+        </button>
+        <button type="button" class="wiz-depth" role="radio" aria-checked="false" data-depth="thorough">
+          <span class="wiz-depth-name">Thorough</span>
+          <span class="wiz-depth-time">hours, until you stop it</span>
+          <span class="wiz-depth-desc">A full penetration test with the complete toolset. Runs until you complete the scan, unless you set a limit in the next step.</span>
+        </button>
+        <button type="button" class="wiz-depth wiz-depth-danger" role="radio" aria-checked="false" data-depth="danger">
+          <span class="wiz-depth-name">Danger</span>
+          <span class="wiz-depth-time">hours, until you stop it</span>
+          <span class="wiz-depth-desc">Thorough, and after a break-in Smith also moves on to internal hosts it discovers. Only for environments where that is allowed.</span>
+        </button>
+      </div>
+    </section>
+
+    <!-- Step 3 — Details. Everything here is optional. -->
+    <section class="wiz-step" data-step="3" hidden>
+      <h4>Anything Smith should know? <em>all optional</em></h4>
+      <!-- White-box: a folder ON THE MACHINE RUNNING THE PLATFORM. A web page
+           cannot read a folder's path from the browser's own picker, so Browse
+           walks folders through GET /api/fs/folders (platform.js). -->
+      <div class="scan-field wiz-code">
+        <span class="scan-field-label">
+          <label for="start-run-codebase">Source code <em>makes it a white-box test</em></label>
+        </span>
+        <div class="wiz-code-row">
+          <input id="start-run-codebase" name="codebase" type="text" spellcheck="false" autocomplete="off"
+                 placeholder="Paste the folder path, or click Browse">
+          <button type="button" class="btn btn-secondary" id="wiz-code-browse">Browse…</button>
+        </div>
+        <span class="scan-field-hint">The folder on this computer that holds the app's code. Smith reads it to find
+          flaws faster, then confirms them on the live target. Leave empty for a black-box test.</span>
+        <div class="wiz-code-status" id="wiz-code-status" role="status" hidden></div>
+        <div class="wiz-browser" id="wiz-browser" hidden>
+          <div class="wiz-browser-head">
+            <button type="button" class="btn btn-secondary btn-sm" id="wiz-browser-up">Up</button>
+            <span class="wiz-browser-path" id="wiz-browser-path"></span>
+          </div>
+          <div class="wiz-browser-roots" id="wiz-browser-roots"></div>
+          <div class="wiz-browser-list" id="wiz-browser-list" role="listbox" aria-label="Folders"></div>
+          <div class="wiz-browser-foot">
+            <span id="wiz-browser-info" class="scan-field-hint"></span>
+            <button type="button" class="btn btn-secondary btn-sm" id="wiz-browser-cancel">Cancel</button>
+            <button type="button" class="btn btn-primary btn-sm" id="wiz-browser-use">Use this folder</button>
+          </div>
+        </div>
+      </div>
+      <label class="scan-field">
+        <span>Notes for Smith</span>
+        <textarea id="start-run-notes" name="notes" rows="3" maxlength="4000"
+          placeholder="For example: test account user@example.com / its password, focus on the checkout flow, do not submit the contact form."></textarea>
+      </label>
+      <div class="wiz-two">
+        <label class="scan-field">
+          <span>Also in scope <em>one per line</em></span>
+          <textarea id="start-run-scope" name="scope" rows="3" placeholder="api.example.com"></textarea>
+        </label>
+        <label class="scan-field">
+          <span>Never touch <em>one per line</em></span>
+          <textarea id="start-run-out-of-scope" name="out_of_scope" rows="3" placeholder="example.com/admin"></textarea>
+        </label>
+      </div>
+      <div class="wiz-two">
+        <label class="scan-field">
+          <span>Stop after</span>
+          <select id="start-run-time-limit" name="max_time_minutes">
+            <option value="">The depth's default</option>
+            <option value="60">1 hour</option>
+            <option value="240">4 hours</option>
+            <option value="480">8 hours</option>
+            <option value="1440">24 hours</option>
+          </select>
+        </label>
+        <label class="scan-field">
+          <span>Cost limit (USD)</span>
+          <input id="start-run-cost-limit" name="max_cost_usd" type="number" min="0.1" max="10000" step="0.1" placeholder="The depth's default">
+        </label>
+      </div>
+      <div class="scan-field">
+        <span class="scan-field-label">
+          <label for="start-run-source">Knowledge vault</label>
+          <!-- Explainer: shown on hover and on keyboard focus. -->
+          <button type="button" class="help-tip" aria-label="What is a knowledge vault?" aria-describedby="start-run-source-help">?</button>
+          <span class="help-tip-text" id="start-run-source-help" role="tooltip">
+            A Source: a notes vault running on this machine, holding testing methodology and what earlier
+            scans found. If you pick one, Smith searches it during the scan and writes what it learns back
+            to it. Without one the scan starts from scratch. See the Knowledge page.
+          </span>
+        </span>
+        <select id="start-run-source" name="source">
+          <option value="">None</option>
+        </select>
+        <span class="scan-field-hint" id="start-run-source-hint"></span>
+      </div>
+    </section>
+
+    <!-- Step 4 — Review -->
+    <section class="wiz-step" data-step="4" hidden>
+      <h4>Ready to start</h4>
+      <dl id="wiz-review" class="wiz-review"></dl>
+      <label class="wiz-authorize">
+        <input type="checkbox" id="wiz-authorized">
+        <span>I am authorized to test this target.</span>
+      </label>
+    </section>
+
+    <div class="scan-dialog-actions wiz-actions">
+      <span id="start-run-status" class="scan-dialog-status" role="status"></span>
+      <button type="button" class="btn btn-secondary" id="wiz-back" hidden>Back</button>
+      <button type="button" class="btn btn-secondary scan-cancel-btn" id="wiz-cancel" onclick="closeNewScanDialog()">Cancel</button>
+      <button type="button" class="btn btn-primary" id="wiz-next">Next</button>
+      <button type="submit" class="btn btn-primary" id="wiz-start" hidden>Start scan</button>
+    </div>
+  </form>
 </dialog>

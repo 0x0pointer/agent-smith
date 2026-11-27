@@ -11,6 +11,15 @@ const _OPERATOR_TOKEN_KEY = 'smith_operator_token';
 const _DASH_TOKEN_KEY = 'smith_dash_token';
 const selectedRunToken = 'selected-run-token';
 const _GOTO_TAB_KEY = 'smith_goto_tab';
+const _TAB_SEEN_KEY = 'smith_tab_seen';
+// The scan driven from the client without the control plane (repo-root files).
+// It has no row in /api/runs and no token of its own: it is read with the
+// operator token. GET /api/platform/overview reports it as run "local".
+const _LOCAL_RUN_ID = 'local';
+// Pages about ALL scans. They stay open when no scan is selected; every other
+// page shows one scan and is locked until one is opened.
+const _PLATFORM_TABS = ['home', 'sessions', 'all-findings', 'apps', 'knowledge'];
+function _isPlatformTab(name) { return _PLATFORM_TABS.indexOf(name) !== -1; }
 
 function _sessEsc(s) {
   return String(s == null ? '' : s).replace(/[&<>"]/g,
@@ -123,32 +132,25 @@ function _currentTab() {
   catch (e) { return 'findings'; }
 }
 
-// Gate / un-gate the dashboard. Gated = no scan selected in platform mode: the
-// Scans page becomes the landing page and every other tab is locked (styling is
-// driven by the body class; see "scan-gated" in dashboard.css).
+// Gate / un-gate the scan pages. Gated = no scan open in platform mode: the
+// platform pages (Home, Scans, All findings, Apps, Knowledge) work, and the
+// pages of a single scan are locked (styling is driven by the body class; see
+// "scan-gated" in dashboard.css).
 function _setGated(gated) {
   _cpGated = !!gated;
   document.body.classList.toggle('scan-gated', _cpGated);
-  _placeStartRunForm();
-  if (_cpGated && _currentTab() !== 'sessions') {
-    try { _origSwitchTab('sessions'); } catch (e) { /* shell not ready */ }
+  if (_cpGated && !_isPlatformTab(_currentTab())) {
+    try { _origSwitchTab('home'); } catch (e) { /* shell not ready */ }
   }
 }
 
-// Wrap the shell's switchTab so a locked tab bounces back to the landing page.
+// Wrap the shell's switchTab so a locked scan page falls back to Home.
 let _origSwitchTab = null;
 try {
   _origSwitchTab = switchTab;
   switchTab = function (name) {                       // eslint-disable-line no-global-assign
-    if (_cpGated && name !== 'sessions') {
-      _origSwitchTab('sessions');
-      const hint = document.getElementById('scan-landing-hint');
-      if (hint) {
-        hint.classList.remove('is-flash');
-        void hint.offsetWidth;                        // restart the CSS animation
-        hint.classList.add('is-flash');
-      }
-      return;
+    if (_cpGated && !_isPlatformTab(name)) {
+      return _origSwitchTab('home');
     }
     return _origSwitchTab(name);
   };
@@ -166,6 +168,7 @@ function _forgetRunToken(runId) {
 const _verifiedRunTokens = {};
 
 async function _tokenForRun(runId) {
+  if (runId === _LOCAL_RUN_ID) return _operatorToken();
   const cached = _runTokenMap()[runId] || '';
   if (cached) {
     if (_verifiedRunTokens[runId] === cached) return cached;
@@ -209,7 +212,7 @@ async function selectRun(runId, opts) {
   }
   const alreadyScoped = _selectedRunId() === runId && _sessStorageGet(_DASH_TOKEN_KEY) === token && !_cpGated;
   const here = _currentTab();
-  const tab = opts.tab || (here === 'sessions' ? 'findings' : here);
+  const tab = opts.tab || (_isPlatformTab(here) ? 'findings' : here);
   _setSelectedRunId(runId);
   _sessStorageSet(_RUN_TOKEN_KEY, token, true);
   _sessStorageSet(_DASH_TOKEN_KEY, token, false);
@@ -233,39 +236,21 @@ function deselectRun() {
 // ── New Scan dialog ──────────────────────────────────────────────────────────
 let _startRunBusy = false;
 
-// The one start form has two homes: inline on the landing page (no scan
-// selected yet) and inside the dialog (opened from the top bar on any tab).
-function _placeStartRunForm() {
-  const form = document.getElementById('start-run-form');
-  if (!form) return;
-  const dlg = document.getElementById('start-run-dialog');
-  const inline = document.getElementById('start-run-inline-slot');
-  const dialogSlot = document.getElementById('start-run-dialog-slot');
-  const wantInline = _cpGated && inline && !(dlg && dlg.open);
-  const home = wantInline ? inline : dialogSlot;
-  if (home && form.parentElement !== home) home.appendChild(form);
-}
-
-function openNewScanDialog() {
+// Open the New Scan wizard. `prefill` ({target, depth, scope, ...}) lets "Scan
+// again" on an app and the Home quick-start box hand over what they know.
+// The step logic lives in platform.js (wizardReset / wizardCanSubmit).
+function openNewScanDialog(prefill) {
   const status = document.getElementById('start-run-status');
   if (status) { status.textContent = ''; status.classList.remove('is-error'); }
-  const target = document.getElementById('start-run-target');
-  // On the landing page the form is already on screen — just go to it.
-  if (_cpGated && _currentTab() === 'sessions') {
-    _placeStartRunForm();
-    if (target) { target.focus(); try { target.scrollIntoView({ block: 'center' }); } catch (e) { /* ignore */ } }
-    return;
-  }
   const dlg = document.getElementById('start-run-dialog');
   if (!dlg) return;
-  const dialogSlot = document.getElementById('start-run-dialog-slot');
-  const form = document.getElementById('start-run-form');
-  if (form && dialogSlot && form.parentElement !== dialogSlot) dialogSlot.appendChild(form);
+  if (typeof wizardReset === 'function') wizardReset(prefill || {});
   if (typeof dlg.showModal === 'function') {
     if (!dlg.open) dlg.showModal();
   } else {
     dlg.setAttribute('open', '');   // very old browsers: non-modal fallback
   }
+  const target = document.getElementById('start-run-target');
   if (target) target.focus();
 }
 
@@ -284,12 +269,21 @@ function _startRunError(httpStatus, data) {
   if (httpStatus === 503) {
     return 'The control plane database is not running. Start it with `smith start`, then try again.';
   }
+  const friendly = {
+    'code folder not found': 'The source code folder was not found on this computer. Go back to Details and check it.',
+    'code folder must be a full path': 'Give the full path of the source code folder, for example C:\\projects\\my-app.',
+    'code folder cannot be a whole drive': 'Pick the project folder for the source code, not a whole drive.',
+  };
+  if (data && friendly[data.error]) return friendly[data.error];
   return (data && data.error) || 'Could not start the scan.';
 }
 
 async function startRunFromForm(ev) {
   if (ev && ev.preventDefault) ev.preventDefault();
   if (_startRunBusy) return;
+  // Enter in a field submits the form: the wizard turns that into "Next"
+  // until the last step, where the authorization box must be ticked.
+  if (typeof wizardCanSubmit === 'function' && !wizardCanSubmit()) return;
   const target = (document.getElementById('start-run-target') || {}).value || '';
   const depth = (document.getElementById('start-run-depth') || {}).value || 'standard';
   const scopeText = (document.getElementById('start-run-scope') || {}).value || '';
@@ -303,6 +297,14 @@ async function startRunFromForm(ev) {
   };
   const source = (document.getElementById('start-run-source') || {}).value || '';
   if (source) body.source = source;
+  const notes = ((document.getElementById('start-run-notes') || {}).value || '').trim();
+  if (notes) body.notes = notes;
+  const codebase = ((document.getElementById('start-run-codebase') || {}).value || '').trim();
+  if (codebase) body.codebase = codebase;
+  const timeLimit = (document.getElementById('start-run-time-limit') || {}).value || '';
+  if (timeLimit) body.max_time_minutes = Number(timeLimit);
+  const costLimit = (document.getElementById('start-run-cost-limit') || {}).value || '';
+  if (costLimit) body.max_cost_usd = Number(costLimit);
   const status = document.getElementById('start-run-status');
   const setStatus = (text, isError) => {
     if (!status) return;
@@ -458,21 +460,27 @@ function _renderRuns(rows, total) {
       '<button type="button" class="runs-clear-btn" data-action="clear-filters">Clear filters</button></div>';
     return;
   }
+  // Finding counts come from the platform overview (platform.js) once it has
+  // loaded; the table still renders without them.
+  const extras = id => (typeof pfRunExtras === 'function' && pfRunExtras(id)) || null;
+  const sevCell = id => (typeof pfSevPills === 'function' && extras(id))
+    ? pfSevPills(extras(id).findings) : '<span class="pf-muted">—</span>';
   const body = rows.map(r => {
     const isSel = r.run_id === selected;
     const st = _runStatus(r);
     const started = _fmtRunTime(r.created_at);
     return `<tr class="sess-row${isSel ? ' sess-new' : ''}" data-run-id="${_sessEsc(r.run_id)}" title="Open this scan">
-      <td class="runs-target">${_sessEsc(r.target || '—')}${isSel ? ' <span class="badge-cur">SELECTED</span>' : ''}</td>
+      <td class="runs-target">${_sessEsc(r.target || '—')}${isSel ? ' <span class="badge-cur">OPEN</span>' : ''}</td>
       <td><span class="sess-status sess-${_sessEsc(st)}">${_sessEsc(st)}</span></td>
+      <td>${sevCell(r.run_id)}</td>
       <td>${_sessEsc(r.depth || '—')}</td>
       <td title="${_sessEsc(started.title)}">${_sessEsc(started.text)}</td>
       <td class="sess-id">${_sessEsc(r.run_id || '')}</td>
-      <td class="runs-actions"><button type="button" class="runs-select-btn" data-run-id="${_sessEsc(r.run_id)}">${isSel ? 'Open' : 'Select'}</button></td>
+      <td class="runs-actions"><button type="button" class="runs-select-btn" data-run-id="${_sessEsc(r.run_id)}">Open</button></td>
     </tr>`;
   }).join('');
   out.innerHTML = `<table class="sessions-table">
-    <thead><tr><th>Target</th><th>Status</th><th>Depth</th><th>Started</th><th>Scan ID</th><th></th></tr></thead>
+    <thead><tr><th>Target</th><th>Status</th><th>Findings</th><th>Depth</th><th>Started</th><th>Scan ID</th><th></th></tr></thead>
     <tbody>${body}</tbody></table>`;
 }
 
@@ -494,6 +502,13 @@ function _renderScanSwitcher(rows) {
   if (sel.dataset.rendered !== html) { sel.innerHTML = html; sel.dataset.rendered = html; }
   const count = document.getElementById('scan-switcher-count');
   if (count) count.textContent = rows.length > 1 ? `${rows.length} scans` : '';
+  // The rail names the open scan above its pages.
+  const name = document.getElementById('rail-scan-name');
+  if (name) {
+    const cur = rows.find(r => r.run_id === selected);
+    name.textContent = cur ? (cur.target || cur.run_id) : '—';
+    name.title = cur ? `${cur.target || ''} · ${cur.run_id}` : '';
+  }
 }
 
 function _renderRunsView() {
@@ -509,7 +524,7 @@ function _renderRunsView() {
   if (summary) {
     const noun = rows.length === 1 ? 'scan' : 'scans';
     const count = _runFiltersActive() ? `${shown.length} of ${rows.length} ${noun}` : `${rows.length} ${noun}`;
-    summary.textContent = _cpGated ? count : `${count} · selected: ${_selectedRunId() || 'none'}`;
+    summary.textContent = _cpGated ? count : `${count} · open: ${_selectedRunId() || 'none'}`;
   }
   _renderRuns(shown, rows.length);
 }
@@ -525,11 +540,15 @@ async function pollSessions() {
     if (!Array.isArray(rows)) rows = [];
   } catch (e) { return; }
 
+  // The client-driven scan has no row in /api/runs; the overview reports it.
+  const local = (typeof pfLocalRun === 'function') ? pfLocalRun() : null;
+  if (local && !rows.some(r => r.run_id === local.run_id)) rows.push(local);
+
   _runsCache = rows;
   if (_platformMode()) {
     // The selected scan must still exist; otherwise fall back to the landing page.
     const selected = _selectedRunId();
-    const valid = !!selected && rows.some(r => r.run_id === selected);
+    const valid = !!selected && (selected === _LOCAL_RUN_ID || rows.some(r => r.run_id === selected));
     if (!valid && selected) _setSelectedRunId('');
     if (_cpGated !== !valid) _setGated(!valid);
   }
@@ -557,11 +576,25 @@ async function _initControlPlane() {
     return;
   }
 
+  // A browser tab opened with the operator link starts on Home with no scan
+  // open, even if one was open last time: the platform is the front door. A
+  // reload inside the tab (sessionStorage survives) keeps the open scan.
+  let freshTab = false;
+  try {
+    freshTab = !sessionStorage.getItem(_TAB_SEEN_KEY);
+    sessionStorage.setItem(_TAB_SEEN_KEY, '1');
+  } catch (e) { freshTab = false; }
+  let dashToken = '';
+  try { dashToken = sessionStorage.getItem(_DASH_TOKEN_KEY) || ''; } catch (e) { dashToken = ''; }
+  if (freshTab && !gotoTab && dashToken === _operatorToken()) _setSelectedRunId('');
+
+  if (typeof pollPlatform === 'function') await pollPlatform();   // so the local scan is known
   await pollSessions();                    // sets/clears the gate from the live scan list
   if (_cpGated) {
     // Nothing selected: make sure API calls carry the operator token again.
     const op = _operatorToken();
     if (op && _sessStorageGet(_DASH_TOKEN_KEY) !== op) _sessStorageSet(_DASH_TOKEN_KEY, op, false);
+    try { switchTab(_isPlatformTab(gotoTab) ? gotoTab : 'home'); } catch (e) { /* ignore */ }
     return;
   }
   // A scan is selected. If the page was opened with the operator link, the data
@@ -601,7 +634,6 @@ function _initScansTab() {
   if (dlg) {
     // Click on the backdrop (the <dialog> element itself) closes it.
     dlg.addEventListener('click', ev => { if (ev.target === dlg) closeNewScanDialog(); });
-    dlg.addEventListener('close', _placeStartRunForm);
   }
 
   const switcher = document.getElementById('scan-switcher');

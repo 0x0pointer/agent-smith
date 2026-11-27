@@ -1,0 +1,41 @@
+<!-- ── Tab: Home (platform) ─────────────────────────────────────────────────── -->
+<!-- The landing page: start a scan in one step, see what is running, what is
+     waiting for the operator and the latest findings across every scan.
+     Rendered by platform.js from GET /api/platform/overview + /findings. -->
+<div id="tab-home" class="tab-content tab-platform">
+  <section class="pf-hero" aria-labelledby="pf-hero-title">
+    <h2 id="pf-hero-title">What do you want to test?</h2>
+    <p class="pf-hero-sub">Enter a website, API or host. Smith plans the test, runs it and reports what it finds.</p>
+    <form id="pf-quick-form" class="pf-quick" autocomplete="off">
+      <input id="pf-quick-target" type="text" placeholder="https://example.com" aria-label="Target to test" spellcheck="false">
+      <button type="submit" class="btn btn-primary">Start a scan</button>
+    </form>
+    <p class="pf-hero-note">Only test systems you are authorized to test.</p>
+  </section>
+
+  <div class="pf-kpis" id="pf-kpis" aria-label="Summary"></div>
+
+  <div class="pf-columns">
+    <section class="pf-panel" aria-labelledby="pf-running-title">
+      <div class="pf-panel-head">
+        <h3 id="pf-running-title">Running now</h3>
+        <button type="button" class="pf-link" onclick="switchTab('sessions')">All scans</button>
+      </div>
+      <div id="pf-home-running" class="pf-run-list"><div class="empty-placeholder">Loading…</div></div>
+    </section>
+    <section class="pf-panel" aria-labelledby="pf-needs-title">
+      <div class="pf-panel-head">
+        <h3 id="pf-needs-title">Needs you</h3>
+      </div>
+      <div id="pf-home-needs" class="pf-needs-list"><div class="empty-placeholder">Loading…</div></div>
+    </section>
+  </div>
+
+  <section class="pf-panel" aria-labelledby="pf-latest-title">
+    <div class="pf-panel-head">
+      <h3 id="pf-latest-title">Most serious findings</h3>
+      <button type="button" class="pf-link" onclick="switchTab('all-findings')">All findings</button>
+    </div>
+    <div id="pf-home-findings" class="pf-finding-list"><div class="empty-placeholder">Loading…</div></div>
+  </section>
+</div>

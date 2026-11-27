@@ -9,7 +9,7 @@
        primary XSS control — output escaping/sanitization in the JS is; tightening
        to remove 'unsafe-inline' needs those handlers refactored first. -->
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'">
-  <title>Pentest Dashboard</title>
+  <title>Smith Platform</title>
   <link rel="icon" type="image/vnd.microsoft.icon" href="/favicon.ico">
   <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
   <link rel="shortcut icon" type="image/vnd.microsoft.icon" href="/favicon.ico">
@@ -18,7 +18,7 @@
   <script src="/static/js/vendor/mermaid.min.js"></script>
   <script src="/static/js/vendor/marked.min.js"></script>
   <script src="/static/js/vendor/cytoscape.min.js"></script>
-  <link rel="stylesheet" href="/static/css/dashboard.css?v=30">
+  <link rel="stylesheet" href="/static/css/dashboard.css?v=32">
 </head>
 <body>
 <div class="app-shell">
@@ -28,21 +28,44 @@
   <div class="rail-brand">
     <img class="rail-logo" src="/logo.png" alt="NullPointer Studio" onerror="this.style.display='none'">
     <div class="rail-brand-text">
-      <span class="rail-brand-line">Pentest</span>
-      <span class="rail-brand-line h1-accent">Dashboard</span>
+      <span class="rail-brand-line">Smith</span>
+      <span class="rail-brand-line h1-accent">Platform</span>
     </div>
   </div>
 
   <nav class="rail-nav" aria-label="Sections">
-    <!-- Primary: the four pages most operators live in. Everything else sits
-         under "More" (collapsed on first visit; state persists per group in
-         localStorage — see toggleRailGroup()/_initRailGroups() in common.js). -->
+    <!-- Platform: the pages about ALL scans. Shown to the operator
+         (body.cp-operator, set by sessions.js); a run-scoped viewer sees only
+         the pages of their one scan. -->
+    <div class="rail-section rail-platform" data-group="platform">
+      <span class="rail-sub rail-sub-head">Platform</span>
+      <div class="rail-group-items" id="rail-items-platform">
+        <button class="tab-btn" id="tab-btn-home" onclick="switchTab('home')">Home</button>
+        <button class="tab-btn" id="tab-btn-sessions" onclick="switchTab('sessions')">Scans</button>
+        <button class="tab-btn" id="tab-btn-all-findings" onclick="switchTab('all-findings')">All findings</button>
+        <button class="tab-btn" id="tab-btn-apps" onclick="switchTab('apps')">Apps</button>
+        <button class="tab-btn" id="tab-btn-knowledge" onclick="switchTab('knowledge')">Knowledge</button>
+      </div>
+    </div>
+    <!-- The open scan: its name, and below it the pages scoped to it. With no
+         scan open (body.scan-gated) those pages are hidden, not just dimmed. -->
+    <div class="rail-scan" id="rail-scan">
+      <span class="rail-sub rail-sub-head">Open scan</span>
+      <div class="rail-scan-card">
+        <span class="rail-scan-name" id="rail-scan-name">&mdash;</span>
+        <button type="button" class="rail-scan-close" onclick="deselectRun()"
+          title="Close this scan and go back to all scans" aria-label="Close this scan">&#10005;</button>
+      </div>
+      <p class="rail-scan-empty">Open a scan to see its findings, coverage and logs here.</p>
+    </div>
+    <!-- Primary pages of the open scan. Everything else sits under "More"
+         (collapsed on first visit; state persists per group in localStorage —
+         see toggleRailGroup()/_initRailGroups() in common.js). -->
     <div class="rail-section rail-primary" data-group="primary">
       <div class="rail-group-items" id="rail-items-primary">
         <button class="tab-btn active" id="tab-btn-findings" onclick="switchTab('findings')">Findings</button>
         <button class="tab-btn" id="tab-btn-coverage" onclick="switchTab('coverage')">Coverage</button>
         <button class="tab-btn" id="tab-btn-activity" onclick="switchTab('activity')">Tool Results</button>
-        <button class="tab-btn" id="tab-btn-sessions" onclick="switchTab('sessions')">Scans</button>
       </div>
     </div>
     <div class="rail-section" data-group="more">
@@ -217,6 +240,10 @@
   </div>
 </div>
 
+{% include 'tabs/home.html' %}
+{% include 'tabs/all-findings.html' %}
+{% include 'tabs/apps.html' %}
+{% include 'tabs/knowledge.html' %}
 {% include 'tabs/findings.html' %}
 {% include 'tabs/topology.html' %}
 {% include 'tabs/components.html' %}
@@ -252,7 +279,7 @@
 </div>
 
 <script src="/static/js/shared.js"></script>
-<script src="/static/js/common.js?v=5"></script>
+<script src="/static/js/common.js?v=6"></script>
 <script src="/static/js/overview.js"></script>
 <script src="/static/js/findings.js?v=6"></script>
 <script src="/static/js/topology.js?v=2"></script>
@@ -263,7 +290,9 @@
 <script src="/static/js/threat-model.js?v=2"></script>
 <script src="/static/js/logs.js"></script>
 <script src="/static/js/session-log.js"></script>
-<script src="/static/js/sessions.js?v=4"></script>
+<script src="/static/js/sessions.js?v=5"></script>
+<script src="/static/js/platform.js?v=2"></script>
+<script src="/static/js/knowledge.js?v=1"></script>
 <script src="/static/js/skills.js"></script>
 <script src="/static/js/activity.js"></script>
 <script src="/static/js/metrics.js"></script>

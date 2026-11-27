@@ -347,6 +347,136 @@ def test_dashboard_is_spawned_detached_from_the_starting_terminal(monkeypatch, t
         assert "creationflags" not in captured
 
 
+def test_create_run_passes_limits_and_notes_to_the_agent(monkeypatch, tmp_path):
+    """Limits are session(start) options; notes go in their own file the prompt points at."""
+    _configure_db(monkeypatch, tmp_path)
+    captured = {}
+
+    def _capture(args, **kwargs):
+        captured["args"] = [str(a) for a in args]
+        captured["env"] = kwargs["env"]
+        return MagicMock(pid=4321)
+
+    with patch("subprocess.Popen", side_effect=_capture):
+        orchestrator.create_run({
+            "target": "https://a.example", "depth": "thorough",
+            "notes": "  Test account: demo  ", "max_time_minutes": "240", "max_cost_usd": 12.5,
+        })
+
+    workdir = Path(captured["env"]["SMITH_WORKDIR"])
+    options = json.loads((workdir / orchestrator._RUN_START_OPTIONS_FILENAME).read_text(encoding="utf-8"))
+    assert options["max_time_minutes"] == 240 and options["max_cost_usd"] == 12.5
+    assert "notes" not in options
+    notes_file = workdir / orchestrator._RUN_NOTES_FILENAME
+    assert notes_file.read_text(encoding="utf-8") == "Test account: demo\n"
+    prompt = " ".join(captured["args"])
+    assert str(notes_file) in prompt and "does not widen the scope" in prompt
+
+
+def test_create_run_without_extras_keeps_the_plain_start(monkeypatch, tmp_path):
+    _configure_db(monkeypatch, tmp_path)
+    captured = {}
+
+    def _capture(args, **kwargs):
+        captured["args"] = [str(a) for a in args]
+        captured["env"] = kwargs["env"]
+        return MagicMock(pid=4321)
+
+    with patch("subprocess.Popen", side_effect=_capture):
+        orchestrator.create_run({"target": "https://a.example", "depth": "recon"})
+
+    workdir = Path(captured["env"]["SMITH_WORKDIR"])
+    options = json.loads((workdir / orchestrator._RUN_START_OPTIONS_FILENAME).read_text(encoding="utf-8"))
+    assert set(options) == {"target", "depth", "scope", "out_of_scope"}
+    assert not (workdir / orchestrator._RUN_NOTES_FILENAME).exists()
+    assert "operator left notes" not in " ".join(captured["args"])
+
+
+@pytest.mark.parametrize("extra, message", [
+    ({"notes": "x" * 4001}, "notes too long"),
+    ({"max_time_minutes": 1}, "invalid limit"),
+    ({"max_time_minutes": float("nan")}, "invalid limit"),
+    ({"max_cost_usd": "abc"}, "invalid limit"),
+    ({"max_cost_usd": True}, "invalid limit"),
+    ({"max_cost_usd": 1e9}, "invalid limit"),
+])
+def test_create_run_rejects_bad_extras_before_any_side_effect(monkeypatch, tmp_path, extra, message):
+    _configure_db(monkeypatch, tmp_path)
+
+    with patch("subprocess.Popen") as popen, pytest.raises(ValueError) as err:
+        orchestrator.create_run({"target": "https://a.example", "depth": "recon", **extra})
+
+    assert orchestrator.public_validation_error(err.value) == message
+    assert popen.call_count == 0
+    assert orchestrator.list_runs() == []
+
+
+def test_create_run_with_a_code_folder_starts_a_white_box_scan(monkeypatch, tmp_path):
+    """The folder goes in a file the prompt points at, never on the agent's command line."""
+    _configure_db(monkeypatch, tmp_path)
+    code = tmp_path / "my app & code"
+    code.mkdir()
+    captured = {}
+
+    def _capture(args, **kwargs):
+        captured["args"] = [str(a) for a in args]
+        captured["env"] = kwargs["env"]
+        return MagicMock(pid=4321)
+
+    with patch("subprocess.Popen", side_effect=_capture):
+        orchestrator.create_run({"target": "https://a.example", "depth": "standard", "codebase": f'  "{code}"  '})
+
+    workdir = Path(captured["env"]["SMITH_WORKDIR"])
+    recorded = workdir / orchestrator._RUN_CODEBASE_FILENAME
+    real = orchestrator.os.path.realpath(str(code))
+    assert json.loads(recorded.read_text(encoding="utf-8")) == {"path": real}
+    assert orchestrator.run_codebase(workdir) == real
+    prompt = " ".join(captured["args"])
+    assert str(recorded) in prompt and "set_codebase" in prompt and "/codebase" in prompt
+    assert "my app & code" not in prompt
+    # session(start) options stay exactly what session(start) understands.
+    options = json.loads((workdir / orchestrator._RUN_START_OPTIONS_FILENAME).read_text(encoding="utf-8"))
+    assert "codebase" not in options
+
+
+def test_a_black_box_run_records_no_code_folder(monkeypatch, tmp_path):
+    _configure_db(monkeypatch, tmp_path)
+    captured = {}
+
+    def _capture(args, **kwargs):
+        captured["args"] = [str(a) for a in args]
+        captured["env"] = kwargs["env"]
+        return MagicMock(pid=4321)
+
+    with patch("subprocess.Popen", side_effect=_capture):
+        orchestrator.create_run({"target": "https://a.example", "depth": "recon"})
+
+    workdir = Path(captured["env"]["SMITH_WORKDIR"])
+    assert orchestrator.run_codebase(workdir) == "" and orchestrator.run_codebase(None) == ""
+    assert "white-box" not in " ".join(captured["args"])
+
+
+def test_code_folder_must_be_an_existing_project_folder(monkeypatch, tmp_path):
+    _configure_db(monkeypatch, tmp_path)
+    a_file = tmp_path / "notes.txt"
+    a_file.write_text("x", encoding="utf-8")
+    drive_root = orchestrator.os.path.abspath(orchestrator.os.sep)
+    cases = [
+        (str(tmp_path / "missing"), "code folder not found"),
+        (str(a_file), "code folder not found"),
+        ("relative/folder", "code folder must be a full path"),
+        (drive_root, "code folder cannot be a whole drive"),
+        ("x" * 2000, "code folder not found"),
+    ]
+    for value, message in cases:
+        with patch("subprocess.Popen") as popen, pytest.raises(ValueError) as err:
+            orchestrator.create_run({"target": "https://a.example", "depth": "recon", "codebase": value})
+        assert orchestrator.public_validation_error(err.value) == message, value
+        assert popen.call_count == 0
+    assert orchestrator.list_runs() == []
+    assert orchestrator.validate_codebase("") == "" and orchestrator.validate_codebase(None) == ""
+
+
 def test_stop_control_plane_terminates_services(monkeypatch):
     monkeypatch.setattr("control_plane.orchestrator._read_pid_file", lambda path: 123)
     with (

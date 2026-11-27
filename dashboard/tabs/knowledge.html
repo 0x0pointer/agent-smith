@@ -1,0 +1,96 @@
+<!-- ── Tab: Knowledge (platform) ────────────────────────────────────────────── -->
+<!-- A workspace over the Source vaults registered on this machine — the notes
+     Smith consults during a scan and writes its learnings back to:
+       left    the notes (folders, filter)
+       centre  search, the open note with its related notes, or the Map (graph)
+       right   the Brain: ask the vault a question, get an answer that cites notes
+     Rendered by knowledge.js from /api/knowledge*. Note text and AI answers are
+     untrusted: they are escaped, or rendered as Markdown through sanitizeHtml(). -->
+<div id="tab-knowledge" class="tab-content tab-platform">
+  <div class="tab-head kb-top">
+    <div>
+      <h2>Knowledge</h2>
+      <p>The notes vault Smith learns from. Read it, search it, or ask the brain.</p>
+    </div>
+    <div id="kb-sources" class="kb-sources" role="tablist" aria-label="Vaults"></div>
+  </div>
+
+  <div id="kb-loading" class="empty-placeholder">Looking for your notes vaults…</div>
+
+  <!-- Shown when no Source is registered (knowledge.js toggles [hidden]). -->
+  <section id="kb-setup" class="pf-panel kb-setup" hidden>
+    <h3>Connect a notes vault</h3>
+    <p>A <strong>Source</strong> is a small search service that runs on this computer over a folder of
+       Markdown notes. Nothing leaves the machine. Once one is connected, Smith can look things up in it
+       during a scan and save what it learns.</p>
+    <ol class="kb-steps">
+      <li><span>Get Source</span> from <code>github.com/0x0pointer/Source</code> and install it.</li>
+      <li><span>Start it</span> on your notes folder:
+        <pre><code>python serve_http.py --vault ./source --port 7801</code></pre></li>
+      <li><span>Register it</span> in <code>sources.yaml</code> at the top of the agent-smith folder:
+        <pre><code>sources:
+  team-notes: {url: "http://127.0.0.1:7801"}</code></pre></li>
+      <li><span>Reload this page.</span> The vault appears here, and in the Details step when you start a scan.</li>
+    </ol>
+    <button type="button" class="btn btn-secondary btn-sm" id="kb-setup-retry">Check again</button>
+  </section>
+
+  <div id="kb-main" class="kb-shell" hidden>
+    <!-- Left: notes -->
+    <aside class="kb-col kb-nav" aria-label="Notes">
+      <div class="kb-col-head">
+        <span id="kb-tree-count" class="kb-col-title">Notes</span>
+        <input id="kb-tree-filter" type="search" placeholder="Filter notes…" aria-label="Filter notes"
+               autocomplete="off" spellcheck="false">
+      </div>
+      <div id="kb-tree" class="kb-tree"><div class="empty-placeholder">Loading…</div></div>
+    </aside>
+
+    <!-- Centre: search + reader / map -->
+    <section class="kb-col kb-center">
+      <div class="kb-bar">
+        <form id="kb-search-form" class="kb-search" role="search" autocomplete="off">
+          <input id="kb-q" type="search" placeholder="Search the vault…" aria-label="Search the vault" spellcheck="false">
+          <select id="kb-mode" aria-label="How to match">
+            <option value="hybrid">Best match</option>
+            <option value="vector">By meaning</option>
+            <option value="keyword">Exact words</option>
+          </select>
+        </form>
+        <div class="kb-views" role="tablist" aria-label="View">
+          <button type="button" role="tab" class="kb-view-btn active" data-kb-view="read" aria-selected="true">Read</button>
+          <button type="button" role="tab" class="kb-view-btn" data-kb-view="map" aria-selected="false">Map</button>
+        </div>
+      </div>
+      <div id="kb-view" class="kb-view" aria-live="polite"></div>
+      <div id="kb-map" class="kb-map" hidden>
+        <div id="kb-map-canvas" class="kb-map-canvas"></div>
+        <div id="kb-map-legend" class="kb-map-legend"></div>
+        <p id="kb-map-hint" class="kb-map-hint">Each dot is a note. Lines are links between notes; small diamonds are tags. Click a note to read it.</p>
+      </div>
+    </section>
+
+    <!-- Right: the brain -->
+    <aside class="kb-col kb-brain" aria-label="Brain">
+      <div class="kb-col-head kb-brain-head">
+        <div>
+          <span class="kb-col-title">Brain</span>
+          <span class="kb-brain-sub">Answers from your notes, with sources</span>
+        </div>
+        <button type="button" class="pf-link" id="kb-chat-new" hidden>New chat</button>
+      </div>
+      <div id="kb-chat" class="kb-chat" aria-live="polite"></div>
+      <form id="kb-ask-form" class="kb-ask" autocomplete="off">
+        <label class="kb-ask-scope" id="kb-ask-scope" hidden>
+          <input type="checkbox" id="kb-ask-note" checked>
+          <span>About the open note: <strong id="kb-ask-note-name"></strong></span>
+        </label>
+        <div class="kb-ask-row">
+          <textarea id="kb-ask-q" rows="2" maxlength="2000" placeholder="Ask your notes a question…" aria-label="Ask the brain"></textarea>
+          <button type="submit" class="btn btn-primary btn-sm" id="kb-ask-send">Ask</button>
+        </div>
+        <p class="kb-ask-note">Answers are written by the same AI client that runs your scans, using only the passages it is shown.</p>
+      </form>
+    </aside>
+  </div>
+</div>

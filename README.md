@@ -173,16 +173,34 @@ The harness runs natively; only the hacking tools are containerized. A Codespace
 
 ## The dashboard
 
-The dashboard opens on a **landing page**: start a scan or pick an existing one. Everything else
-unlocks once a scan is selected, and the top bar always shows which scan you are looking at, with a
-dropdown to switch and a **New Scan** button.
+The dashboard is a **platform** with two levels. The **platform pages** are about every scan and
+are always available; the **scan pages** appear in the rail once you open one scan.
 
-| Page | What it answers |
+| Platform page | What it answers |
+|---|---|
+| **Home** | Type a target and start. Below: how many scans are active, which ones need you, open findings by severity, and the most serious findings across all scans. |
+| **Scans** | Every instance of Smith. Active scans are live cards (status, progress, findings so far, Open / Resume / Stop); the history table filters by target, status and depth. |
+| **All findings** | Every finding of every scan in one list. Filter by severity, app or scan, group by app / severity / scan, export CSV. Opening one shows its evidence and reproduction. |
+| **Apps** | Scans grouped by target host: when each app was last tested, what is open on it, and **Scan again** with the same settings. |
+| **Knowledge** | A workspace over the [Source](https://github.com/0x0pointer/Source) notes vaults registered in `sources.yaml`. Notes on the left; the reader in the middle, with related notes and a **Map** of how notes link; and the **Brain** on the right: ask a question in plain words and get an answer written from your notes, with numbered citations that open the note. An answer can be saved back to the vault. |
+
+**New scan** (top bar, Home, or *Scan again* on an app) is a four-step wizard: target → depth
+(Recon / Standard / Thorough / Danger, each explained in plain words) → optional details (the app's
+**source code folder** for a white-box test, notes for Smith such as a test account, extra scope,
+what never to touch, a time or cost limit, a knowledge vault) → review, with a box confirming you
+are authorized to test the target.
+
+**White-box scans.** In Details, paste the path of the folder that holds the app's code, or click
+**Browse** to pick it. The folder is on the machine the platform runs on; the platform checks it
+exists and tells you what it found (*"16 folders, 24 files · Git repository · Python"*). Smith then
+reviews the code with the `/codebase` skill and uses what it learns to guide and confirm the testing
+of the live target. Scans started this way carry a **white-box** tag on their card.
+
+| Scan page | What it answers |
 |---|---|
 | **Findings** | How many issues, by severity (the tiles are the filter). Group by severity or by endpoint, sort by confirmed / severity / newest, and export as Markdown, CSV or JSON. A legend explains each verification label. |
 | **Coverage** | Which endpoint × parameter × attack-type cells are tested, vulnerable, skipped or still pending. |
 | **Tool Results** | What each tool actually found: one card per tool with a headline (*"8 open ports on 2 hosts"*), the de-duplicated results, every run, and its raw output (secrets masked). **Steer Smith on this** opens the instruction box pre-filled with that tool's context. |
-| **Scans** | Every scan, filterable by target, status and depth. |
 | **More** | Operator Actions, Topology, Components, AI Red Team, Skills, World Model, Threat Model, Metrics, Timeline (one chronological feed of tool calls, instructions, quality checks, reviews and queued work) and the raw Logs. |
 
 The command panel above every page shows the scan's progress (Exploitation → Coverage sweep →

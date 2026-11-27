@@ -40,7 +40,7 @@
 
   function _notify(title, body, urgency = 'normal') {
     // Always update the page title
-    document.title = `⚠ ${title} — Pentest Dashboard`;
+    document.title = `⚠ ${title} — Smith Platform`;
     // Browser notification only when tab is not focused
     if (document.hidden && 'Notification' in window && Notification.permission === 'granted') {
       try {
@@ -56,24 +56,24 @@
   }
 
   function _clearNotif() {
-    document.title = 'Pentest Dashboard';
+    document.title = 'Smith Platform';
   }
 
   function _updateTitleBadge(alertCount, stallActive, hirActive) {
     if (hirActive) {
-      document.title = '⚠ PAUSED — Pentest Dashboard';
+      document.title = '⚠ PAUSED — Smith Platform';
     } else if (stallActive) {
-      document.title = '⟳ Smith needs guidance — Pentest Dashboard';
+      document.title = '⟳ Smith needs guidance — Smith Platform';
     } else if (alertCount > 0) {
-      document.title = `(${alertCount}) Pentest Dashboard`;
+      document.title = `(${alertCount}) Smith Platform`;
     } else {
-      document.title = 'Pentest Dashboard';
+      document.title = 'Smith Platform';
     }
   }
 
   // ── Tab switching ─────────────────────────────────────────────────────────
   // Order MUST match the .tab-btn DOM order in index.html's sidebar (switchTab maps by index).
-  const TAB_NAMES = ['findings', 'topology', 'components', 'ai-redteam', 'coverage', 'skills', 'activity', 'world-model', 'threat-model', 'metrics', 'setup-gates', 'logs', 'session-log', 'sessions'];
+  const TAB_NAMES = ['home', 'all-findings', 'apps', 'knowledge', 'findings', 'topology', 'components', 'ai-redteam', 'coverage', 'skills', 'activity', 'world-model', 'threat-model', 'metrics', 'setup-gates', 'logs', 'session-log', 'sessions'];
 
   function switchTab(name) {
     _activeTab = name;
@@ -90,6 +90,10 @@
     }
     document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
     document.getElementById(`tab-${name}`).classList.add('active');
+    // Platform pages (about all scans) hide the open scan's command panel.
+    const tabEl = document.getElementById(`tab-${name}`);
+    document.body.classList.toggle('on-platform-tab', !!tabEl && tabEl.classList.contains('tab-platform'));
+    if (typeof platformOnTab === 'function') platformOnTab(name);
     if (name === 'topology')      renderTopology(allData.diagrams || []);
     if (name === 'components')    renderComponentMap(allData.findings || []);
     if (name === 'ai-redteam')    pollAiRedteam();
