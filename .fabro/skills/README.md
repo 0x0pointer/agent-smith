@@ -16,8 +16,8 @@ verify step rejects any change under `.fabro/`.
 | `incremental-implementation` | Implement (first pass, standard changes) | addyosmani/agent-skills |
 | `systematic-debugging` | Escalated fix, both `fix-ci` stages | obra/superpowers |
 | `verification-before-completion` | Every stage that changes code: Implement, all fix stages, both `fix-ci` stages | obra/superpowers |
-| `code-review-and-quality` | Review (standard reviewer) | addyosmani/agent-skills |
-| `differential-review` | Security review | trailofbits/skills |
+| `code-review-and-quality` | Code review (every change) | addyosmani/agent-skills |
+| `differential-review` | Security review (after the code review, security-relevant changes) | trailofbits/skills |
 
 Each stage gets only the skills for its own job. Loading every skill into
 every stage costs tokens on each turn and makes the instructions contradict

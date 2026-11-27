@@ -34,7 +34,7 @@ in step with each other) and in `docker/Dockerfile`:
 `skills/` in this folder holds the skills the model stages follow: spec
 writing and task breakdown for the planner, test-driven and incremental
 implementation for the implementer, systematic debugging for the fix stages,
-verification before completion for every stage that changes code, code review for the standard reviewer, and the Trail
+verification before completion for every stage that changes code, code review for the code reviewer of every change, and the Trail
 of Bits `differential-review` skill for the security reviewer.
 `skills/README.md` there lists which stage uses which, with source and license.
 
