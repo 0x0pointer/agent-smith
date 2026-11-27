@@ -1,0 +1,6 @@
+{
+  "outcome": "failed",
+  "notes": null,
+  "failure_reason": "Script failed with exit code: 1\n\n## output\nWAITING: issue 302 is still being built (label fabro-in-progress). One issue is built at a time.\nIf no run is working on it any more, remove that label from the issue.\n",
+  "timestamp": "2026-11-27T11:33:12.545703093Z"
+}
