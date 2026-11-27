@@ -1,0 +1,894 @@
+diff --git a/control_plane/orchestrator.py b/control_plane/orchestrator.py
+index 573029d..e2cae0b 100644
+--- a/control_plane/orchestrator.py
++++ b/control_plane/orchestrator.py
+@@ -1,5 +1,6 @@
+ from __future__ import annotations
+ 
++import json
+ import os
+ import shutil
+ import signal
+@@ -24,6 +25,12 @@ _LIST_ENTRY_MAX_LENGTH = 512
+ _DEFAULT_DATABASE_URL = "postgresql+psycopg://smith:smith@127.0.0.1:55432/agent_smith"
+ _CONTROL_PLANE_PORT = 7777
+ _COMPOSE_FILE = _paths.REPO_ROOT / "docker-compose.yml"
++_RUN_ID_ATTEMPTS = 5
++_KNOWN_AGENT_CLIENTS = {"claude", "opencode", "codex"}
++
++
++class RunIdCollisionError(RuntimeError):
++    pass
+ 
+ 
+ def _dashboard_base_url() -> str:
+@@ -77,16 +84,71 @@ def _validate(payload: object) -> tuple[str, str, list[str], list[str]]:
+ 
+ 
+ def _workdir_for(run_id: str) -> Path:
+-    path = Path(_paths.RUNTIME_ROOT) / "runs" / run_id
++    path = _workdir_path_for(run_id)
+     path.mkdir(parents=True, exist_ok=True)
+     return path
+ 
+ 
+-def _spawn_worker(run_id: str, workdir: Path) -> int:
++def _workdir_path_for(run_id: str) -> Path:
++    return Path(_paths.RUNTIME_ROOT) / "runs" / run_id
++
++
++def _initial_run_prompt(target: str, depth: str, scope: list[str], out_of_scope: list[str]) -> str:
++    options = {
++        "target": target,
++        "depth": depth,
++        "scope": scope,
++        "out_of_scope": out_of_scope,
++    }
++    return (
++        "Start a new agent-smith pentest run from the dashboard control plane. "
++        f"First call session(action='start', options={json.dumps(options, sort_keys=True)}). "
++        "Then call session(action='status') and continue autonomously with the next recommended "
++        "tool call until the scan is complete or genuinely blocked."
++    )
++
++
++def _agent_client() -> str:
++    client = os.environ.get("SMITH_WORKER_CLIENT", "").strip().lower() or "claude"
++    return client if client in _KNOWN_AGENT_CLIENTS else "claude"
++
++
++def _agent_spawn_args(client: str, prompt: str) -> list[str]:
++    from core.api_server.smith.spawn import _build_spawn_args
++
++    return _build_spawn_args(client, client, None, prompt)
++
++
++def _spawn_worker(
++    run_id: str,
++    workdir: Path,
++    target: str,
++    depth: str,
++    scope: list[str],
++    out_of_scope: list[str],
++) -> int:
+     env = os.environ.copy()
+     env["SMITH_RUN_ID"] = run_id
+     env["SMITH_WORKDIR"] = str(workdir)
+-    proc = subprocess.Popen([sys.executable, "-m", "mcp_server"], env=env)
++    env["SMITH_RUN_TARGET"] = target
++    env["SMITH_RUN_DEPTH"] = depth
++    env["SMITH_RUN_SCOPE"] = json.dumps(scope)
++    env["SMITH_RUN_OUT_OF_SCOPE"] = json.dumps(out_of_scope)
++    env.setdefault("SMITH_SESSION_ORIGIN", "operator")
++    logs_dir = workdir / "logs"
++    logs_dir.mkdir(parents=True, exist_ok=True)
++    prompt = _initial_run_prompt(target, depth, scope, out_of_scope)
++    args = _agent_spawn_args(_agent_client(), prompt)
++    spawn_kwargs = {
++        "cwd": str(_paths.REPO_ROOT),
++        "env": env,
++        "start_new_session": sys.platform != "win32",
++    }
++    if sys.platform == "win32":
++        spawn_kwargs.pop("start_new_session", None)
++        spawn_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
++    with (logs_dir / "worker.log").open("a", encoding="utf-8") as log_fh:
++        proc = subprocess.Popen(args, stdout=log_fh, stderr=log_fh, **spawn_kwargs)
+     return int(getattr(proc, "pid", 0) or 0)
+ 
+ 
+@@ -241,22 +303,41 @@ def create_run(payload: object) -> dict:
+     if repo is None:
+         raise RuntimeError("database unavailable")
+ 
+-    run_id = _new_run_id()
+-    workdir = _workdir_for(run_id)
++    run_id = ""
++    workdir = Path()
++    session_doc: dict | None = None
++    for _ in range(_RUN_ID_ATTEMPTS):
++        candidate = _new_run_id()
++        candidate_workdir = _workdir_path_for(candidate)
++        candidate_doc = {
++            "run_id": candidate,
++            "target": target,
++            "depth": depth,
++            "scope": scope or [target],
++            "out_of_scope": out_of_scope,
++            "status": "starting",
++            "workdir": str(candidate_workdir),
++        }
++        if repo.create_run(candidate, candidate_doc, str(candidate_workdir)):
++            run_id = candidate
++            workdir = _workdir_for(run_id)
++            session_doc = candidate_doc
++            break
++    if session_doc is None:
++        raise RunIdCollisionError("could not allocate unique run id")
++
+     token = dashboard_auth.mint_run_token(run_id)
+-    session_doc = {
+-        "run_id": run_id,
+-        "target": target,
+-        "depth": depth,
+-        "scope": scope or [target],
+-        "out_of_scope": out_of_scope,
+-        "status": "running",
+-        "workdir": str(workdir),
+-    }
+-    repo.upsert_run(run_id, session_doc, str(workdir))
++    session_doc["status"] = "running"
+     repo.save_snapshot(run_id, "session", session_doc)
+     try:
+-        worker_pid = _spawn_worker(run_id, workdir)
++        worker_pid = _spawn_worker(
++            run_id,
++            workdir,
++            target,
++            depth,
++            scope or [target],
++            out_of_scope,
++        )
+         session_doc["worker_pid"] = worker_pid
+         repo.upsert_run(run_id, session_doc, str(workdir))
+         repo.save_snapshot(run_id, "session", session_doc)
+diff --git a/core/api_server/routes/runs_routes.py b/core/api_server/routes/runs_routes.py
+index 336af11..ef0b533 100644
+--- a/core/api_server/routes/runs_routes.py
++++ b/core/api_server/routes/runs_routes.py
+@@ -32,6 +32,8 @@ async def api_create_run(request: Request) -> JSONResponse:
+         return JSONResponse({"error": "malformed json"}, status_code=400)
+     except ValueError as exc:
+         return JSONResponse({"error": str(exc)}, status_code=400)
++    except orchestrator.RunIdCollisionError as exc:
++        return JSONResponse({"error": str(exc)}, status_code=409)
+     except RuntimeError as exc:
+         return JSONResponse({"error": str(exc)}, status_code=503)
+ 
+diff --git a/core/api_server/routes/session_log_routes.py b/core/api_server/routes/session_log_routes.py
+index a98e0a2..fd55a9a 100644
+--- a/core/api_server/routes/session_log_routes.py
++++ b/core/api_server/routes/session_log_routes.py
+@@ -13,7 +13,9 @@ from __future__ import annotations
+ 
+ import json
+ from collections import deque
++from pathlib import Path
+ 
++from fastapi import Request
+ from fastapi.responses import JSONResponse
+ 
+ from core import paths as _paths
+@@ -27,13 +29,26 @@ _DEFAULT_TYPES = {"note", "decision", "action", "result", "finding", "coverage_t
+ _MAX_EVENTS = 5000
+ 
+ 
+-def _session_label(stem: str) -> dict:
++def _run_events_dir(request: Request) -> Path | None:
++    run_id = getattr(request.state, "run_id", None)
++    if not run_id:
++        return _paths.SMITH_EVENTS_DIR
++    from core import db as _db
++
++    row = _db.get_run(run_id)
++    workdir = (row or {}).get("workdir")
++    if not workdir:
++        return None
++    return Path(workdir) / "logs" / "smith-events"
++
++
++def _session_label(stem: str, events_dir: Path) -> dict:
+     """Dropdown label for a session id, enriched from its durable meta.json subdir
+     (logs/smith-events/<id>/meta.json) when present; falls back to the bare id (a
+     decision/note-only stream has a .jsonl but no meta.json)."""
+     info = {"id": stem, "target": None, "started": None}
+     try:
+-        meta = _paths.SMITH_EVENTS_DIR / stem / "meta.json"
++        meta = events_dir / stem / "meta.json"
+         if meta.exists():
+             m = json.loads(meta.read_text(encoding="utf-8"))
+             info["target"] = m.get("target")
+@@ -44,15 +59,17 @@ def _session_label(stem: str) -> dict:
+ 
+ 
+ @router.get("/api/session-log")
+-async def api_session_log(session: str = "", limit: int = _MAX_EVENTS) -> JSONResponse:
++async def api_session_log(request: Request, session: str = "", limit: int = _MAX_EVENTS) -> JSONResponse:
+     """List reasoning-stream sessions and replay one.
+ 
+     ``session`` — the engagement id to replay; defaults to the newest by file mtime
+     (session ids are random uuid4, so filename order is meaningless). Resolved against a
+-    trusted glob by stem — never built from the raw query param (path-traversal safety,
+-    mirroring /api/logs).
+-    """
+-    events_dir = _paths.SMITH_EVENTS_DIR
++     trusted glob by stem — never built from the raw query param (path-traversal safety,
++     mirroring /api/logs).
++     """
++    events_dir = _run_events_dir(request)
++    if events_dir is None:
++        return JSONResponse({"error": "forbidden"}, status_code=403)
+     try:
+         streams = sorted(
+             events_dir.glob("*.jsonl"),  # *.jsonl only — the dir also holds per-session bundle subdirs
+@@ -62,7 +79,7 @@ async def api_session_log(session: str = "", limit: int = _MAX_EVENTS) -> JSONRe
+     except OSError:
+         streams = []
+ 
+-    sessions = [_session_label(p.stem) for p in streams]
++    sessions = [_session_label(p.stem, events_dir) for p in streams]
+ 
+     if not streams:
+         return JSONResponse({"session": None, "sessions": [], "events": [],
+@@ -71,8 +88,10 @@ async def api_session_log(session: str = "", limit: int = _MAX_EVENTS) -> JSONRe
+     if session:
+         target = next((p for p in streams if p.stem == session), None)
+         if target is None:
++            status = 403 if getattr(request.state, "run_id", None) else 200
+             return JSONResponse({"session": None, "sessions": sessions, "events": [],
+-                                 "truncated": False, "count": 0, "error": "invalid session"})
++                                 "truncated": False, "count": 0, "error": "invalid session"},
++                                status_code=status)
+     else:
+         target = streams[0]  # newest by mtime
+ 
+diff --git a/core/api_server/routes/sessions_routes.py b/core/api_server/routes/sessions_routes.py
+index 7df0f25..acac79a 100644
+--- a/core/api_server/routes/sessions_routes.py
++++ b/core/api_server/routes/sessions_routes.py
+@@ -13,7 +13,9 @@ mcp_server at import time).
+ from __future__ import annotations
+ 
+ import json
++from pathlib import Path
+ 
++from fastapi import Request
+ from fastapi.responses import JSONResponse
+ 
+ from core import paths as _paths
+@@ -23,6 +25,20 @@ from ._common import router
+ _FINDING_SCAN_CAP = 20_000   # lines scanned to count findings when no snapshot exists
+ 
+ 
++def _run_paths(request: Request) -> tuple[Path, Path] | None:
++    run_id = getattr(request.state, "run_id", None)
++    if not run_id:
++        return _paths.SMITH_EVENTS_DIR, _paths.SESSION_FILE
++    from core import db as _db
++
++    row = _db.get_run(run_id)
++    workdir = (row or {}).get("workdir")
++    if not workdir:
++        return None
++    root = Path(workdir)
++    return root / "logs" / "smith-events", root / "session.json"
++
++
+ def _read_json(path):
+     try:
+         return json.loads(path.read_text(encoding="utf-8"))
+@@ -30,20 +46,20 @@ def _read_json(path):
+         return None
+ 
+ 
+-def _current_session() -> dict:
++def _current_session(session_file: Path) -> dict:
+     """The live session.json {id, status} — the ONE session the clobber-prone
+     current pointer names; every other session's status is inferred from its bundle."""
+-    data = _read_json(_paths.SESSION_FILE) or {}
++    data = _read_json(session_file) or {}
+     return {"id": data.get("id"), "status": data.get("status")}
+ 
+ 
+-def _findings_count(stem: str) -> int:
++def _findings_count(stem: str, events_dir: Path) -> int:
+     """Prefer the durable per-session snapshot (cheap, authoritative); else count
+     `finding` events in the stream, bounded so a huge log can't stall the request."""
+-    doc = _read_json(_paths.SMITH_EVENTS_DIR / stem / "findings.json")
++    doc = _read_json(events_dir / stem / "findings.json")
+     if isinstance(doc, dict):
+         return len(doc.get("findings") or [])
+-    jl = _paths.SMITH_EVENTS_DIR / f"{stem}.jsonl"
++    jl = events_dir / f"{stem}.jsonl"
+     n = 0
+     try:
+         with jl.open(encoding="utf-8") as f:
+@@ -57,9 +73,9 @@ def _findings_count(stem: str) -> int:
+     return n
+ 
+ 
+-def _session_row(stem: str, current: dict) -> dict:
+-    meta = _read_json(_paths.SMITH_EVENTS_DIR / stem / "meta.json") or {}
+-    jl = _paths.SMITH_EVENTS_DIR / f"{stem}.jsonl"
++def _session_row(stem: str, current: dict, events_dir: Path) -> dict:
++    meta = _read_json(events_dir / stem / "meta.json") or {}
++    jl = events_dir / f"{stem}.jsonl"
+     try:
+         last_activity = jl.stat().st_mtime if jl.exists() else None
+     except OSError:
+@@ -68,7 +84,7 @@ def _session_row(stem: str, current: dict) -> dict:
+     # snapshot marks a finished one; otherwise it's a past/backgrounded session.
+     if stem == current.get("id"):
+         status = current.get("status") or "running"
+-    elif (_paths.SMITH_EVENTS_DIR / stem / "findings.json").exists():
++    elif (events_dir / stem / "findings.json").exists():
+         status = "complete"
+     else:
+         status = "inactive"
+@@ -80,17 +96,20 @@ def _session_row(stem: str, current: dict) -> dict:
+         "origin": origin,
+         "auto_started": origin != "operator",
+         "status": status,
+-        "findings": _findings_count(stem),
++        "findings": _findings_count(stem, events_dir),
+         "scan_phase": meta.get("scan_phase"),
+         "last_activity": last_activity,
+     }
+ 
+ 
+ @router.get("/api/sessions")
+-async def api_sessions() -> JSONResponse:
++async def api_sessions(request: Request) -> JSONResponse:
+     """List every scan session newest-first, with origin/status/findings so the
+     dashboard can badge auto-started ones and switch between concurrent sessions."""
+-    events_dir = _paths.SMITH_EVENTS_DIR
++    scoped_paths = _run_paths(request)
++    if scoped_paths is None:
++        return JSONResponse({"error": "forbidden"}, status_code=403)
++    events_dir, session_file = scoped_paths
+     try:
+         streams = sorted(
+             events_dir.glob("*.jsonl"),   # *.jsonl only — the dir also holds per-session bundle subdirs
+@@ -99,6 +118,6 @@ async def api_sessions() -> JSONResponse:
+         ) if events_dir.exists() else []
+     except OSError:
+         streams = []
+-    current = _current_session()
+-    rows = [_session_row(p.stem, current) for p in streams]
++    current = _current_session(session_file)
++    rows = [_session_row(p.stem, current, events_dir) for p in streams]
+     return JSONResponse({"sessions": rows, "current": current.get("id"), "count": len(rows)})
+diff --git a/core/db/__init__.py b/core/db/__init__.py
+index 2e4e826..4c1d107 100644
+--- a/core/db/__init__.py
++++ b/core/db/__init__.py
+@@ -67,3 +67,10 @@ def list_runs() -> list[dict]:
+     if repo is None:
+         return []
+     return repo.list_runs()
++
++
++def get_run(run_id: str) -> dict | None:
++    repo = get_repository()
++    if repo is None:
++        return None
++    return repo.get_run(run_id)
+diff --git a/core/db/repository.py b/core/db/repository.py
+index fe158f7..1b5e60c 100644
+--- a/core/db/repository.py
++++ b/core/db/repository.py
+@@ -5,6 +5,7 @@ from datetime import datetime, timezone
+ 
+ from sqlalchemy import create_engine, select
+ from sqlalchemy.engine import Engine
++from sqlalchemy.exc import IntegrityError
+ 
+ from .schema import dashboard_tokens, metadata, run_snapshots, runs
+ 
+@@ -18,9 +19,9 @@ class DatabaseRepository:
+     def _now() -> str:
+         return datetime.now(timezone.utc).isoformat()
+ 
+-    def upsert_run(self, run_id: str, payload: dict, workdir: str) -> None:
++    def _run_row(self, run_id: str, payload: dict, workdir: str) -> dict:
+         now = self._now()
+-        row = {
++        return {
+             "run_id": run_id,
+             "target": str(payload.get("target") or ""),
+             "status": str(payload.get("status") or ""),
+@@ -30,6 +31,23 @@ class DatabaseRepository:
+             "created_at": str(payload.get("started") or now),
+             "updated_at": now,
+         }
++
++    def create_run(self, run_id: str, payload: dict, workdir: str) -> bool:
++        row = self._run_row(run_id, payload, workdir)
++        try:
++            with self._engine.begin() as conn:
++                conn.execute(runs.insert().values(**row))
++            return True
++        except IntegrityError:
++            return False
++
++    def get_run(self, run_id: str) -> dict | None:
++        with self._engine.begin() as conn:
++            row = conn.execute(select(runs).where(runs.c.run_id == run_id)).mappings().first()
++        return dict(row) if row else None
++
++    def upsert_run(self, run_id: str, payload: dict, workdir: str) -> None:
++        row = self._run_row(run_id, payload, workdir)
+         with self._engine.begin() as conn:
+             existing = conn.execute(
+                 select(runs.c.run_id).where(runs.c.run_id == run_id)
+diff --git a/dashboard/js/sessions.js b/dashboard/js/sessions.js
+index 77ca676..face367 100644
+--- a/dashboard/js/sessions.js
++++ b/dashboard/js/sessions.js
+@@ -1,104 +1,155 @@
+-// ── Sessions tab (issue #187) ─────────────────────────────────────────────────
+-// Lists every scan session (operator / watchdog-respawned / implicit) from
+-// /api/sessions, badges auto-started ones, highlights sessions new since the
+-// operator last VIEWED this tab, toasts a brand-new auto-started session, and
+-// links each row to its Session Log replay. FLAT classic script sharing the
+-// global dashboard scope (NOT an IIFE) — identifiers are prefixed to avoid
+-// colliding with other tab scripts.
++// ── Runs / Sessions tab ──────────────────────────────────────────────────────
++// Platform mode manages run creation and selection through /api/runs. The
++// operator token is kept separately so the selected per-run token can scope the
++// rest of the dashboard without losing the ability to list/start/stop runs.
+ 
+-let _sessionsSeen = null;        // Set<id> the operator has already looked at (localStorage-backed)
+-let _sessionsInit = false;       // first pollSessions has run (so we don't toast the backlog)
++let _sessionsSeen = null;        // kept for backwards-compatible globals used by older tabs
++let _sessionsInit = false;
++const _RUN_TOKEN_KEY = 'smith_selected_run_token';
++const _RUN_TOKEN_MAP_KEY = 'smith_run_tokens';
++const _OPERATOR_TOKEN_KEY = 'smith_operator_token';
++const _DASH_TOKEN_KEY = 'smith_dash_token';
++const selectedRunToken = 'selected-run-token';
+ 
+ function _sessEsc(s) {
+   return String(s == null ? '' : s).replace(/[&<>"]/g,
+     c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+ }
+ 
+-function _sessLoadSeen() {
+-  if (_sessionsSeen) return _sessionsSeen;
+-  try { _sessionsSeen = new Set(JSON.parse(localStorage.getItem('smith_sessions_seen') || '[]')); }
+-  catch (e) { _sessionsSeen = new Set(); }
+-  return _sessionsSeen;
++function _sessStorageGet(key) {
++  try { return sessionStorage.getItem(key) || localStorage.getItem(key) || ''; }
++  catch (e) { return ''; }
+ }
+ 
+-function _sessSaveSeen(seen) {
+-  try { localStorage.setItem('smith_sessions_seen', JSON.stringify(Array.from(seen).slice(-300))); }
+-  catch (e) { /* private mode / blocked storage — highlight just won't persist */ }
++function _sessStorageSet(key, value, persist) {
++  try { sessionStorage.setItem(key, value || ''); } catch (e) { /* ignore */ }
++  if (persist) {
++    try { localStorage.setItem(key, value || ''); } catch (e) { /* ignore */ }
++  }
+ }
+ 
+-// Row click → replay that session's reasoning in the Session Log tab (issue #186).
+-function openSessionInLog(id) {
+-  try { _selectedSessionId = id; } catch (e) { /* session-log.js may not be loaded yet */ }
+-  try { switchTab('session-log'); } catch (e) { return; }
+-  const sel = document.getElementById('session-log-select');
+-  if (sel) sel.value = id;
+-  try { pollSessionLog(); } catch (e) { /* refresh will catch up */ }
++function _operatorToken() {
++  const existing = _sessStorageGet(_OPERATOR_TOKEN_KEY);
++  if (existing) return existing;
++  const current = _sessStorageGet(_DASH_TOKEN_KEY);
++  if (current) _sessStorageSet(_OPERATOR_TOKEN_KEY, current, true);
++  return current;
+ }
+ 
+-async function pollSessions() {
+-  let data;
+-  try {
+-    const r = await fetch('/api/sessions?_=' + Date.now());
+-    if (!r.ok) return;
+-    data = await r.json();
+-  } catch (e) { return; }
++function _runTokenMap() {
++  try { return JSON.parse(localStorage.getItem(_RUN_TOKEN_MAP_KEY) || '{}') || {}; }
++  catch (e) { return {}; }
++}
+ 
+-  const rows = data.sessions || [];
+-  const seen = _sessLoadSeen();
+-  const out = document.getElementById('sessions-output');
+-  const summary = document.getElementById('sessions-summary');
++function _rememberRunToken(runId, token) {
++  if (!runId || !token) return;
++  const tokens = _runTokenMap();
++  tokens[runId] = token;
++  try { localStorage.setItem(_RUN_TOKEN_MAP_KEY, JSON.stringify(tokens)); } catch (e) { /* ignore */ }
++}
+ 
+-  // Toast a brand-new auto-started session (acceptance #4) — only after the first
+-  // load, so a fresh browser doesn't toast the whole backlog at once.
+-  if (_sessionsInit) {
+-    for (const s of rows) {
+-      if (s.auto_started && !seen.has(s.id) && typeof _notify === 'function') {
+-        _notify('Auto-started session', `${s.origin} · ${s.target || s.id.slice(0, 8)}`);
+-      }
+-    }
++function _headersFor(token) {
++  return token ? { 'Authorization': 'Bearer ' + token } : {};
++}
++
++function _selectedRunId() {
++  try { return localStorage.getItem('smith_selected_run_id') || ''; }
++  catch (e) { return ''; }
++}
++
++function selectRun(runId) {
++  const token = _runTokenMap()[runId] || '';
++  if (!token) {
++    if (typeof _notify === 'function') _notify('Run token unavailable', 'Start or open this run from its dashboard URL to select it.');
++    return;
+   }
+-  _sessionsInit = true;
++  try { localStorage.setItem('smith_selected_run_id', runId); } catch (e) { /* ignore */ }
++  _sessStorageSet(_RUN_TOKEN_KEY, token, true);
++  _sessStorageSet(_DASH_TOKEN_KEY, token, false);
++  pollSessions();
++}
+ 
+-  if (summary) {
+-    const auto = rows.filter(s => s.auto_started).length;
+-    summary.textContent =
+-      `${rows.length} session${rows.length === 1 ? '' : 's'} · ${auto} auto-started · ` +
+-      `current: ${data.current ? data.current.slice(0, 8) : 'none'}`;
++async function startRunFromForm(ev) {
++  if (ev && ev.preventDefault) ev.preventDefault();
++  const target = (document.getElementById('start-run-target') || {}).value || '';
++  const depth = (document.getElementById('start-run-depth') || {}).value || 'standard';
++  const scopeText = (document.getElementById('start-run-scope') || {}).value || '';
++  const outText = (document.getElementById('start-run-out-of-scope') || {}).value || '';
++  const splitLines = s => s.split(/\n|,/).map(x => x.trim()).filter(Boolean);
++  const body = {
++    target: target.trim(),
++    depth: depth,
++    scope: splitLines(scopeText),
++    out_of_scope: splitLines(outText),
++  };
++  const status = document.getElementById('start-run-status');
++  if (status) status.textContent = 'Starting…';
++  try {
++    const r = await fetch('/api/runs', {
++      method: 'POST',
++      headers: Object.assign({ 'Content-Type': 'application/json' }, _headersFor(_operatorToken())),
++      body: JSON.stringify(body),
++    });
++    const data = await r.json().catch(() => ({}));
++    if (!r.ok) {
++      if (status) status.textContent = data.error || 'Run creation failed';
++      return;
++    }
++    _rememberRunToken(data.run_id, data.token);
++    selectRun(data.run_id);
++    if (status) status.textContent = 'Run started: ' + data.run_id;
++  } catch (e) {
++    if (status) status.textContent = 'Run creation failed';
+   }
++}
+ 
++function _renderRuns(rows) {
++  const out = document.getElementById('runs-output') || document.getElementById('sessions-output');
++  const selected = _selectedRunId();
++  if (!out) return;
+   if (!rows.length) {
+-    if (out) out.innerHTML = '<div class="empty-placeholder">No sessions yet.</div>';
++    out.innerHTML = '<div class="empty-placeholder">No runs yet.</div>';
+     return;
+   }
+-
+-  const body = rows.map(s => {
+-    const isNew = !seen.has(s.id);
+-    const badge = s.auto_started
+-      ? `<span class="badge-auto">${_sessEsc((s.origin || 'auto').toUpperCase())}</span>`
+-      : '<span class="badge-op">OPERATOR</span>';
+-    const cur = s.id === data.current ? ' <span class="badge-cur">CURRENT</span>' : '';
+-    const started = s.started ? new Date(s.started).toLocaleString() : '—';
+-    return `<tr class="sess-row${isNew ? ' sess-new' : ''}" onclick="openSessionInLog('${_sessEsc(s.id)}')" title="Replay this session's reasoning">
+-      <td>${badge}${cur}</td>
+-      <td>${_sessEsc(s.target || '—')}</td>
+-      <td><span class="sess-status sess-${_sessEsc(s.status)}">${_sessEsc(s.status)}</span></td>
+-      <td style="text-align:right">${_sessEsc(s.findings)}</td>
+-      <td>${_sessEsc(started)}</td>
+-      <td class="sess-id">${_sessEsc(s.id.slice(0, 8))}</td>
++  const tokens = _runTokenMap();
++  const body = rows.map(r => {
++    const active = r.run_id === selected ? ' <span class="badge-cur">SELECTED</span>' : '';
++    const selectable = tokens[r.run_id] ? '' : ' disabled';
++    return `<tr class="sess-row${r.run_id === selected ? ' sess-new' : ''}">
++      <td><span class="badge-op">RUN</span>${active}</td>
++      <td>${_sessEsc(r.target || '—')}</td>
++      <td><span class="sess-status sess-${_sessEsc(r.status)}">${_sessEsc(r.status || 'unknown')}</span></td>
++      <td>${_sessEsc(r.depth || '—')}</td>
++      <td class="sess-id">${_sessEsc((r.run_id || '').slice(0, 12))}</td>
++      <td><button type="button" onclick="selectRun('${_sessEsc(r.run_id)}')"${selectable}>Select</button></td>
+     </tr>`;
+   }).join('');
++  out.innerHTML = `<table class="sessions-table">
++    <thead><tr><th>Type</th><th>Target</th><th>Status</th><th>Depth</th><th>Run ID</th><th></th></tr></thead>
++    <tbody>${body}</tbody></table>`;
++}
+ 
+-  if (out) {
+-    out.innerHTML = `<table class="sessions-table">
+-      <thead><tr><th>Origin</th><th>Target</th><th>Status</th><th style="text-align:right">Findings</th><th>Started</th><th>ID</th></tr></thead>
+-      <tbody>${body}</tbody></table>`;
+-  }
++async function pollSessions() {
++  let rows = [];
++  try {
++    const r = await fetch('/api/runs?_=' + Date.now(), { headers: _headersFor(_operatorToken()) });
++    if (!r.ok) return;
++    rows = await r.json();
++    if (!Array.isArray(rows)) rows = [];
++  } catch (e) { return; }
+ 
+-  // "New since last looked": only clear the highlight when the operator is actually
+-  // VIEWING this tab, so sessions that appear in the background stay highlighted
+-  // until seen.
+-  if (typeof _activeTab !== 'undefined' && _activeTab === 'sessions') {
+-    for (const s of rows) seen.add(s.id);
+-    _sessSaveSeen(seen);
++  const summary = document.getElementById('sessions-summary');
++  if (summary) {
++    const selected = _selectedRunId() || 'none';
++    summary.textContent = `${rows.length} run${rows.length === 1 ? '' : 's'} · selected: ${selected}`;
+   }
++  _renderRuns(rows);
++  _sessionsInit = true;
+ }
++
++try {
++  document.addEventListener('DOMContentLoaded', () => {
++    const form = document.getElementById('start-run-form');
++    if (form) form.addEventListener('submit', startRunFromForm);
++  });
++} catch (e) { /* ignore */ }
+diff --git a/dashboard/tabs/sessions.html b/dashboard/tabs/sessions.html
+index 701f8d4..aaaa93a 100644
+--- a/dashboard/tabs/sessions.html
++++ b/dashboard/tabs/sessions.html
+@@ -1,13 +1,38 @@
+-<!-- ── Tab: Sessions ─────────────────────────────────────────────────────── -->
+-<!-- Lists every scan session — operator, watchdog-respawned, or implicit — from
+-     /api/sessions (over the per-session smith-events streams, immune to the
+-     session.json single-current clobber). Auto-started sessions are badged;
+-     sessions new since the last view are highlighted (issue #187). -->
++<!-- ── Tab: Sessions / Runs ───────────────────────────────────────────────── -->
+ <div id="tab-sessions" class="tab-content">
+   <div class="tab-head">
+-    <h2>Sessions</h2>
+-    <p>Every scan session from this workspace, whatever started it. <span class="badge-auto">AUTO</span> marks a watchdog/auto-spawned session. A row highlighted is new since you last looked. Click a row to replay its reasoning in the Session Log.</p>
++    <h2>Runs</h2>
++    <p>Start isolated platform runs, list all persisted runs, and select a run token to scope the dashboard data tabs.</p>
+   </div>
++
++  <form id="start-run-form" class="air-card" autocomplete="off">
++    <h3>Start Run</h3>
++    <label>
++      Target
++      <input id="start-run-target" name="target" type="text" placeholder="https://example.com" required>
++    </label>
++    <label>
++      Depth
++      <select id="start-run-depth" name="depth">
++        <option value="recon">Recon</option>
++        <option value="standard" selected>Standard</option>
++        <option value="thorough">Thorough</option>
++        <option value="danger">Danger</option>
++      </select>
++    </label>
++    <label>
++      Scope (one per line or comma-separated)
++      <textarea id="start-run-scope" name="scope" rows="3" placeholder="Defaults to target"></textarea>
++    </label>
++    <label>
++      Out of scope (one per line or comma-separated)
++      <textarea id="start-run-out-of-scope" name="out_of_scope" rows="3"></textarea>
++    </label>
++    <button type="submit">Start Run</button>
++    <span id="start-run-status" class="air-sub-note"></span>
++  </form>
++
+   <div id="sessions-summary" class="air-sub-note"></div>
+-  <div id="sessions-output"><div class="empty-placeholder">No sessions yet.</div></div>
++  <div id="runs-output"><div class="empty-placeholder">No runs yet.</div></div>
++  <div id="sessions-output" style="display:none"></div>
+ </div>
+diff --git a/tests/test_control_plane.py b/tests/test_control_plane.py
+index 930f4d6..2406d65 100644
+--- a/tests/test_control_plane.py
++++ b/tests/test_control_plane.py
+@@ -104,6 +104,63 @@ def test_docker_failure_marks_failed_and_cleans(monkeypatch, tmp_path):
+     assert rows[0]["status"] == "failed"
+ 
+ 
++def test_create_run_retries_generated_id_collision_before_side_effects(monkeypatch, tmp_path):
++    db_path = tmp_path / "runs.db"
++    monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")
++    new_run_id = MagicMock(return_value="run-same")
++    monkeypatch.setattr(orchestrator, "_new_run_id", new_run_id)
++
++    with patch("subprocess.Popen", return_value=MagicMock(pid=1111)):
++        original = orchestrator.create_run({"target": "https://original.example", "depth": "recon"})
++
++    with patch("subprocess.Popen") as popen:
++        with pytest.raises(orchestrator.RunIdCollisionError):
++            orchestrator.create_run({"target": "https://collision.example", "depth": "danger"})
++
++    rows = orchestrator.list_runs()
++    assert original["run_id"] == "run-same"
++    assert popen.call_count == 0
++    assert len(rows) == 1
++    assert rows[0]["run_id"] == "run-same"
++    assert rows[0]["target"] == "https://original.example"
++    assert rows[0]["depth"] == "recon"
++    assert new_run_id.call_count > 2
++
++
++def test_create_run_spawns_agent_driver_with_run_start_context(monkeypatch, tmp_path):
++    db_path = tmp_path / "runs.db"
++    monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")
++    monkeypatch.setattr(orchestrator, "_new_run_id", lambda: "run-context")
++
++    captured = {}
++
++    def _capture_popen(args, **kwargs):
++        captured["args"] = list(args)
++        captured["kwargs"] = kwargs
++        return MagicMock(pid=2222)
++
++    with patch("subprocess.Popen", side_effect=_capture_popen):
++        orchestrator.create_run({
++            "target": "https://target.example",
++            "depth": "thorough",
++            "scope": ["https://target.example/app"],
++            "out_of_scope": ["https://target.example/admin"],
++        })
++
++    env = captured["kwargs"]["env"]
++    argv_text = "\n".join(str(part) for part in captured["args"])
++    assert captured["args"][:3] != [orchestrator.sys.executable, "-m", "mcp_server"]
++    assert env["SMITH_RUN_ID"] == "run-context"
++    assert env["SMITH_WORKDIR"].endswith("/runs/run-context")
++    assert env["SMITH_RUN_TARGET"] == "https://target.example"
++    assert env["SMITH_RUN_DEPTH"] == "thorough"
++    assert "https://target.example/app" in env["SMITH_RUN_SCOPE"]
++    assert "https://target.example/admin" in env["SMITH_RUN_OUT_OF_SCOPE"]
++    assert "session(action='start'" in argv_text
++    assert "https://target.example" in argv_text
++    assert "thorough" in argv_text
++
++
+ def test_stop_run_cleans_only_targeted_resources(monkeypatch, tmp_path):
+     db_path = tmp_path / "runs.db"
+     monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")
+diff --git a/tests/test_dashboard_runs_ui.py b/tests/test_dashboard_runs_ui.py
+new file mode 100644
+index 0000000..8e4a974
+--- /dev/null
++++ b/tests/test_dashboard_runs_ui.py
+@@ -0,0 +1,15 @@
++from pathlib import Path
++
++
++REPO_ROOT = Path(__file__).resolve().parent.parent
++
++
++def test_sessions_tab_uses_runs_api_for_platform_run_management():
++    script = (REPO_ROOT / "dashboard" / "js" / "sessions.js").read_text(encoding="utf-8")
++    markup = (REPO_ROOT / "dashboard" / "tabs" / "sessions.html").read_text(encoding="utf-8")
++
++    assert "/api/runs" in script
++    assert "start-run-form" in markup
++    assert "runs-output" in markup
++    assert "selected-run-token" in script
++    assert "/api/sessions" not in script
+diff --git a/tests/test_runs_routes.py b/tests/test_runs_routes.py
+index 95da8a3..f4b3ddf 100644
+--- a/tests/test_runs_routes.py
++++ b/tests/test_runs_routes.py
+@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
+ from fastapi.testclient import TestClient
+ 
+ import core.api_server as api_server
++from core import paths as core_paths
+ import core.steering as steering_store
+ import core.wishlist as wishlist_store
+ from core.api_server import app
+@@ -26,6 +27,26 @@ def _create_run(client: TestClient, operator_token: str, target: str) -> dict:
+     return response.json()
+ 
+ 
++def _write_event_stream(events_dir, session_id: str, target: str, message: str) -> None:
++    events_dir.mkdir(parents=True, exist_ok=True)
++    (events_dir / f"{session_id}.jsonl").write_text(
++        json.dumps({
++            "event_id": f"evt-{session_id}",
++            "event_type": "note",
++            "sequence": 1,
++            "occurred_at": "2026-01-01T00:00:00Z",
++            "note": {"message": message},
++        }) + "\n",
++        encoding="utf-8",
++    )
++    bundle = events_dir / session_id
++    bundle.mkdir(parents=True, exist_ok=True)
++    (bundle / "meta.json").write_text(
++        json.dumps({"target": target, "started": "2026-01-01T00:00:00Z"}),
++        encoding="utf-8",
++    )
++
++
+ def test_operator_token_can_create_and_stop(monkeypatch, tmp_path):
+     db_path = tmp_path / "runs.db"
+     monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")
+@@ -48,6 +69,45 @@ def test_operator_token_can_create_and_stop(monkeypatch, tmp_path):
+     assert stopped.json()["status"] == "stopped"
+ 
+ 
++def test_run_token_scopes_sessions_and_session_log_to_run_workdir(monkeypatch, tmp_path):
++    db_path = tmp_path / "runs.db"
++    monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")
++    monkeypatch.setenv("SMITH_DASHBOARD_AUTH", "1")
++    monkeypatch.delenv("SMITH_SINGLE_RUN", raising=False)
++
++    global_events = tmp_path / "global" / "logs" / "smith-events"
++    _write_event_stream(global_events, "sess-a", "https://global-a.example", "GLOBAL A LEAK")
++    _write_event_stream(global_events, "sess-b", "https://global-b.example", "GLOBAL B LEAK")
++    monkeypatch.setattr(core_paths, "SMITH_EVENTS_DIR", global_events)
++    monkeypatch.setattr(core_paths, "SESSION_FILE", tmp_path / "global" / "session.json")
++    core_paths.SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
++    core_paths.SESSION_FILE.write_text(json.dumps({"id": "sess-b", "status": "running"}))
++
++    run_a_workdir = tmp_path / "runs" / "run-a"
++    run_b_workdir = tmp_path / "runs" / "run-b"
++    _write_event_stream(run_a_workdir / "logs" / "smith-events", "sess-a", "https://a.example", "RUN A ONLY")
++    _write_event_stream(run_b_workdir / "logs" / "smith-events", "sess-b", "https://b.example", "RUN B ONLY")
++    (run_a_workdir / "session.json").write_text(json.dumps({"id": "sess-a", "status": "running"}))
++    (run_b_workdir / "session.json").write_text(json.dumps({"id": "sess-b", "status": "running"}))
++
++    repo = db_store.get_repository()
++    repo.upsert_run("run-a", {"run_id": "run-a", "target": "https://a.example", "status": "running"}, str(run_a_workdir))
++    repo.upsert_run("run-b", {"run_id": "run-b", "target": "https://b.example", "status": "running"}, str(run_b_workdir))
++    token_a = dashboard_auth.mint_run_token("run-a")
++    client = TestClient(app)
++
++    sessions = client.get("/api/sessions", headers=_headers(token_a))
++    log_a = client.get("/api/session-log", headers=_headers(token_a))
++    log_b = client.get("/api/session-log?session=sess-b", headers=_headers(token_a))
++
++    assert sessions.status_code == 200
++    assert [row["id"] for row in sessions.json()["sessions"]] == ["sess-a"]
++    assert log_a.status_code == 200
++    assert [row["id"] for row in log_a.json()["sessions"]] == ["sess-a"]
++    assert log_a.json()["events"][0]["payload"]["message"] == "RUN A ONLY"
++    assert log_b.status_code == 403
++
++
+ def test_api_runs_list_persists_after_restart(monkeypatch, tmp_path):
+     db_path = tmp_path / "runs.db"
+     monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")
