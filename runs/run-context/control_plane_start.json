@@ -1,0 +1,1 @@
+{"depth": "thorough", "out_of_scope": ["https://target.example/admin"], "scope": ["https://target.example/app"], "target": "https://target.example"}

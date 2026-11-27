@@ -26,8 +26,8 @@ _DEFAULT_DATABASE_URL = "postgresql+psycopg://smith:smith@127.0.0.1:55432/agent_
 _CONTROL_PLANE_PORT = 7777
 _COMPOSE_FILE = _paths.REPO_ROOT / "docker-compose.yml"
 _RUN_ID_ATTEMPTS = 5
+_RUN_START_OPTIONS_FILENAME = "control_plane_start.json"
 _KNOWN_AGENT_CLIENTS = {"claude", "opencode", "codex"}
-
 
 class RunIdCollisionError(RuntimeError):
     pass
@@ -93,16 +93,28 @@ def _workdir_path_for(run_id: str) -> Path:
     return Path(_paths.RUNTIME_ROOT) / "runs" / run_id
 
 
-def _initial_run_prompt(target: str, depth: str, scope: list[str], out_of_scope: list[str]) -> str:
-    options = {
+def _write_run_start_options(
+    workdir: Path,
+    target: str,
+    depth: str,
+    scope: list[str],
+    out_of_scope: list[str],
+) -> Path:
+    options_path = workdir / _RUN_START_OPTIONS_FILENAME
+    options_path.write_text(json.dumps({
         "target": target,
         "depth": depth,
         "scope": scope,
         "out_of_scope": out_of_scope,
-    }
+    }, sort_keys=True), encoding="utf-8")
+    return options_path
+
+
+def _initial_run_prompt(options_path: Path) -> str:
     return (
         "Start a new agent-smith pentest run from the dashboard control plane. "
-        f"First call session(action='start', options={json.dumps(options, sort_keys=True)}). "
+        f"Read the JSON start options from {options_path} and call "
+        "session(action='start', options=<that JSON object>). "
         "Then call session(action='status') and continue autonomously with the next recommended "
         "tool call until the scan is complete or genuinely blocked."
     )
@@ -137,7 +149,9 @@ def _spawn_worker(
     env.setdefault("SMITH_SESSION_ORIGIN", "operator")
     logs_dir = workdir / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
-    prompt = _initial_run_prompt(target, depth, scope, out_of_scope)
+    prompt = _initial_run_prompt(
+        _write_run_start_options(workdir, target, depth, scope, out_of_scope)
+    )
     args = _agent_spawn_args(_agent_client(), prompt)
     spawn_kwargs = {
         "cwd": str(_paths.REPO_ROOT),

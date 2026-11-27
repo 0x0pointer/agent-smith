@@ -1,3 +1,5 @@
+import json
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -149,6 +151,7 @@ def test_create_run_spawns_agent_driver_with_run_start_context(monkeypatch, tmp_
 
     env = captured["kwargs"]["env"]
     argv_text = "\n".join(str(part) for part in captured["args"])
+    options_path = Path(env["SMITH_WORKDIR"]) / orchestrator._RUN_START_OPTIONS_FILENAME
     assert captured["args"][:3] != [orchestrator.sys.executable, "-m", "mcp_server"]
     assert env["SMITH_RUN_ID"] == "run-context"
     assert env["SMITH_WORKDIR"].endswith("/runs/run-context")
@@ -157,8 +160,14 @@ def test_create_run_spawns_agent_driver_with_run_start_context(monkeypatch, tmp_
     assert "https://target.example/app" in env["SMITH_RUN_SCOPE"]
     assert "https://target.example/admin" in env["SMITH_RUN_OUT_OF_SCOPE"]
     assert "session(action='start'" in argv_text
-    assert "https://target.example" in argv_text
-    assert "thorough" in argv_text
+    assert str(options_path) in argv_text
+    assert "https://target.example" not in argv_text
+    assert json.loads(options_path.read_text(encoding="utf-8")) == {
+        "target": "https://target.example",
+        "depth": "thorough",
+        "scope": ["https://target.example/app"],
+        "out_of_scope": ["https://target.example/admin"],
+    }
 
 
 def test_stop_run_cleans_only_targeted_resources(monkeypatch, tmp_path):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
@@ -9,9 +10,16 @@ from control_plane import orchestrator
 
 from ._common import router
 
+_LOG = logging.getLogger(__name__)
+
 
 def _is_operator(request: Request) -> bool:
     return getattr(request.state, "role", "") == "operator"
+
+
+def _service_unavailable(action: str, exc: RuntimeError) -> JSONResponse:
+    _LOG.warning("runs route %s failed: %s", action, exc)
+    return JSONResponse({"error": "service unavailable"}, status_code=503)
 
 
 @router.get("/api/runs")
@@ -35,7 +43,7 @@ async def api_create_run(request: Request) -> JSONResponse:
     except orchestrator.RunIdCollisionError as exc:
         return JSONResponse({"error": str(exc)}, status_code=409)
     except RuntimeError as exc:
-        return JSONResponse({"error": str(exc)}, status_code=503)
+        return _service_unavailable("create", exc)
 
 
 @router.post("/api/runs/{run_id}/token")
@@ -47,7 +55,7 @@ async def api_mint_run_token(run_id: str, request: Request) -> JSONResponse:
     except KeyError:
         return JSONResponse({"error": "run not found"}, status_code=404)
     except RuntimeError as exc:
-        return JSONResponse({"error": str(exc)}, status_code=503)
+        return _service_unavailable("mint_token", exc)
 
 
 @router.post("/api/runs/{run_id}/stop")
@@ -59,4 +67,4 @@ async def api_stop_run(run_id: str, request: Request) -> JSONResponse:
     try:
         return JSONResponse(orchestrator.stop_run(run_id))
     except RuntimeError as exc:
-        return JSONResponse({"error": str(exc)}, status_code=503)
+        return _service_unavailable("stop", exc)

@@ -217,6 +217,7 @@ async def test_already_running_multi_run_container_rediscovers_api_port_after_re
 ):
     monkeypatch.setenv("SMITH_RUN_ID", "run-restart")
     monkeypatch.delenv("SMITH_SINGLE_RUN", raising=False)
+    monkeypatch.setattr(runner, "docker_executable", lambda: "/usr/bin/docker")
     runner._RUN_API_PORTS.clear()
     calls = []
     _patch_already_running_subprocess(
@@ -235,5 +236,5 @@ async def test_already_running_multi_run_container_rediscovers_api_port_after_re
     assert msg == "already running"
     assert runner.api_url() == expected_url
     assert [call for call in calls if call[1] == "port"] == [
-        ["docker", "port", container, container_port]
+        [runner.docker_executable(), "port", container, container_port]
     ]
