@@ -1,7 +1,7 @@
 _version = 1
 
-# Issue -> spec -> human approval -> code -> checks -> one independent review
-# (standard or security) -> draft PR.
+# Issue -> spec -> human approval -> code -> checks -> code review ->
+# security review where needed -> draft PR.
 #
 # Started by its Fabro automation (schedule or the Run button in the web UI) or:
 #   fabro run .fabro/workflows/issue-to-pr/workflow.toml [-I issue=<number>]
@@ -42,12 +42,12 @@ max_fix_attempts = "3"
 # rejection goes back to the implementer, the next one to the strong model.
 max_review_rounds = "3"
 
-# Which reviewer. A change gets the security reviewer (strong model, Trail of
-# Bits differential-review skill in .fabro/skills/) if it touches one of the
-# sensitive paths (substrings of changed non-test paths), adds a risky
-# construct, has more changed lines than this, or the spec says
-# "Risk level: high". Everything else gets the standard reviewer, which can
-# still hand a change over to the security reviewer.
+# Which reviews. Every change gets the code review (code-review-and-quality
+# skill in .fabro/skills/). After it passes, a change also gets the security
+# review (strong model, Trail of Bits differential-review skill) if it touches
+# one of the sensitive paths (substrings of changed non-test paths), adds a
+# risky construct, has more changed lines than this, the spec says
+# "Risk level: high", or the code reviewer asks for it.
 max_standard_review_lines = "400"
 sensitive_paths = "auth,secret,token,crypt,password,sandbox,policy,proxy,session,mcp_server,installers,tools/,scripts/,Dockerfile,pyproject.toml,poetry.lock,requirements,config"
 # Directory that holds the tests, or "none". Python code changes must come
