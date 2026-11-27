@@ -38,6 +38,18 @@ async def api_create_run(request: Request) -> JSONResponse:
         return JSONResponse({"error": str(exc)}, status_code=503)
 
 
+@router.post("/api/runs/{run_id}/token")
+async def api_mint_run_token(run_id: str, request: Request) -> JSONResponse:
+    if not _is_operator(request):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    try:
+        return JSONResponse(orchestrator.mint_existing_run_token(run_id))
+    except KeyError:
+        return JSONResponse({"error": "run not found"}, status_code=404)
+    except RuntimeError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=503)
+
+
 @router.post("/api/runs/{run_id}/stop")
 async def api_stop_run(run_id: str, request: Request) -> JSONResponse:
     role = getattr(request.state, "role", "")

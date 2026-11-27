@@ -149,6 +149,57 @@ def test_run_token_scopes_existing_tabs(monkeypatch, tmp_path):
     assert session_b.json()["target"] == "https://b.example"
 
 
+def test_operator_can_mint_persisted_run_token_that_scopes_existing_tabs(monkeypatch, tmp_path):
+    db_path = tmp_path / "runs.db"
+    global_findings = tmp_path / "findings.json"
+    global_session = tmp_path / "session.json"
+    global_cost = tmp_path / "session_cost.json"
+    global_coverage = tmp_path / "coverage.json"
+    global_findings.write_text(json.dumps({"findings": [{"title": "GLOBAL"}]}))
+    global_session.write_text(json.dumps({"target": "https://global.example"}))
+    global_cost.write_text(json.dumps({"total_usd": 99}))
+    global_coverage.write_text(json.dumps({"endpoints": [{"path": "/global"}], "cells": []}))
+    monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")
+    monkeypatch.setenv("SMITH_DASHBOARD_AUTH", "1")
+    monkeypatch.delenv("SMITH_SINGLE_RUN", raising=False)
+    monkeypatch.setattr(api_server, "_FINDINGS_FILE", global_findings)
+    monkeypatch.setattr(api_server, "_SESSION_FILE", global_session)
+    monkeypatch.setattr(api_server, "_COST_FILE", global_cost)
+    monkeypatch.setattr(api_server, "_COVERAGE_FILE", global_coverage)
+
+    client = TestClient(app)
+    operator_token = dashboard_auth.mint_operator_token()
+    repo = db_store.get_repository()
+    repo.upsert_run("run-a", {"run_id": "run-a", "target": "https://a.example", "status": "running"}, str(tmp_path / "run-a"))
+    repo.upsert_run("run-b", {"run_id": "run-b", "target": "https://b.example", "status": "running"}, str(tmp_path / "run-b"))
+    repo.save_snapshot("run-a", "findings", {"findings": [{"title": "SQLi A"}]})
+    repo.save_snapshot("run-a", "session", {"target": "https://a.example", "status": "running"})
+    repo.save_snapshot("run-a", "coverage", {"endpoints": [{"path": "/a"}], "cells": []})
+    repo.save_snapshot("run-a", "cost", {"total_usd": 1})
+    repo.save_snapshot("run-b", "findings", {"findings": [{"title": "XSS B"}]})
+    repo.save_snapshot("run-b", "session", {"target": "https://b.example", "status": "running"})
+    repo.save_snapshot("run-b", "coverage", {"endpoints": [{"path": "/b"}], "cells": []})
+    repo.save_snapshot("run-b", "cost", {"total_usd": 2})
+
+    minted = client.post("/api/runs/run-a/token", headers=_headers(operator_token))
+    assert minted.status_code == 200
+    selected_token = minted.json()["token"]
+    cross_mint = client.post("/api/runs/run-b/token", headers=_headers(selected_token))
+    missing = client.post("/api/runs/missing/token", headers=_headers(operator_token))
+
+    findings = client.get("/api/findings", headers=_headers(selected_token))
+    session = client.get("/api/session", headers=_headers(selected_token))
+    coverage = client.get("/api/coverage", headers=_headers(selected_token))
+    cost = client.get("/api/cost", headers=_headers(selected_token))
+
+    assert cross_mint.status_code == 403
+    assert missing.status_code == 404
+    assert findings.json()["findings"][0]["title"] == "SQLi A"
+    assert session.json()["target"] == "https://a.example"
+    assert coverage.json()["endpoints"] == [{"path": "/a"}]
+    assert cost.json()["total_usd"] == 1
+
+
 def test_cross_run_token_rejected(monkeypatch, tmp_path):
     db_path = tmp_path / "runs.db"
     monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")

@@ -13,3 +13,10 @@ def test_sessions_tab_uses_runs_api_for_platform_run_management():
     assert "runs-output" in markup
     assert "selected-run-token" in script
     assert "/api/sessions" not in script
+
+
+def test_sessions_tab_can_select_persisted_runs_without_cached_localstorage_tokens():
+    script = (REPO_ROOT / "dashboard" / "js" / "sessions.js").read_text(encoding="utf-8")
+
+    assert "api/runs/' + encodeURIComponent(runId) + '/token" in script
+    assert "disabled" not in script

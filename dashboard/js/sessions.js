@@ -57,8 +57,29 @@ function _selectedRunId() {
   catch (e) { return ''; }
 }
 
-function selectRun(runId) {
-  const token = _runTokenMap()[runId] || '';
+async function _tokenForRun(runId) {
+  const cached = _runTokenMap()[runId] || '';
+  if (cached) return cached;
+  const operatorToken = _operatorToken();
+  if (!operatorToken) return '';
+  const r = await fetch('/api/runs/' + encodeURIComponent(runId) + '/token', {
+    method: 'POST',
+    headers: _headersFor(operatorToken),
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error || 'Run token unavailable');
+  if (data.token) _rememberRunToken(runId, data.token);
+  return data.token || '';
+}
+
+async function selectRun(runId) {
+  let token = '';
+  try {
+    token = await _tokenForRun(runId);
+  } catch (e) {
+    if (typeof _notify === 'function') _notify('Run token unavailable', e.message || 'Could not select this run.');
+    return;
+  }
   if (!token) {
     if (typeof _notify === 'function') _notify('Run token unavailable', 'Start or open this run from its dashboard URL to select it.');
     return;
@@ -96,7 +117,7 @@ async function startRunFromForm(ev) {
       return;
     }
     _rememberRunToken(data.run_id, data.token);
-    selectRun(data.run_id);
+    await selectRun(data.run_id);
     if (status) status.textContent = 'Run started: ' + data.run_id;
   } catch (e) {
     if (status) status.textContent = 'Run creation failed';
@@ -111,17 +132,15 @@ function _renderRuns(rows) {
     out.innerHTML = '<div class="empty-placeholder">No runs yet.</div>';
     return;
   }
-  const tokens = _runTokenMap();
   const body = rows.map(r => {
     const active = r.run_id === selected ? ' <span class="badge-cur">SELECTED</span>' : '';
-    const selectable = tokens[r.run_id] ? '' : ' disabled';
     return `<tr class="sess-row${r.run_id === selected ? ' sess-new' : ''}">
       <td><span class="badge-op">RUN</span>${active}</td>
       <td>${_sessEsc(r.target || '—')}</td>
       <td><span class="sess-status sess-${_sessEsc(r.status)}">${_sessEsc(r.status || 'unknown')}</span></td>
       <td>${_sessEsc(r.depth || '—')}</td>
       <td class="sess-id">${_sessEsc((r.run_id || '').slice(0, 12))}</td>
-      <td><button type="button" onclick="selectRun('${_sessEsc(r.run_id)}')"${selectable}>Select</button></td>
+      <td><button type="button" onclick="selectRun('${_sessEsc(r.run_id)}')">Select</button></td>
     </tr>`;
   }).join('');
   out.innerHTML = `<table class="sessions-table">

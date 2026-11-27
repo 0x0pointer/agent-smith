@@ -370,6 +370,20 @@ def list_runs() -> list[dict]:
     ]
 
 
+def mint_existing_run_token(run_id: str) -> dict:
+    repo = _db.get_repository()
+    if repo is None:
+        raise RuntimeError("database unavailable")
+    if not repo.get_run(run_id):
+        raise KeyError(run_id)
+    token = dashboard_auth.mint_run_token(run_id)
+    return {
+        "run_id": run_id,
+        "dashboard_url": f"{_dashboard_base_url()}/#k={token}",
+        "token": token,
+    }
+
+
 def _stop_worker(run_id: str, worker_pid: int | None) -> list[str]:
     errors: list[str] = []
     if not worker_pid:
