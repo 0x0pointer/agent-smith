@@ -279,7 +279,8 @@ function buildFindingsMarkdown() {
     `- **${confirmed} of ${rows.length} confirmed**` + (confirmed < rows.length ? ' — the rest are not yet independently re-tested' : ''),
     '', '| # | Severity | Finding | Where | Verification |', '|---|---|---|---|---|',
   ];
-  const cell = s => String(s == null ? '' : s).replace(/\|/g, '\\|').replace(/\s+/g, ' ').trim();
+  // Backslashes first: otherwise a value ending in "\" would un-escape the "|" escape added next.
+  const cell = s => String(s == null ? '' : s).replace(/\\/g, '\\\\').replace(/\|/g, '\\|').replace(/\s+/g, ' ').trim();
   rows.forEach((f, i) => lines.push(`| ${i + 1} | ${cell(f.severity)} | ${cell(f.title)} | ${cell(f.target)} | ${cell(_vsPlain(f))} |`));
   lines.push('', '## Findings', '');
   rows.forEach((f, i) => {

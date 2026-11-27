@@ -418,3 +418,53 @@ def test_source_is_validated_against_the_registry_and_passed_to_the_run(monkeypa
     with patch("subprocess.Popen") as popen, pytest.raises(ValueError, match="unknown source"):
         orchestrator.create_run({"target": "https://c.example", "depth": "recon", "source": "nope"})
     popen.assert_not_called()
+
+
+def test_run_workdir_is_always_inside_the_runs_root(monkeypatch, tmp_path):
+    """A run id reaches the orchestrator from URLs; it must never become a path
+    outside <runtime>/runs, whatever it contains or whatever was recorded."""
+    _configure_db(monkeypatch, tmp_path)
+    root = Path(orchestrator.os.path.realpath(Path(orchestrator._paths.RUNTIME_ROOT) / "runs"))
+
+    for hostile in ("../../etc", "..", "run-1/../../x", "/abs/path", "a\x00b", ""):
+        path = orchestrator._contained_workdir(hostile)
+        assert path.parent == root, hostile
+
+    # A recorded directory outside the root is ignored in favour of the derived one.
+    assert orchestrator._contained_workdir("run-abc", "/etc").parent == root
+    inside = root / "run-abc"
+    assert orchestrator._contained_workdir("run-abc", str(inside)) == inside
+
+
+def test_resume_uses_the_stored_run_and_rejects_unknown_ids(monkeypatch, tmp_path):
+    _configure_db(monkeypatch, tmp_path)
+    with patch("subprocess.Popen") as popen:
+        for hostile in ("../../etc/passwd", "run-does-not-exist"):
+            with pytest.raises(KeyError):
+                orchestrator.resume_run(hostile)
+    popen.assert_not_called()
+
+
+def test_validation_failures_map_to_fixed_public_messages():
+    public = orchestrator.public_validation_error
+    assert public(ValueError("target required")) == "target required"
+    assert public(ValueError("unknown source '<script>alert(1)</script>'")) == "unknown source"
+    assert public(ValueError("scope exceeds 128 entries")) == "too many scope entries"
+    assert public(ValueError("/secret/path/leaked in a traceback")) == "invalid request"
+
+
+def test_stop_keeps_the_recorded_workdir(monkeypatch, tmp_path):
+    """The tool server rewrites the session snapshot without a workdir; stopping
+    must not blank the run's recorded directory."""
+    _configure_db(monkeypatch, tmp_path)
+    with patch("subprocess.Popen", return_value=MagicMock(pid=4321)):
+        created = orchestrator.create_run({"target": "https://a.example", "depth": "recon"})
+    repo = orchestrator._db.get_repository()
+    before = repo.get_run(created["run_id"])["workdir"]
+    repo.save_snapshot(created["run_id"], "session", {"status": "running", "target": "https://a.example"})
+
+    with patch.object(orchestrator, "_stop_worker", return_value=[]), \
+         patch.object(orchestrator, "_stop_run_tooling", return_value=[]):
+        orchestrator.stop_run(created["run_id"])
+
+    assert before and repo.get_run(created["run_id"])["workdir"] == before

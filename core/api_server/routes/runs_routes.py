@@ -74,10 +74,11 @@ async def api_create_run(request: Request) -> JSONResponse:
         return JSONResponse(orchestrator.create_run(body))
     except json.JSONDecodeError:
         return JSONResponse({"error": "malformed json"}, status_code=400)
+    except orchestrator.RunIdCollisionError:
+        return JSONResponse({"error": "could not allocate a unique run id, try again"}, status_code=409)
     except ValueError as exc:
-        return JSONResponse({"error": str(exc)}, status_code=400)
-    except orchestrator.RunIdCollisionError as exc:
-        return JSONResponse({"error": str(exc)}, status_code=409)
+        # A fixed message per validation rule — never the exception text itself.
+        return JSONResponse({"error": orchestrator.public_validation_error(exc)}, status_code=400)
     except RuntimeError as exc:
         return _service_unavailable("create", exc)
 
@@ -102,11 +103,23 @@ async def api_resume_run(run_id: str, request: Request) -> JSONResponse:
     if role != "operator" and token_run_id != run_id:
         return JSONResponse({"error": "forbidden"}, status_code=403)
     try:
-        return JSONResponse(orchestrator.resume_run(run_id))
+        return JSONResponse(_public_resume_result(orchestrator.resume_run(run_id)))
     except KeyError:
+        return JSONResponse({"error": "run not found"}, status_code=404)
+    except orchestrator.UnsafeRunPath:
         return JSONResponse({"error": "run not found"}, status_code=404)
     except RuntimeError as exc:
         return _service_unavailable("resume", exc)
+
+
+def _public_resume_result(result: dict) -> dict:
+    """The fields of a resume result that are safe and useful to a client."""
+    body = {"run_id": str(result.get("run_id") or ""), "resumed": bool(result.get("resumed"))}
+    if result.get("pid"):
+        body["pid"] = int(result["pid"])
+    if not body["resumed"]:
+        body["reason"] = "already running" if result.get("reason") == "already running" else "run is not active"
+    return body
 
 
 def _may_access_run(request: Request, run_id: str) -> bool:
@@ -161,6 +174,12 @@ async def api_stop_run(run_id: str, request: Request) -> JSONResponse:
     if role != "operator" and token_run_id != run_id:
         return JSONResponse({"error": "forbidden"}, status_code=403)
     try:
-        return JSONResponse(orchestrator.stop_run(run_id))
+        result = orchestrator.stop_run(run_id)
     except RuntimeError as exc:
         return _service_unavailable("stop", exc)
+    # Cleanup failures carry process/docker error text: report only that cleanup
+    # was incomplete (the details are in the server log).
+    body = {"run_id": str(result.get("run_id") or ""), "status": "stopped"}
+    if result.get("cleanup_errors"):
+        body["cleanup_incomplete"] = True
+    return JSONResponse(body)

@@ -1,6 +1,8 @@
 """Smith lifecycle + watchdog diagnostic routes."""
 from __future__ import annotations
 
+import logging
+
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
@@ -8,6 +10,8 @@ import core.api_server as _api
 from core.api_server.smith import idle as _idle
 
 from ._common import router
+
+_log = logging.getLogger(__name__)
 
 
 # ── Smith lifecycle ─────────────────────────────────────────────────────────
@@ -137,11 +141,13 @@ async def api_restart_smith(request: Request) -> JSONResponse:
         # A dashboard-started run has its own worker process: resume THAT.
         try:
             from control_plane import orchestrator
-            return JSONResponse({"ok": True, **orchestrator.resume_run(run_id)})
-        except KeyError:
+            from .runs_routes import _public_resume_result
+            return JSONResponse({"ok": True, **_public_resume_result(orchestrator.resume_run(run_id))})
+        except (KeyError, ValueError):
             return JSONResponse({"ok": False, "error": "run not found"}, status_code=404)
-        except Exception as exc:
-            return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+        except Exception:
+            _log.exception("api_restart_smith: could not resume run")
+            return JSONResponse({"ok": False, "error": "could not resume the scan"}, status_code=500)
     if not force and _api._smith_running():
         return JSONResponse({"ok": False, "error": "Smith is already running. Pass force=true to override."}, status_code=409)
     client = (body.get("client") or _api._detect_active_client()).lower()

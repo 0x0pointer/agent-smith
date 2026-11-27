@@ -595,3 +595,32 @@ def test_sources_endpoint_lists_the_registry(monkeypatch, tmp_path):
 
     # Only localhost Sources are valid registry entries.
     assert body == {"sources": [{"name": "team-kb", "url": "http://127.0.0.1:8900"}]}
+
+
+def test_error_responses_never_carry_exception_or_process_text(monkeypatch, tmp_path):
+    db_path = tmp_path / "runs.db"
+    monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")
+    monkeypatch.setenv("SMITH_DASHBOARD_AUTH", "1")
+    monkeypatch.delenv("SMITH_SINGLE_RUN", raising=False)
+    client = TestClient(app)
+    operator_token = dashboard_auth.mint_operator_token()
+    h = _headers(operator_token)
+
+    # Validation: a fixed message, not the caller's own string echoed back.
+    bad = client.post("/api/runs", json={"target": "https://a.example", "depth": "recon",
+                                         "source": "<img src=x onerror=1>"}, headers=h)
+    assert bad.status_code == 400 and bad.json() == {"error": "unknown source"}
+
+    created = _create_run(client, operator_token, "https://a.example")
+    secret = "docker: permission denied /var/run/docker.sock token=abc123"
+    with patch("control_plane.orchestrator._stop_worker", return_value=[secret]), \
+         patch("control_plane.orchestrator._stop_run_tooling", return_value=[]):
+        stopped = client.post(f"/api/runs/{created['run_id']}/stop", headers=h)
+    assert stopped.json() == {"run_id": created["run_id"], "status": "stopped", "cleanup_incomplete": True}
+    assert "docker" not in stopped.text
+
+    # Resume failures are generic too.
+    created2 = _create_run(client, operator_token, "https://b.example")
+    with patch("control_plane.orchestrator.resume_run", side_effect=Exception("/Users/x/.ssh/id_rsa boom")):
+        r = client.post("/api/restart-smith", headers=_headers(created2["token"]))
+    assert r.status_code == 500 and r.json() == {"ok": False, "error": "could not resume the scan"}

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import signal
@@ -17,6 +18,8 @@ from core import db as _db
 from core import paths as _paths
 from core import run_context as _run_context
 from tools.docker_cli import docker_executable
+
+_LOG = logging.getLogger(__name__)
 
 _DEPTHS = {"recon", "standard", "thorough", "danger"}
 _TARGET_MAX_LENGTH = 2048
@@ -84,13 +87,62 @@ def _validate(payload: object) -> tuple[str, str, list[str], list[str]]:
 
 
 def _workdir_for(run_id: str) -> Path:
-    path = _workdir_path_for(run_id)
+    path = _contained_workdir(run_id)
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
 def _workdir_path_for(run_id: str) -> Path:
     return Path(_paths.RUNTIME_ROOT) / "runs" / run_id
+
+
+class UnsafeRunPath(ValueError):
+    """A run's working directory would fall outside the runs root."""
+
+
+def _contained_workdir(run_id: str, recorded: str | None = None) -> Path:
+    """The run's working directory, guaranteed to sit inside ``<runtime>/runs``.
+
+    ``run_id`` reaches this module from URLs (resume, stop, steer). A crafted id
+    such as ``../../x`` must never turn into a path that is created, read or
+    handed to a subprocess, so the candidate path is normalised and then checked
+    against the runs root. The directory recorded for the run is preferred when
+    it passes the same check; otherwise the path is derived from the id.
+    """
+    root = os.path.realpath(os.path.join(str(_paths.RUNTIME_ROOT), "runs"))
+    for candidate in (recorded, os.path.join(root, _run_context.sanitize_run_id(run_id))):
+        if not candidate:
+            continue
+        full = os.path.realpath(str(candidate))
+        if full.startswith(root + os.sep):
+            return Path(full)
+    raise UnsafeRunPath("run working directory is outside the runs root")
+
+
+# Messages a client may be shown for a rejected start request. The route answers
+# with one of these constants rather than with exception text.
+PUBLIC_VALIDATION_ERRORS = (
+    "request body must be an object",
+    "target required",
+    "target too long",
+    "invalid depth",
+    "scope must be a list",
+    "out_of_scope must be a list",
+    "scope entry too long",
+    "out_of_scope entry too long",
+    "unknown source",
+)
+
+
+def public_validation_error(exc: Exception) -> str:
+    """Map a validation failure onto one of the fixed public messages."""
+    text = str(exc)
+    for known in PUBLIC_VALIDATION_ERRORS:
+        if text == known or text.startswith(known):
+            return known
+    if "exceeds" in text and "entries" in text:
+        return "too many scope entries"
+    return "invalid request"
 
 
 def _validate_source(payload: object) -> str:
@@ -346,11 +398,14 @@ def resume_run(run_id: str, prompt: str | None = None) -> dict:
     row = repo.get_run(run_id)
     if not row:
         raise KeyError(run_id)
+    # From here on use the id as STORED for this run, never the caller's string.
+    run_id = str(row["run_id"])
     if _worker_alive(_worker_pid(repo, run_id)):
         return {"run_id": run_id, "resumed": False, "reason": "already running"}
-    if str(row.get("status") or "") not in _ACTIVE_STATUSES:
-        return {"run_id": run_id, "resumed": False, "reason": f"run is {row.get('status') or 'not active'}"}
-    workdir = Path(row.get("workdir") or _workdir_path_for(run_id))
+    status = str(row.get("status") or "")
+    if status not in _ACTIVE_STATUSES:
+        return {"run_id": run_id, "resumed": False, "reason": "run has ended" if status else "run is not active"}
+    workdir = _contained_workdir(run_id, row.get("workdir"))
     workdir.mkdir(parents=True, exist_ok=True)
     try:
         opts = json.loads((workdir / _RUN_START_OPTIONS_FILENAME).read_text(encoding="utf-8"))
@@ -670,16 +725,22 @@ def stop_run(run_id: str) -> dict:
     repo = _db.get_repository()
     if repo is None:
         raise RuntimeError("database unavailable")
+    row = repo.get_run(run_id) or {}
     session_doc = repo.load_snapshot(run_id, "session") or {"run_id": run_id}
     cleanup_errors = []
     cleanup_errors.extend(_stop_worker(run_id, _worker_pid(repo, run_id)))
     cleanup_errors.extend(_stop_run_tooling(run_id))
     session_doc["status"] = "stopped"
     session_doc["cleanup_errors"] = cleanup_errors
-    repo.upsert_run(run_id, session_doc, session_doc.get("workdir", ""))
+    # The run's tool server rewrites the session snapshot without a workdir, so
+    # take it from the run row — writing "" here would orphan the run's files.
+    repo.upsert_run(run_id, session_doc, str(row.get("workdir") or session_doc.get("workdir") or ""))
     repo.save_snapshot(run_id, "session", session_doc)
     result = {"run_id": run_id, "status": "stopped"}
     if cleanup_errors:
+        # Details (process and docker error text) stay in the stored session and
+        # the server log; callers only learn that cleanup was incomplete.
+        _LOG.warning("stop_run %s: cleanup incomplete: %s", run_id, cleanup_errors)
         result["cleanup_errors"] = cleanup_errors
     return result
 
