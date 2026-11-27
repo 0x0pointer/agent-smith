@@ -1,0 +1,6 @@
+{
+  "outcome": "failed",
+  "notes": null,
+  "failure_reason": "Script failed with exit code: 1\n\n## output\nskipped pull request 287 - its branch dependabot/pip/pip-89390a9de7 is not a fabro run branch\nskipped pull request 305 - no check failed\nNOTHING TO FIX: no pull request with failed checks is waiting (2 looked at).\n",
+  "timestamp": "2026-11-27T21:58:09.045258299Z"
+}
