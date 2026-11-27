@@ -1,0 +1,96 @@
+diff --git a/runs/run-357360d9/control_plane_start.json b/runs/run-357360d9/control_plane_start.json
+new file mode 100644
+index 0000000..4e3c7ba
+--- /dev/null
++++ b/runs/run-357360d9/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://persist.example"], "target": "https://persist.example"}
+\ No newline at end of file
+diff --git a/runs/run-4486cd12/control_plane_start.json b/runs/run-4486cd12/control_plane_start.json
+new file mode 100644
+index 0000000..c7fbab3
+--- /dev/null
++++ b/runs/run-4486cd12/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-52069597/control_plane_start.json b/runs/run-52069597/control_plane_start.json
+new file mode 100644
+index 0000000..5c724aa
+--- /dev/null
++++ b/runs/run-52069597/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://b.example"], "target": "https://b.example"}
+\ No newline at end of file
+diff --git a/runs/run-865caff5/control_plane_start.json b/runs/run-865caff5/control_plane_start.json
+new file mode 100644
+index 0000000..c7fbab3
+--- /dev/null
++++ b/runs/run-865caff5/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-99266897/control_plane_start.json b/runs/run-99266897/control_plane_start.json
+new file mode 100644
+index 0000000..c7fbab3
+--- /dev/null
++++ b/runs/run-99266897/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-a5389bfd/control_plane_start.json b/runs/run-a5389bfd/control_plane_start.json
+new file mode 100644
+index 0000000..5c724aa
+--- /dev/null
++++ b/runs/run-a5389bfd/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://b.example"], "target": "https://b.example"}
+\ No newline at end of file
+diff --git a/runs/run-a5c9c4c5/control_plane_start.json b/runs/run-a5c9c4c5/control_plane_start.json
+new file mode 100644
+index 0000000..5c724aa
+--- /dev/null
++++ b/runs/run-a5c9c4c5/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://b.example"], "target": "https://b.example"}
+\ No newline at end of file
+diff --git a/runs/run-a5d521bd/control_plane_start.json b/runs/run-a5d521bd/control_plane_start.json
+new file mode 100644
+index 0000000..c7fbab3
+--- /dev/null
++++ b/runs/run-a5d521bd/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-b4236ce7/control_plane_start.json b/runs/run-b4236ce7/control_plane_start.json
+new file mode 100644
+index 0000000..5c724aa
+--- /dev/null
++++ b/runs/run-b4236ce7/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://b.example"], "target": "https://b.example"}
+\ No newline at end of file
+diff --git a/runs/run-c68b7c76/control_plane_start.json b/runs/run-c68b7c76/control_plane_start.json
+new file mode 100644
+index 0000000..c7fbab3
+--- /dev/null
++++ b/runs/run-c68b7c76/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-d23093dd/control_plane_start.json b/runs/run-d23093dd/control_plane_start.json
+new file mode 100644
+index 0000000..c7fbab3
+--- /dev/null
++++ b/runs/run-d23093dd/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-fbb24858/control_plane_start.json b/runs/run-fbb24858/control_plane_start.json
+new file mode 100644
+index 0000000..c7fbab3
+--- /dev/null
++++ b/runs/run-fbb24858/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
