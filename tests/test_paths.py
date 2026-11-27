@@ -1,4 +1,5 @@
 import importlib
+from pathlib import Path
 
 import core.paths
 
@@ -28,3 +29,9 @@ def test_default_paths_unchanged_without_env(monkeypatch):
     assert paths.ARTIFACTS_DIR == paths.REPO_ROOT / "artifacts"
     assert paths.POCS_DIR == paths.REPO_ROOT / "pocs"
     assert paths.LOGS_DIR == paths.REPO_ROOT / "logs"
+
+
+def test_gitignore_covers_generated_run_workdirs():
+    entries = Path(".gitignore").read_text(encoding="utf-8").splitlines()
+
+    assert "runs/" in entries
