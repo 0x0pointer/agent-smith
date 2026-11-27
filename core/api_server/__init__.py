@@ -100,14 +100,22 @@ async def _require_dashboard_token(request: Request, call_next):
     """
     path = request.url.path
     auth_on = os.environ.get("SMITH_DASHBOARD_AUTH", "1").lower() not in ("0", "false", "no")
+    request.state.run_id = None
+    request.state.role = None
     if auth_on and path.startswith("/api/"):
         from core import dashboard_auth
-        token = dashboard_auth.read_token()
-        if token:  # a session is active → require the bearer token
-            hdr = request.headers.get("authorization", "")
-            supplied = hdr[7:].strip() if hdr[:7].lower() == "bearer " else ""
-            if not dashboard_auth.verify(supplied):
-                return JSONResponse({"error": "unauthorized"}, status_code=401)
+        hdr = request.headers.get("authorization", "")
+        supplied = hdr[7:].strip() if hdr[:7].lower() == "bearer " else ""
+        meta = dashboard_auth.verify_bearer(supplied)
+        if meta:
+            request.state.run_id = meta.get("run_id") or None
+            request.state.role = meta.get("role") or None
+        else:
+            token = dashboard_auth.read_token()
+            if token:  # a session is active → require the bearer token
+                if not dashboard_auth.verify(supplied):
+                    return JSONResponse({"error": "unauthorized"}, status_code=401)
+                request.state.role = "operator"
     resp = await call_next(request)
     # Force the browser to REVALIDATE dashboard assets on every load instead of
     # serving a heuristically-cached stale copy. Without this, the un-versioned

@@ -15,9 +15,19 @@ _log = logging.getLogger(__name__)
 
 # ── Read APIs ───────────────────────────────────────────────────────────────
 
+def _scoped_data(request: Request, kind: str, path):
+    run_id = getattr(request.state, "run_id", None)
+    if run_id:
+        from core import db as _db
+        data = _db.load_snapshot(kind, run_id=run_id)
+        if isinstance(data, dict):
+            return data
+    return _api._read_json(path)
+
+
 @router.get("/api/findings")
-async def api_findings() -> JSONResponse:
-    data = _api._read_json(_api._FINDINGS_FILE)
+async def api_findings(request: Request) -> JSONResponse:
+    data = _scoped_data(request, "findings", _api._FINDINGS_FILE)
     # Render diagram + exploit-chain SVGs server-side so the topology tab matches
     # the threat-model theme.
     from ..mermaid import sanitize_mermaid
@@ -73,8 +83,8 @@ async def api_finding(finding_id: str) -> JSONResponse:
 
 
 @router.get("/api/session")
-async def api_session() -> JSONResponse:
-    data = _api._read_json(_api._SESSION_FILE)
+async def api_session(request: Request) -> JSONResponse:
+    data = _scoped_data(request, "session", _api._SESSION_FILE)
     # Self-heal the triage banner + expose the live pending count so the dashboard
     # can show progress (and a "stalled" warning if Smith goes idle mid-pass).
     if isinstance(data, dict) and data.get("triage_requested"):
@@ -126,13 +136,13 @@ async def api_session() -> JSONResponse:
 
 
 @router.get("/api/cost")
-async def api_cost() -> JSONResponse:
-    return JSONResponse(_api._read_json(_api._COST_FILE))
+async def api_cost(request: Request) -> JSONResponse:
+    return JSONResponse(_scoped_data(request, "cost", _api._COST_FILE))
 
 
 @router.get("/api/coverage")
-async def api_coverage() -> JSONResponse:
-    return JSONResponse(_api._read_json(_api._COVERAGE_FILE))
+async def api_coverage(request: Request) -> JSONResponse:
+    return JSONResponse(_scoped_data(request, "coverage", _api._COVERAGE_FILE))
 
 
 @router.get("/api/graph")

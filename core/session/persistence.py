@@ -20,6 +20,7 @@ import json
 from datetime import datetime, timezone
 
 import core.session as _sess
+from core import db as _db
 from core import store as _store
 
 
@@ -128,6 +129,10 @@ def _flush() -> None:
                 _sess._last_local_write_mtime = disk_mtime
                 return
     _store.save(_sess._SESSION_FILE, _sess._current)
+    try:
+        _db.persist_session(_sess._current)
+    except Exception:
+        pass
     try:
         _sess._last_local_write_mtime = _sess._SESSION_FILE.stat().st_mtime
     except OSError:

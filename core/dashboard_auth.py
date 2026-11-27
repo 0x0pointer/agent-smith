@@ -32,9 +32,11 @@ handled separately by output escaping + sanitization in the dashboard JS.
 """
 from __future__ import annotations
 
+import hashlib
 import hmac
 import os
 
+from core import db as _db
 from core import paths as _paths
 
 
@@ -67,6 +69,28 @@ def mint_token() -> str:
     return token
 
 
+def _hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _mint_db_token(run_id: str, role: str) -> str:
+    import secrets
+
+    token = secrets.token_urlsafe(32)
+    repo = _db.get_repository()
+    if repo is not None:
+        repo.save_dashboard_token(_hash_token(token), run_id, role)
+    return token
+
+
+def mint_run_token(run_id: str) -> str:
+    return _mint_db_token(run_id, "run")
+
+
+def mint_operator_token() -> str:
+    return _mint_db_token("", "operator")
+
+
 def read_token() -> str | None:
     """Return the current session token, or None if none has been minted."""
     try:
@@ -82,6 +106,16 @@ def verify(supplied: str | None) -> bool:
     if not token or not supplied:
         return False
     return hmac.compare_digest(supplied, token)
+
+
+def verify_bearer(supplied: str | None) -> dict | None:
+    repo = _db.get_repository()
+    if repo is None or not supplied:
+        return None
+    row = repo.lookup_dashboard_token(_hash_token(supplied))
+    if not row:
+        return None
+    return {"run_id": row.get("run_id", ""), "role": row.get("role", "run")}
 
 
 def clear() -> None:

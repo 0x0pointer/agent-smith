@@ -3,11 +3,11 @@ Consolidated HTTP tool — replaces http_request and save_poc from exploitation.
 """
 import asyncio
 import json
-import os
 from typing import Any
 
 from core import cost as cost_tracker
 from core import logger as log
+from core import paths as _paths
 from mcp_server._app import mcp, _ensure_dict, _record
 
 # Inline response body shown in the result/cost/log (the envelope itself only
@@ -35,8 +35,10 @@ def _write_text(path: str, content: str) -> None:
 def _load_artifact_payload(artifact_id: str) -> str | None:
     """Read a stored payload artifact's bytes (issue #252), or None if missing."""
     try:
-        from mcp_server.scan_engine.artifacts import _ARTIFACTS_DIR
-        f = _ARTIFACTS_DIR / f"{artifact_id}.txt"
+        from mcp_server.scan_engine import artifacts as _artifacts
+
+        artifacts_dir = getattr(_artifacts, "_ARTIFACTS_DIR", _paths.ARTIFACTS_DIR)
+        f = artifacts_dir / f"{artifact_id}.txt"
         return f.read_text(encoding="utf-8") if f.exists() else None
     except Exception:
         return None
@@ -209,22 +211,22 @@ async def _do_save_poc(url, method, headers, body, opts):
         lines.append(body)
     raw = "\r\n".join(lines)
 
-    pocs_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "pocs")
-    os.makedirs(pocs_dir, exist_ok=True)
+    pocs_dir = _paths.POCS_DIR
+    pocs_dir.mkdir(parents=True, exist_ok=True)
     safe_title = "".join(c if c.isalnum() or c in "-_" else "_" for c in title)
     timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-    filepath = os.path.join(pocs_dir, f"{timestamp}_{safe_title}.http")
+    filepath = pocs_dir / f"{timestamp}_{safe_title}.http"
 
     poc_content = (f"# {notes}\n\n" if notes else "") + raw
-    await asyncio.to_thread(_write_text, filepath, poc_content)
+    await asyncio.to_thread(_write_text, str(filepath), poc_content)
 
     linked = False
     if finding_id:
         from core import findings as findings_store
-        linked = await findings_store.link_poc(finding_id, filepath)
+        linked = await findings_store.link_poc(finding_id, str(filepath))
 
     result = json.dumps({
-        "saved":      filepath,
+        "saved":      str(filepath),
         "linked_to":  finding_id if linked else None,
         "hint":       "Open Burp Repeater and paste this file to load the request",
     })

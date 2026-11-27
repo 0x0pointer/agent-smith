@@ -27,6 +27,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
+from core import db as _db
 from core import paths as _paths
 from core import store as _store
 
@@ -58,11 +59,15 @@ class WishlistQueue:
                 return json.loads(_WISHLIST_FILE.read_text(encoding="utf-8")).get("items", [])
         except Exception:
             pass
+        cached = _db.load_snapshot("wishlist")
+        if isinstance(cached, dict):
+            return cached.get("items", [])
         return []
 
     def _save(self, items: list[dict]) -> None:
         try:
             _store.save(_WISHLIST_FILE, {"items": items})
+            _db.persist_snapshot("wishlist", {"items": items})
         except Exception:
             pass
 

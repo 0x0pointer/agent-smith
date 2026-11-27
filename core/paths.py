@@ -19,34 +19,36 @@ depend on it without creating an import cycle.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 # core/paths.py → one parent up is core/, two is the repo root. Resolved so
 # every consumer derives the same canonical absolute path.
 REPO_ROOT = Path(__file__).parent.parent.resolve()
+RUNTIME_ROOT = Path(os.environ.get("SMITH_WORKDIR", "")).expanduser().resolve() if os.environ.get("SMITH_WORKDIR") else REPO_ROOT
 
 # ── State / output files (repo root) ──────────────────────────────────────────
-SESSION_FILE     = REPO_ROOT / "session.json"
-FINDINGS_FILE    = REPO_ROOT / "findings.json"
-COVERAGE_FILE    = REPO_ROOT / "coverage_matrix.json"
-AI_REDTEAM_FILE  = REPO_ROOT / "ai_redteam.json"
-QA_STATE_FILE    = REPO_ROOT / "qa_state.json"
-STEERING_FILE    = REPO_ROOT / "steering_queue.json"
-WISHLIST_FILE    = REPO_ROOT / "wishlist_queue.json"
-QUICK_LOG_FILE        = REPO_ROOT / "quick_log.json"
-ADJUDICATION_LOG_FILE = REPO_ROOT / "adjudication_log.jsonl"
-COST_FILE        = REPO_ROOT / "session_cost.json"
-METRICS_FILE     = REPO_ROOT / "pentest_metrics.jsonl"
+SESSION_FILE     = RUNTIME_ROOT / "session.json"
+FINDINGS_FILE    = RUNTIME_ROOT / "findings.json"
+COVERAGE_FILE    = RUNTIME_ROOT / "coverage_matrix.json"
+AI_REDTEAM_FILE  = RUNTIME_ROOT / "ai_redteam.json"
+QA_STATE_FILE    = RUNTIME_ROOT / "qa_state.json"
+STEERING_FILE    = RUNTIME_ROOT / "steering_queue.json"
+WISHLIST_FILE    = RUNTIME_ROOT / "wishlist_queue.json"
+QUICK_LOG_FILE        = RUNTIME_ROOT / "quick_log.json"
+ADJUDICATION_LOG_FILE = RUNTIME_ROOT / "adjudication_log.jsonl"
+COST_FILE        = RUNTIME_ROOT / "session_cost.json"
+METRICS_FILE     = RUNTIME_ROOT / "pentest_metrics.jsonl"
 
 # ── Directories ───────────────────────────────────────────────────────────────
-LOGS_DIR         = REPO_ROOT / "logs"
+LOGS_DIR         = RUNTIME_ROOT / "logs"
 SMITH_EVENTS_DIR = LOGS_DIR / "smith-events"  # per-session reasoning/event streams (<engagement_id>.jsonl)
 JOBS_DIR         = LOGS_DIR / "jobs"          # background-job registry (one <job_id>.json per job, gitignored)
-ARTIFACTS_DIR    = REPO_ROOT / "artifacts"
+ARTIFACTS_DIR    = RUNTIME_ROOT / "artifacts"
 TEMPLATES_DIR    = REPO_ROOT / "templates"
 DASHBOARD_DIR    = REPO_ROOT / "dashboard"
 THREAT_MODEL_DIR = REPO_ROOT / "threat-model"
-POCS_DIR         = REPO_ROOT / "pocs"
+POCS_DIR         = RUNTIME_ROOT / "pocs"
 
 # ── Files within logs/ ────────────────────────────────────────────────────────
 SMITH_PID_FILE       = LOGS_DIR / "smith.pid"

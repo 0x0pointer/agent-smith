@@ -52,7 +52,9 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+from core import db as _db
 from core import paths as _paths
+from core import run_context as _run_context
 from core import store as _store
 
 COVERAGE_FILE  = _paths.COVERAGE_FILE
@@ -76,11 +78,21 @@ ADDRESSED_STATUSES: frozenset[str] = frozenset({"tested_clean", "vulnerable", "n
 # ---------------------------------------------------------------------------
 
 def _load() -> dict:
+    file_data = None
     if COVERAGE_FILE.exists():
         try:
-            return json.loads(COVERAGE_FILE.read_text())
+            data = json.loads(COVERAGE_FILE.read_text())
+            if ((data.get("meta") or {}).get("run_id") in (None, _run_context.run_id())):
+                return data
+            file_data = data
         except Exception:
             pass
+    repo = _db.get_repository()
+    cached = _db.load_snapshot("coverage")
+    if isinstance(cached, dict):
+        return cached
+    if isinstance(file_data, dict) and repo is None:
+        return file_data
     return {
         "meta": {
             "created": datetime.now(timezone.utc).isoformat(),
@@ -97,7 +109,13 @@ def _load() -> dict:
 
 
 def _save(data: dict) -> None:
+    data.setdefault("meta", {})
+    data["meta"]["run_id"] = _run_context.run_id()
     _store.save(COVERAGE_FILE, data)
+    try:
+        _db.persist_snapshot("coverage", data)
+    except Exception:
+        pass
 
 
 def _recount(data: dict) -> None:

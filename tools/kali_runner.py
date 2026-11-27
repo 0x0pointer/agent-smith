@@ -15,6 +15,7 @@ import asyncio
 import os
 import shlex
 
+from core import run_context as _run_context
 from tools.docker_cli import docker_executable
 
 KALI_IMAGE     = "pentest-agent/kali-mcp"
@@ -38,6 +39,64 @@ _TOKEN_FILE = _REPO_ROOT / "logs" / ".kali_api_token"
 # kali-server-mcp runs loopback-only inside the container on this port; only the
 # in-container guard (published on :5000) can reach it.
 _KALI_UPSTREAM_PORT = "5555"
+_RUN_API_PORTS: dict[str, int] = {}
+
+
+def container_name() -> str:
+    return _run_context.container_name("kali") if _run_context.multi_run_mode() else KALI_CONTAINER
+
+
+def network_name() -> str:
+    return _run_context.docker_network_name() if _run_context.multi_run_mode() else "smith"
+
+
+def remember_api_port(port: int) -> None:
+    _RUN_API_PORTS[_run_context.run_id()] = int(port)
+
+
+def api_publish_arg() -> str:
+    return "127.0.0.1::5000" if _run_context.multi_run_mode() else f"127.0.0.1:{KALI_PORT}:5000"
+
+
+def api_url() -> str:
+    if _run_context.multi_run_mode():
+        port = _RUN_API_PORTS.get(_run_context.run_id(), KALI_PORT)
+        return f"http://127.0.0.1:{port}"
+    return KALI_API
+
+
+async def _ensure_network() -> None:
+    if not _run_context.multi_run_mode():
+        return
+    inspect_proc = await asyncio.create_subprocess_exec(
+        docker_executable(), "network", "inspect", network_name(),
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    await inspect_proc.wait()
+    if inspect_proc.returncode == 0:
+        return
+    create_proc = await asyncio.create_subprocess_exec(
+        docker_executable(), "network", "create", network_name(),
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    await create_proc.wait()
+
+
+async def _discover_host_port(container_port: int, default_port: int) -> int:
+    if not _run_context.multi_run_mode():
+        return default_port
+    proc = await asyncio.create_subprocess_exec(
+        docker_executable(), "port", container_name(), f"{container_port}/tcp",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    stdout, _ = await proc.communicate()
+    try:
+        return int(stdout.decode().strip().rsplit(":", 1)[1])
+    except Exception:
+        return default_port
 
 
 def _kali_token() -> str:
@@ -77,7 +136,7 @@ async def image_exists() -> bool:
 
 async def container_running() -> bool:
     proc = await asyncio.create_subprocess_exec(
-        docker_executable(), "inspect", "--format={{.State.Running}}", KALI_CONTAINER,
+        docker_executable(), "inspect", "--format={{.State.Running}}", container_name(),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
     )
@@ -121,6 +180,7 @@ async def ensure_running() -> tuple[bool, str]:
                 f"Image '{KALI_IMAGE}' not found. Build it first:\n"
                 f"  docker build -t {KALI_IMAGE} ./tools/kali/"
             )
+        await _ensure_network()
 
         # Forward AI API keys into the container (see _forward_ai_keys).
         env_flags: list[str] = _forward_ai_keys(os.environ)
@@ -142,11 +202,11 @@ async def ensure_running() -> tuple[bool, str]:
         def _run_argv(extra: list[str]) -> list[str]:
             return [
                 docker_executable(), "run", "-d",
-                "--name", KALI_CONTAINER,
+                "--name", container_name(),
                 # SECURITY: publish the command API to LOOPBACK ONLY. It is unauthenticated
                 # root RCE — on 0.0.0.0 any host on the LAN could drive it. The MCP reaches it
                 # at localhost:5001; the LAN cannot.
-                "-p", f"127.0.0.1:{KALI_PORT}:5000",
+                "-p", api_publish_arg(),
                 # Tunnel/listener ports stay on 0.0.0.0 — targets must reach them for
                 # reverse tunnels / file transfer during a pentest (that is their purpose).
                 "-p", "1080:1080",          # SOCKS5 proxy (chisel reverse tunnel)
@@ -159,6 +219,7 @@ async def ensure_running() -> tuple[bool, str]:
                 "--cap-add=NET_ADMIN",
                 "--device=/dev/net/tun:/dev/net/tun",
                 "--add-host=host.docker.internal:host-gateway",
+                *(["--network", network_name()] if _run_context.multi_run_mode() else []),
                 # Front the API with the loopback auth guard (token + Host allowlist) so a local
                 # process or a DNS-rebinding page that reaches loopback still can't drive it. The
                 # guard is MOUNTED so this is live without an image rebuild; the Dockerfile bakes
@@ -201,13 +262,14 @@ async def ensure_running() -> tuple[bool, str]:
             rc, err = await _docker_run(_run_argv([]))
         if rc != 0:
             return False, f"docker run failed: {err}"
+        remember_api_port(await _discover_host_port(5000, KALI_PORT))
 
     # Poll /health until the Flask server is ready (up to 30 s)
     for _ in range(30):
         try:
             async with aiohttp.ClientSession() as s:
                 async with s.get(
-                    f"{KALI_API}/health",
+                    f"{api_url()}/health",
                     headers={"X-Kali-Token": _kali_token()},
                     timeout=aiohttp.ClientTimeout(total=1),
                 ) as r:
@@ -229,7 +291,7 @@ async def _seed_curl_defaults() -> None:
     bakes the same file for clean rebuilds. Best-effort — never fail container startup."""
     try:
         proc = await asyncio.create_subprocess_exec(
-            docker_executable(), "exec", KALI_CONTAINER, "sh", "-c",
+            docker_executable(), "exec", container_name(), "sh", "-c",
             "printf 'connect-timeout = 5\\nmax-time = 30\\n' > /root/.curlrc",
             stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
         )
@@ -247,7 +309,7 @@ async def _register_scanner_ips() -> None:
     Best-effort; a failure here never affects Kali startup or promotion correctness."""
     try:
         proc = await asyncio.create_subprocess_exec(
-            docker_executable(), "exec", KALI_CONTAINER, "hostname", "-I",
+            docker_executable(), "exec", container_name(), "hostname", "-I",
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
         )
         out, _ = await proc.communicate()
@@ -261,13 +323,13 @@ async def _register_scanner_ips() -> None:
 
 async def stop() -> str:
     proc = await asyncio.create_subprocess_exec(
-        docker_executable(), "stop", KALI_CONTAINER,
+        docker_executable(), "stop", container_name(),
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.PIPE,
     )
     _, stderr = await proc.communicate()
     if proc.returncode == 0:
-        return f"Container '{KALI_CONTAINER}' stopped."
+        return f"Container '{container_name()}' stopped."
     return f"Could not stop container: {stderr.decode().strip()}"
 
 
@@ -368,7 +430,7 @@ async def exec_command(command: str, timeout: int = 600, proxy: str | None = Non
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                f"{KALI_API}/api/command",
+                f"{api_url()}/api/command",
                 json={"command": command, "timeout": timeout},
                 headers={"X-Kali-Token": _kali_token()},
                 timeout=aiohttp.ClientTimeout(total=timeout + 30),

@@ -21,6 +21,7 @@ import json
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
+from core import db as _db
 from core import paths as _paths
 from core import store as _store
 
@@ -61,11 +62,15 @@ class SteeringQueue:
                 return json.loads(_STEERING_FILE.read_text(encoding="utf-8")).get("directives", [])
         except Exception:
             pass
+        cached = _db.load_snapshot("steering")
+        if isinstance(cached, dict):
+            return cached.get("directives", [])
         return []
 
     def _save(self, directives: list[dict]) -> None:
         try:
             _store.save(_STEERING_FILE, {"directives": directives})
+            _db.persist_snapshot("steering", {"directives": directives})
         except Exception:
             pass
 

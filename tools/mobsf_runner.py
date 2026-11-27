@@ -22,6 +22,7 @@ import asyncio
 import os
 
 from core import paths as _paths
+from core import run_context as _run_context
 from tools.docker_cli import docker_executable
 
 # Use the official MobSF image directly — we don't customise it, so there's no
@@ -70,6 +71,21 @@ API_KEY = _resolve_api_key()
 SCAN_TIMEOUT = int(os.environ.get("SMITH_MOBSF_SCAN_TIMEOUT", "600"))
 
 _start_lock = asyncio.Lock()
+_RUN_API_PORTS: dict[str, int] = {}
+
+
+def container_name() -> str:
+    return _run_context.container_name("mobsf") if _run_context.multi_run_mode() else MOBSF_CONTAINER
+
+
+def remember_api_port(port: int) -> None:
+    _RUN_API_PORTS[_run_context.run_id()] = int(port)
+
+
+def api_url() -> str:
+    if _run_context.multi_run_mode():
+        return f"http://127.0.0.1:{_RUN_API_PORTS.get(_run_context.run_id(), MOBSF_PORT)}"
+    return MOBSF_API
 
 
 def _read_bytes(path: str) -> bytes:
@@ -94,7 +110,7 @@ async def image_exists() -> bool:
 
 async def container_running() -> bool:
     proc = await asyncio.create_subprocess_exec(
-        docker_executable(), "inspect", "--format={{.State.Running}}", MOBSF_CONTAINER,
+        docker_executable(), "inspect", "--format={{.State.Running}}", container_name(),
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
     )
     stdout, _ = await proc.communicate()
@@ -127,8 +143,8 @@ async def ensure_running() -> tuple[bool, str]:
                 )
         proc = await asyncio.create_subprocess_exec(
             docker_executable(), "run", "-d",
-            "--name", MOBSF_CONTAINER,
-            "-p", f"{MOBSF_PORT}:8000",
+            "--name", container_name(),
+            "-p", f"127.0.0.1::{8000}" if _run_context.multi_run_mode() else f"{MOBSF_PORT}:8000",
             "-e", f"MOBSF_API_KEY={API_KEY}",
             "--rm",
             MOBSF_IMAGE,
@@ -137,12 +153,13 @@ async def ensure_running() -> tuple[bool, str]:
         _, stderr = await proc.communicate()
         if proc.returncode != 0:
             return False, f"docker run failed: {stderr.decode().strip()}"
+        remember_api_port(MOBSF_PORT)
 
     # Poll the MobSF home page until Django is serving (up to 90 s — slow boot).
     for _ in range(90):
         try:
             async with aiohttp.ClientSession() as s:
-                async with s.get(MOBSF_API + "/", timeout=aiohttp.ClientTimeout(total=2)) as r:
+                async with s.get(api_url() + "/", timeout=aiohttp.ClientTimeout(total=2)) as r:
                     if r.status == 200:
                         return True, "started"
         except Exception:
@@ -153,12 +170,12 @@ async def ensure_running() -> tuple[bool, str]:
 
 async def stop() -> str:
     proc = await asyncio.create_subprocess_exec(
-        docker_executable(), "stop", MOBSF_CONTAINER,
+        docker_executable(), "stop", container_name(),
         stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
     )
     _, stderr = await proc.communicate()
     if proc.returncode == 0:
-        return f"Container '{MOBSF_CONTAINER}' stopped."
+        return f"Container '{container_name()}' stopped."
     return f"Could not stop container: {stderr.decode().strip()}"
 
 
@@ -199,7 +216,7 @@ async def analyze(file_path: str) -> dict:
             form.add_field("file", file_bytes,
                            filename=os.path.basename(file_path),
                            content_type="application/octet-stream")
-            async with session.post(MOBSF_API + "/api/v1/upload", data=form,
+            async with session.post(api_url() + "/api/v1/upload", data=form,
                                     timeout=aiohttp.ClientTimeout(total=120)) as r:
                 if r.status == 401:
                     return {"ok": False, "error": "MobSF 401 — API key rejected"}
@@ -209,13 +226,13 @@ async def analyze(file_path: str) -> dict:
                 return {"ok": False, "error": f"upload failed: {up}"}
 
             # 2. run the scan (blocking; can take minutes on a large binary)
-            async with session.post(MOBSF_API + "/api/v1/scan",
+            async with session.post(api_url() + "/api/v1/scan",
                                     data={"hash": file_hash},
                                     timeout=aiohttp.ClientTimeout(total=SCAN_TIMEOUT)) as r:
                 await r.read()  # ensure the scan completes before we fetch the report
 
             # 3. fetch the structured JSON report
-            async with session.post(MOBSF_API + "/api/v1/report_json",
+            async with session.post(api_url() + "/api/v1/report_json",
                                     data={"hash": file_hash},
                                     timeout=aiohttp.ClientTimeout(total=120)) as r:
                 report = await r.json()

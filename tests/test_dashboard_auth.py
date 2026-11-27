@@ -6,6 +6,7 @@ other API tests can hit /api/* without a header; here we re-enable it via
 SMITH_DASHBOARD_AUTH=1 and exercise the real behaviour.
 """
 import pytest
+import sqlite3
 from fastapi.testclient import TestClient
 
 from core.api_server import app
@@ -67,3 +68,22 @@ def test_token_file_is_0600(token_file):
     # On POSIX the file must not be group/world readable.
     if os.name == "posix":
         assert mode & 0o077 == 0, oct(mode)
+
+
+def test_db_tokens_store_hashes_and_scope_run_ids(monkeypatch, tmp_path):
+    db_path = tmp_path / "auth.db"
+    monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")
+    monkeypatch.delenv("SMITH_SINGLE_RUN", raising=False)
+
+    token = dashboard_auth.mint_run_token("run-a")
+    meta = dashboard_auth.verify_bearer(token)
+
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            "select run_id, role, token_hash from dashboard_tokens"
+        ).fetchone()
+
+    assert meta == {"run_id": "run-a", "role": "run"}
+    assert row[0] == "run-a"
+    assert row[1] == "run"
+    assert row[2] != token

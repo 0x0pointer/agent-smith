@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 
 import core.session as _sess
 from core import cost as cost_tracker
+from core import run_context
 
 
 def _parse_lhost(raw: str) -> tuple[str, int]:
@@ -147,6 +148,7 @@ def start(
 
     _sess._current = {
         "id":           str(uuid.uuid4()),
+        "run_id":       run_context.run_id(),
         "target":       target,
         "depth":        depth,
         "depth_label":  preset["label"],
@@ -252,12 +254,10 @@ def stop_pentest_containers() -> None:
     try:
         import subprocess
         from tools.docker_cli import docker_executable
-        from tools.kali_runner import KALI_CONTAINER
-        from tools.metasploit_runner import MSF_CONTAINER
-        from tools.mobsf_runner import MOBSF_CONTAINER
+        from tools import kali_runner, metasploit_runner, mobsf_runner
         subprocess.run(
             [docker_executable(), "stop", "-t", "3",
-             KALI_CONTAINER, MSF_CONTAINER, MOBSF_CONTAINER],
+             kali_runner.container_name(), metasploit_runner.container_name(), mobsf_runner.container_name()],
             capture_output=True, timeout=40, check=False,
         )
     except Exception:
@@ -454,10 +454,22 @@ def load_from_disk(force: bool = False) -> dict | None:
                 pass
         elif _sess._last_local_write_mtime > 0:
             _sess._current = None
+        elif _sess._current is None:
+            try:
+                from core import db as _db
+                _sess._current = _db.load_snapshot("session")
+            except Exception:
+                pass
         return _sess._current
     if _sess._current is None and _sess._SESSION_FILE.exists():
         try:
             _sess._current = json.loads(_sess._SESSION_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    elif _sess._current is None:
+        try:
+            from core import db as _db
+            _sess._current = _db.load_snapshot("session")
         except Exception:
             pass
     return _sess._current

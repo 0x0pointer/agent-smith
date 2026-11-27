@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import os
 
+from core import run_context as _run_context
 from tools.docker_cli import docker_executable
 
 MSF_IMAGE     = "pentest-agent/metasploit"
@@ -31,6 +32,21 @@ import secrets as _secrets
 _REPO_ROOT = _pathlib.Path(__file__).resolve().parents[1]
 _SERVER_SRC = _REPO_ROOT / "tools" / "metasploit" / "server.py"
 _SECRET_FILE = _REPO_ROOT / "logs" / ".msf_api_secret"
+_RUN_API_PORTS: dict[str, int] = {}
+
+
+def container_name() -> str:
+    return _run_context.container_name("metasploit") if _run_context.multi_run_mode() else MSF_CONTAINER
+
+
+def remember_api_port(port: int) -> None:
+    _RUN_API_PORTS[_run_context.run_id()] = int(port)
+
+
+def api_url() -> str:
+    if _run_context.multi_run_mode():
+        return f"http://127.0.0.1:{_RUN_API_PORTS.get(_run_context.run_id(), MSF_PORT)}"
+    return MSF_API
 
 
 def _msf_secret() -> str:
@@ -70,7 +86,7 @@ async def image_exists() -> bool:
 
 async def container_running() -> bool:
     proc = await asyncio.create_subprocess_exec(
-        docker_executable(), "inspect", "--format={{.State.Running}}", MSF_CONTAINER,
+        docker_executable(), "inspect", "--format={{.State.Running}}", container_name(),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
     )
@@ -102,10 +118,10 @@ async def ensure_running() -> tuple[bool, str]:
         _secret = _msf_secret()
         proc = await asyncio.create_subprocess_exec(
             docker_executable(), "run", "-d",
-            "--name", MSF_CONTAINER,
+            "--name", container_name(),
             # SECURITY: the command API is unauthenticated root RCE — publish it to LOOPBACK
             # ONLY (was 0.0.0.0). The MCP reaches it at localhost:5002; the LAN cannot.
-            "-p", f"127.0.0.1:{MSF_PORT}:5000",
+            "-p", "127.0.0.1::5000" if _run_context.multi_run_mode() else f"127.0.0.1:{MSF_PORT}:5000",
             # Handler/proxy ports stay on 0.0.0.0 — payloads/targets must reach them.
             "-p", "4444:4444",          # meterpreter handler
             "-p", "4445:4445",          # secondary handler
@@ -125,13 +141,14 @@ async def ensure_running() -> tuple[bool, str]:
         _, stderr = await proc.communicate()
         if proc.returncode != 0:
             return False, f"docker run failed: {stderr.decode().strip()}"
+        remember_api_port(MSF_PORT)
 
     # Poll /health until the server is ready (up to 60 s — MSF is slow to start)
     for _ in range(60):
         try:
             async with aiohttp.ClientSession() as s:
                 async with s.get(
-                    f"{MSF_API}/health",
+                    f"{api_url()}/health",
                     headers={"X-API-Secret": _msf_secret()},
                     timeout=aiohttp.ClientTimeout(total=2),
                 ) as r:
@@ -146,13 +163,13 @@ async def ensure_running() -> tuple[bool, str]:
 
 async def stop() -> str:
     proc = await asyncio.create_subprocess_exec(
-        docker_executable(), "stop", MSF_CONTAINER,
+        docker_executable(), "stop", container_name(),
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.PIPE,
     )
     _, stderr = await proc.communicate()
     if proc.returncode == 0:
-        return f"Container '{MSF_CONTAINER}' stopped."
+        return f"Container '{container_name()}' stopped."
     return f"Could not stop container: {stderr.decode().strip()}"
 
 
@@ -182,7 +199,7 @@ async def exec_command(command: str, timeout: int = 900) -> str:  # NOSONAR
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                f"{MSF_API}/api/command",
+                f"{api_url()}/api/command",
                 json={"command": command},
                 headers={"X-API-Secret": _msf_secret()},
                 timeout=aiohttp.ClientTimeout(total=timeout + 5),
