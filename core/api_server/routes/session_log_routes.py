@@ -29,6 +29,19 @@ _DEFAULT_TYPES = {"note", "decision", "action", "result", "finding", "coverage_t
 _MAX_EVENTS = 5000
 
 
+def _empty_response(sessions: list[dict] | None = None, *, error: str | None = None) -> dict:
+    payload = {
+        "session": None,
+        "sessions": sessions or [],
+        "events": [],
+        "truncated": False,
+        "count": 0,
+    }
+    if error:
+        payload["error"] = error
+    return payload
+
+
 def _run_events_dir(request: Request) -> Path | None:
     run_id = getattr(request.state, "run_id", None)
     if not run_id:
@@ -58,6 +71,58 @@ def _session_label(stem: str, events_dir: Path) -> dict:
     return info
 
 
+def _list_streams(events_dir: Path) -> list[Path]:
+    if not events_dir.exists():
+        return []
+    try:
+        return sorted(
+            events_dir.glob("*.jsonl"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+    except OSError:
+        return []
+
+
+def _resolve_target_stream(streams: list[Path], session: str) -> Path | None:
+    if not streams:
+        return None
+    if not session:
+        return streams[0]
+    return next((p for p in streams if p.stem == session), None)
+
+
+def _read_events(target: Path, cap: int) -> tuple[list[dict], int]:
+    rows: deque = deque(maxlen=cap)
+    total = 0
+    try:
+        with target.open(encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    ev = json.loads(line)
+                except Exception:
+                    continue
+                event_type = ev.get("event_type")
+                if event_type not in _DEFAULT_TYPES:
+                    continue
+                total += 1
+                rows.append({
+                    "event_id": ev.get("event_id"),
+                    "event_type": event_type,
+                    "sequence": ev.get("sequence"),
+                    "occurred_at": ev.get("occurred_at"),
+                    "caused_by": ev.get("caused_by"),
+                    "correlation_id": ev.get("correlation_id"),
+                    "payload": ev.get(event_type),
+                })
+    except OSError:
+        pass
+    return list(rows), total
+
+
 @router.get("/api/session-log")
 async def api_session_log(request: Request, session: str = "", limit: int = _MAX_EVENTS) -> JSONResponse:
     """List reasoning-stream sessions and replay one.
@@ -70,65 +135,25 @@ async def api_session_log(request: Request, session: str = "", limit: int = _MAX
     events_dir = _run_events_dir(request)
     if events_dir is None:
         return JSONResponse({"error": "forbidden"}, status_code=403)
-    try:
-        streams = sorted(
-            events_dir.glob("*.jsonl"),  # *.jsonl only — the dir also holds per-session bundle subdirs
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        ) if events_dir.exists() else []
-    except OSError:
-        streams = []
+    streams = _list_streams(events_dir)
 
     sessions = [_session_label(p.stem, events_dir) for p in streams]
 
     if not streams:
-        return JSONResponse({"session": None, "sessions": [], "events": [],
-                             "truncated": False, "count": 0})
+        return JSONResponse(_empty_response())
 
-    if session:
-        target = next((p for p in streams if p.stem == session), None)
-        if target is None:
-            status = 403 if getattr(request.state, "run_id", None) else 200
-            return JSONResponse({"session": None, "sessions": sessions, "events": [],
-                                 "truncated": False, "count": 0, "error": "invalid session"},
-                                status_code=status)
-    else:
-        target = streams[0]  # newest by mtime
+    target = _resolve_target_stream(streams, session)
+    if target is None:
+        status = 403 if getattr(request.state, "run_id", None) else 200
+        return JSONResponse(_empty_response(sessions, error="invalid session"), status_code=status)
 
     cap = max(1, min(limit, _MAX_EVENTS))  # FastAPI already coerced limit to int
-
-    rows: deque = deque(maxlen=cap)  # tail the most-recent events; bounded memory
-    total = 0
-    try:
-        with target.open(encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    ev = json.loads(line)
-                except Exception:
-                    continue  # skip a truncated/malformed final line — never 500
-                et = ev.get("event_type")
-                if et not in _DEFAULT_TYPES:
-                    continue
-                total += 1
-                rows.append({
-                    "event_id": ev.get("event_id"),
-                    "event_type": et,
-                    "sequence": ev.get("sequence"),
-                    "occurred_at": ev.get("occurred_at"),
-                    "caused_by": ev.get("caused_by"),
-                    "correlation_id": ev.get("correlation_id"),
-                    "payload": ev.get(et),  # reasoning is NESTED under a key == event_type
-                })
-    except OSError:
-        pass
+    rows, total = _read_events(target, cap)
 
     return JSONResponse({
         "session": target.stem,
         "sessions": sessions,
-        "events": list(rows),
+        "events": rows,
         "truncated": total > len(rows),
         "count": total,
     })

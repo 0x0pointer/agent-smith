@@ -85,6 +85,31 @@ if _sentry_dsn:
 app = FastAPI(title="pentest-agent")
 
 
+def _dashboard_auth_enabled() -> bool:
+    return os.environ.get("SMITH_DASHBOARD_AUTH", "1").lower() not in ("0", "false", "no")
+
+
+def _authenticate_api_request(request: Request) -> JSONResponse | None:
+    from core import dashboard_auth
+
+    hdr = request.headers.get("authorization", "")
+    supplied = hdr[7:].strip() if hdr[:7].lower() == "bearer " else ""
+    meta = dashboard_auth.verify_bearer(supplied)
+    if meta:
+        request.state.run_id = meta.get("run_id") or None
+        request.state.role = meta.get("role") or None
+        return None
+    if dashboard_auth.verify(supplied):
+        request.state.role = "operator"
+        return None
+
+    from core import db as _db
+
+    if _db.database_enabled() or dashboard_auth.read_token():
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return None
+
+
 @app.middleware("http")
 async def _require_dashboard_token(request: Request, call_next):
     """Gate the ``/api/*`` control plane behind the per-session bearer token.
@@ -99,23 +124,12 @@ async def _require_dashboard_token(request: Request, call_next):
     Disable for the test suite via ``SMITH_DASHBOARD_AUTH=0`` (see tests/conftest).
     """
     path = request.url.path
-    auth_on = os.environ.get("SMITH_DASHBOARD_AUTH", "1").lower() not in ("0", "false", "no")
     request.state.run_id = None
     request.state.role = None
-    if auth_on and path.startswith("/api/"):
-        from core import dashboard_auth
-        hdr = request.headers.get("authorization", "")
-        supplied = hdr[7:].strip() if hdr[:7].lower() == "bearer " else ""
-        meta = dashboard_auth.verify_bearer(supplied)
-        if meta:
-            request.state.run_id = meta.get("run_id") or None
-            request.state.role = meta.get("role") or None
-        elif dashboard_auth.verify(supplied):
-            request.state.role = "operator"
-        else:
-            from core import db as _db
-            if _db.database_enabled() or dashboard_auth.read_token():
-                return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if _dashboard_auth_enabled() and path.startswith("/api/"):
+        unauthorized = _authenticate_api_request(request)
+        if unauthorized is not None:
+            return unauthorized
     resp = await call_next(request)
     # Force the browser to REVALIDATE dashboard assets on every load instead of
     # serving a heuristically-cached stale copy. Without this, the un-versioned

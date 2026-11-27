@@ -12,15 +12,155 @@ import core.api_server.routes as _routes  # for _wake_smith_if_idle (patch-trans
 from ._common import router
 
 _log = logging.getLogger(__name__)
+_ERR_DB_UNAVAILABLE = "database unavailable"
+_TERMINAL_STATUSES = ("complete", "incomplete_with_unresolved_blockers", "limit_reached")
+_TRIAGE_CANCELLED_REASON = "triage cancelled by operator"
 
 
 def _save_run_session(run_id: str, session_doc: dict) -> None:
     from core import db as _db
     repo = _db.get_repository()
     if repo is None:
-        raise RuntimeError("database unavailable")
+        raise RuntimeError(_ERR_DB_UNAVAILABLE)
     repo.upsert_run(run_id, session_doc, session_doc.get("workdir", ""))
     repo.save_snapshot(run_id, "session", session_doc)
+
+
+def _terminal_scan(sess: dict) -> bool:
+    return sess.get("status") in _TERMINAL_STATUSES
+
+
+def _triage_closing_note(terminal: bool) -> str:
+    if terminal:
+        return (
+            "\n\nNOTE: This is a post-scan TRIAGE pass requested by the human "
+            "operator on a STOPPED scan. After you have adjudicated ALL findings "
+            "above, STOP — do NOT resume testing and do NOT call "
+            "session(action='start'). The scan stays complete."
+        )
+    return (
+        "\n\nNOTE: This is a standalone TRIAGE pass requested by the human "
+        "operator. After you have adjudicated ALL findings above, DO NOT "
+        "complete the scan — resume normal testing where you left off. The "
+        "scan stays open."
+    )
+
+
+def _pending_triage_findings(findings_data: dict) -> list[dict]:
+    try:
+        from core.adjunction import pending_findings
+
+        return pending_findings(findings_data)
+    except Exception:
+        return []
+
+
+def _enqueue_triage_directive(pending: list[dict], *, terminal: bool, run_id: str | None = None) -> None:
+    from core.adjunction.directive import build_adjudication_directive
+    from core.steering import RESUME_REQUIRED, steering_queue
+
+    directive_body = build_adjudication_directive(pending) + _triage_closing_note(terminal)
+    steering_queue.add_directive(
+        code=RESUME_REQUIRED,
+        message=directive_body,
+        priority="high",
+        skill=None,
+        trigger="TRIAGE_ADJUDICATION",
+        force=True,
+        run_id=run_id,
+    )
+    try:
+        from core.adjunction.log import log_directive
+
+        log_directive(pending)
+    except Exception:
+        pass
+
+
+def _cancel_triage_directives(run_id: str | None = None) -> int:
+    from core.steering import steering_queue
+
+    removed = steering_queue.cancel_by_trigger(
+        "TRIAGE_ADJUDICATION", _TRIAGE_CANCELLED_REASON, run_id=run_id
+    )
+    return removed + steering_queue.cancel_by_trigger(
+        "FORCE_COMPLETE_ADJUDICATION", _TRIAGE_CANCELLED_REASON, run_id=run_id
+    )
+
+
+def _run_scoped_triage(run_id: str) -> JSONResponse:
+    from core import db as _db
+
+    repo = _db.get_repository()
+    if repo is None:
+        return JSONResponse({"ok": False, "error": _ERR_DB_UNAVAILABLE}, status_code=503)
+    sess = repo.load_snapshot(run_id, "session") or {}
+    pending = _pending_triage_findings(repo.load_snapshot(run_id, "findings") or {"findings": []})
+    if not pending:
+        return JSONResponse({"ok": True, "status": "nothing_to_triage", "pending_adjudication": 0})
+    if not sess.get("target"):
+        return JSONResponse({"ok": False, "error": "no scan to triage"}, status_code=409)
+    sess["triage_requested"] = True
+    _save_run_session(run_id, sess)
+    _enqueue_triage_directive(pending, terminal=_terminal_scan(sess), run_id=run_id)
+    return JSONResponse({
+        "ok": True,
+        "status": "triaging",
+        "pending_adjudication": len(pending),
+        "smith_spawned": False,
+    })
+
+
+async def _single_run_triage() -> JSONResponse:
+    from core.findings import _load as _load_findings
+    from core import session as scan_session
+
+    scan_session.load_from_disk(force=True)
+    pending = _pending_triage_findings(_load_findings())
+    if not pending:
+        return JSONResponse({"ok": True, "status": "nothing_to_triage", "pending_adjudication": 0})
+    sess = scan_session.get() or {}
+    if not sess.get("target"):
+        return JSONResponse({"ok": False, "error": "no scan to triage"}, status_code=409)
+    scan_session.set_triage_requested(True)
+    _enqueue_triage_directive(pending, terminal=_terminal_scan(sess))
+    smith_spawned = await _routes._wake_smith_if_idle()
+    return JSONResponse({
+        "ok": True,
+        "status": "triaging",
+        "pending_adjudication": len(pending),
+        "smith_spawned": smith_spawned,
+    })
+
+
+def _run_scoped_triage_cancel(run_id: str) -> JSONResponse:
+    from core import db as _db
+
+    repo = _db.get_repository()
+    if repo is None:
+        return JSONResponse({"ok": False, "error": _ERR_DB_UNAVAILABLE}, status_code=503)
+    sess = repo.load_snapshot(run_id, "session") or {"run_id": run_id}
+    sess["triage_requested"] = False
+    _save_run_session(run_id, sess)
+    removed = 0
+    try:
+        removed = _cancel_triage_directives(run_id)
+    except Exception:
+        _log.exception("api_triage_cancel: directive cleanup failed")
+    return JSONResponse({"ok": True, "removed_directives": removed})
+
+
+def _single_run_triage_cancel() -> JSONResponse:
+    from core import session as scan_session
+
+    scan_session.load_from_disk(force=True)
+    scan_session.set_triage_requested(False)
+    removed = 0
+    try:
+        removed = _cancel_triage_directives()
+    except Exception:
+        _log.exception("api_triage_cancel: directive cleanup failed")
+    return JSONResponse({"ok": True, "removed_directives": removed})
 
 
 @router.post("/api/complete")
@@ -78,130 +218,8 @@ async def api_triage(request: Request) -> JSONResponse:
     try:
         run_id = getattr(request.state, "run_id", None) or None
         if run_id:
-            from core import db as _db
-            repo = _db.get_repository()
-            if repo is None:
-                return JSONResponse({"ok": False, "error": "database unavailable"}, status_code=503)
-            sess = repo.load_snapshot(run_id, "session") or {}
-            findings_data = repo.load_snapshot(run_id, "findings") or {"findings": []}
-            try:
-                from core.adjunction import pending_findings
-                pending = pending_findings(findings_data)
-            except Exception:
-                pending = []
-            if not pending:
-                return JSONResponse({"ok": True, "status": "nothing_to_triage", "pending_adjudication": 0})
-            if not sess.get("target"):
-                return JSONResponse({"ok": False, "error": "no scan to triage"}, status_code=409)
-            terminal = sess.get("status") in (
-                "complete", "incomplete_with_unresolved_blockers", "limit_reached",
-            )
-            sess["triage_requested"] = True
-            _save_run_session(run_id, sess)
-
-            from core.adjunction.directive import build_adjudication_directive
-            from core.steering import steering_queue, RESUME_REQUIRED
-            if terminal:
-                closing_note = (
-                    "\n\nNOTE: This is a post-scan TRIAGE pass requested by the human "
-                    "operator on a STOPPED scan. After you have adjudicated ALL findings "
-                    "above, STOP — do NOT resume testing and DO NOT call "
-                    "session(action='start'). The scan stays complete."
-                )
-            else:
-                closing_note = (
-                    "\n\nNOTE: This is a standalone TRIAGE pass requested by the human "
-                    "operator. After you have adjudicated ALL findings above, DO NOT "
-                    "complete the scan — resume normal testing where you left off. The "
-                    "scan stays open."
-                )
-            directive_body = build_adjudication_directive(pending) + closing_note
-            steering_queue.add_directive(
-                code=RESUME_REQUIRED,
-                message=directive_body,
-                priority="high",
-                skill=None,
-                trigger="TRIAGE_ADJUDICATION",
-                force=True,
-                run_id=run_id,
-            )
-            try:
-                from core.adjunction.log import log_directive
-                log_directive(pending)
-            except Exception:
-                pass
-            return JSONResponse({
-                "ok": True,
-                "status": "triaging",
-                "pending_adjudication": len(pending),
-                "smith_spawned": False,
-            })
-
-        from core import session as scan_session
-        scan_session.load_from_disk(force=True)
-
-        try:
-            from core.findings import _load as _load_findings
-            from core.adjunction import pending_findings
-            pending = pending_findings(_load_findings())
-        except Exception:
-            pending = []
-
-        if not pending:
-            return JSONResponse({"ok": True, "status": "nothing_to_triage", "pending_adjudication": 0})
-        sess = scan_session.get() or {}
-        if not sess.get("target"):
-            return JSONResponse({"ok": False, "error": "no scan to triage"}, status_code=409)
-
-        # Triage is now a POST-scan step: it runs against a STOPPED scan and
-        # (re)spawns Smith to adjudicate. A running scan is also tolerated (the
-        # legacy mid-scan path), but the dashboard only surfaces the button once
-        # the scan has stopped. The directive wording branches on that so a
-        # terminal-scan triage tells Smith to stop afterwards, not resume.
-        terminal = sess.get("status") in (
-            "complete", "incomplete_with_unresolved_blockers", "limit_reached",
-        )
-
-        scan_session.set_triage_requested(True)
-
-        from core.adjunction.directive import build_adjudication_directive
-        from core.steering import steering_queue, RESUME_REQUIRED
-        if terminal:
-            closing_note = (
-                "\n\nNOTE: This is a post-scan TRIAGE pass requested by the human "
-                "operator on a STOPPED scan. After you have adjudicated ALL findings "
-                "above, STOP — do NOT resume testing and do NOT call "
-                "session(action='start'). The scan stays complete."
-            )
-        else:
-            closing_note = (
-                "\n\nNOTE: This is a standalone TRIAGE pass requested by the human "
-                "operator. After you have adjudicated ALL findings above, DO NOT "
-                "complete the scan — resume normal testing where you left off. The "
-                "scan stays open."
-            )
-        directive_body = build_adjudication_directive(pending) + closing_note
-        steering_queue.add_directive(
-            code=RESUME_REQUIRED,
-            message=directive_body,
-            priority="high",
-            skill=None,
-            trigger="TRIAGE_ADJUDICATION",
-            force=True,
-        )
-        try:
-            from core.adjunction.log import log_directive
-            log_directive(pending)
-        except Exception:
-            pass
-
-        smith_spawned = await _routes._wake_smith_if_idle()
-        return JSONResponse({
-            "ok": True,
-            "status": "triaging",
-            "pending_adjudication": len(pending),
-            "smith_spawned": smith_spawned,
-        })
+            return _run_scoped_triage(run_id)
+        return await _single_run_triage()
     except Exception:
         _log.exception("api_triage failed")
         return JSONResponse({"ok": False, "error": _api._ERR_REQUEST_FAILED}, status_code=500)
@@ -219,43 +237,8 @@ async def api_triage_cancel(request: Request) -> JSONResponse:
     try:
         run_id = getattr(request.state, "run_id", None) or None
         if run_id:
-            from core import db as _db
-            repo = _db.get_repository()
-            if repo is None:
-                return JSONResponse({"ok": False, "error": "database unavailable"}, status_code=503)
-            sess = repo.load_snapshot(run_id, "session") or {"run_id": run_id}
-            sess["triage_requested"] = False
-            _save_run_session(run_id, sess)
-            removed = 0
-            try:
-                from core.steering import steering_queue
-                removed = steering_queue.cancel_by_trigger(
-                    "TRIAGE_ADJUDICATION", "triage cancelled by operator", run_id=run_id
-                )
-                removed += steering_queue.cancel_by_trigger(
-                    "FORCE_COMPLETE_ADJUDICATION", "triage cancelled by operator", run_id=run_id
-                )
-            except Exception:
-                _log.exception("api_triage_cancel: directive cleanup failed")
-            return JSONResponse({"ok": True, "removed_directives": removed})
-
-        from core import session as scan_session
-        scan_session.load_from_disk(force=True)
-        scan_session.set_triage_requested(False)
-        removed = 0
-        try:
-            from core.steering import steering_queue
-            removed = steering_queue.cancel_by_trigger(
-                "TRIAGE_ADJUDICATION", "triage cancelled by operator"
-            )
-            # Also clear legacy force-complete directives, which otherwise have
-            # no cleanup path at all and would replay into the next run.
-            removed += steering_queue.cancel_by_trigger(
-                "FORCE_COMPLETE_ADJUDICATION", "triage cancelled by operator"
-            )
-        except Exception:
-            _log.exception("api_triage_cancel: directive cleanup failed")
-        return JSONResponse({"ok": True, "removed_directives": removed})
+            return _run_scoped_triage_cancel(run_id)
+        return _single_run_triage_cancel()
     except Exception:
         _log.exception("api_triage_cancel failed")
         return JSONResponse({"ok": False, "error": _api._ERR_REQUEST_FAILED}, status_code=500)

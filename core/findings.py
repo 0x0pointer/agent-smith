@@ -63,24 +63,31 @@ def _empty_store() -> dict:
     }
 
 
+def _load_findings_file() -> dict | None:
+    if not FINDINGS_FILE.exists():
+        return None
+    try:
+        return json.loads(FINDINGS_FILE.read_text())
+    except Exception:
+        return None
+
+
+def _load_cached_findings(run_id: str | None, repo) -> dict | None:
+    try:
+        if run_id:
+            return repo.load_snapshot(run_id, "findings") if repo is not None else None
+        return _db.load_snapshot("findings")
+    except Exception:
+        return None
+
+
 def _load_for_run(run_id: str | None) -> dict:
-    file_data = None
-    if run_id is None and FINDINGS_FILE.exists():
-        try:
-            data = json.loads(FINDINGS_FILE.read_text())
-            if ((data.get("meta") or {}).get("run_id") in (None, _run_context.run_id())):
-                return data
-            file_data = data
-        except Exception:
-            pass
+    file_data = _load_findings_file() if run_id is None else None
+    if isinstance(file_data, dict):
+        if (file_data.get("meta") or {}).get("run_id") in (None, _run_context.run_id()):
+            return file_data
     repo = _db.get_repository()
-    if run_id:
-        try:
-            cached = repo.load_snapshot(run_id, "findings") if repo is not None else None
-        except Exception:
-            cached = None
-    else:
-        cached = _db.load_snapshot("findings")
+    cached = _load_cached_findings(run_id, repo)
     if isinstance(cached, dict):
         return cached
     if run_id is None and isinstance(file_data, dict) and repo is None:

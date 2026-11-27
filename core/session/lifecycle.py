@@ -428,6 +428,48 @@ def get() -> dict | None:
     return _sess._current
 
 
+def _load_session_file() -> dict | None:
+    try:
+        return json.loads(_sess._SESSION_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _load_db_session() -> dict | None:
+    try:
+        from core import db as _db
+
+        return _db.load_snapshot("session")
+    except Exception:
+        return None
+
+
+def _force_load_from_disk() -> dict | None:
+    if _sess._SESSION_FILE.exists():
+        loaded = _load_session_file()
+        if loaded is not None:
+            _sess._current = loaded
+        return _sess._current
+    if _sess._last_local_write_mtime > 0:
+        _sess._current = None
+        return None
+    if _sess._current is None:
+        _sess._current = _load_db_session()
+    return _sess._current
+
+
+def _load_when_empty() -> dict | None:
+    if _sess._current is not None:
+        return _sess._current
+    if _sess._SESSION_FILE.exists():
+        loaded = _load_session_file()
+        if loaded is not None:
+            _sess._current = loaded
+            return _sess._current
+    _sess._current = _load_db_session()
+    return _sess._current
+
+
 def load_from_disk(force: bool = False) -> dict | None:
     """Populate _current from session.json.
 
@@ -447,29 +489,5 @@ def load_from_disk(force: bool = False) -> dict | None:
         # monkeypatch _current without ever flushing don't get
         # clobbered: in those tests we never saw disk, so its absence
         # isn't a deletion to mirror.
-        if _sess._SESSION_FILE.exists():
-            try:
-                _sess._current = json.loads(_sess._SESSION_FILE.read_text(encoding="utf-8"))
-            except Exception:
-                pass
-        elif _sess._last_local_write_mtime > 0:
-            _sess._current = None
-        elif _sess._current is None:
-            try:
-                from core import db as _db
-                _sess._current = _db.load_snapshot("session")
-            except Exception:
-                pass
-        return _sess._current
-    if _sess._current is None and _sess._SESSION_FILE.exists():
-        try:
-            _sess._current = json.loads(_sess._SESSION_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-    elif _sess._current is None:
-        try:
-            from core import db as _db
-            _sess._current = _db.load_snapshot("session")
-        except Exception:
-            pass
-    return _sess._current
+        return _force_load_from_disk()
+    return _load_when_empty()

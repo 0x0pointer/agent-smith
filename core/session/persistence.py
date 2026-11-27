@@ -102,6 +102,24 @@ _TERMINAL_STATUSES = (
 )
 
 
+def _adopt_external_terminal_state() -> bool:
+    try:
+        disk_mtime = _sess._SESSION_FILE.stat().st_mtime
+    except OSError:
+        return False
+    if disk_mtime <= _sess._last_local_write_mtime + 0.001:
+        return False
+    try:
+        fresh = json.loads(_sess._SESSION_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(fresh, dict) or fresh.get("status") not in _TERMINAL_STATUSES:
+        return False
+    _sess._current = fresh
+    _sess._last_local_write_mtime = disk_mtime
+    return True
+
+
 def _flush() -> None:
     if not _sess._current:
         return
@@ -114,20 +132,8 @@ def _flush() -> None:
     # complete" falls into). So: before writing a NON-terminal status, if disk
     # was changed externally since our last flush AND now holds a terminal
     # status, adopt disk's state and abort this flush instead of clobbering it.
-    if _sess._current.get("status") not in _TERMINAL_STATUSES:
-        try:
-            disk_mtime = _sess._SESSION_FILE.stat().st_mtime
-        except OSError:
-            disk_mtime = None
-        if disk_mtime is not None and disk_mtime > _sess._last_local_write_mtime + 0.001:
-            try:
-                fresh = json.loads(_sess._SESSION_FILE.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                fresh = None
-            if isinstance(fresh, dict) and fresh.get("status") in _TERMINAL_STATUSES:
-                _sess._current = fresh
-                _sess._last_local_write_mtime = disk_mtime
-                return
+    if _sess._current.get("status") not in _TERMINAL_STATUSES and _adopt_external_terminal_state():
+        return
     _store.save(_sess._SESSION_FILE, _sess._current)
     try:
         _db.persist_session(_sess._current)

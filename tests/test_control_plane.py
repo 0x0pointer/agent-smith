@@ -10,9 +10,20 @@ from core.api_server import app
 from core import dashboard_auth
 
 
-def test_create_run_inserts_row_and_starts_worker(monkeypatch, tmp_path):
+def _configure_db(monkeypatch, tmp_path):
     db_path = tmp_path / "runs.db"
     monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")
+    return db_path
+
+
+def _configure_authenticated_multi_run(monkeypatch, tmp_path):
+    _configure_db(monkeypatch, tmp_path)
+    monkeypatch.setenv("SMITH_DASHBOARD_AUTH", "1")
+    monkeypatch.delenv("SMITH_SINGLE_RUN", raising=False)
+
+
+def test_create_run_inserts_row_and_starts_worker(monkeypatch, tmp_path):
+    _configure_db(monkeypatch, tmp_path)
 
     with patch("subprocess.Popen", return_value=MagicMock(pid=4321)):
         created = orchestrator.create_run({"target": "https://a.example", "depth": "recon"})
@@ -24,8 +35,7 @@ def test_create_run_inserts_row_and_starts_worker(monkeypatch, tmp_path):
 
 
 def test_concurrent_create_two_runs(monkeypatch, tmp_path):
-    db_path = tmp_path / "runs.db"
-    monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")
+    _configure_db(monkeypatch, tmp_path)
 
     with patch("subprocess.Popen", side_effect=[MagicMock(pid=1), MagicMock(pid=2)]):
         run_a = orchestrator.create_run({"target": "https://a.example", "depth": "recon"})
@@ -37,16 +47,14 @@ def test_concurrent_create_two_runs(monkeypatch, tmp_path):
 
 
 def test_create_run_validation_400(monkeypatch, tmp_path):
-    db_path = tmp_path / "runs.db"
-    monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")
+    _configure_db(monkeypatch, tmp_path)
 
     with pytest.raises(ValueError):
         orchestrator.create_run({"target": "", "depth": "bogus"})
 
 
 def test_create_run_rejects_non_dict_without_side_effects(monkeypatch, tmp_path):
-    db_path = tmp_path / "runs.db"
-    monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")
+    _configure_db(monkeypatch, tmp_path)
 
     with patch("subprocess.Popen") as popen:
         with pytest.raises(ValueError, match="object"):
@@ -57,8 +65,7 @@ def test_create_run_rejects_non_dict_without_side_effects(monkeypatch, tmp_path)
 
 
 def test_create_run_rejects_oversized_scope_without_side_effects(monkeypatch, tmp_path):
-    db_path = tmp_path / "runs.db"
-    monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")
+    _configure_db(monkeypatch, tmp_path)
 
     payload = {
         "target": "https://valid.example",
@@ -74,10 +81,7 @@ def test_create_run_rejects_oversized_scope_without_side_effects(monkeypatch, tm
 
 
 def test_api_create_run_malformed_body_400_without_side_effects(monkeypatch, tmp_path):
-    db_path = tmp_path / "runs.db"
-    monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")
-    monkeypatch.setenv("SMITH_DASHBOARD_AUTH", "1")
-    monkeypatch.delenv("SMITH_SINGLE_RUN", raising=False)
+    _configure_authenticated_multi_run(monkeypatch, tmp_path)
 
     client = TestClient(app)
     operator_token = dashboard_auth.mint_operator_token()
@@ -85,7 +89,7 @@ def test_api_create_run_malformed_body_400_without_side_effects(monkeypatch, tmp
     with patch("subprocess.Popen") as popen:
         response = client.post(
             "/api/runs",
-            data="[",
+            content="[",
             headers={**{"Content-Type": "application/json"}, "Authorization": f"Bearer {operator_token}"},
         )
 
@@ -95,8 +99,7 @@ def test_api_create_run_malformed_body_400_without_side_effects(monkeypatch, tmp
 
 
 def test_docker_failure_marks_failed_and_cleans(monkeypatch, tmp_path):
-    db_path = tmp_path / "runs.db"
-    monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")
+    _configure_db(monkeypatch, tmp_path)
 
     with patch("subprocess.Popen", side_effect=OSError("docker failed")):
         with pytest.raises(OSError):
@@ -107,8 +110,7 @@ def test_docker_failure_marks_failed_and_cleans(monkeypatch, tmp_path):
 
 
 def test_create_run_retries_generated_id_collision_before_side_effects(monkeypatch, tmp_path):
-    db_path = tmp_path / "runs.db"
-    monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")
+    _configure_db(monkeypatch, tmp_path)
     new_run_id = MagicMock(return_value="run-same")
     monkeypatch.setattr(orchestrator, "_new_run_id", new_run_id)
 
@@ -130,8 +132,7 @@ def test_create_run_retries_generated_id_collision_before_side_effects(monkeypat
 
 
 def test_create_run_spawns_agent_driver_with_run_start_context(monkeypatch, tmp_path):
-    db_path = tmp_path / "runs.db"
-    monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")
+    _configure_db(monkeypatch, tmp_path)
     monkeypatch.setattr(orchestrator, "_new_run_id", lambda: "run-context")
 
     captured = {}
@@ -171,8 +172,7 @@ def test_create_run_spawns_agent_driver_with_run_start_context(monkeypatch, tmp_
 
 
 def test_stop_run_cleans_only_targeted_resources(monkeypatch, tmp_path):
-    db_path = tmp_path / "runs.db"
-    monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")
+    _configure_db(monkeypatch, tmp_path)
 
     with patch("subprocess.Popen", return_value=MagicMock(pid=4321)):
         created = orchestrator.create_run({"target": "https://a.example", "depth": "recon"})

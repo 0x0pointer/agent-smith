@@ -120,7 +120,7 @@ async def test_kali_run_uses_run_scoped_name_network_and_ephemeral_port(monkeypa
     assert kali_runner.api_publish_arg() == "127.0.0.1::5000"
     assert kali_runner.api_url() == "http://127.0.0.1:41001"
     kali_run = next(argv for argv in run_calls if argv[2] == "-d" and "smith-kali-run-a" in argv)
-    assert ["--network", "smith-run-run-a"] == kali_run[kali_run.index("--network"):kali_run.index("--network") + 2]
+    assert kali_run[kali_run.index("--network"):kali_run.index("--network") + 2] == ["--network", "smith-run-run-a"]
     assert "1080:1080" not in kali_run
     assert "8888:8888" not in kali_run
     assert "8889:8889" not in kali_run
