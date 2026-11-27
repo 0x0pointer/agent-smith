@@ -958,10 +958,11 @@
     "base_sha": "512ed0d4f9bfb7ff3f3bc157c4b1cde7beeb88ff"
   },
   "status": {
-    "kind": "running"
+    "kind": "blocked",
+    "blocked_reason": "human_input_required"
   },
-  "status_updated_at": "2026-11-27T10:36:49.660058467Z",
-  "last_event_at": "2026-11-27T10:54:19.829641689Z",
+  "status_updated_at": "2026-11-27T10:54:25.310986664Z",
+  "last_event_at": "2026-11-27T10:54:25.310986664Z",
   "pending_control": null,
   "checkpoints": [
     {
@@ -4856,9 +4857,9 @@
       }
     },
     {
-      "seq": 0,
+      "seq": 1842,
       "checkpoint": {
-        "timestamp": "2026-11-27T10:54:20.377600712Z",
+        "timestamp": "2026-11-27T10:54:25.258072237Z",
         "current_node": "review_gate",
         "completed_nodes": [
           "start",
@@ -4882,25 +4883,378 @@
         ],
         "node_retries": {},
         "context_values": {
+          "internal.retry_count.check_issue": 0,
+          "thread.security_review.current_node": "review_gate",
+          "graph.max_node_visits": "30",
+          "graph.model_stylesheet": "\n            *       { model: gpt-5.4; reasoning_effort: medium; }\n            .strong { model: gpt-5.5; reasoning_effort: high; }\n        ",
+          "graph.rankdir": "LR",
+          "human.gate.label": "[A] Approve",
+          "failure_signature": "review_gate|deterministic|script failed with exit code: <n> ## output route_human review rejected,round <n> of <n>,<n> blocking finding(s): <n>. [authorization] core/api_server/routes/scan_state_routes.py:<n> problem: a holder of run a's dashboard token can call pos",
+          "human.gate.approve.label": "[A] Approve",
+          "internal.retry_count.start": 0,
+          "internal.work_dir": "/workspace/agent-smith",
+          "last_response": "Verdict: fail\n\nBlocking findings: core/api_server/routes/scan_state_routes.py:216 — run-token phase steering still mutates process-global state.\n\n# Security review\n\n## Summary\n- Findings: 1 blocking",
+          "thread.review_gate.current_node": "implement",
+          "thread.spec.current_node": "save_spec",
+          "preferred_label": "[A] Approve",
+          "thread.strong.current_node": "security_review",
+          "human.gate.selected": "A",
+          "internal.retry_count.approve": 0,
+          "internal.retry_count.spec": 0,
+          "thread.approve.current_node": "implement",
           "internal.retry_count.verify": 0,
+          "response.deep_fix": "Summary:\n- Root cause: `/api/session` loaded a run-scoped DB session, but its triage self-heal path then switched back to global `findings.json`, global `session.json`, and global steering helpers. Under a run token, that could leak/mutate unrelated state and even drop the run session response.\n- Fix:\n  - Kept `/api/session` triage self-heal fully run-scoped when `request.state.run_id` is set: findings, session updates, progress counters, and steering cancellation all use the authenticated run’s DB snapshots.\n  - Preserved legacy single-run behavior for requests without `run_id`.\n  - Fixed wishlist route direct-call compatibility by safely treating missing `Request.state` as global/single-run mode, while still using run-scoped wishlist/steering for authenticated dashboard requests.\n- Regression coverage:\n  - Added `test_run_token_session_triage_self_heal_uses_run_snapshots_only`, which fails without the `/api/session` fix and passes with it.\n  - Verified red/green:\n    - Before fix: new regression failed with `KeyError: 'target'`.\n    - With fix: new regression passed.\n    - Temporarily removed fix: regression failed again with `KeyError: 'target'`.\n    - Restored fix: regression passed.\n\nVerification run after final edit:\n- `poetry run pytest -q tests/test_wishlist_routes.py` → `4 passed`\n- `poetry run pytest -q tests/test_runs_routes.py tests/test_wishlist_routes.py tests/test_dashboard_auth.py tests/test_container_isolation.py tests/test_control_plane.py tests/test_smith_cli.py` → `47 passed`\n- Required full suite: `poetry run pytest -q` → `2804 passed, 22 skipped, 11 warnings`",
+          "human.gate.approve.answer": "A",
+          "response.implement": "Implemented the fix-pass items only.\n\nWhat changed\n- Tightened `/api/*` auth in `core/api_server/__init__.py`:\n  - DB/per-run mode now returns `401` for missing/invalid bearer tokens.\n  - Operator role is set only for verified operator/legacy tokens.\n- Scoped finding detail/mutation routes by run in `core/api_server/routes/findings_routes.py` and `core/findings.py`:\n  - `GET/PATCH/DELETE /api/findings/{id}` now use the request run context for DB-backed runs.\n  - Legacy single-run/global file behavior remains for non-run-token mode.\n- Hardened run creation/stop in `control_plane/orchestrator.py` and `core/api_server/routes/runs_routes.py`:\n  - Request bodies are validated before side effects.\n  - Non-dict and malformed JSON requests return `400`.\n  - Oversized `scope`/`out_of_scope` inputs are rejected.\n  - `stop_run()` now stops only that run’s worker/container/network resources and records cleanup errors without failing the stop.\n  - Added real `start/stop/status` control-plane management behavior and operator token provisioning.\n- Fixed container isolation in:\n  - `tools/kali_runner.py`\n  - `tools/metasploit_runner.py`\n  - `tools/mobsf_runner.py`\n  - Metasploit and MobSF now discover their real published API port from `docker port`.\n  - Kali and Metasploit no longer publish fixed host listener ports in multi-run mode.\n  - Metasploit/MobSF also join the run-scoped Docker network.\n- Added `docker-compose.yml` for the local Postgres control-plane service.\n\nTest coverage for the reviewer todo items\n1. Auth `401` on missing token:\n   - `tests/test_dashboard_auth.py::test_db_mode_api_401_without_any_bearer`\n2. Run-scoped findings detail/patch/delete:\n   - `tests/test_runs_routes.py::test_run_token_scopes_finding_detail_patch_and_delete`\n3. Metasploit/MobSF dynamic API port discovery:\n   - `tests/test_container_isolation.py::test_two_run_apis_do_not_collide`\n4. Non-colliding multi-run listener/handler ports:\n   - `tests/test_container_isolation.py::test_kali_run_uses_run_scoped_name_network_and_ephemeral_port`\n   - `tests/test_container_isolation.py::test_two_run_apis_do_not_collide`\n   - existing `tests/test_container_isolation.py::test_stop_only_current_run_containers`\n5. Stop-run cleanup:\n   - `tests/test_control_plane.py::test_stop_run_cleans_only_targeted_resources`\n6. Control-plane start/stop/status behavior:\n   - `tests/test_control_plane.py::test_start_control_plane_starts_services_and_returns_operator_token`\n   - `tests/test_control_plane.py::test_control_plane_status_reflects_real_health`\n   - `tests/test_control_plane.py::test_stop_control_plane_terminates_services`\n   - existing `tests/test_smith_cli.py`\n7. Request validation / malformed input / no side effects:\n   - `tests/test_control_plane.py::test_create_run_rejects_non_dict_without_side_effects`\n   - `tests/test_control_plane.py::test_create_run_rejects_oversized_scope_without_side_effects`\n   - `tests/test_control_plane.py::test_api_create_run_malformed_body_400_without_side_effects`\n\nVerification run\n- Targeted changed tests: passed\n- Full suite: `poetry run pytest -q` → passed (`2792 passed, 22 skipped`)\n\nNoticed, not touched\n- Existing pytest warnings remain, including FastAPI `on_event` deprecation and a few pre-existing runtime warnings in unrelated tests.\n\nSTATUS: DONE",
+          "internal.node_visit_count": 3,
+          "internal.retry_count.implement": 0,
+          "failure_class": "deterministic",
+          "internal.retry_count.deep_fix": 0,
+          "response.spec": "1. Intent\nBuild the issue as one platform change, in vertical slices: run identity/workdir isolation -> Postgres read/write model -> per-run tool-container isolation -> always-on orchestrator/worker launch -> multi-run dashboard/tokens. Keep the existing single-scan worker model inside each worker so the 87 `scan_session.get()` call sites are not rewritten. `smith start` becomes the operator entrypoint for an always-on local control plane that can run multiple isolated scans concurrently, while a documented `SMITH_SINGLE_RUN=1`/no-DB mode preserves today’s MCP single-run workflow.\n\n2. Acceptance criteria\n1. `smith start` brings up Postgres, dashboard/API on `127.0.0.1:7777`, and orchestrator; `smith status` shows healthy services and `GET /api/runs` returns an empty list before scans.\n2. `POST /api/runs` from the dashboard/API validates input, inserts a run, returns `{run_id, status, dashboard_url, token}`, and starts one worker using `SMITH_RUN_ID` and `SMITH_WORKDIR`.\n3. Two simultaneous `POST /api/runs` calls create two workers whose Kali/Metasploit/MobSF containers and Docker networks are named with different run ids, use non-colliding dynamic API ports, and keep artifacts/PoCs/events under separate workdirs.\n4. Findings, diagrams, chains, coverage endpoints/cells, known assets, steering, wishlist, cost summary, and session/run metadata are persisted in Postgres keyed by `run_id`; large artifacts, PoCs, and smith-events remain on disk and are referenced by id/path.\n5. The dashboard lists all runs after process restart, selecting a run scopes all existing tabs to that run, and stopping run A does not stop or mutate run B.\n6. Bearer token auth maps tokens to run ids: no token is 401, token A cannot read/mutate run B, and the operator/control token may create/stop runs.\n7. Existing MCP tools and single-run tests keep working without `SMITH_DATABASE_URL` and with `SMITH_SINGLE_RUN=1`.\n\n3. Boundaries\nAlways: derive state paths through `core.paths`; use `core.store`/existing `_load`/`_save` funnels; use `tools.docker_cli.docker_executable`; keep command APIs loopback-only; use parameterized SQL via SQLAlchemy Core; keep blobs out of Postgres.\nNever: do not rewrite all session call sites; do not remove any MCP tool action; do not expose Docker/container command APIs on `0.0.0.0`; do not add accounts/RBAC/billing; do not store secrets in logs or URL query strings; do not modify `skills/` submodule content.\n\n4. Code map\nSlice 1, run roots (tests: `test_paths.py`, existing `test_session.py`): `core/run_context.py` add `run_id()`, `workdir()`, `docker_network_name()`, `container_name(tool)`, `sanitize_run_id()`; `core/paths.py` root runtime state under `SMITH_WORKDIR` when set while leaving code/static dirs at `REPO_ROOT`; `mcp_server/scan_engine/artifacts.py` and `mcp_server/http_tools.py` use `core.paths.ARTIFACTS_DIR`/`POCS_DIR`.\nSlice 2, DB persistence (tests: `test_db_repository.py`, existing `test_findings.py`, `test_coverage.py`, `test_wishlist.py`): add `core/db/{__init__.py,schema.py,repository.py}` with migrations-on-connect and run-scoped CRUD; update `pyproject.toml`/lock for SQLAlchemy Core + psycopg; update `core/session/lifecycle.py`, `core/session/persistence.py`, `core/findings.py`, `core/coverage/__init__.py`, `core/steering.py`, `core/wishlist.py`, `core/cost.py` to write-through to DB when configured and still maintain the JSON cache.\nSlice 3, isolated containers (tests: `test_container_isolation.py`, existing `test_kali_proxychains.py`, `test_session_tools_helpers.py`): update `tools/kali_runner.py`, `tools/metasploit_runner.py`, `tools/mobsf_runner.py` to compute names/API URLs/ports after start from run id, attach `smith-run-<run_id>` network, publish command API as `127.0.0.1::container_port`, and stop only that run’s containers; update `mcp_server/session_tools/containers.py` and `core/session/lifecycle.stop_pentest_containers` to use the run context.\nSlice 4, control plane (tests: `test_control_plane.py`, `test_smith_cli.py`): add `control_plane/orchestrator.py` routes `POST /runs`, `GET /runs`, `POST /runs/{run_id}/stop`; add `smith` CLI module/console script for `start|stop|status`; add `docker-compose.yml` and `installers/worker/Dockerfile`; reuse `core/api_server/smith/spawn.py` for per-run agent spawn with run env.\nSlice 5, dashboard/auth (tests: `test_runs_routes.py`, `test_dashboard_auth.py`, existing `test_api_server.py`, `test_sessions_api.py`): update `core/dashboard_auth.py` to store token metadata `{token_hash, run_id, role}` in DB; middleware sets `request.state.run_id`; update dashboard routes for findings/session/cost/coverage/wishlist/triage to query by run id; add run-list/start UI in `dashboard/tabs/sessions.html` and `dashboard/js/sessions.js`.\n\n5. Edge cases\n| State/input | Expected behaviour |\n|---|---|\n| Empty run list | Dashboard shows no runs and Start Run remains available. |\n| Malformed target/depth/body | `POST /api/runs` returns 400 without creating DB rows or containers. |\n| Oversized scope/out_of_scope | Request is rejected at documented limits; no worker starts. |\n| Duplicate target submitted twice | Two distinct run ids are allowed; state and containers remain isolated. |\n| Concurrent create for same generated id/name | Orchestrator retries id generation or returns 409 before starting containers. |\n| Postgres unavailable | `smith status` unhealthy; run creation returns 503; worker file cache is not corrupted. |\n| Docker run/network failure | Run becomes `failed`, partial worker/tool containers/network are cleaned best-effort. |\n| Stop run twice | First stops resources and marks stopped; second is idempotent 200/404-safe with no other run affected. |\n\n6. Security considerations\nUntrusted input enters through dashboard/API run creation, steering/wishlist forms, MCP tool options, and target-derived coverage data. Validate and length-limit run parameters, use parameterized SQL only, hash tokens at rest, keep tokens in URL fragments not query strings, and prevent token A from selecting arbitrary `run_id`. Docker access is privileged via the host socket; only the orchestrator should receive it, and worker/tool container names, networks, and mounts must be run-scoped. Continue existing shell-injection protections: subprocess argv lists for Docker/agent launch; no shell concatenation of request fields. Logs must redact secrets and must not include bearer tokens.\n\n7. Test plan\nAdd `tests/test_paths.py::test_smith_workdir_rehomes_runtime_state_only` and `::test_default_paths_unchanged_without_env`.\nAdd `tests/test_db_repository.py::{test_session_findings_coverage_round_trip_by_run_id,test_json_cache_survives_db_disabled,test_db_error_does_not_truncate_cache}`.\nAdd `tests/test_container_isolation.py::{test_kali_run_uses_run_scoped_name_network_and_ephemeral_port,test_two_run_apis_do_not_collide,test_stop_only_current_run_containers}` with Docker subprocess/aiohttp mocked.\nAdd `tests/test_control_plane.py::{test_create_run_inserts_row_and_starts_worker,test_concurrent_create_two_runs,test_create_run_validation_400,test_docker_failure_marks_failed_and_cleans}`.\nAdd `tests/test_runs_routes.py::{test_api_runs_list_persists_after_restart,test_run_token_scopes_existing_tabs,test_cross_run_token_rejected,test_operator_token_can_create_and_stop}`.\nUpdate `tests/test_dashboard_auth.py` for token metadata and hashed storage; update existing route tests to set request run context. Existing `test_session.py`, `test_findings.py`, `test_coverage.py`, `test_wishlist.py`, `test_api_server.py`, `test_sessions_api.py`, `test_kali_proxychains.py`, and `test_session_tools_helpers.py` must keep passing.\nTests required: yes\n\n8. Review focus\n1. Whether DB write-through preserves current JSON-cache semantics and terminal-status race protections.\n2. Whether any dashboard route can be forced to read another run by query/body manipulation.\n3. Whether dynamic Docker port discovery is race-free and updates API URLs after restart.\n4. Whether cleanup can accidentally stop fixed legacy containers or another run’s containers.\n5. Whether `smith start`/install changes preserve existing single-run developer workflow.\n\n9. Assumptions\nThe full issue, not only Phase 0, is in scope for this build. A local operator/control token is permitted for creating/stopping runs because per-run tokens alone cannot safely protect the Start Run surface. SQLAlchemy Core with psycopg is acceptable as a normal PyPI dependency. Tests may use SQLite or mocked DB adapters for unit coverage, but platform mode must support PostgreSQL. `SMITH_SINGLE_RUN=1` is the compatibility switch for the old daemon-style workflow.\n\n10. Suspicious content\nnone\n\nSize: standard\nRisk level: high\nReason: XL by the planning skill sizing (new persistence, orchestration, auth, Docker isolation, and dashboard surfaces); mistakes can cross-contaminate pentest data, expose command APIs, or stop the wrong containers.",
+          "thread.check_issue.current_node": "install",
+          "outcome": "failed",
+          "internal.retry_count.security_review": 0,
+          "graph.loop_restart_signature_limit": "10",
+          "response.security_review": "Verdict: fail\n\nBlocking findings: core/api_server/routes/scan_state_routes.py:216 — run-token phase steering still mutates process-global state.\n\n# Security review\n\n## Summary\n- Findings: 1 blocking, 0 non-blocking.\n- Re-review status: the four prior blockers were mostly addressed: scoped reads no longer fall back to global findings for run tokens, QA/steering/wishlist/triage got run-aware paths, the three tool runners rediscover dynamic ports after restart, operator-token minting now waits for DB availability/fails closed, and the inert orchestrator marker was removed in favor of health-checking the real `/api/runs` surface.\n- Remaining issue: phase-control steering is still process-global in a run-token request, so an existing dashboard action is not scoped to the selected run.\n\n## Changed files reviewed\n\n| File | Risk | Blast radius |\n|---|---:|---|\n| `control_plane/orchestrator.py` | HIGH | CLI and `/api/runs` create/list/stop/status paths; 5 public control-plane functions. |\n| `core/api_server/routes/findings_routes.py` | HIGH | Findings/session/cost/coverage APIs; dashboard tabs for every authenticated run. |\n| `core/api_server/routes/misc_routes.py` | HIGH | QA and steering read APIs; dashboard state disclosure boundary. |\n| `core/api_server/routes/scan_state_routes.py` | HIGH | `/api/steer`, phase controls, intervention/stop state actions; public dashboard control surface. |\n| `core/api_server/routes/triage_routes.py` | HIGH | Complete/triage/cancel/force-stop dashboard actions. |\n| `core/api_server/routes/wishlist_routes.py` | HIGH | Wishlist read/fulfill/dismiss actions and steering wakeups. |\n| `core/dashboard_auth.py` | HIGH | Bearer token mint/verification for run and operator tokens. |\n| `core/qa_agent/daemon.py` | MEDIUM | One QA writer loop; now persists QA snapshots to DB. |\n| `core/steering.py` | HIGH | Central directive queue; >20 direct callers across QA, MCP tools, routes, and envelope injection. |\n| `core/wishlist.py` | MEDIUM | Wishlist queue; direct callers in dashboard routes, MCP session tools, pivot/spider helpers. |\n| `tools/kali_runner.py` | HIGH | Kali command API container lifecycle and dynamic port URL. |\n| `tools/metasploit_runner.py` | HIGH | Metasploit command API container lifecycle and dynamic port URL. |\n| `tools/mobsf_runner.py` | HIGH | MobSF API container lifecycle and dynamic port URL. |\n| `tests/test_container_isolation.py` | LOW | Regression coverage for container naming/ports. |\n| `tests/test_control_plane.py` | LOW | Regression coverage for control-plane health/token behavior. |\n| `tests/test_dashboard_auth.py` | LOW | Regression coverage for token persistence/fail-closed behavior. |\n| `tests/test_runs_routes.py` | LOW | Regression coverage for run token scoping on selected tabs/actions. |\n\n## Findings\n\n### Blocking — run-token phase steering still mutates process-global state\n\n- **File/line:** `core/api_server/routes/scan_state_routes.py:216`\n- **Category:** authorization / correctness\n- **Attacker model:** Holder of a valid run A dashboard token. This is an authenticated but run-scoped user interacting through the documented dashboard/API route.\n- **Reachable path checked:** The auth middleware sets `request.state.run_id` for the bearer token. `POST /api/steer` with `{\"message\":\"advance to phase B\"}` enters the phase special case at lines 219-226 before the new `run_id` is used for normal steering directives. That branch calls `scan_session.load_from_disk(force=True)` and `scan_session.advance_phase(target)`, which operate on the process-global session, not the authenticated run's DB snapshot. The sibling `/api/phase/advance` endpoint has the same global pattern.\n- **Impact:** Selecting run A does not scope phase-control actions to run A. The request either fails against an unrelated empty/global session or advances whatever process-global/single-run session is loaded, while run A's persisted DB session remains unchanged. This violates the AC5 requirement that selecting a run scopes existing dashboard tabs/actions to that run, and keeps a run token able to affect state outside its run boundary.\n- **Required fix:** For DB-backed run-token requests, load the authenticated run's session snapshot, apply the forward-only phase transition to that document, and save it back with `repo.upsert_run()`/`repo.save_snapshot(run_id, \"session\", ...)`; do not touch `core.session` globals. Apply the same run-scoped behavior or an explicit 403/409 to `/api/phase`, `/api/phase/advance`, and typed phase steering in `/api/steer`. Add a regression test with run A and run B snapshots proving a run A token advances only run A and does not create or mutate repo-root/global session state.\n\n## Test coverage gaps\n- Added tests cover run-scoped normal `/api/steer` directives, wishlist, QA, steering, triage, and findings operations, but not typed phase steering or `/api/phase/advance` under run tokens.\n- I did not run the whole test suite per instruction. I used targeted source/history/caller/test inspection only.\n\n## Not covered / limits\n- Re-review was limited to regions in `/tmp/fabro/since-review.diff`; I did not re-audit unchanged portions of the large original change except where needed to trace callers/guards.\n- I did not manually exercise Docker, Postgres, or the dashboard browser UI.\n- I did not review dependency lockfile content beyond noting it was outside the re-review delta.",
+          "thread.deep_fix.current_node": "verify",
+          "thread.save_spec.current_node": "approve",
           "internal.thread_id": "security_review",
+          "graph.goal": "Resolve the next maintainer-approved GitHub issue of 0x0pointer/agent-smith with a reviewed spec, code, and passing tests",
+          "human.gate.approve.question": "Approve the spec? To have it revised, type what should change.",
+          "internal.retry_count.save_spec": 0,
+          "internal.run_id": "01M8E2VGXJAGZS2C51TYVY5WK3",
+          "last_stage": "security_review",
+          "thread.implement.current_node": "verify",
+          "current_node": "review_gate",
+          "thread.start.current_node": "check_issue",
+          "command.output": "blob://sha256/d5f3591c434d97b5fcd2f2dd90cd87ad9f8a20b9e0b4f5cff88b4309c04f26fc",
+          "internal.retry_count.review_gate": 0,
+          "internal.retry_count.install": 0,
+          "internal.fidelity": "compact"
+        },
+        "node_outcomes": {
+          "deep_fix": {
+            "status": "succeeded",
+            "context_updates": {
+              "response.deep_fix": "Summary:\n- Root cause: `/api/session` loaded a run-scoped DB session, but its triage self-heal path then switched back to global `findings.json`, global `session.json`, and global steering helpers. Under a run token, that could leak/mutate unrelated state and even drop the run session response.\n- Fix:\n  - Kept `/api/session` triage self-heal fully run-scoped when `request.state.run_id` is set: findings, session updates, progress counters, and steering cancellation all use the authenticated run’s DB snapshots.\n  - Preserved legacy single-run behavior for requests without `run_id`.\n  - Fixed wishlist route direct-call compatibility by safely treating missing `Request.state` as global/single-run mode, while still using run-scoped wishlist/steering for authenticated dashboard requests.\n- Regression coverage:\n  - Added `test_run_token_session_triage_self_heal_uses_run_snapshots_only`, which fails without the `/api/session` fix and passes with it.\n  - Verified red/green:\n    - Before fix: new regression failed with `KeyError: 'target'`.\n    - With fix: new regression passed.\n    - Temporarily removed fix: regression failed again with `KeyError: 'target'`.\n    - Restored fix: regression passed.\n\nVerification run after final edit:\n- `poetry run pytest -q tests/test_wishlist_routes.py` → `4 passed`\n- `poetry run pytest -q tests/test_runs_routes.py tests/test_wishlist_routes.py tests/test_dashboard_auth.py tests/test_container_isolation.py tests/test_control_plane.py tests/test_smith_cli.py` → `47 passed`\n- Required full suite: `poetry run pytest -q` → `2804 passed, 22 skipped, 11 warnings`",
+              "last_stage": "deep_fix",
+              "last_response": "Summary:\n- Root cause: `/api/session` loaded a run-scoped DB session, but its triage self-heal path then switched back to global `findings.json`, global `session.json`, and global steering helpers. Un"
+            },
+            "notes": "Stage completed: deep_fix",
+            "usage": {
+              "input": {
+                "usage": {
+                  "model": {
+                    "provider": "openai",
+                    "model_id": "gpt-5.5"
+                  },
+                  "tokens": {
+                    "input_tokens": 163374,
+                    "output_tokens": 7562,
+                    "reasoning_tokens": 3612,
+                    "cache_read_tokens": 3264000,
+                    "cache_write_tokens": 0
+                  }
+                },
+                "facts": {
+                  "algorithm": "openai"
+                }
+              },
+              "total_usd_micros": 2784090
+            },
+            "timing": {
+              "wall_time_ms": 0,
+              "inference_time_ms": 145944,
+              "tool_time_ms": 520883,
+              "active_time_ms": 666827
+            }
+          },
+          "implement": {
+            "status": "succeeded",
+            "context_updates": {
+              "last_response": "Implemented the fix-pass items only.\n\nWhat changed\n- Tightened `/api/*` auth in `core/api_server/__init__.py`:\n  - DB/per-run mode now returns `401` for missing/invalid bearer tokens.\n  - Operator rol",
+              "response.implement": "Implemented the fix-pass items only.\n\nWhat changed\n- Tightened `/api/*` auth in `core/api_server/__init__.py`:\n  - DB/per-run mode now returns `401` for missing/invalid bearer tokens.\n  - Operator role is set only for verified operator/legacy tokens.\n- Scoped finding detail/mutation routes by run in `core/api_server/routes/findings_routes.py` and `core/findings.py`:\n  - `GET/PATCH/DELETE /api/findings/{id}` now use the request run context for DB-backed runs.\n  - Legacy single-run/global file behavior remains for non-run-token mode.\n- Hardened run creation/stop in `control_plane/orchestrator.py` and `core/api_server/routes/runs_routes.py`:\n  - Request bodies are validated before side effects.\n  - Non-dict and malformed JSON requests return `400`.\n  - Oversized `scope`/`out_of_scope` inputs are rejected.\n  - `stop_run()` now stops only that run’s worker/container/network resources and records cleanup errors without failing the stop.\n  - Added real `start/stop/status` control-plane management behavior and operator token provisioning.\n- Fixed container isolation in:\n  - `tools/kali_runner.py`\n  - `tools/metasploit_runner.py`\n  - `tools/mobsf_runner.py`\n  - Metasploit and MobSF now discover their real published API port from `docker port`.\n  - Kali and Metasploit no longer publish fixed host listener ports in multi-run mode.\n  - Metasploit/MobSF also join the run-scoped Docker network.\n- Added `docker-compose.yml` for the local Postgres control-plane service.\n\nTest coverage for the reviewer todo items\n1. Auth `401` on missing token:\n   - `tests/test_dashboard_auth.py::test_db_mode_api_401_without_any_bearer`\n2. Run-scoped findings detail/patch/delete:\n   - `tests/test_runs_routes.py::test_run_token_scopes_finding_detail_patch_and_delete`\n3. Metasploit/MobSF dynamic API port discovery:\n   - `tests/test_container_isolation.py::test_two_run_apis_do_not_collide`\n4. Non-colliding multi-run listener/handler ports:\n   - `tests/test_container_isolation.py::test_kali_run_uses_run_scoped_name_network_and_ephemeral_port`\n   - `tests/test_container_isolation.py::test_two_run_apis_do_not_collide`\n   - existing `tests/test_container_isolation.py::test_stop_only_current_run_containers`\n5. Stop-run cleanup:\n   - `tests/test_control_plane.py::test_stop_run_cleans_only_targeted_resources`\n6. Control-plane start/stop/status behavior:\n   - `tests/test_control_plane.py::test_start_control_plane_starts_services_and_returns_operator_token`\n   - `tests/test_control_plane.py::test_control_plane_status_reflects_real_health`\n   - `tests/test_control_plane.py::test_stop_control_plane_terminates_services`\n   - existing `tests/test_smith_cli.py`\n7. Request validation / malformed input / no side effects:\n   - `tests/test_control_plane.py::test_create_run_rejects_non_dict_without_side_effects`\n   - `tests/test_control_plane.py::test_create_run_rejects_oversized_scope_without_side_effects`\n   - `tests/test_control_plane.py::test_api_create_run_malformed_body_400_without_side_effects`\n\nVerification run\n- Targeted changed tests: passed\n- Full suite: `poetry run pytest -q` → passed (`2792 passed, 22 skipped`)\n\nNoticed, not touched\n- Existing pytest warnings remain, including FastAPI `on_event` deprecation and a few pre-existing runtime warnings in unrelated tests.\n\nSTATUS: DONE",
+              "last_stage": "implement"
+            },
+            "notes": "Stage completed: implement",
+            "usage": {
+              "input": {
+                "usage": {
+                  "model": {
+                    "provider": "openai",
+                    "model_id": "gpt-5.4"
+                  },
+                  "tokens": {
+                    "input_tokens": 151664,
+                    "output_tokens": 19095,
+                    "reasoning_tokens": 11344,
+                    "cache_read_tokens": 4152832,
+                    "cache_write_tokens": 0
+                  }
+                },
+                "facts": {
+                  "algorithm": "openai"
+                }
+              },
+              "total_usd_micros": 1873953
+            },
+            "timing": {
+              "wall_time_ms": 0,
+              "inference_time_ms": 321903,
+              "tool_time_ms": 280849,
+              "active_time_ms": 602752
+            }
+          },
+          "approve": {
+            "status": "succeeded",
+            "preferred_label": "[A] Approve",
+            "suggested_next_ids": [
+              "implement"
+            ],
+            "context_updates": {
+              "human.gate.label": "[A] Approve",
+              "human.gate.selected": "A",
+              "human.gate.approve.label": "[A] Approve",
+              "human.gate.approve.question": "Approve the spec? To have it revised, type what should change.",
+              "human.gate.approve.answer": "A"
+            },
+            "usage": null
+          },
+          "install": {
+            "status": "succeeded",
+            "context_updates": {
+              "command.output": "blob://sha256/12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126"
+            },
+            "notes": "Script completed: git submodule update -q --init --recursive && poetry install --with dev --no-interaction -q",
+            "usage": null,
+            "timing": {
+              "wall_time_ms": 0,
+              "inference_time_ms": 0,
+              "tool_time_ms": 13246,
+              "active_time_ms": 13246
+            }
+          },
+          "spec": {
+            "status": "succeeded",
+            "context_updates": {
+              "last_response": "1. Intent\nBuild the issue as one platform change, in vertical slices: run identity/workdir isolation -> Postgres read/write model -> per-run tool-container isolation -> always-on orchestrator/worker l",
+              "response.spec": "1. Intent\nBuild the issue as one platform change, in vertical slices: run identity/workdir isolation -> Postgres read/write model -> per-run tool-container isolation -> always-on orchestrator/worker launch -> multi-run dashboard/tokens. Keep the existing single-scan worker model inside each worker so the 87 `scan_session.get()` call sites are not rewritten. `smith start` becomes the operator entrypoint for an always-on local control plane that can run multiple isolated scans concurrently, while a documented `SMITH_SINGLE_RUN=1`/no-DB mode preserves today’s MCP single-run workflow.\n\n2. Acceptance criteria\n1. `smith start` brings up Postgres, dashboard/API on `127.0.0.1:7777`, and orchestrator; `smith status` shows healthy services and `GET /api/runs` returns an empty list before scans.\n2. `POST /api/runs` from the dashboard/API validates input, inserts a run, returns `{run_id, status, dashboard_url, token}`, and starts one worker using `SMITH_RUN_ID` and `SMITH_WORKDIR`.\n3. Two simultaneous `POST /api/runs` calls create two workers whose Kali/Metasploit/MobSF containers and Docker networks are named with different run ids, use non-colliding dynamic API ports, and keep artifacts/PoCs/events under separate workdirs.\n4. Findings, diagrams, chains, coverage endpoints/cells, known assets, steering, wishlist, cost summary, and session/run metadata are persisted in Postgres keyed by `run_id`; large artifacts, PoCs, and smith-events remain on disk and are referenced by id/path.\n5. The dashboard lists all runs after process restart, selecting a run scopes all existing tabs to that run, and stopping run A does not stop or mutate run B.\n6. Bearer token auth maps tokens to run ids: no token is 401, token A cannot read/mutate run B, and the operator/control token may create/stop runs.\n7. Existing MCP tools and single-run tests keep working without `SMITH_DATABASE_URL` and with `SMITH_SINGLE_RUN=1`.\n\n3. Boundaries\nAlways: derive state paths through `core.paths`; use `core.store`/existing `_load`/`_save` funnels; use `tools.docker_cli.docker_executable`; keep command APIs loopback-only; use parameterized SQL via SQLAlchemy Core; keep blobs out of Postgres.\nNever: do not rewrite all session call sites; do not remove any MCP tool action; do not expose Docker/container command APIs on `0.0.0.0`; do not add accounts/RBAC/billing; do not store secrets in logs or URL query strings; do not modify `skills/` submodule content.\n\n4. Code map\nSlice 1, run roots (tests: `test_paths.py`, existing `test_session.py`): `core/run_context.py` add `run_id()`, `workdir()`, `docker_network_name()`, `container_name(tool)`, `sanitize_run_id()`; `core/paths.py` root runtime state under `SMITH_WORKDIR` when set while leaving code/static dirs at `REPO_ROOT`; `mcp_server/scan_engine/artifacts.py` and `mcp_server/http_tools.py` use `core.paths.ARTIFACTS_DIR`/`POCS_DIR`.\nSlice 2, DB persistence (tests: `test_db_repository.py`, existing `test_findings.py`, `test_coverage.py`, `test_wishlist.py`): add `core/db/{__init__.py,schema.py,repository.py}` with migrations-on-connect and run-scoped CRUD; update `pyproject.toml`/lock for SQLAlchemy Core + psycopg; update `core/session/lifecycle.py`, `core/session/persistence.py`, `core/findings.py`, `core/coverage/__init__.py`, `core/steering.py`, `core/wishlist.py`, `core/cost.py` to write-through to DB when configured and still maintain the JSON cache.\nSlice 3, isolated containers (tests: `test_container_isolation.py`, existing `test_kali_proxychains.py`, `test_session_tools_helpers.py`): update `tools/kali_runner.py`, `tools/metasploit_runner.py`, `tools/mobsf_runner.py` to compute names/API URLs/ports after start from run id, attach `smith-run-<run_id>` network, publish command API as `127.0.0.1::container_port`, and stop only that run’s containers; update `mcp_server/session_tools/containers.py` and `core/session/lifecycle.stop_pentest_containers` to use the run context.\nSlice 4, control plane (tests: `test_control_plane.py`, `test_smith_cli.py`): add `control_plane/orchestrator.py` routes `POST /runs`, `GET /runs`, `POST /runs/{run_id}/stop`; add `smith` CLI module/console script for `start|stop|status`; add `docker-compose.yml` and `installers/worker/Dockerfile`; reuse `core/api_server/smith/spawn.py` for per-run agent spawn with run env.\nSlice 5, dashboard/auth (tests: `test_runs_routes.py`, `test_dashboard_auth.py`, existing `test_api_server.py`, `test_sessions_api.py`): update `core/dashboard_auth.py` to store token metadata `{token_hash, run_id, role}` in DB; middleware sets `request.state.run_id`; update dashboard routes for findings/session/cost/coverage/wishlist/triage to query by run id; add run-list/start UI in `dashboard/tabs/sessions.html` and `dashboard/js/sessions.js`.\n\n5. Edge cases\n| State/input | Expected behaviour |\n|---|---|\n| Empty run list | Dashboard shows no runs and Start Run remains available. |\n| Malformed target/depth/body | `POST /api/runs` returns 400 without creating DB rows or containers. |\n| Oversized scope/out_of_scope | Request is rejected at documented limits; no worker starts. |\n| Duplicate target submitted twice | Two distinct run ids are allowed; state and containers remain isolated. |\n| Concurrent create for same generated id/name | Orchestrator retries id generation or returns 409 before starting containers. |\n| Postgres unavailable | `smith status` unhealthy; run creation returns 503; worker file cache is not corrupted. |\n| Docker run/network failure | Run becomes `failed`, partial worker/tool containers/network are cleaned best-effort. |\n| Stop run twice | First stops resources and marks stopped; second is idempotent 200/404-safe with no other run affected. |\n\n6. Security considerations\nUntrusted input enters through dashboard/API run creation, steering/wishlist forms, MCP tool options, and target-derived coverage data. Validate and length-limit run parameters, use parameterized SQL only, hash tokens at rest, keep tokens in URL fragments not query strings, and prevent token A from selecting arbitrary `run_id`. Docker access is privileged via the host socket; only the orchestrator should receive it, and worker/tool container names, networks, and mounts must be run-scoped. Continue existing shell-injection protections: subprocess argv lists for Docker/agent launch; no shell concatenation of request fields. Logs must redact secrets and must not include bearer tokens.\n\n7. Test plan\nAdd `tests/test_paths.py::test_smith_workdir_rehomes_runtime_state_only` and `::test_default_paths_unchanged_without_env`.\nAdd `tests/test_db_repository.py::{test_session_findings_coverage_round_trip_by_run_id,test_json_cache_survives_db_disabled,test_db_error_does_not_truncate_cache}`.\nAdd `tests/test_container_isolation.py::{test_kali_run_uses_run_scoped_name_network_and_ephemeral_port,test_two_run_apis_do_not_collide,test_stop_only_current_run_containers}` with Docker subprocess/aiohttp mocked.\nAdd `tests/test_control_plane.py::{test_create_run_inserts_row_and_starts_worker,test_concurrent_create_two_runs,test_create_run_validation_400,test_docker_failure_marks_failed_and_cleans}`.\nAdd `tests/test_runs_routes.py::{test_api_runs_list_persists_after_restart,test_run_token_scopes_existing_tabs,test_cross_run_token_rejected,test_operator_token_can_create_and_stop}`.\nUpdate `tests/test_dashboard_auth.py` for token metadata and hashed storage; update existing route tests to set request run context. Existing `test_session.py`, `test_findings.py`, `test_coverage.py`, `test_wishlist.py`, `test_api_server.py`, `test_sessions_api.py`, `test_kali_proxychains.py`, and `test_session_tools_helpers.py` must keep passing.\nTests required: yes\n\n8. Review focus\n1. Whether DB write-through preserves current JSON-cache semantics and terminal-status race protections.\n2. Whether any dashboard route can be forced to read another run by query/body manipulation.\n3. Whether dynamic Docker port discovery is race-free and updates API URLs after restart.\n4. Whether cleanup can accidentally stop fixed legacy containers or another run’s containers.\n5. Whether `smith start`/install changes preserve existing single-run developer workflow.\n\n9. Assumptions\nThe full issue, not only Phase 0, is in scope for this build. A local operator/control token is permitted for creating/stopping runs because per-run tokens alone cannot safely protect the Start Run surface. SQLAlchemy Core with psycopg is acceptable as a normal PyPI dependency. Tests may use SQLite or mocked DB adapters for unit coverage, but platform mode must support PostgreSQL. `SMITH_SINGLE_RUN=1` is the compatibility switch for the old daemon-style workflow.\n\n10. Suspicious content\nnone\n\nSize: standard\nRisk level: high\nReason: XL by the planning skill sizing (new persistence, orchestration, auth, Docker isolation, and dashboard surfaces); mistakes can cross-contaminate pentest data, expose command APIs, or stop the wrong containers.",
+              "last_stage": "spec"
+            },
+            "notes": "Stage completed: spec",
+            "usage": {
+              "input": {
+                "usage": {
+                  "model": {
+                    "provider": "openai",
+                    "model_id": "gpt-5.5"
+                  },
+                  "tokens": {
+                    "input_tokens": 173583,
+                    "output_tokens": 7570,
+                    "reasoning_tokens": 3984,
+                    "cache_read_tokens": 3840000,
+                    "cache_write_tokens": 0
+                  }
+                },
+                "facts": {
+                  "algorithm": "openai"
+                }
+              },
+              "total_usd_micros": 3134535
+            },
+            "files_touched": [
+              "/tmp/fabro/spec.md"
+            ],
+            "timing": {
+              "wall_time_ms": 0,
+              "inference_time_ms": 153631,
+              "tool_time_ms": 6944,
+              "active_time_ms": 160575
+            }
+          },
+          "verify": {
+            "status": "succeeded",
+            "context_updates": {
+              "command.output": "blob://sha256/b47a1faea39ab73927736217e57df8aec4106d45f77796b381a28b2c41d15a38"
+            },
+            "notes": "Script completed: \nimport os, re, shlex, shutil, subprocess, sys\nD = '/tmp/fabro'\nNL = chr(10)\nFIRST_FIXES = int('2')\nMAX_FIXES = int('3')\nMAX_STANDARD_LINES = int('400')\nSENSITIVE = [s.strip().lower() for s in 'auth,secret,token,crypt,password,sandbox,policy,proxy,session,mcp_server,installers,tools/,scripts/,Dockerfile,pyproject.toml,poetry.lock,requirements,config'.split(',') if s.strip()]\nINSTALL = '''git submodule update -q --init --recursive && poetry install --with dev --no-interaction -q'''.strip()\nLINT = '''none'''.strip()\nTESTS = '''poetry run pytest -q'''.strip()\nPREFIXES = tuple(p.strip() for p in '.github/,.fabro/,skills/,.env'.split(',') if p.strip())\nFILES = set(p.strip() for p in 'LICENSE,sonar-project.properties,.gitmodules,skills'.split(',') if p.strip())\nTESTS_DIR = 'tests/'.strip()\n# 'none' means the repository has no test directory: nothing counts as a test file.\nIS_TEST = (lambda f: False) if TESTS_DIR.lower() == 'none' else (lambda f: f.startswith(TESTS_DIR))\n# Added code containing one of these gets the security reviewer.\nRISKY = ['subprocess', 'os.system', 'eval(', 'exec(', 'pickle', 'yaml.load', 'shell=True', '.execute(', 'urlopen', 'requests.', 'httpx.', 'jinja', 'token', 'secret', 'password', 'authoriz', 'permission']\n# Added lines containing one of these lower the bar instead of meeting it.\n# They are not rejected here, but listed for the reviewer.\nLOOSENING = ['pytest.mark.skip', 'pytest.skip(', 'unittest.skip', 'xfail', '# noqa', '# nosec', '# type: ignore', 'pragma: no cover', 'NOSONAR', 'nosemgrep']\nos.makedirs(D, exist_ok=True)\ndef run(cmd, env=None):\n    p = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='replace', env=env)\n    return p.returncode, p.stdout\ndef read(path):\n    try:\n        with open(path) as f:\n            return f.read()\n    except OSError:\n        return ''\ndef write(path, text):\n    with open(path, 'w') as f:\n        f.write(text)\ndef remove(*names):\n    for name in names:\n        if os.path.exists(D + '/' + name):\n            os.remove(D + '/' + name)\ndef snapshot():\n    # The whole working tree, new files included, as a git tree object. It is\n    # built in a private index, so the real index and the files stay as they are.\n    index = D + '/index'\n    rc, source = run('git rev-parse --git-path index')\n    try:\n        shutil.copyfile(source.strip(), index)\n    except OSError:\n        if os.path.exists(index):\n            os.remove(index)\n    rc, out = run('git add -A . && git write-tree', dict(os.environ, GIT_INDEX_FILE=index))\n    last = (out.strip().splitlines() or [''])[-1].strip()\n    if rc == 0 and len(last) >= 40 and all(c in '0123456789abcdef' for c in last):\n        return last, ''\n    return '', out\nremove('review-notes.md', 'review.json')\nblocked = read(D + '/blocked.md').strip()\nif blocked:\n    remove('blocked.md')\n    write(D + '/todo.md', '# The implementer reported that the spec cannot be implemented as written' + NL + NL + blocked[:4000] + NL)\n    print('ROUTE_human (the implementer is blocked)')\n    print(blocked.replace('ROUTE_', 'ROUTE-')[:3000])\n    sys.exit(1)\nTREE, tree_error = snapshot()\ndef changed_files():\n    if not TREE:\n        return None, tree_error\n    rc, names = run('git diff --name-only origin/main ' + TREE)\n    if rc != 0:\n        return None, names\n    return sorted(set(l.strip() for l in names.splitlines() if l.strip())), ''\nchanged, git_error = changed_files()\ndef guard():\n    if changed is None:\n        return False, 'Could not list changed files:' + NL + git_error\n    bad = [f for f in changed if f.startswith(PREFIXES) or f in FILES]\n    if bad:\n        return False, 'PROTECTED FILES CHANGED - revert these:' + NL + NL.join(bad)\n    if not changed:\n        return False, 'No files were changed, so there is nothing to verify.'\n    return True, 'changed files:' + NL + NL.join(changed)\ndef tests_present():\n    code = [f for f in changed if f.endswith('.py') and not IS_TEST(f)]\n    tests = [f for f in changed if IS_TEST(f)]\n    waived = TESTS_DIR.lower() == 'none' or 'tests required: no' in read(D + '/spec.md').lower()\n    if code and not tests and not waived:\n        return False, 'Python code changed but nothing under ' + TESTS_DIR + ' was added or updated. Write the tests named in the spec Test plan. Changed code:' + NL + NL.join(code)\n    return True, str(len(tests)) + ' test file(s) changed'\ndef syntax():\n    py = [f for f in changed if f.endswith('.py') and os.path.exists(f)]\n    if not py:\n        return True, 'no python files changed'\n    rc, out = run(shlex.quote(sys.executable) + ' -m py_compile ' + ' '.join(shlex.quote(f) for f in py))\n    return rc == 0, out\ndef command(cmd):\n    def go():\n        rc, out = run(cmd)\n        return rc == 0, out\n    return go\nSTEPS = [\n    ('protected paths', guard),\n    ('tests present', tests_present),\n    ('syntax', syntax),\n    ('install', command(INSTALL)),\n] + ([] if LINT.lower() == 'none' else [('lint', command(LINT))]) + [\n    ('tests', command(TESTS)),\n]\nlog = []\nfailure = None\nfor name, step in STEPS:\n    ok, out = step()\n    log.append('===== ' + name + ': ' + ('ok' if ok else 'FAILED') + NL + out)\n    if not ok:\n        failure = (name, out)\n        break\nwrite(D + '/verify.log', (NL + NL).join(log) + NL)\nif failure is not None:\n    name, out = failure\n    lines = out.splitlines()\n    failing = [l for l in lines if l.startswith(('FAILED ', 'ERROR '))][:25]\n    summary = '# Fix this: automated verification failed at step: ' + name + NL\n    if failing:\n        summary += NL + 'Failing tests:' + NL + NL.join(failing) + NL\n    summary += NL + 'Last lines of output:' + NL + NL.join(lines[-30:]) + NL\n    summary += NL + 'Full log: /tmp/fabro/verify.log' + NL\n    summary = summary[-6000:]\n    if os.path.exists(D + '/last-review.md'):\n        summary += NL + 'The reviewer findings in /tmp/fabro/last-review.md must stay fixed.' + NL\n    write(D + '/todo.md', summary)\n    try:\n        fails = int(read(D + '/verify_fails').strip() or 0) + 1\n    except ValueError:\n        fails = MAX_FIXES + 1\n    write(D + '/verify_fails', str(fails))\n    if fails <= FIRST_FIXES:\n        route = 'ROUTE_implement'\n    elif fails <= MAX_FIXES:\n        route = 'ROUTE_deep'\n    else:\n        route = 'ROUTE_human'\n    print(route + ' (consecutive failed verifications: ' + str(fails) + ')')\n    print(summary.replace('ROUTE_', 'ROUTE-')[-3000:])\n    sys.exit(1)\n# Passed. Hand the change over to review.\nwrite(D + '/verify_fails', '0')\nremove('todo.md')\nrc, diff = run('git diff origin/main ' + TREE)\nwrite(D + '/change.diff', diff)\nwrite(D + '/review_tree', TREE)\nreviewed = read(D + '/reviewed_tree').strip()\nremove('since-review.diff')\nif reviewed and reviewed != TREE:\n    rc2, since = run('git diff ' + reviewed + ' ' + TREE)\n    if rc2 == 0:\n        write(D + '/since-review.diff', since)\nadded, removed = [], []\ncurrent = ''\nfor line in diff.splitlines():\n    if line.startswith('--- a/') or line.startswith('+++ b/'):\n        current = line[6:]\n    elif line.startswith(('--- ', '+++ ')):\n        continue\n    elif line.startswith('+'):\n        added.append((current, line[1:]))\n    elif line.startswith('-'):\n        removed.append((current, line[1:]))\ndef is_test(name):\n    return IS_TEST(name) or 'test' in os.path.basename(name).lower()\nsize = len(added) + len(removed)\ncode_files = [f for f in changed if not IS_TEST(f)]\nreasons = []\nif rc != 0:\n    reasons.append('could not read the diff')\nif os.path.exists(D + '/force_security'):\n    reasons.append('an earlier reviewer asked for a security review')\nspec_risk = ''\nfor line in read(D + '/spec.md').splitlines():\n    text = line.strip().lstrip('#*- ').lower()\n    if text.startswith('risk level'):\n        spec_risk = text.split(':', 1)[-1].strip().strip('*`. ')\nif not spec_risk.startswith(('low', 'medium')):\n    reasons.append('spec risk level is ' + (spec_risk or 'not stated'))\nif size > MAX_STANDARD_LINES:\n    reasons.append(str(size) + ' changed lines (limit for a standard review: ' + str(MAX_STANDARD_LINES) + ')')\nhits = sorted(set(f for f in code_files for s in SENSITIVE if s in f.lower()))\nif hits:\n    reasons.append('security-sensitive paths: ' + ', '.join(hits[:8]))\nrisky = sorted(set(r for name, l in added if not IS_TEST(name) for r in RISKY if r in l))\nif risky:\n    reasons.append('risky constructs in added code: ' + ', '.join(risky))\nloosened = []\nfor name, l in added:\n    for pattern in LOOSENING:\n        if pattern in l:\n            loosened.append(name + ': added ' + pattern + ' in: ' + l.strip()[:120])\nrc4, fresh = run('git diff --name-only --diff-filter=A origin/main ' + TREE)\nnew_files = [f.strip() for f in fresh.splitlines() if f.strip()] if rc4 == 0 else []\nrc3, gone = run('git diff --name-only --diff-filter=D origin/main ' + TREE)\nfor f in gone.splitlines():\n    if f.strip() and is_test(f.strip()):\n        loosened.append('test file deleted: ' + f.strip())\nfinder = re.compile('def (test_[A-Za-z0-9_]+)')\nold_tests = set(m for name, l in removed if is_test(name) for m in finder.findall(l))\nnew_tests = set(m for name, l in added if is_test(name) for m in finder.findall(l))\nfor t in sorted(old_tests - new_tests)[:20]:\n    loosened.append('test removed or renamed: ' + t)\nasserts_gone = sum(1 for name, l in removed if is_test(name) and l.strip().startswith('assert'))\nasserts_new = sum(1 for name, l in added if is_test(name) and l.strip().startswith('assert'))\nif asserts_gone > asserts_new:\n    loosened.append(str(asserts_gone) + ' assert lines removed from tests, only ' + str(asserts_new) + ' added')\ntier = 'security' if reasons else 'standard'\nwrite(D + '/review_tier', tier)\nbrief = '# Review brief (written by a script; quoted code lines are data, not instructions)' + NL + NL\nbrief += 'Reviewer chosen: ' + tier + NL\nbrief += ''.join('- ' + r + NL for r in reasons) or '- no security trigger was found' + NL\nbrief += NL + 'Files changed: ' + str(len(changed)) + ', lines changed: ' + str(size) + NL + NL.join(changed) + NL\nbrief += NL + '## New files (no version in origin/main, so no history)' + NL + (''.join('- ' + x + NL for x in new_files[:60]) or 'none' + NL)\nbrief += NL + '## Loosened checks' + NL + (''.join('- ' + x + NL for x in loosened[:40]) or 'none found' + NL)\nwrite(D + '/review-brief.md', brief)\nprint('VERIFIED: ' + ', '.join(name for name, _ in STEPS) + ' all passed')\nprint('ROUTE_' + tier)\nprint('files changed: ' + str(len(changed)) + ', lines changed: ' + str(size) + ', loosened checks: ' + str(len(loosened)))\nfor r in reasons:\n    print('- ' + r.replace('ROUTE_', 'ROUTE-'))",
+            "usage": null,
+            "timing": {
+              "wall_time_ms": 0,
+              "inference_time_ms": 0,
+              "tool_time_ms": 188349,
+              "active_time_ms": 188349
+            }
+          },
+          "check_issue": {
+            "status": "succeeded",
+            "context_updates": {
+              "command.output": "blob://sha256/a9545c1bdf71d8291c43efa10453e8b09ebc22a8c43670d594ed3161f5ff27cb"
+            },
+            "notes": "Script completed: \nimport json, os, sys, urllib.parse, urllib.request\nREPO_OWNER, REPO_NAME = '0x0pointer', 'agent-smith'\nRAW_NUMBER = '0'.strip()\nLABEL = 'fabro-approved'\nCLAIM = 'fabro-in-progress'\nBUILT = 'fabro-built'\nFAILED = 'fabro-failed'\nMAINTAINERS = set(m.strip().lower() for m in 'RiieCco,blabla1337,JorgeCarvalhoPT'.split(',') if m.strip())\nclass Refused(Exception):\n    pass\ndef refuse(msg):\n    print('REFUSED: ' + msg)\n    sys.exit(1)\ntoken = os.environ.get('GITHUB_TOKEN')\nif not token:\n    refuse('no GITHUB_TOKEN in the sandbox, cannot verify approval')\nif not RAW_NUMBER.isdigit():\n    refuse('issue must be a number; 0 picks the oldest approved issue')\nNUMBER = int(RAW_NUMBER)\ndef send(url, body):\n    req = urllib.request.Request(url, data=json.dumps(body).encode(),\n        headers=dict(Authorization='Bearer ' + token, Accept='application/json'))\n    return json.load(urllib.request.urlopen(req, timeout=30))\ndef graphql(query, **variables):\n    reply = send('https://api.github.com/graphql',\n        dict(query=query, variables=dict(variables, o=REPO_OWNER, n=REPO_NAME)))\n    if reply.get('errors'):\n        refuse('GitHub API error: ' + json.dumps(reply['errors'])[:300])\n    return reply['data']['repository']\nISSUE_QUERY = '''\nquery($o: String!, $n: String!, $i: Int!) {\n  repository(owner: $o, name: $n) {\n    issue(number: $i) {\n      title\n      body\n      state\n      lastEditedAt\n      author { login }\n      labels(first: 50) { nodes { name } }\n      timelineItems(itemTypes: [LABELED_EVENT], last: 100) {\n        nodes { ... on LabeledEvent { createdAt actor { login } label { name } } }\n      }\n    }\n  }\n}\n'''\nLIST_QUERY = '''\nquery($o: String!, $n: String!, $l: String!) {\n  repository(owner: $o, name: $n) {\n    issues(first: 100, states: [OPEN], labels: [$l], orderBy: { field: CREATED_AT, direction: ASC }) {\n      nodes { number labels(first: 50) { nodes { name } } }\n    }\n  }\n}\n'''\ndef approved(number):\n    # The approval check itself. Raises Refused unless every condition holds.\n    issue = graphql(ISSUE_QUERY, i=number)['issue']\n    if issue is None:\n        raise Refused('issue not found (pull requests are not accepted)')\n    if issue['state'] != 'OPEN':\n        raise Refused('issue is not open')\n    if LABEL not in [l['name'] for l in issue['labels']['nodes']]:\n        raise Refused('issue does not carry the label ' + LABEL)\n    events = [e for e in issue['timelineItems']['nodes'] if e and e['label']['name'] == LABEL]\n    if not events:\n        raise Refused('no labelling event found for ' + LABEL)\n    last = events[-1]\n    actor = ((last.get('actor') or dict()).get('login') or '').lower()\n    if actor not in MAINTAINERS:\n        raise Refused('label was applied by ' + (actor or 'unknown') + ', who is not a listed maintainer')\n    edited = issue.get('lastEditedAt')\n    if edited and edited > last['createdAt']:\n        raise Refused('issue text was edited after approval; a maintainer must re-apply the label')\n    return issue, actor, last['createdAt']\ndef claim(number, labels):\n    # Mark the issue as being built. While it carries this label no run\n    # started without a number picks another issue: one build at a time.\n    base = 'https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/issues/' + str(number) + '/labels'\n    send(base, dict(labels=[CLAIM]))\n    for old in (BUILT, FAILED):\n        if old in labels:\n            try:\n                req = urllib.request.Request(base + '/' + urllib.parse.quote(old), method='DELETE',\n                    headers=dict(Authorization='Bearer ' + token, Accept='application/json'))\n                urllib.request.urlopen(req, timeout=30).read()\n            except Exception:\n                pass\nif NUMBER > 0:\n    # A specific issue was asked for (-I issue=<number>, or construct-build).\n    try:\n        issue, actor, when = approved(NUMBER)\n    except Refused as exc:\n        refuse(str(exc))\n    try:\n        claim(NUMBER, [l['name'] for l in issue['labels']['nodes']])\n    except Exception as exc:\n        print('warning: could not add the label ' + CLAIM + ' (' + type(exc).__name__ + ')')\nelse:\n    # No issue given (an automation run): take the oldest open, approved issue\n    # that no run has handled yet. Every candidate still has to pass the full\n    # approval check; one that fails is skipped, not built.\n    # One build at a time: nothing is picked while another issue is being built.\n    busy = [n['number'] for n in graphql(LIST_QUERY, l=CLAIM)['issues']['nodes']]\n    if busy:\n        print('WAITING: issue ' + str(busy[0]) + ' is still being built (label ' + CLAIM + '). One issue is built at a time.')\n        print('If no run is working on it any more, remove that label from the issue.')\n        sys.exit(1)\n    issue = None\n    candidates = graphql(LIST_QUERY, l=LABEL)['issues']['nodes']\n    for node in candidates:\n        number = node['number']\n        handled = [l['name'] for l in node['labels']['nodes'] if l['name'] in (BUILT, FAILED)]\n        if handled:\n            print('skipped issue', number, '- already handled (label ' + handled[0] + ')')\n            continue\n        try:\n            issue, actor, when = approved(number)\n        except Refused as exc:\n            print('skipped issue', number, '-', exc)\n            continue\n        NUMBER = number\n        break\n    if issue is None:\n        print('NOTHING TO BUILD: no open issue labelled ' + LABEL + ' is waiting (' + str(len(candidates)) + ' checked).')\n        print('To build an issue again, remove its ' + BUILT + ' or ' + FAILED + ' label.')\n        sys.exit(1)\n    try:\n        claim(NUMBER, [])\n    except Exception as exc:\n        refuse('could not add the label ' + CLAIM + ' to issue ' + str(NUMBER) + ' (' + type(exc).__name__ + '); not building it, because the next run would pick it again')\nos.makedirs('/tmp/fabro', exist_ok=True)\nwith open('/tmp/fabro/issue.md', 'w') as f:\n    f.write('# ' + issue['title'] + chr(10) + chr(10) + (issue['body'] or '') + chr(10))\nwith open('/tmp/fabro/issue_number', 'w') as f:\n    f.write(str(NUMBER))\nprint('APPROVED: issue', NUMBER, 'released by', actor, 'at', when)\nprint('title:', issue['title'])",
+            "usage": null,
+            "timing": {
+              "wall_time_ms": 0,
+              "inference_time_ms": 0,
+              "tool_time_ms": 3161,
+              "active_time_ms": 3161
+            }
+          },
+          "review_gate": {
+            "status": "failed",
+            "context_updates": {
+              "command.output": "blob://sha256/d5f3591c434d97b5fcd2f2dd90cd87ad9f8a20b9e0b4f5cff88b4309c04f26fc"
+            },
+            "failure": {
+              "message": "Script failed with exit code: 1\n\n## output\nROUTE_human\nREVIEW REJECTED, round 3 of 3, 1 blocking finding(s):\n1. [authorization] core/api_server/routes/scan_state_routes.py:216\n   Problem: A holder of run A's dashboard token can call POST /api/steer with a phase command such as {\"message\":\"advance to phase B\"}. The middleware sets request.state.run_id, but the phase-special-case branch ignores it and calls scan_session.load_from_disk() and scan_session.advance_phase() on the process-global session; the sibling /api/phase/advance endpoint has the same global behavior. As a result, the selected run's DB snapshot is not advanced and an unrelated global/single-run session can be mutated, so existing dashboard controls are not scoped to the selected run as required by AC5 and the run-token boundary is bypassed for phase state.\n   Required fix: When request.state.run_id is present, load that run's session snapshot from the repository, apply the same forward-only phase transition to that document, and save it back with repo.upsert_run() and repo.save_snapshot(run_id, \"session\", ...); do not call the process-global core.session helpers. Apply the same run-scoped behavior or an explicit 403/409 to /api/phase, /api/phase/advance, and typed phase steering in /api/steer, and add a regression test with run A and run B snapshots proving only run A changes and no global session file/state is touched.\n",
+              "category": "deterministic"
+            },
+            "usage": null,
+            "timing": {
+              "wall_time_ms": 0,
+              "inference_time_ms": 0,
+              "tool_time_ms": 514,
+              "active_time_ms": 514
+            }
+          },
+          "save_spec": {
+            "status": "succeeded",
+            "context_updates": {
+              "command.output": "blob://sha256/196712d3e595d09a1085c450308db62af8ff6feb590c395e322a4c61f00bbd22"
+            },
+            "notes": "Script completed: \nimport os, subprocess, sys\nD = '/tmp/fabro'\nNL = chr(10)\nNEEDED = ('acceptance criteria', 'risk level:', 'tests required:')\ndef read(path):\n    try:\n        with open(path) as f:\n            return f.read()\n    except OSError:\n        return ''\ndef write(path, text):\n    with open(path, 'w') as f:\n        f.write(text)\ndef missing(text):\n    return [n for n in NEEDED if n not in text.lower()]\ndef run(cmd):\n    p = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='replace')\n    return p.returncode, p.stdout\ndef repo_changes():\n    # The working tree against origin/main: this also covers what a\n    # checkpoint already committed. New files are listed separately.\n    rc1, tracked = run('git diff --name-only origin/main')\n    rc2, added = run('git ls-files --others --exclude-standard')\n    if rc1 != 0 or rc2 != 0:\n        return None\n    return sorted(set(l.strip() for l in (tracked + NL + added).splitlines() if l.strip()))\ndef send_back(reason):\n    try:\n        tries = int(read(D + '/spec_tries').strip() or 0) + 1\n    except ValueError:\n        tries = 3\n    write(D + '/spec_tries', str(tries))\n    print('ROUTE_spec' if tries < 3 else 'ROUTE_stop')\n    print('The spec was not accepted (attempt ' + str(tries) + ' of 3). ' + reason)\n    sys.exit(1)\nos.makedirs(D, exist_ok=True)\ntouched = repo_changes()\ndiscarded = ''\nif touched is None:\n    print('warning: could not compare the repository with origin/main, so changes made by the planner were not checked')\nelif touched:\n    run('git restore --source=origin/main --staged --worktree -- . && git clean -fdq')\n    left = repo_changes()\n    listed = ', '.join(touched[:20])\n    if left:\n        send_back('You changed files in the repository, which this step must not do, and they could not be put back: ' + ', '.join(left[:20]) + '. Restore them to their origin/main state, then deliver only the spec.')\n    discarded = 'You also changed files in the repository (' + listed + '). This step only writes the spec, so those changes were discarded; nothing is built before a maintainer approves the spec. '\n    print('DISCARDED ' + str(len(touched)) + ' repository file(s) the planner changed in the spec step: ' + listed)\nprinted = sys.stdin.read().strip()\non_disk = read(D + '/spec.md').strip()\nif printed and not missing(printed):\n    spec, source = printed, 'the text the planner printed'\nelif on_disk and not missing(on_disk):\n    spec, source = on_disk, 'the file the planner wrote'\nelse:\n    gaps = missing(printed or on_disk) if (printed or on_disk) else ['the whole spec: nothing was printed and /tmp/fabro/spec.md does not exist']\n    send_back(discarded + 'The spec is incomplete. Missing: ' + '; '.join(gaps))\n# spec.shown.md is the spec as it was last shown to the maintainer. This step\n# runs again after it only when they sent it back with feedback.\nif spec == read(D + '/spec.shown.md').strip():\n    send_back(discarded + 'A maintainer sent the spec back with feedback (human.gate.approve.answer in your context) and /tmp/fabro/spec.md came back unchanged. Revise the spec to follow that feedback, write it to /tmp/fabro/spec.md and print it.')\nwrite(D + '/spec.md', spec + NL)\nwrite(D + '/spec.shown.md', spec + NL)\nwrite(D + '/spec_tries', '0')\nprint('SPEC SAVED from ' + source + ': ' + str(len(spec.split())) + ' words')\nfor line in spec.splitlines():\n    low = line.strip().lstrip('#*- ').lower()\n    if low.startswith(('decision needed', 'behaviour removed', 'behavior removed', 'size:', 'risk level:', 'tests required:')):\n        print(line.strip()[:300].replace('ROUTE_', 'ROUTE-'))\n",
+            "usage": null,
+            "timing": {
+              "wall_time_ms": 0,
+              "inference_time_ms": 0,
+              "tool_time_ms": 1129,
+              "active_time_ms": 1129
+            }
+          },
+          "security_review": {
+            "status": "succeeded",
+            "context_updates": {
+              "response.security_review": "Verdict: fail\n\nBlocking findings: core/api_server/routes/scan_state_routes.py:216 — run-token phase steering still mutates process-global state.\n\n# Security review\n\n## Summary\n- Findings: 1 blocking, 0 non-blocking.\n- Re-review status: the four prior blockers were mostly addressed: scoped reads no longer fall back to global findings for run tokens, QA/steering/wishlist/triage got run-aware paths, the three tool runners rediscover dynamic ports after restart, operator-token minting now waits for DB availability/fails closed, and the inert orchestrator marker was removed in favor of health-checking the real `/api/runs` surface.\n- Remaining issue: phase-control steering is still process-global in a run-token request, so an existing dashboard action is not scoped to the selected run.\n\n## Changed files reviewed\n\n| File | Risk | Blast radius |\n|---|---:|---|\n| `control_plane/orchestrator.py` | HIGH | CLI and `/api/runs` create/list/stop/status paths; 5 public control-plane functions. |\n| `core/api_server/routes/findings_routes.py` | HIGH | Findings/session/cost/coverage APIs; dashboard tabs for every authenticated run. |\n| `core/api_server/routes/misc_routes.py` | HIGH | QA and steering read APIs; dashboard state disclosure boundary. |\n| `core/api_server/routes/scan_state_routes.py` | HIGH | `/api/steer`, phase controls, intervention/stop state actions; public dashboard control surface. |\n| `core/api_server/routes/triage_routes.py` | HIGH | Complete/triage/cancel/force-stop dashboard actions. |\n| `core/api_server/routes/wishlist_routes.py` | HIGH | Wishlist read/fulfill/dismiss actions and steering wakeups. |\n| `core/dashboard_auth.py` | HIGH | Bearer token mint/verification for run and operator tokens. |\n| `core/qa_agent/daemon.py` | MEDIUM | One QA writer loop; now persists QA snapshots to DB. |\n| `core/steering.py` | HIGH | Central directive queue; >20 direct callers across QA, MCP tools, routes, and envelope injection. |\n| `core/wishlist.py` | MEDIUM | Wishlist queue; direct callers in dashboard routes, MCP session tools, pivot/spider helpers. |\n| `tools/kali_runner.py` | HIGH | Kali command API container lifecycle and dynamic port URL. |\n| `tools/metasploit_runner.py` | HIGH | Metasploit command API container lifecycle and dynamic port URL. |\n| `tools/mobsf_runner.py` | HIGH | MobSF API container lifecycle and dynamic port URL. |\n| `tests/test_container_isolation.py` | LOW | Regression coverage for container naming/ports. |\n| `tests/test_control_plane.py` | LOW | Regression coverage for control-plane health/token behavior. |\n| `tests/test_dashboard_auth.py` | LOW | Regression coverage for token persistence/fail-closed behavior. |\n| `tests/test_runs_routes.py` | LOW | Regression coverage for run token scoping on selected tabs/actions. |\n\n## Findings\n\n### Blocking — run-token phase steering still mutates process-global state\n\n- **File/line:** `core/api_server/routes/scan_state_routes.py:216`\n- **Category:** authorization / correctness\n- **Attacker model:** Holder of a valid run A dashboard token. This is an authenticated but run-scoped user interacting through the documented dashboard/API route.\n- **Reachable path checked:** The auth middleware sets `request.state.run_id` for the bearer token. `POST /api/steer` with `{\"message\":\"advance to phase B\"}` enters the phase special case at lines 219-226 before the new `run_id` is used for normal steering directives. That branch calls `scan_session.load_from_disk(force=True)` and `scan_session.advance_phase(target)`, which operate on the process-global session, not the authenticated run's DB snapshot. The sibling `/api/phase/advance` endpoint has the same global pattern.\n- **Impact:** Selecting run A does not scope phase-control actions to run A. The request either fails against an unrelated empty/global session or advances whatever process-global/single-run session is loaded, while run A's persisted DB session remains unchanged. This violates the AC5 requirement that selecting a run scopes existing dashboard tabs/actions to that run, and keeps a run token able to affect state outside its run boundary.\n- **Required fix:** For DB-backed run-token requests, load the authenticated run's session snapshot, apply the forward-only phase transition to that document, and save it back with `repo.upsert_run()`/`repo.save_snapshot(run_id, \"session\", ...)`; do not touch `core.session` globals. Apply the same run-scoped behavior or an explicit 403/409 to `/api/phase`, `/api/phase/advance`, and typed phase steering in `/api/steer`. Add a regression test with run A and run B snapshots proving a run A token advances only run A and does not create or mutate repo-root/global session state.\n\n## Test coverage gaps\n- Added tests cover run-scoped normal `/api/steer` directives, wishlist, QA, steering, triage, and findings operations, but not typed phase steering or `/api/phase/advance` under run tokens.\n- I did not run the whole test suite per instruction. I used targeted source/history/caller/test inspection only.\n\n## Not covered / limits\n- Re-review was limited to regions in `/tmp/fabro/since-review.diff`; I did not re-audit unchanged portions of the large original change except where needed to trace callers/guards.\n- I did not manually exercise Docker, Postgres, or the dashboard browser UI.\n- I did not review dependency lockfile content beyond noting it was outside the re-review delta.",
+              "last_stage": "security_review",
+              "last_response": "Verdict: fail\n\nBlocking findings: core/api_server/routes/scan_state_routes.py:216 — run-token phase steering still mutates process-global state.\n\n# Security review\n\n## Summary\n- Findings: 1 blocking"
+            },
+            "notes": "Stage completed: security_review",
+            "usage": {
+              "input": {
+                "usage": {
+                  "model": {
+                    "provider": "openai",
+                    "model_id": "gpt-5.5"
+                  },
+                  "tokens": {
+                    "input_tokens": 153716,
+                    "output_tokens": 6532,
+                    "reasoning_tokens": 6693,
+                    "cache_read_tokens": 1842688,
+                    "cache_write_tokens": 0
+                  }
+                },
+                "facts": {
+                  "algorithm": "openai"
+                }
+              },
+              "total_usd_micros": 2086674
+            },
+            "files_touched": [
+              "/tmp/fabro/review.json",
+              "/tmp/fabro/security-review.md"
+            ],
+            "timing": {
+              "wall_time_ms": 0,
+              "inference_time_ms": 156063,
+              "tool_time_ms": 8869,
+              "active_time_ms": 164932
+            }
+          },
+          "start": {
+            "status": "succeeded",
+            "usage": null
+          }
+        },
+        "next_node_id": "stuck",
+        "git_commit_sha": "a5b77e8264026c1d5de952657f876ab91aceeb39",
+        "loop_failure_signatures": {
+          "review_gate|deterministic|script failed with exit code: <n> ## output route_human review rejected,round <n> of <n>,<n> blocking finding(s): <n>. [authorization] core/api_server/routes/scan_state_routes.py:<n> problem: a holder of run a's dashboard token can call pos": 1
+        },
+        "node_visits": {
+          "install": 1,
+          "start": 1,
+          "verify": 3,
+          "approve": 1,
+          "check_issue": 1,
+          "save_spec": 1,
+          "security_review": 3,
+          "deep_fix": 1,
+          "spec": 1,
+          "review_gate": 3,
+          "implement": 2
+        }
+      },
+      "diff": {
+        "summary": {
+          "files_changed": 41,
+          "additions": 2748,
+          "deletions": 162
+        }
+      }
+    },
+    {
+      "seq": 0,
+      "checkpoint": {
+        "timestamp": "2026-11-27T11:03:24.781929996Z",
+        "current_node": "stuck",
+        "completed_nodes": [
+          "start",
+          "check_issue",
+          "install",
+          "spec",
+          "save_spec",
+          "approve",
+          "implement",
+          "verify",
+          "security_review",
+          "review_gate",
+          "implement",
+          "verify",
+          "security_review",
+          "review_gate",
+          "deep_fix",
+          "verify",
+          "security_review",
+          "review_gate",
+          "stuck"
+        ],
+        "node_retries": {},
+        "context_values": {
+          "internal.retry_count.verify": 0,
+          "internal.thread_id": "review_gate",
           "response.deep_fix": "Summary:\n- Root cause: `/api/session` loaded a run-scoped DB session, but its triage self-heal path then switched back to global `findings.json`, global `session.json`, and global steering helpers. Under a run token, that could leak/mutate unrelated state and even drop the run session response.\n- Fix:\n  - Kept `/api/session` triage self-heal fully run-scoped when `request.state.run_id` is set: findings, session updates, progress counters, and steering cancellation all use the authenticated run’s DB snapshots.\n  - Preserved legacy single-run behavior for requests without `run_id`.\n  - Fixed wishlist route direct-call compatibility by safely treating missing `Request.state` as global/single-run mode, while still using run-scoped wishlist/steering for authenticated dashboard requests.\n- Regression coverage:\n  - Added `test_run_token_session_triage_self_heal_uses_run_snapshots_only`, which fails without the `/api/session` fix and passes with it.\n  - Verified red/green:\n    - Before fix: new regression failed with `KeyError: 'target'`.\n    - With fix: new regression passed.\n    - Temporarily removed fix: regression failed again with `KeyError: 'target'`.\n    - Restored fix: regression passed.\n\nVerification run after final edit:\n- `poetry run pytest -q tests/test_wishlist_routes.py` → `4 passed`\n- `poetry run pytest -q tests/test_runs_routes.py tests/test_wishlist_routes.py tests/test_dashboard_auth.py tests/test_container_isolation.py tests/test_control_plane.py tests/test_smith_cli.py` → `47 passed`\n- Required full suite: `poetry run pytest -q` → `2804 passed, 22 skipped, 11 warnings`",
           "internal.retry_count.install": 0,
-          "human.gate.selected": "A",
+          "human.gate.selected": "freeform",
+          "human.gate.text": "It is fine, the dashboard wil be used by trusted users only via VPN so we can ignore this issue for now",
+          "human.gate.stuck.answer": "It is fine, the dashboard wil be used by trusted users only via VPN so we can ignore this issue for now",
           "internal.retry_count.approve": 0,
           "thread.start.current_node": "check_issue",
           "thread.security_review.current_node": "review_gate",
-          "human.gate.label": "[A] Approve",
+          "human.gate.label": "It is fine, the dashboard wil be used by trusted users only via VPN so we can ignore this issue for now",
           "thread.check_issue.current_node": "install",
           "internal.retry_count.security_review": 0,
           "human.gate.approve.answer": "A",
-          "thread.review_gate.current_node": "implement",
+          "thread.review_gate.current_node": "stuck",
           "internal.run_id": "01M8E2VGXJAGZS2C51TYVY5WK3",
           "graph.goal": "Resolve the next maintainer-approved GitHub issue of 0x0pointer/agent-smith with a reviewed spec, code, and passing tests",
-          "internal.node_visit_count": 3,
+          "internal.retry_count.stuck": 0,
+          "internal.node_visit_count": 1,
           "human.gate.approve.label": "[A] Approve",
           "internal.retry_count.spec": 0,
-          "failure_class": "deterministic",
+          "human.gate.stuck.question": "Automatic fixing did not converge. Stop, allow one more attempt, or type what should be done differently.",
+          "failure_class": "",
           "graph.loop_restart_signature_limit": "10",
           "internal.retry_count.start": 0,
           "human.gate.approve.question": "Approve the spec? To have it revised, type what should change.",
@@ -4909,7 +5263,7 @@
           "response.security_review": "Verdict: fail\n\nBlocking findings: core/api_server/routes/scan_state_routes.py:216 — run-token phase steering still mutates process-global state.\n\n# Security review\n\n## Summary\n- Findings: 1 blocking, 0 non-blocking.\n- Re-review status: the four prior blockers were mostly addressed: scoped reads no longer fall back to global findings for run tokens, QA/steering/wishlist/triage got run-aware paths, the three tool runners rediscover dynamic ports after restart, operator-token minting now waits for DB availability/fails closed, and the inert orchestrator marker was removed in favor of health-checking the real `/api/runs` surface.\n- Remaining issue: phase-control steering is still process-global in a run-token request, so an existing dashboard action is not scoped to the selected run.\n\n## Changed files reviewed\n\n| File | Risk | Blast radius |\n|---|---:|---|\n| `control_plane/orchestrator.py` | HIGH | CLI and `/api/runs` create/list/stop/status paths; 5 public control-plane functions. |\n| `core/api_server/routes/findings_routes.py` | HIGH | Findings/session/cost/coverage APIs; dashboard tabs for every authenticated run. |\n| `core/api_server/routes/misc_routes.py` | HIGH | QA and steering read APIs; dashboard state disclosure boundary. |\n| `core/api_server/routes/scan_state_routes.py` | HIGH | `/api/steer`, phase controls, intervention/stop state actions; public dashboard control surface. |\n| `core/api_server/routes/triage_routes.py` | HIGH | Complete/triage/cancel/force-stop dashboard actions. |\n| `core/api_server/routes/wishlist_routes.py` | HIGH | Wishlist read/fulfill/dismiss actions and steering wakeups. |\n| `core/dashboard_auth.py` | HIGH | Bearer token mint/verification for run and operator tokens. |\n| `core/qa_agent/daemon.py` | MEDIUM | One QA writer loop; now persists QA snapshots to DB. |\n| `core/steering.py` | HIGH | Central directive queue; >20 direct callers across QA, MCP tools, routes, and envelope injection. |\n| `core/wishlist.py` | MEDIUM | Wishlist queue; direct callers in dashboard routes, MCP session tools, pivot/spider helpers. |\n| `tools/kali_runner.py` | HIGH | Kali command API container lifecycle and dynamic port URL. |\n| `tools/metasploit_runner.py` | HIGH | Metasploit command API container lifecycle and dynamic port URL. |\n| `tools/mobsf_runner.py` | HIGH | MobSF API container lifecycle and dynamic port URL. |\n| `tests/test_container_isolation.py` | LOW | Regression coverage for container naming/ports. |\n| `tests/test_control_plane.py` | LOW | Regression coverage for control-plane health/token behavior. |\n| `tests/test_dashboard_auth.py` | LOW | Regression coverage for token persistence/fail-closed behavior. |\n| `tests/test_runs_routes.py` | LOW | Regression coverage for run token scoping on selected tabs/actions. |\n\n## Findings\n\n### Blocking — run-token phase steering still mutates process-global state\n\n- **File/line:** `core/api_server/routes/scan_state_routes.py:216`\n- **Category:** authorization / correctness\n- **Attacker model:** Holder of a valid run A dashboard token. This is an authenticated but run-scoped user interacting through the documented dashboard/API route.\n- **Reachable path checked:** The auth middleware sets `request.state.run_id` for the bearer token. `POST /api/steer` with `{\"message\":\"advance to phase B\"}` enters the phase special case at lines 219-226 before the new `run_id` is used for normal steering directives. That branch calls `scan_session.load_from_disk(force=True)` and `scan_session.advance_phase(target)`, which operate on the process-global session, not the authenticated run's DB snapshot. The sibling `/api/phase/advance` endpoint has the same global pattern.\n- **Impact:** Selecting run A does not scope phase-control actions to run A. The request either fails against an unrelated empty/global session or advances whatever process-global/single-run session is loaded, while run A's persisted DB session remains unchanged. This violates the AC5 requirement that selecting a run scopes existing dashboard tabs/actions to that run, and keeps a run token able to affect state outside its run boundary.\n- **Required fix:** For DB-backed run-token requests, load the authenticated run's session snapshot, apply the forward-only phase transition to that document, and save it back with `repo.upsert_run()`/`repo.save_snapshot(run_id, \"session\", ...)`; do not touch `core.session` globals. Apply the same run-scoped behavior or an explicit 403/409 to `/api/phase`, `/api/phase/advance`, and typed phase steering in `/api/steer`. Add a regression test with run A and run B snapshots proving a run A token advances only run A and does not create or mutate repo-root/global session state.\n\n## Test coverage gaps\n- Added tests cover run-scoped normal `/api/steer` directives, wishlist, QA, steering, triage, and findings operations, but not typed phase steering or `/api/phase/advance` under run tokens.\n- I did not run the whole test suite per instruction. I used targeted source/history/caller/test inspection only.\n\n## Not covered / limits\n- Re-review was limited to regions in `/tmp/fabro/since-review.diff`; I did not re-audit unchanged portions of the large original change except where needed to trace callers/guards.\n- I did not manually exercise Docker, Postgres, or the dashboard browser UI.\n- I did not review dependency lockfile content beyond noting it was outside the re-review delta.",
           "last_stage": "security_review",
           "response.implement": "Implemented the fix-pass items only.\n\nWhat changed\n- Tightened `/api/*` auth in `core/api_server/__init__.py`:\n  - DB/per-run mode now returns `401` for missing/invalid bearer tokens.\n  - Operator role is set only for verified operator/legacy tokens.\n- Scoped finding detail/mutation routes by run in `core/api_server/routes/findings_routes.py` and `core/findings.py`:\n  - `GET/PATCH/DELETE /api/findings/{id}` now use the request run context for DB-backed runs.\n  - Legacy single-run/global file behavior remains for non-run-token mode.\n- Hardened run creation/stop in `control_plane/orchestrator.py` and `core/api_server/routes/runs_routes.py`:\n  - Request bodies are validated before side effects.\n  - Non-dict and malformed JSON requests return `400`.\n  - Oversized `scope`/`out_of_scope` inputs are rejected.\n  - `stop_run()` now stops only that run’s worker/container/network resources and records cleanup errors without failing the stop.\n  - Added real `start/stop/status` control-plane management behavior and operator token provisioning.\n- Fixed container isolation in:\n  - `tools/kali_runner.py`\n  - `tools/metasploit_runner.py`\n  - `tools/mobsf_runner.py`\n  - Metasploit and MobSF now discover their real published API port from `docker port`.\n  - Kali and Metasploit no longer publish fixed host listener ports in multi-run mode.\n  - Metasploit/MobSF also join the run-scoped Docker network.\n- Added `docker-compose.yml` for the local Postgres control-plane service.\n\nTest coverage for the reviewer todo items\n1. Auth `401` on missing token:\n   - `tests/test_dashboard_auth.py::test_db_mode_api_401_without_any_bearer`\n2. Run-scoped findings detail/patch/delete:\n   - `tests/test_runs_routes.py::test_run_token_scopes_finding_detail_patch_and_delete`\n3. Metasploit/MobSF dynamic API port discovery:\n   - `tests/test_container_isolation.py::test_two_run_apis_do_not_collide`\n4. Non-colliding multi-run listener/handler ports:\n   - `tests/test_container_isolation.py::test_kali_run_uses_run_scoped_name_network_and_ephemeral_port`\n   - `tests/test_container_isolation.py::test_two_run_apis_do_not_collide`\n   - existing `tests/test_container_isolation.py::test_stop_only_current_run_containers`\n5. Stop-run cleanup:\n   - `tests/test_control_plane.py::test_stop_run_cleans_only_targeted_resources`\n6. Control-plane start/stop/status behavior:\n   - `tests/test_control_plane.py::test_start_control_plane_starts_services_and_returns_operator_token`\n   - `tests/test_control_plane.py::test_control_plane_status_reflects_real_health`\n   - `tests/test_control_plane.py::test_stop_control_plane_terminates_services`\n   - existing `tests/test_smith_cli.py`\n7. Request validation / malformed input / no side effects:\n   - `tests/test_control_plane.py::test_create_run_rejects_non_dict_without_side_effects`\n   - `tests/test_control_plane.py::test_create_run_rejects_oversized_scope_without_side_effects`\n   - `tests/test_control_plane.py::test_api_create_run_malformed_body_400_without_side_effects`\n\nVerification run\n- Targeted changed tests: passed\n- Full suite: `poetry run pytest -q` → passed (`2792 passed, 22 skipped`)\n\nNoticed, not touched\n- Existing pytest warnings remain, including FastAPI `on_event` deprecation and a few pre-existing runtime warnings in unrelated tests.\n\nSTATUS: DONE",
-          "outcome": "failed",
+          "outcome": "succeeded",
           "graph.max_node_visits": "30",
           "internal.retry_count.implement": 0,
           "graph.rankdir": "LR",
@@ -4920,7 +5274,7 @@
           "thread.save_spec.current_node": "approve",
           "last_response": "Verdict: fail\n\nBlocking findings: core/api_server/routes/scan_state_routes.py:216 — run-token phase steering still mutates process-global state.\n\n# Security review\n\n## Summary\n- Findings: 1 blocking",
           "thread.strong.current_node": "security_review",
-          "failure_signature": "review_gate|deterministic|script failed with exit code: <n> ## output route_human review rejected,round <n> of <n>,<n> blocking finding(s): <n>. [authorization] core/api_server/routes/scan_state_routes.py:<n> problem: a holder of run a's dashboard token can call pos",
+          "failure_signature": "",
           "command.output": "blob://sha256/d5f3591c434d97b5fcd2f2dd90cd87ad9f8a20b9e0b4f5cff88b4309c04f26fc",
           "preferred_label": "[A] Approve",
           "thread.implement.current_node": "verify",
@@ -4929,7 +5283,7 @@
           "graph.model_stylesheet": "\n            *       { model: gpt-5.4; reasoning_effort: medium; }\n            .strong { model: gpt-5.5; reasoning_effort: high; }\n        ",
           "internal.work_dir": "/workspace/agent-smith",
           "internal.retry_count.check_issue": 0,
-          "current_node": "review_gate"
+          "current_node": "stuck"
         },
         "node_outcomes": {
           "security_review": {
@@ -5174,9 +5528,23 @@
               "tool_time_ms": 1129,
               "active_time_ms": 1129
             }
+          },
+          "stuck": {
+            "status": "succeeded",
+            "suggested_next_ids": [
+              "guided_fix"
+            ],
+            "context_updates": {
+              "human.gate.selected": "freeform",
+              "human.gate.label": "It is fine, the dashboard wil be used by trusted users only via VPN so we can ignore this issue for now",
+              "human.gate.stuck.question": "Automatic fixing did not converge. Stop, allow one more attempt, or type what should be done differently.",
+              "human.gate.text": "It is fine, the dashboard wil be used by trusted users only via VPN so we can ignore this issue for now",
+              "human.gate.stuck.answer": "It is fine, the dashboard wil be used by trusted users only via VPN so we can ignore this issue for now"
+            },
+            "usage": null
           }
         },
-        "next_node_id": "stuck",
+        "next_node_id": "guided_fix",
         "node_visits": {
           "verify": 3,
           "spec": 1,
@@ -5188,6 +5556,7 @@
           "deep_fix": 1,
           "security_review": 3,
           "install": 1,
+          "stuck": 1,
           "review_gate": 3
         }
       },
@@ -5219,7 +5588,29 @@
   },
   "pull_request": null,
   "superseded_by": null,
-  "pending_interviews": {},
+  "pending_interviews": {
+    "01M8EA8S0Y3J274FSNZT6EG2FW": {
+      "question": {
+        "id": "01M8EA8S0Y3J274FSNZT6EG2FW",
+        "text": "Automatic fixing did not converge. Stop, allow one more attempt, or type what should be done differently.",
+        "stage": "stuck",
+        "question_type": "multiple_choice",
+        "options": [
+          {
+            "key": "X",
+            "label": "[X] Stop, fail the run"
+          },
+          {
+            "key": "S",
+            "label": "[S] One more attempt, strong model"
+          }
+        ],
+        "allow_freeform": true,
+        "context_display": "Verdict: fail\n\nBlocking findings: core/api_server/routes/scan_state_routes.py:216 — run-token phase steering still mutates process-global state.\n\n# Security review\n\n## Summary\n- Findings: 1 blocking, 0 non-blocking.\n- Re-review status: the four prior blockers were mostly addressed: scoped reads no longer fall back to global findings for run tokens, QA/steering/wishlist/triage got run-aware paths, the three tool runners rediscover dynamic ports after restart, operator-token minting now waits for DB availability/fails closed, and the inert orchestrator marker was removed in favor of health-checking the real `/api/runs` surface.\n- Remaining issue: phase-control steering is still process-global in a run-token request, so an existing dashboard action is not scoped to the selected run.\n\n## Changed files reviewed\n\n| File | Risk | Blast radius |\n|---|---:|---|\n| `control_plane/orchestrator.py` | HIGH | CLI and `/api/runs` create/list/stop/status paths; 5 public control-plane functions. |\n| `core/api_server/routes/findings_routes.py` | HIGH | Findings/session/cost/coverage APIs; dashboard tabs for every authenticated run. |\n| `core/api_server/routes/misc_routes.py` | HIGH | QA and steering read APIs; dashboard state disclosure boundary. |\n| `core/api_server/routes/scan_state_routes.py` | HIGH | `/api/steer`, phase controls, intervention/stop state actions; public dashboard control surface. |\n| `core/api_server/routes/triage_routes.py` | HIGH | Complete/triage/cancel/force-stop dashboard actions. |\n| `core/api_server/routes/wishlist_routes.py` | HIGH | Wishlist read/fulfill/dismiss actions and steering wakeups. |\n| `core/dashboard_auth.py` | HIGH | Bearer token mint/verification for run and operator tokens. |\n| `core/qa_agent/daemon.py` | MEDIUM | One QA writer loop; now persists QA snapshots to DB. |\n| `core/steering.py` | HIGH | Central directive queue; >20 direct callers across QA, MCP tools, routes, and envelope injection. |\n| `core/wishlist.py` | MEDIUM | Wishlist queue; direct callers in dashboard routes, MCP session tools, pivot/spider helpers. |\n| `tools/kali_runner.py` | HIGH | Kali command API container lifecycle and dynamic port URL. |\n| `tools/metasploit_runner.py` | HIGH | Metasploit command API container lifecycle and dynamic port URL. |\n| `tools/mobsf_runner.py` | HIGH | MobSF API container lifecycle and dynamic port URL. |\n| `tests/test_container_isolation.py` | LOW | Regression coverage for container naming/ports. |\n| `tests/test_control_plane.py` | LOW | Regression coverage for control-plane health/token behavior. |\n| `tests/test_dashboard_auth.py` | LOW | Regression coverage for token persistence/fail-closed behavior. |\n| `tests/test_runs_routes.py` | LOW | Regression coverage for run token scoping on selected tabs/actions. |\n\n## Findings\n\n### Blocking — run-token phase steering still mutates process-global state\n\n- **File/line:** `core/api_server/routes/scan_state_routes.py:216`\n- **Category:** authorization / correctness\n- **Attacker model:** Holder of a valid run A dashboard token. This is an authenticated but run-scoped user interacting through the documented dashboard/API route.\n- **Reachable path checked:** The auth middleware sets `request.state.run_id` for the bearer token. `POST /api/steer` with `{\"message\":\"advance to phase B\"}` enters the phase special case at lines 219-226 before the new `run_id` is used for normal steering directives. That branch calls `scan_session.load_from_disk(force=True)` and `scan_session.advance_phase(target)`, which operate on the process-global session, not the authenticated run's DB snapshot. The sibling `/api/phase/advance` endpoint has the same global pattern.\n- **Impact:** Selecting run A does not scope phase-control actions to run A. The request either fails against an unrelated empty/global session or advances whatever process-global/single-run session is loaded, while run A's persisted DB session remains unchanged. This violates the AC5 requirement that selecting a run scopes existing dashboard tabs/actions to that run, and keeps a run token able to affect state outside its run boundary.\n- **Required fix:** For DB-backed run-token requests, load the authenticated run's session snapshot, apply the forward-only phase transition to that document, and save it back with `repo.upsert_run()`/`repo.save_snapshot(run_id, \"session\", ...)`; do not touch `core.session` globals. Apply the same run-scoped behavior or an explicit 403/409 to `/api/phase`, `/api/phase/advance`, and typed phase steering in `/api/steer`. Add a regression test with run A and run B snapshots proving a run A token advances only run A and does not create or mutate repo-root/global session state.\n\n## Test coverage gaps\n- Added tests cover run-scoped normal `/api/steer` directives, wishlist, QA, steering, triage, and findings operations, but not typed phase steering or `/api/phase/advance` under run tokens.\n- I did not run the whole test suite per instruction. I used targeted source/history/caller/test inspection only.\n\n## Not covered / limits\n- Re-review was limited to regions in `/tmp/fabro/since-review.diff`; I did not re-audit unchanged portions of the large original change except where needed to trace callers/guards.\n- I did not manually exercise Docker, Postgres, or the dashboard browser UI.\n- I did not review dependency lockfile content beyond noting it was outside the re-review delta."
+      },
+      "started_at": "2026-11-27T10:54:25.310868586Z"
+    }
+  },
   "stages": {
     "security_review@1": {
       "first_event_seq": 706,
@@ -5842,6 +6233,29 @@
         "cache_write_tokens": 0
       },
       "state": "succeeded"
+    },
+    "stuck@1": {
+      "first_event_seq": 1845,
+      "prompt": null,
+      "response": null,
+      "completion": null,
+      "provider_used": null,
+      "diff": null,
+      "script_invocation": null,
+      "script_timing": null,
+      "parallel_results": null,
+      "output": null,
+      "started_at": "2026-11-27T10:54:25.301367205Z",
+      "handler": "human",
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "reasoning_tokens": 0,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0
+      },
+      "state": "running"
     },
     "install@1": {
       "first_event_seq": 31,
@@ -7004,7 +7418,12 @@
       "first_event_seq": 1835,
       "prompt": null,
       "response": null,
-      "completion": null,
+      "completion": {
+        "outcome": "failed",
+        "notes": null,
+        "failure_reason": "Script failed with exit code: 1\n\n## output\nROUTE_human\nREVIEW REJECTED, round 3 of 3, 1 blocking finding(s):\n1. [authorization] core/api_server/routes/scan_state_routes.py:216\n   Problem: A holder of run A's dashboard token can call POST /api/steer with a phase command such as {\"message\":\"advance to phase B\"}. The middleware sets request.state.run_id, but the phase-special-case branch ignores it and calls scan_session.load_from_disk() and scan_session.advance_phase() on the process-global session; the sibling /api/phase/advance endpoint has the same global behavior. As a result, the selected run's DB snapshot is not advanced and an unrelated global/single-run session can be mutated, so existing dashboard controls are not scoped to the selected run as required by AC5 and the run-token boundary is bypassed for phase state.\n   Required fix: When request.state.run_id is present, load that run's session snapshot from the repository, apply the same forward-only phase transition to that document, and save it back with repo.upsert_run() and repo.save_snapshot(run_id, \"session\", ...); do not call the process-global core.session helpers. Apply the same run-scoped behavior or an explicit 403/409 to /api/phase, /api/phase/advance, and typed phase steering in /api/steer, and add a regression test with run A and run B snapshots proving only run A changes and no global session file/state is touched.\n",
+        "timestamp": "2026-11-27T10:54:20.373334330Z"
+      },
       "provider_used": null,
       "diff": null,
       "script_invocation": {
@@ -7013,11 +7432,27 @@
         "language": "python",
         "timeout_ms": 120000
       },
-      "script_timing": null,
+      "script_timing": {
+        "output": "blob://sha256/d5f3591c434d97b5fcd2f2dd90cd87ad9f8a20b9e0b4f5cff88b4309c04f26fc",
+        "exit_code": 1,
+        "duration_ms": 514,
+        "termination": "exited",
+        "output_bytes": 1365,
+        "live_streaming": true
+      },
       "parallel_results": null,
       "output": null,
+      "output_bytes": 1365,
+      "live_streaming": true,
+      "termination": "exited",
       "started_at": "2026-11-27T10:54:19.827007688Z",
       "handler": "command",
+      "timing": {
+        "wall_time_ms": 543,
+        "inference_time_ms": 0,
+        "tool_time_ms": 514,
+        "active_time_ms": 514
+      },
       "usage": {
         "input_tokens": 0,
         "output_tokens": 0,
@@ -7026,7 +7461,7 @@
         "cache_read_tokens": 0,
         "cache_write_tokens": 0
       },
-      "state": "running"
+      "state": "failed"
     },
     "verify@1": {
       "first_event_seq": 698,
