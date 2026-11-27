@@ -1,0 +1,6 @@
+{
+  "script": "git submodule update -q --init --recursive && poetry install --with dev --no-interaction -q",
+  "command": "exec 2>&1\ngit submodule update -q --init --recursive && poetry install --with dev --no-interaction -q",
+  "language": "shell",
+  "timeout_ms": 600000
+}
