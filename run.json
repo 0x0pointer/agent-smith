@@ -952,7 +952,7 @@
     "kind": "running"
   },
   "status_updated_at": "2026-11-27T11:18:18.676466464Z",
-  "last_event_at": "2026-11-27T11:18:24.029131618Z",
+  "last_event_at": "2026-11-27T11:18:30.653451873Z",
   "pending_control": null,
   "checkpoints": [
     {
@@ -995,9 +995,9 @@
       "diff": {}
     },
     {
-      "seq": 0,
+      "seq": 29,
       "checkpoint": {
-        "timestamp": "2026-11-27T11:18:24.048369334Z",
+        "timestamp": "2026-11-27T11:18:30.653281414Z",
         "current_node": "check_issue",
         "completed_nodes": [
           "start",
@@ -1005,24 +1005,24 @@
         ],
         "node_retries": {},
         "context_values": {
-          "current_node": "check_issue",
-          "graph.goal": "Resolve the next maintainer-approved GitHub issue of 0x0pointer/agent-smith with a reviewed spec, code, and passing tests",
-          "graph.model_stylesheet": "\n            *       { model: gpt-5.4; reasoning_effort: medium; }\n            .strong { model: gpt-5.5; reasoning_effort: high; }\n        ",
-          "internal.work_dir": "/workspace/agent-smith",
+          "graph.max_node_visits": "30",
           "thread.start.current_node": "check_issue",
-          "command.output": "blob://sha256/62948d8956ab4bc45595194fc594f7b3f9a7235fa0e1b2fc91dec438030fa787",
           "internal.run_id": "01M8EBKZ78M19SKG3ZTGSCDEVD",
-          "graph.loop_restart_signature_limit": "10",
-          "outcome": "failed",
-          "internal.retry_count.check_issue": 0,
+          "current_node": "check_issue",
+          "internal.fidelity": "compact",
+          "internal.node_visit_count": 1,
+          "command.output": "blob://sha256/62948d8956ab4bc45595194fc594f7b3f9a7235fa0e1b2fc91dec438030fa787",
+          "internal.thread_id": "start",
           "internal.retry_count.start": 0,
           "graph.rankdir": "LR",
-          "graph.max_node_visits": "30",
-          "failure_class": "deterministic",
-          "internal.node_visit_count": 1,
+          "internal.work_dir": "/workspace/agent-smith",
+          "outcome": "failed",
           "failure_signature": "check_issue|deterministic|script failed with exit code: <n> ## output waiting: issue <n> is still being built (label fabro-in-progress). one issue is built at a time. if no run is working on it any more,remove that label from the issue.",
-          "internal.fidelity": "compact",
-          "internal.thread_id": "start"
+          "graph.loop_restart_signature_limit": "10",
+          "internal.retry_count.check_issue": 0,
+          "failure_class": "deterministic",
+          "graph.goal": "Resolve the next maintainer-approved GitHub issue of 0x0pointer/agent-smith with a reviewed spec, code, and passing tests",
+          "graph.model_stylesheet": "\n            *       { model: gpt-5.4; reasoning_effort: medium; }\n            .strong { model: gpt-5.5; reasoning_effort: high; }\n        "
         },
         "node_outcomes": {
           "check_issue": {
@@ -1048,15 +1048,61 @@
           }
         },
         "next_node_id": "exit",
+        "git_commit_sha": "5091733219b77bb49e68bae7c5a2008c07070173",
+        "loop_failure_signatures": {
+          "check_issue|deterministic|script failed with exit code: <n> ## output waiting: issue <n> is still being built (label fabro-in-progress). one issue is built at a time. if no run is working on it any more,remove that label from the issue.": 1
+        },
         "node_visits": {
-          "check_issue": 1,
-          "start": 1
+          "start": 1,
+          "check_issue": 1
         }
       },
-      "diff": {}
+      "diff": {
+        "summary": {
+          "files_changed": 0,
+          "additions": 0,
+          "deletions": 0
+        }
+      }
     }
   ],
-  "conclusion": null,
+  "conclusion": {
+    "timestamp": "2026-11-27T11:18:30.727002790Z",
+    "status": "succeeded",
+    "timing": {
+      "wall_time_ms": 12054,
+      "inference_time_ms": 0,
+      "tool_time_ms": 2725,
+      "active_time_ms": 2725
+    },
+    "final_git_commit_sha": "5091733219b77bb49e68bae7c5a2008c07070173",
+    "stages": [
+      {
+        "stage_id": "start",
+        "stage_label": "start",
+        "timing": {
+          "wall_time_ms": 0,
+          "inference_time_ms": 0,
+          "tool_time_ms": 0,
+          "active_time_ms": 0
+        },
+        "retries": 0
+      },
+      {
+        "stage_id": "check_issue",
+        "stage_label": "check_issue",
+        "timing": {
+          "wall_time_ms": 2746,
+          "inference_time_ms": 0,
+          "tool_time_ms": 2725,
+          "active_time_ms": 2725
+        },
+        "retries": 0
+      }
+    ],
+    "total_retries": 0,
+    "diff": {}
+  },
   "sandbox": {
     "kind": "ready",
     "plan": {
@@ -1121,7 +1167,12 @@
       "first_event_seq": 21,
       "prompt": null,
       "response": null,
-      "completion": null,
+      "completion": {
+        "outcome": "failed",
+        "notes": null,
+        "failure_reason": "Script failed with exit code: 1\n\n## output\nWAITING: issue 302 is still being built (label fabro-in-progress). One issue is built at a time.\nIf no run is working on it any more, remove that label from the issue.\n",
+        "timestamp": "2026-11-27T11:18:24.043759292Z"
+      },
       "provider_used": null,
       "diff": null,
       "script_invocation": {
@@ -1145,6 +1196,12 @@
       "termination": "exited",
       "started_at": "2026-11-27T11:18:21.283147908Z",
       "handler": "command",
+      "timing": {
+        "wall_time_ms": 2746,
+        "inference_time_ms": 0,
+        "tool_time_ms": 2725,
+        "active_time_ms": 2725
+      },
       "usage": {
         "input_tokens": 0,
         "output_tokens": 0,
@@ -1153,7 +1210,41 @@
         "cache_read_tokens": 0,
         "cache_write_tokens": 0
       },
-      "state": "running"
+      "state": "failed"
+    },
+    "exit@1": {
+      "first_event_seq": 32,
+      "prompt": null,
+      "response": null,
+      "completion": {
+        "outcome": "succeeded",
+        "notes": null,
+        "failure_reason": null,
+        "timestamp": "2026-11-27T11:18:30.653451873Z"
+      },
+      "provider_used": null,
+      "diff": null,
+      "script_invocation": null,
+      "script_timing": null,
+      "parallel_results": null,
+      "output": null,
+      "started_at": "2026-11-27T11:18:30.653415035Z",
+      "handler": "exit",
+      "timing": {
+        "wall_time_ms": 0,
+        "inference_time_ms": 0,
+        "tool_time_ms": 0,
+        "active_time_ms": 0
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "reasoning_tokens": 0,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0
+      },
+      "state": "succeeded"
     }
   }
 }
