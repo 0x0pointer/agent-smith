@@ -110,3 +110,14 @@ async def test_db_error_does_not_truncate_cache(monkeypatch, findings_file):
     data = core.findings._load()
 
     assert data["findings"][0]["title"] == "XSS"
+
+
+def test_postgres_engine_gets_a_connect_timeout():
+    """libpq waits forever by default; a stopped control-plane Postgres must make
+    get_repository() report unavailable, not hang `smith status` / the dashboard."""
+    from core.db.repository import _PG_CONNECT_TIMEOUT_S, _engine_kwargs
+
+    for url in ("postgresql+psycopg://smith:smith@127.0.0.1:55432/agent_smith",
+                "postgresql://u@h/db", "postgres://u@h/db"):
+        assert _engine_kwargs(url) == {"connect_args": {"connect_timeout": _PG_CONNECT_TIMEOUT_S}}
+    assert _engine_kwargs("sqlite:///x.db") == {}

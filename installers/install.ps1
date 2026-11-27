@@ -106,6 +106,11 @@ poetry -C $RepoDir install --no-interaction
 if ($LASTEXITCODE -ne 0) { Write-Fail 'poetry install failed' }
 Write-Ok 'Poetry dependencies installed'
 
+# ── `smith` control-plane command ────────────────────────────────────────────
+# package-mode=false means Poetry does not install the [tool.poetry.scripts]
+# entry, so put a launcher (smith.cmd) on PATH ourselves.
+& (Join-Path $RepoDir 'installers\install-smith-cli.ps1')
+
 # ── Disarm any stale Task Scheduler entry before restarting MCP ──────────────
 $TaskName = 'agent-smith-mcp-sse'
 $existingTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
@@ -120,6 +125,38 @@ Write-Host 'Starting MCP SSE server...'
 & (Join-Path $RepoDir 'installers\start-mcp-server.ps1') restart
 if ($LASTEXITCODE -ne 0) { Write-Fail 'MCP SSE server failed to start — check logs/mcp_sse.log' }
 Write-Ok 'MCP SSE server running on localhost:7778'
+
+# ── Clear a stale dashboard off :7777 ────────────────────────────────────────
+# The dashboard is a detached uvicorn process tracked only by logs\dashboard.pid.
+# One left running by an OLDER install (or a checkout in another directory) is
+# invisible to that PID file, keeps the port and keeps serving the old code:
+# /healthz answers 200 while new routes 404, and `smith start` then reports
+# "unhealthy" because its own dashboard cannot bind. Only our own uvicorn is
+# stopped (with the venv launcher that spawned it); anything else is reported.
+$DashboardPort = 7777
+$reapedDashboard = $false
+$listeners = @(Get-NetTCPConnection -LocalPort $DashboardPort -State Listen -ErrorAction SilentlyContinue |
+               Select-Object -ExpandProperty OwningProcess -Unique)
+foreach ($procId in $listeners) {
+    $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$procId" -ErrorAction SilentlyContinue
+    if ($proc -and $proc.CommandLine -match 'core\.api_server:app') {
+        # A venv python.exe is a launcher that re-spawns the base interpreter;
+        # stop that parent too when it is the same dashboard command.
+        $parent = Get-CimInstance Win32_Process -Filter "ProcessId=$($proc.ParentProcessId)" -ErrorAction SilentlyContinue
+        if ($parent -and $parent.CommandLine -match 'core\.api_server:app') {
+            Stop-Process -Id $parent.ProcessId -Force -ErrorAction SilentlyContinue
+        }
+        Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
+        $reapedDashboard = $true
+    } else {
+        Write-Warn "Port $DashboardPort is held by a non-agent-smith process (PID $procId) - the dashboard will not start until it is freed."
+    }
+}
+Remove-Item -Path (Join-Path $RepoDir 'logs\dashboard.pid') -ErrorAction SilentlyContinue
+if ($reapedDashboard) {
+    Start-Sleep -Seconds 1
+    Write-Ok "Stopped the previous dashboard on :$DashboardPort (it restarts from this checkout on next use)"
+}
 
 # ── Register MCP with Claude Code (SSE) ──────────────────────────────────────
 Write-Host ''
@@ -465,6 +502,59 @@ if ($DockerUp -and (Confirm-Default '  Build Garak image now? (~5 min - LLM red-
     Write-Warn "Garak build skipped — auto-builds on first scan(tool='garak'), or run: docker build -t pentest-agent/garak $GarakCtx"
 }
 
+# ── Control plane (optional) ─────────────────────────────────────────────────
+# `smith start` brings up Postgres (docker compose, 127.0.0.1:55432) and the
+# dashboard/orchestrator on :7777, which is what lets the dashboard launch and
+# track several runs. Plain single-run use through your client does not need it.
+# Postgres runs in Docker, so this needs the engine probed above.
+Write-Host ''
+Write-Host '  Control plane (multi-run dashboard)'
+Write-Host '  -----------------------------------'
+Write-Host ''
+if (-not $DockerUp) {
+    Write-Warn 'Docker is not running - control plane not started. Start Docker Desktop, then run: smith start'
+} elseif (Confirm-Yes '  Start the control plane now? (Postgres on :55432 + dashboard on :7777)') {
+    $smithPy = $null
+    try {
+        $prevEAP = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        $smithPy = (& (Join-Path $RepoDir 'installers\run-mcp-server.ps1') --print-python 2>$null |
+                    Where-Object { $_ -is [string] -and $_.Trim() } | Select-Object -First 1)
+    } catch { $smithPy = $null }
+    finally { $ErrorActionPreference = $prevEAP }
+    if (-not $smithPy) {
+        Write-Warn 'Could not resolve the project virtualenv - start it later with: smith start'
+    } else {
+        $prevPyPath = $env:PYTHONPATH
+        $env:PYTHONPATH = $RepoDir
+        $env:PYTHONUTF8 = '1'
+        $cpOut = $null
+        try {
+            $prevEAP = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
+            Push-Location $RepoDir
+            $cpOut = (& $smithPy.Trim() (Join-Path $RepoDir 'smith_cli.py') start 2>&1 | Out-String).Trim()
+            $cpRc = $LASTEXITCODE
+        } finally {
+            Pop-Location
+            $ErrorActionPreference = $prevEAP
+            $env:PYTHONPATH = $prevPyPath
+        }
+        if ($cpRc -eq 0 -and $cpOut -match '"status": "started"') {
+            Write-Host "  $cpOut"
+            Write-Ok 'Control plane running - open the dashboard_url above with #k=<operator_token>'
+        } elseif ($cpRc -eq 0) {
+            Write-Host "  $cpOut"
+            Write-Warn 'Control plane did not come up healthy. Check that ports 55432 and 7777 are free, then: smith start'
+        } else {
+            ($cpOut -split "`n" | Select-Object -Last 5) | ForEach-Object { Write-Host "  $_" }
+            Write-Warn 'smith start failed (is port 55432 already in use by another container?). Retry later with: smith start'
+        }
+    }
+} else {
+    Write-Warn 'Control plane not started - run later: smith start   (smith status / smith stop)'
+}
+
 # ── Done ─────────────────────────────────────────────────────────────────────
 Write-Host ''
 Write-Host '  Install complete!'
@@ -478,6 +568,9 @@ Write-Host '    /ai-redteam https://ai-app.com/api/chat'
 Write-Host '    /cloud-security my-aws-account provider=aws'
 Write-Host '    /metasploit 10.0.0.5 cve=CVE-2017-0144'
 Write-Host '    /gh-export'
+Write-Host ''
+Write-Host '  Control plane (multi-run dashboard, Postgres-backed):'
+Write-Host '    smith start | smith status | smith stop'
 Write-Host ''
 Write-Host '  To rebuild images after adding new skills:'
 Write-Host "    docker build -t pentest-agent/kali-mcp $KaliCtx"

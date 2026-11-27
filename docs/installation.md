@@ -184,8 +184,11 @@ Troubleshooting:
   `lsof -nP -iTCP:7777 -sTCP:LISTEN` and stop it yourself.
 - **`smith start` fails with a port error** — port 55432 is already allocated. Stop whatever
   holds it (`docker ps --filter publish=55432`) or point `SMITH_DATABASE_URL` at your own database.
-- **Windows** — the `.ps1` installers do not install the launcher yet; use
-  `poetry run python smith_cli.py start` from the checkout.
+- **Windows** — `install.ps1` installs a `smith.cmd` launcher at `%USERPROFILE%\.local\bin`
+  (override with `SMITH_BIN_DIR`; standalone: `installers\install-smith-cli.ps1`), offers to add
+  that folder to your user PATH, stops a stale agent-smith dashboard on :7777, and offers to start
+  the control plane when Docker Desktop is running. Find what holds a port with
+  `Get-NetTCPConnection -LocalPort 7777 -State Listen`.
 
 ---
 

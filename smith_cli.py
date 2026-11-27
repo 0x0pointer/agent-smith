@@ -13,6 +13,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("stop")
     sub.add_parser("status")
     args = parser.parse_args(argv)
+    # Every subcommand talks to the same database `smith start` brings up.
+    orchestrator.apply_database_url_default()
 
     if args.command == "start":
         print(json.dumps(orchestrator.start_control_plane()))

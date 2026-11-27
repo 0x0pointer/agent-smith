@@ -4,7 +4,6 @@ import json
 import logging
 import os
 import shutil
-import signal
 import subprocess
 import sys
 import time
@@ -12,6 +11,8 @@ import uuid
 from pathlib import Path
 from urllib import error as urllib_error
 from urllib import request as urllib_request
+
+import psutil
 
 from core import dashboard_auth
 from core import db as _db
@@ -346,17 +347,17 @@ def _worker_alive(pid: int | None) -> bool:
 
     The worker is our child and is never waited on, so after it exits it lingers
     as a zombie that still answers ``kill(pid, 0)``. Reap it first, then treat a
-    zombie as dead.
+    zombie as dead. Windows has no zombies (and no os.WNOHANG), so reaping is
+    POSIX-only there.
     """
     if not pid or pid <= 0:
         return False
+    if hasattr(os, "WNOHANG"):
+        try:
+            os.waitpid(pid, os.WNOHANG)
+        except (ChildProcessError, OSError):
+            pass                              # not our child (after a dashboard restart) or already reaped
     try:
-        os.waitpid(pid, os.WNOHANG)
-    except (ChildProcessError, OSError):
-        pass                                  # not our child (after a dashboard restart) or already reaped
-    try:
-        import psutil
-
         proc = psutil.Process(pid)
         return proc.is_running() and proc.status() != psutil.STATUS_ZOMBIE
     except Exception:
@@ -449,24 +450,50 @@ def _read_pid_file(path: Path) -> int | None:
         return None
 
 
+# Process checks go through psutil, not os.kill: on Windows os.kill(pid, 0)
+# sends CTRL_C_EVENT (signal 0) instead of probing the pid, and there is no
+# SIGKILL. psutil maps terminate/kill onto SIGTERM/SIGKILL on POSIX and
+# TerminateProcess on Windows.
 def _pid_alive(pid: int | None) -> bool:
     if not pid or pid <= 0:
         return False
     try:
-        os.kill(pid, 0)
-        return True
-    except OSError:
+        return psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+    except (psutil.Error, OSError):
         return False
 
 
 def _terminate_pid(pid: int | None) -> bool:
-    if not pid:
+    if not pid or pid <= 0:
         return False
     try:
-        os.kill(pid, signal.SIGTERM)
-    except OSError:
+        psutil.Process(pid).terminate()
+    except (psutil.Error, OSError):
         return False
     return True
+
+
+def _kill_pid(pid: int) -> None:
+    """Force-kill ``pid``. A process that is already gone is not an error."""
+    try:
+        psutil.Process(pid).kill()
+    except psutil.NoSuchProcess:
+        pass
+
+
+def _detached_spawn_kwargs() -> dict:
+    """Popen options that keep the dashboard alive after `smith start` exits.
+
+    POSIX: a new session, so the terminal's SIGHUP does not reach it. Windows:
+    no console of its own and a new process group — otherwise closing the
+    terminal that ran `smith start` delivers CTRL_CLOSE_EVENT and takes the
+    dashboard down with it.
+    """
+    if sys.platform != "win32":
+        return {"start_new_session": True}
+    flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+    flags |= getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
+    return {"creationflags": flags}
 
 
 def _start_dashboard() -> int:
@@ -488,9 +515,10 @@ def _start_dashboard() -> int:
             "critical",
         ],
         cwd=str(_paths.REPO_ROOT),
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        start_new_session=True,
+        **_detached_spawn_kwargs(),
     )
     pid = int(getattr(proc, "pid", 0) or 0)
     _write_pid_file(_paths.DASHBOARD_PID_FILE, pid)
@@ -681,8 +709,8 @@ def _stop_worker(run_id: str, worker_pid: int | None) -> list[str]:
         time.sleep(0.1)
     if _pid_alive(worker_pid):
         try:
-            os.kill(worker_pid, signal.SIGKILL)
-        except OSError as exc:
+            _kill_pid(worker_pid)
+        except (psutil.Error, OSError) as exc:
             errors.append(f"worker {run_id}: {exc}")
     return errors
 
@@ -784,6 +812,18 @@ def stop_control_plane() -> dict:
     _paths.DASHBOARD_PID_FILE.unlink(missing_ok=True)
     _stop_database()
     return {"status": "stopped"}
+
+
+def apply_database_url_default() -> None:
+    """Point this process at the control-plane database `smith start` uses.
+
+    For the `smith` CLI process only: without it, `smith status` in a fresh
+    shell (no SMITH_DATABASE_URL exported) reports the database unavailable
+    while the Postgres container `smith start` brought up is healthy. Not done
+    inside control_plane_status() so reading status never flips the database on
+    for a long-lived process (dashboard, MCP server, tests).
+    """
+    os.environ.setdefault("SMITH_DATABASE_URL", _ensure_database_url())
 
 
 def control_plane_status() -> dict:

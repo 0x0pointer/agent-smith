@@ -156,7 +156,7 @@ def test_create_run_spawns_agent_driver_with_run_start_context(monkeypatch, tmp_
     options_path = Path(env["SMITH_WORKDIR"]) / orchestrator._RUN_START_OPTIONS_FILENAME
     assert captured["args"][:3] != [orchestrator.sys.executable, "-m", "mcp_server"]
     assert env["SMITH_RUN_ID"] == "run-context"
-    assert env["SMITH_WORKDIR"].endswith("/runs/run-context")
+    assert Path(env["SMITH_WORKDIR"]).parts[-2:] == ("runs", "run-context")
     assert env["SMITH_RUN_TARGET"] == "https://target.example"
     assert env["SMITH_RUN_DEPTH"] == "thorough"
     assert "https://target.example/app" in env["SMITH_RUN_SCOPE"]
@@ -253,6 +253,100 @@ def test_control_plane_status_does_not_report_orchestrator_running_from_marker_p
     assert status["api"] == "unavailable"
 
 
+def test_pid_alive_probes_without_signalling():
+    """Liveness must not go through os.kill(pid, 0): on Windows signal 0 is
+    CTRL_C_EVENT, so the probe failed for a live dashboard (and could interrupt it)."""
+    import os
+    with patch("os.kill", side_effect=AssertionError("os.kill must not be used")):
+        assert orchestrator._pid_alive(os.getpid()) is True
+        assert orchestrator._pid_alive(2**22 + 12345) is False
+        assert orchestrator._pid_alive(None) is False
+        assert orchestrator._pid_alive(0) is False
+
+
+def test_worker_alive_works_without_waitpid_nohang(monkeypatch):
+    """Windows has no os.WNOHANG; the liveness check must not crash there."""
+    import os
+    monkeypatch.delattr(os, "WNOHANG", raising=False)
+    assert orchestrator._worker_alive(os.getpid()) is True
+    assert orchestrator._worker_alive(2**22 + 12345) is False
+    assert orchestrator._worker_alive(None) is False
+
+
+def test_pid_alive_treats_a_zombie_as_gone():
+    import psutil
+    proc = MagicMock()
+    proc.status.return_value = psutil.STATUS_ZOMBIE
+    with patch("psutil.Process", return_value=proc):
+        assert orchestrator._pid_alive(4321) is False
+
+
+def test_terminate_pid_uses_psutil_and_reports_missing_process():
+    import psutil
+    proc = MagicMock()
+    with patch("psutil.Process", return_value=proc) as ctor:
+        assert orchestrator._terminate_pid(4321) is True
+    ctor.assert_called_once_with(4321)
+    proc.terminate.assert_called_once_with()
+
+    with patch("psutil.Process", side_effect=psutil.NoSuchProcess(4321)):
+        assert orchestrator._terminate_pid(4321) is False
+    assert orchestrator._terminate_pid(None) is False
+
+
+def test_stop_worker_force_kills_a_worker_that_ignores_terminate(monkeypatch):
+    """The escalation must not reference signal.SIGKILL, which Windows lacks."""
+    import psutil
+    proc = MagicMock()
+    proc.status.return_value = psutil.STATUS_RUNNING
+    monkeypatch.setattr(orchestrator.time, "sleep", lambda s: None)
+    clock = iter([0.0, 10.0, 10.0, 10.0])
+    monkeypatch.setattr(orchestrator.time, "time", lambda: next(clock, 10.0))
+    with patch("psutil.Process", return_value=proc):
+        errors = orchestrator._stop_worker("run-abc", 4321)
+
+    assert errors == []
+    proc.terminate.assert_called_once_with()
+    proc.kill.assert_called_once_with()
+
+
+def test_stop_worker_reports_a_kill_that_is_refused(monkeypatch):
+    import psutil
+    proc = MagicMock()
+    proc.status.return_value = psutil.STATUS_RUNNING
+    proc.kill.side_effect = psutil.AccessDenied(4321)
+    monkeypatch.setattr(orchestrator.time, "sleep", lambda s: None)
+    clock = iter([0.0, 10.0, 10.0, 10.0])
+    monkeypatch.setattr(orchestrator.time, "time", lambda: next(clock, 10.0))
+    with patch("psutil.Process", return_value=proc):
+        errors = orchestrator._stop_worker("run-abc", 4321)
+
+    assert len(errors) == 1 and errors[0].startswith("worker run-abc:")
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin", "win32"])
+def test_dashboard_is_spawned_detached_from_the_starting_terminal(monkeypatch, tmp_path, platform):
+    monkeypatch.setattr(orchestrator.sys, "platform", platform)
+    monkeypatch.setattr(orchestrator._paths, "DASHBOARD_PID_FILE", tmp_path / "dashboard.pid")
+    captured = {}
+
+    def _capture(args, **kwargs):
+        captured.update(kwargs)
+        return MagicMock(pid=4321)
+
+    with patch("subprocess.Popen", side_effect=_capture):
+        assert orchestrator._start_dashboard() == 4321
+
+    assert captured["stdin"] is orchestrator.subprocess.DEVNULL
+    if platform == "win32":
+        assert "start_new_session" not in captured
+        assert captured["creationflags"] & 0x00000200  # CREATE_NEW_PROCESS_GROUP
+        assert captured["creationflags"] & 0x00000008  # DETACHED_PROCESS
+    else:
+        assert captured["start_new_session"] is True
+        assert "creationflags" not in captured
+
+
 def test_stop_control_plane_terminates_services(monkeypatch):
     monkeypatch.setattr("control_plane.orchestrator._read_pid_file", lambda path: 123)
     with (
@@ -303,8 +397,10 @@ def test_worker_gets_a_private_tool_server_carrying_the_run_identity(monkeypatch
     assert server["env"]["SMITH_RUN_ID"] == created["run_id"]
     assert Path(server["env"]["SMITH_WORKDIR"]) == config_path.parent
     assert server["env"]["SMITH_DATABASE_URL"].startswith("sqlite:///")
-    # Holds the database URL: owner-only.
-    assert (config_path.stat().st_mode & 0o077) == 0
+    # Holds the database URL: owner-only. (POSIX mode bits; Windows has no
+    # group/other bits to check — the file inherits the profile's ACL.)
+    if orchestrator.sys.platform != "win32":
+        assert (config_path.stat().st_mode & 0o077) == 0
 
 
 def test_two_runs_get_different_tool_server_configs(monkeypatch, tmp_path):

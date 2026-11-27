@@ -10,9 +10,23 @@ from sqlalchemy.exc import IntegrityError
 from .schema import dashboard_tokens, metadata, run_snapshots, run_work_items, runs
 
 
+# Seconds to wait for a Postgres connection. libpq waits forever by default, and
+# on some hosts (Docker Desktop on Windows) a connect to the stopped control-plane
+# Postgres times out instead of being refused — so `smith status`, the dashboard
+# and every caller of get_repository() would hang instead of reporting the
+# database unavailable.
+_PG_CONNECT_TIMEOUT_S = 5
+
+
+def _engine_kwargs(url: str) -> dict:
+    if url.startswith(("postgresql", "postgres")):
+        return {"connect_args": {"connect_timeout": _PG_CONNECT_TIMEOUT_S}}
+    return {}
+
+
 class DatabaseRepository:
     def __init__(self, url: str):
-        self._engine: Engine = create_engine(url, future=True)
+        self._engine: Engine = create_engine(url, future=True, **_engine_kwargs(url))
         metadata.create_all(self._engine)
 
     @staticmethod
