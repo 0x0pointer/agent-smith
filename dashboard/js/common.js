@@ -40,7 +40,7 @@
 
   function _notify(title, body, urgency = 'normal') {
     // Always update the page title
-    document.title = `⚠ ${title} — Smith Platform`;
+    document.title = `⚠ ${title} — Agent-Smith Pentester Platform`;
     // Browser notification only when tab is not focused
     if (document.hidden && 'Notification' in window && Notification.permission === 'granted') {
       try {
@@ -56,18 +56,18 @@
   }
 
   function _clearNotif() {
-    document.title = 'Smith Platform';
+    document.title = 'Agent-Smith Pentester Platform';
   }
 
   function _updateTitleBadge(alertCount, stallActive, hirActive) {
     if (hirActive) {
-      document.title = '⚠ PAUSED — Smith Platform';
+      document.title = '⚠ PAUSED — Agent-Smith Pentester Platform';
     } else if (stallActive) {
-      document.title = '⟳ Smith needs guidance — Smith Platform';
+      document.title = '⟳ Smith needs guidance — Agent-Smith Pentester Platform';
     } else if (alertCount > 0) {
-      document.title = `(${alertCount}) Smith Platform`;
+      document.title = `(${alertCount}) Agent-Smith Pentester Platform`;
     } else {
-      document.title = 'Smith Platform';
+      document.title = 'Agent-Smith Pentester Platform';
     }
   }
 

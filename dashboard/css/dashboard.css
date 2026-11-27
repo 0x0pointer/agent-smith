@@ -2647,6 +2647,8 @@ div.act-row:hover, .act-row > summary:hover { background: rgba(123,120,255,0.05)
 /* ── Rail: platform group + the open scan ── */
 .rail-platform { display: none; }
 body.cp-operator .rail-platform { display: block; }
+/* Brand: the product name on two lines; the second is longer, so it is a step smaller. */
+.rail-brand-sub { font-size: var(--fs-sm); letter-spacing: 0.02em; white-space: nowrap; }
 .rail-sub-head { padding-top: var(--sp-2); font-weight: 700; letter-spacing: 0.14em; }
 .rail-scan { display: none; margin-top: var(--sp-3); padding-top: var(--sp-2); border-top: 1px solid var(--border-subtle); }
 body.cp-platform .rail-scan { display: block; }

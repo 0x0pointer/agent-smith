@@ -173,7 +173,7 @@ The harness runs natively; only the hacking tools are containerized. A Codespace
 
 ## The dashboard
 
-The dashboard is a **platform** with two levels. The **platform pages** are about every scan and
+The dashboard is the **Agent-Smith Pentester Platform**, with two levels. The **platform pages** are about every scan and
 are always available; the **scan pages** appear in the rail once you open one scan.
 
 | Platform page | What it answers |
