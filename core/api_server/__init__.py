@@ -110,12 +110,12 @@ async def _require_dashboard_token(request: Request, call_next):
         if meta:
             request.state.run_id = meta.get("run_id") or None
             request.state.role = meta.get("role") or None
+        elif dashboard_auth.verify(supplied):
+            request.state.role = "operator"
         else:
-            token = dashboard_auth.read_token()
-            if token:  # a session is active → require the bearer token
-                if not dashboard_auth.verify(supplied):
-                    return JSONResponse({"error": "unauthorized"}, status_code=401)
-                request.state.role = "operator"
+            from core import db as _db
+            if _db.database_enabled() or dashboard_auth.read_token():
+                return JSONResponse({"error": "unauthorized"}, status_code=401)
     resp = await call_next(request)
     # Force the browser to REVALIDATE dashboard assets on every load instead of
     # serving a heuristically-cached stale copy. Without this, the un-versioned

@@ -78,6 +78,10 @@ def container_name() -> str:
     return _run_context.container_name("mobsf") if _run_context.multi_run_mode() else MOBSF_CONTAINER
 
 
+def network_name() -> str:
+    return _run_context.docker_network_name() if _run_context.multi_run_mode() else "smith"
+
+
 def remember_api_port(port: int) -> None:
     _RUN_API_PORTS[_run_context.run_id()] = int(port)
 
@@ -86,6 +90,40 @@ def api_url() -> str:
     if _run_context.multi_run_mode():
         return f"http://127.0.0.1:{_RUN_API_PORTS.get(_run_context.run_id(), MOBSF_PORT)}"
     return MOBSF_API
+
+
+async def _ensure_network() -> None:
+    if not _run_context.multi_run_mode():
+        return
+    inspect_proc = await asyncio.create_subprocess_exec(
+        docker_executable(), "network", "inspect", network_name(),
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    await inspect_proc.wait()
+    if inspect_proc.returncode == 0:
+        return
+    create_proc = await asyncio.create_subprocess_exec(
+        docker_executable(), "network", "create", network_name(),
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    await create_proc.wait()
+
+
+async def _discover_host_port(container_port: int, default_port: int) -> int:
+    if not _run_context.multi_run_mode():
+        return default_port
+    proc = await asyncio.create_subprocess_exec(
+        docker_executable(), "port", container_name(), f"{container_port}/tcp",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    stdout, _ = await proc.communicate()
+    try:
+        return int(stdout.decode().strip().rsplit(":", 1)[1])
+    except Exception:
+        return default_port
 
 
 def _read_bytes(path: str) -> bytes:
@@ -141,19 +179,21 @@ async def ensure_running() -> tuple[bool, str]:
                     f"could not pull {MOBSF_IMAGE}: {perr.decode().strip()} — "
                     f"check Docker/network, or run: docker pull {MOBSF_IMAGE}"
                 )
+        await _ensure_network()
         proc = await asyncio.create_subprocess_exec(
             docker_executable(), "run", "-d",
             "--name", container_name(),
             "-p", f"127.0.0.1::{8000}" if _run_context.multi_run_mode() else f"{MOBSF_PORT}:8000",
             "-e", f"MOBSF_API_KEY={API_KEY}",
             "--rm",
+            *(["--network", network_name()] if _run_context.multi_run_mode() else []),
             MOBSF_IMAGE,
             stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
         )
         _, stderr = await proc.communicate()
         if proc.returncode != 0:
             return False, f"docker run failed: {stderr.decode().strip()}"
-        remember_api_port(MOBSF_PORT)
+        remember_api_port(await _discover_host_port(8000, MOBSF_PORT))
 
     # Poll the MobSF home page until Django is serving (up to 90 s — slow boot).
     for _ in range(90):

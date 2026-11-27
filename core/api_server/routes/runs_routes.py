@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
@@ -26,6 +28,8 @@ async def api_create_run(request: Request) -> JSONResponse:
     try:
         body = await request.json()
         return JSONResponse(orchestrator.create_run(body))
+    except json.JSONDecodeError:
+        return JSONResponse({"error": "malformed json"}, status_code=400)
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
     except RuntimeError as exc:

@@ -58,6 +58,10 @@ def api_publish_arg() -> str:
     return "127.0.0.1::5000" if _run_context.multi_run_mode() else f"127.0.0.1:{KALI_PORT}:5000"
 
 
+def _listener_publish_arg(port: int) -> str:
+    return f"0.0.0.0::{port}" if _run_context.multi_run_mode() else f"{port}:{port}"
+
+
 def api_url() -> str:
     if _run_context.multi_run_mode():
         port = _RUN_API_PORTS.get(_run_context.run_id(), KALI_PORT)
@@ -209,10 +213,10 @@ async def ensure_running() -> tuple[bool, str]:
                 "-p", api_publish_arg(),
                 # Tunnel/listener ports stay on 0.0.0.0 — targets must reach them for
                 # reverse tunnels / file transfer during a pentest (that is their purpose).
-                "-p", "1080:1080",          # SOCKS5 proxy (chisel reverse tunnel)
-                "-p", "8888:8888",          # chisel server listener
-                "-p", "8889:8889",          # python HTTP server (file transfer to targets)
-                "-p", "11601:11601",        # ligolo-ng proxy listener
+                "-p", _listener_publish_arg(1080),   # SOCKS5 proxy (chisel reverse tunnel)
+                "-p", _listener_publish_arg(8888),   # chisel server listener
+                "-p", _listener_publish_arg(8889),   # python HTTP server (file transfer to targets)
+                "-p", _listener_publish_arg(11601),  # ligolo-ng proxy listener
                 *extra,                     # opt-in reverse-shell listener ports
                 "--rm",
                 "--cap-add=NET_RAW",

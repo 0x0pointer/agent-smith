@@ -1,4 +1,3 @@
-import sqlite3
 from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
@@ -100,3 +99,42 @@ def test_cross_run_token_rejected(monkeypatch, tmp_path):
     response = client.post(f"/api/runs/{run_b['run_id']}/stop", headers=_headers(run_a["token"]))
 
     assert response.status_code == 403
+
+
+def test_run_token_scopes_finding_detail_patch_and_delete(monkeypatch, tmp_path):
+    db_path = tmp_path / "runs.db"
+    monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")
+    monkeypatch.setenv("SMITH_DASHBOARD_AUTH", "1")
+    monkeypatch.delenv("SMITH_SINGLE_RUN", raising=False)
+
+    client = TestClient(app)
+    operator_token = dashboard_auth.mint_operator_token()
+    run_a = _create_run(client, operator_token, "https://a.example")
+    run_b = _create_run(client, operator_token, "https://b.example")
+
+    finding_a = {"id": "finding-a", "title": "SQLi A", "severity": "high"}
+    finding_b = {"id": "finding-a", "title": "SQLi B", "severity": "medium"}
+    repo = db_store.get_repository()
+    repo.save_snapshot(run_a["run_id"], "findings", {"findings": [finding_a], "archived": [], "chains": [], "meta": {}})
+    repo.save_snapshot(run_b["run_id"], "findings", {"findings": [finding_b], "archived": [], "chains": [], "meta": {}})
+
+    detail = client.get(f"/api/findings/{finding_a['id']}", headers=_headers(run_a["token"]))
+    patched = client.patch(
+        f"/api/findings/{finding_a['id']}",
+        json={"title": "SQLi A fixed scope"},
+        headers=_headers(run_a["token"]),
+    )
+    deleted = client.delete(f"/api/findings/{finding_a['id']}", headers=_headers(run_a["token"]))
+
+    run_a_snapshot = repo.load_snapshot(run_a["run_id"], "findings")
+    run_b_snapshot = repo.load_snapshot(run_b["run_id"], "findings")
+
+    assert detail.status_code == 200
+    assert detail.json()["finding"]["title"] == "SQLi A"
+    assert patched.status_code == 200
+    assert patched.json() == {"ok": True}
+    assert deleted.status_code == 200
+    assert deleted.json() == {"ok": True}
+    assert run_a_snapshot["findings"] == []
+    assert run_a_snapshot["archived"][0]["title"] == "SQLi A fixed scope"
+    assert run_b_snapshot["findings"][0]["title"] == "SQLi B"

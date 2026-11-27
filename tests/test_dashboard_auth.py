@@ -87,3 +87,16 @@ def test_db_tokens_store_hashes_and_scope_run_ids(monkeypatch, tmp_path):
     assert row[0] == "run-a"
     assert row[1] == "run"
     assert row[2] != token
+
+
+def test_db_mode_api_401_without_any_bearer(monkeypatch, tmp_path):
+    db_path = tmp_path / "auth.db"
+    monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")
+    monkeypatch.delenv("SMITH_SINGLE_RUN", raising=False)
+    monkeypatch.setenv("SMITH_DASHBOARD_AUTH", "1")
+
+    dashboard_auth.mint_operator_token()
+
+    response = TestClient(app).get("/api/findings")
+
+    assert response.status_code == 401

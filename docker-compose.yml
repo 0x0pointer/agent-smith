@@ -1,0 +1,19 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: agent_smith
+      POSTGRES_USER: smith
+      POSTGRES_PASSWORD: smith
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - smith-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U smith -d agent_smith"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  smith-postgres-data:

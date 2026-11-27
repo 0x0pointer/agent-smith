@@ -39,6 +39,10 @@ def container_name() -> str:
     return _run_context.container_name("metasploit") if _run_context.multi_run_mode() else MSF_CONTAINER
 
 
+def network_name() -> str:
+    return _run_context.docker_network_name() if _run_context.multi_run_mode() else "smith"
+
+
 def remember_api_port(port: int) -> None:
     _RUN_API_PORTS[_run_context.run_id()] = int(port)
 
@@ -47,6 +51,44 @@ def api_url() -> str:
     if _run_context.multi_run_mode():
         return f"http://127.0.0.1:{_RUN_API_PORTS.get(_run_context.run_id(), MSF_PORT)}"
     return MSF_API
+
+
+def _listener_publish_arg(port: int) -> str:
+    return f"0.0.0.0::{port}" if _run_context.multi_run_mode() else f"{port}:{port}"
+
+
+async def _ensure_network() -> None:
+    if not _run_context.multi_run_mode():
+        return
+    inspect_proc = await asyncio.create_subprocess_exec(
+        docker_executable(), "network", "inspect", network_name(),
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    await inspect_proc.wait()
+    if inspect_proc.returncode == 0:
+        return
+    create_proc = await asyncio.create_subprocess_exec(
+        docker_executable(), "network", "create", network_name(),
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    await create_proc.wait()
+
+
+async def _discover_host_port(container_port: int, default_port: int) -> int:
+    if not _run_context.multi_run_mode():
+        return default_port
+    proc = await asyncio.create_subprocess_exec(
+        docker_executable(), "port", container_name(), f"{container_port}/tcp",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    stdout, _ = await proc.communicate()
+    try:
+        return int(stdout.decode().strip().rsplit(":", 1)[1])
+    except Exception:
+        return default_port
 
 
 def _msf_secret() -> str:
@@ -115,6 +157,7 @@ async def ensure_running() -> tuple[bool, str]:
                 f"  docker build -t {MSF_IMAGE} ./tools/metasploit/"
             )
 
+        await _ensure_network()
         _secret = _msf_secret()
         proc = await asyncio.create_subprocess_exec(
             docker_executable(), "run", "-d",
@@ -123,13 +166,14 @@ async def ensure_running() -> tuple[bool, str]:
             # ONLY (was 0.0.0.0). The MCP reaches it at localhost:5002; the LAN cannot.
             "-p", "127.0.0.1::5000" if _run_context.multi_run_mode() else f"127.0.0.1:{MSF_PORT}:5000",
             # Handler/proxy ports stay on 0.0.0.0 — payloads/targets must reach them.
-            "-p", "4444:4444",          # meterpreter handler
-            "-p", "4445:4445",          # secondary handler
-            "-p", "1081:1081",          # MSF socks_proxy module
+            "-p", _listener_publish_arg(4444),       # meterpreter handler
+            "-p", _listener_publish_arg(4445),       # secondary handler
+            "-p", _listener_publish_arg(1081),       # MSF socks_proxy module
             "--rm",
             "--cap-add=NET_RAW",
             "--cap-add=NET_ADMIN",
             "--add-host=host.docker.internal:host-gateway",
+            *(["--network", network_name()] if _run_context.multi_run_mode() else []),
             # Mount the hardened server (Host allowlist + json-only) so it's live without an
             # image rebuild; set the shared secret it enforces on /api/command.
             "-v", f"{_SERVER_SRC}:/opt/server.py:ro",
@@ -141,7 +185,7 @@ async def ensure_running() -> tuple[bool, str]:
         _, stderr = await proc.communicate()
         if proc.returncode != 0:
             return False, f"docker run failed: {stderr.decode().strip()}"
-        remember_api_port(MSF_PORT)
+        remember_api_port(await _discover_host_port(5000, MSF_PORT))
 
     # Poll /health until the server is ready (up to 60 s — MSF is slow to start)
     for _ in range(60):

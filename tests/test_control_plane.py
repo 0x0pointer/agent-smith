@@ -1,9 +1,11 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
+from fastapi.testclient import TestClient
 
 from control_plane import orchestrator
-from core import db as db_store
+from core.api_server import app
+from core import dashboard_auth
 
 
 def test_create_run_inserts_row_and_starts_worker(monkeypatch, tmp_path):
@@ -40,6 +42,56 @@ def test_create_run_validation_400(monkeypatch, tmp_path):
         orchestrator.create_run({"target": "", "depth": "bogus"})
 
 
+def test_create_run_rejects_non_dict_without_side_effects(monkeypatch, tmp_path):
+    db_path = tmp_path / "runs.db"
+    monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")
+
+    with patch("subprocess.Popen") as popen:
+        with pytest.raises(ValueError, match="object"):
+            orchestrator.create_run([])
+
+    assert popen.call_count == 0
+    assert orchestrator.list_runs() == []
+
+
+def test_create_run_rejects_oversized_scope_without_side_effects(monkeypatch, tmp_path):
+    db_path = tmp_path / "runs.db"
+    monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")
+
+    payload = {
+        "target": "https://valid.example",
+        "depth": "recon",
+        "scope": ["a" * 600 for _ in range(130)],
+    }
+    with patch("subprocess.Popen") as popen:
+        with pytest.raises(ValueError, match="scope"):
+            orchestrator.create_run(payload)
+
+    assert popen.call_count == 0
+    assert orchestrator.list_runs() == []
+
+
+def test_api_create_run_malformed_body_400_without_side_effects(monkeypatch, tmp_path):
+    db_path = tmp_path / "runs.db"
+    monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")
+    monkeypatch.setenv("SMITH_DASHBOARD_AUTH", "1")
+    monkeypatch.delenv("SMITH_SINGLE_RUN", raising=False)
+
+    client = TestClient(app)
+    operator_token = dashboard_auth.mint_operator_token()
+
+    with patch("subprocess.Popen") as popen:
+        response = client.post(
+            "/api/runs",
+            data="[",
+            headers={**{"Content-Type": "application/json"}, "Authorization": f"Bearer {operator_token}"},
+        )
+
+    assert response.status_code == 400
+    assert popen.call_count == 0
+    assert orchestrator.list_runs() == []
+
+
 def test_docker_failure_marks_failed_and_cleans(monkeypatch, tmp_path):
     db_path = tmp_path / "runs.db"
     monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")
@@ -50,3 +102,72 @@ def test_docker_failure_marks_failed_and_cleans(monkeypatch, tmp_path):
 
     rows = orchestrator.list_runs()
     assert rows[0]["status"] == "failed"
+
+
+def test_stop_run_cleans_only_targeted_resources(monkeypatch, tmp_path):
+    db_path = tmp_path / "runs.db"
+    monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")
+
+    with patch("subprocess.Popen", return_value=MagicMock(pid=4321)):
+        created = orchestrator.create_run({"target": "https://a.example", "depth": "recon"})
+
+    with (
+        patch("control_plane.orchestrator._stop_worker", return_value=[] ) as stop_worker,
+        patch("control_plane.orchestrator._stop_run_tooling", return_value=[] ) as stop_tools,
+    ):
+        stopped = orchestrator.stop_run(created["run_id"])
+
+    assert stopped["status"] == "stopped"
+    assert stop_worker.call_args.args == (created["run_id"], 4321)
+    assert stop_tools.call_args.args == (created["run_id"],)
+
+
+def test_start_control_plane_starts_services_and_returns_operator_token(monkeypatch):
+    monkeypatch.setattr("control_plane.orchestrator._start_database", lambda: {"database": "healthy"})
+    monkeypatch.setattr("control_plane.orchestrator._start_dashboard", lambda: 101)
+    monkeypatch.setattr("control_plane.orchestrator._start_orchestrator_marker", lambda: 202)
+    monkeypatch.setattr("control_plane.orchestrator._wait_for_dashboard", lambda timeout_s=5.0: True)
+    monkeypatch.setattr("core.dashboard_auth.mint_operator_token", lambda: "operator-token")
+
+    started = orchestrator.start_control_plane()
+
+    assert started == {
+        "status": "started",
+        "database": "healthy",
+        "dashboard": "running",
+        "orchestrator": "running",
+        "dashboard_url": "http://127.0.0.1:7777",
+        "operator_token": "operator-token",
+    }
+
+
+def test_control_plane_status_reflects_real_health(monkeypatch):
+    monkeypatch.setattr("core.db.get_repository", lambda: object())
+    monkeypatch.setattr("control_plane.orchestrator._read_pid_file", lambda path: 123 if "dashboard" in str(path) else 456)
+    monkeypatch.setattr("control_plane.orchestrator._pid_alive", lambda pid: pid in {123, 456})
+    monkeypatch.setattr("control_plane.orchestrator._dashboard_healthy", lambda: True)
+
+    status = orchestrator.control_plane_status()
+
+    assert status == {
+        "database": "healthy",
+        "dashboard": "running",
+        "orchestrator": "running",
+        "api": "healthy",
+    }
+
+
+def test_stop_control_plane_terminates_services(monkeypatch):
+    monkeypatch.setattr("control_plane.orchestrator._read_pid_file", lambda path: 123 if "dashboard" in str(path) else 456)
+    with (
+        patch("control_plane.orchestrator._terminate_pid") as terminate,
+        patch("control_plane.orchestrator._stop_database") as stop_db,
+        patch("pathlib.Path.unlink") as unlink,
+    ):
+        stopped = orchestrator.stop_control_plane()
+
+    assert stopped == {"status": "stopped"}
+    assert terminate.call_args_list[0].args == (123,)
+    assert terminate.call_args_list[1].args == (456,)
+    assert stop_db.call_count == 1
+    assert unlink.call_count == 2

@@ -45,12 +45,12 @@ async def api_findings(request: Request) -> JSONResponse:
 
 
 @router.get("/api/findings/{finding_id}")
-async def api_finding(finding_id: str) -> JSONResponse:
+async def api_finding(finding_id: str, request: Request) -> JSONResponse:
     """One finding + any exploit chains that reference it — feeds the standalone
     /finding/<id> detail page. Chain mermaid is pre-rendered server-side (same as
     api_findings) so the dossier's kill-chain matches the topology theme. Falls
     back to the archived list so a deleted finding's URL still resolves."""
-    data = _api._read_json(_api._FINDINGS_FILE)
+    data = _scoped_data(request, "findings", _api._FINDINGS_FILE)
     finding = next((f for f in data.get("findings", []) if f.get("id") == finding_id), None)
     archived = False
     if finding is None:
@@ -306,6 +306,7 @@ async def api_patch_finding(finding_id: str, request: Request) -> JSONResponse:
         body = await request.json()
         updated = await update_finding(
             finding_id,
+            run_id=getattr(request.state, "run_id", None) or None,
             severity=body.get("severity"),
             title=body.get("title"),
             description=body.get("description"),
@@ -323,10 +324,10 @@ async def api_patch_finding(finding_id: str, request: Request) -> JSONResponse:
 
 
 @router.delete("/api/findings/{finding_id}")
-async def api_delete_finding(finding_id: str) -> JSONResponse:
+async def api_delete_finding(finding_id: str, request: Request) -> JSONResponse:
     from core.findings import delete_finding
     try:
-        archived = await delete_finding(finding_id)
+        archived = await delete_finding(finding_id, run_id=getattr(request.state, "run_id", None) or None)
         return JSONResponse({"ok": archived})
     except Exception:
         _log.exception("api_delete_finding failed")
