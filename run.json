@@ -518,7 +518,7 @@
     "kind": "running"
   },
   "status_updated_at": "2026-11-27T00:28:05.440712665Z",
-  "last_event_at": "2026-11-27T00:28:07.551220556Z",
+  "last_event_at": "2026-11-27T00:28:12.944452057Z",
   "pending_control": null,
   "checkpoints": [
     {
@@ -560,9 +560,9 @@
       "diff": {}
     },
     {
-      "seq": 0,
+      "seq": 28,
       "checkpoint": {
-        "timestamp": "2026-11-27T00:28:08.600472388Z",
+        "timestamp": "2026-11-27T00:28:12.944324804Z",
         "current_node": "pick_pr",
         "completed_nodes": [
           "start",
@@ -570,29 +570,25 @@
         ],
         "node_retries": {},
         "context_values": {
-          "internal.fidelity": "compact",
           "failure_signature": "pick_pr|deterministic|script failed with exit code: <n> ## output skipped pull request <n> - its branch dependabot/pip/pip-<hex> is not a fabro run branch nothing to fix: no pull request with failed checks is waiting (<n> looked at).",
-          "internal.retry_count.pick_pr": 0,
-          "internal.retry_count.start": 0,
-          "graph.goal": "Fix the failed CI checks on a Fabro pull request of 0x0pointer/agent-smith and push the fix to the same branch",
-          "graph.model_stylesheet": "\n            *       { model: gpt-5.4; reasoning_effort: medium; }\n            .strong { model: gpt-5.5; reasoning_effort: high; }\n        ",
-          "graph.max_node_visits": "12",
-          "internal.node_visit_count": 1,
-          "thread.start.current_node": "pick_pr",
-          "graph.rankdir": "LR",
-          "outcome": "failed",
-          "internal.work_dir": "/workspace/agent-smith",
-          "current_node": "pick_pr",
-          "internal.thread_id": "start",
-          "failure_class": "deterministic",
           "command.output": "blob://sha256/077a696a264a006256ff911d1feebc75732d7a0c1c442c4014f96a48bb616171",
-          "internal.run_id": "01M8D6DRM7S539ZDRZH99MC6Y3"
+          "graph.model_stylesheet": "\n            *       { model: gpt-5.4; reasoning_effort: medium; }\n            .strong { model: gpt-5.5; reasoning_effort: high; }\n        ",
+          "graph.rankdir": "LR",
+          "graph.goal": "Fix the failed CI checks on a Fabro pull request of 0x0pointer/agent-smith and push the fix to the same branch",
+          "internal.node_visit_count": 1,
+          "internal.run_id": "01M8D6DRM7S539ZDRZH99MC6Y3",
+          "internal.work_dir": "/workspace/agent-smith",
+          "internal.retry_count.start": 0,
+          "outcome": "failed",
+          "thread.start.current_node": "pick_pr",
+          "internal.fidelity": "compact",
+          "current_node": "pick_pr",
+          "failure_class": "deterministic",
+          "internal.retry_count.pick_pr": 0,
+          "internal.thread_id": "start",
+          "graph.max_node_visits": "12"
         },
         "node_outcomes": {
-          "start": {
-            "status": "succeeded",
-            "usage": null
-          },
           "pick_pr": {
             "status": "failed",
             "context_updates": {
@@ -609,18 +605,68 @@
               "tool_time_ms": 1034,
               "active_time_ms": 1034
             }
+          },
+          "start": {
+            "status": "succeeded",
+            "usage": null
           }
         },
         "next_node_id": "exit",
+        "git_commit_sha": "1cb4302a1ec5fd3e019a10fa019fe82a8c48af90",
+        "loop_failure_signatures": {
+          "pick_pr|deterministic|script failed with exit code: <n> ## output skipped pull request <n> - its branch dependabot/pip/pip-<hex> is not a fabro run branch nothing to fix: no pull request with failed checks is waiting (<n> looked at).": 1
+        },
         "node_visits": {
-          "pick_pr": 1,
-          "start": 1
+          "start": 1,
+          "pick_pr": 1
         }
       },
-      "diff": {}
+      "diff": {
+        "summary": {
+          "files_changed": 0,
+          "additions": 0,
+          "deletions": 0
+        }
+      }
     }
   ],
-  "conclusion": null,
+  "conclusion": {
+    "timestamp": "2026-11-27T00:28:12.975750770Z",
+    "status": "succeeded",
+    "timing": {
+      "wall_time_ms": 7508,
+      "inference_time_ms": 0,
+      "tool_time_ms": 1034,
+      "active_time_ms": 1034
+    },
+    "final_git_commit_sha": "1cb4302a1ec5fd3e019a10fa019fe82a8c48af90",
+    "stages": [
+      {
+        "stage_id": "start",
+        "stage_label": "start",
+        "timing": {
+          "wall_time_ms": 0,
+          "inference_time_ms": 0,
+          "tool_time_ms": 0,
+          "active_time_ms": 0
+        },
+        "retries": 0
+      },
+      {
+        "stage_id": "pick_pr",
+        "stage_label": "pick_pr",
+        "timing": {
+          "wall_time_ms": 1043,
+          "inference_time_ms": 0,
+          "tool_time_ms": 1034,
+          "active_time_ms": 1034
+        },
+        "retries": 0
+      }
+    ],
+    "total_retries": 0,
+    "diff": {}
+  },
   "sandbox": {
     "kind": "ready",
     "plan": {
@@ -651,7 +697,12 @@
       "first_event_seq": 21,
       "prompt": null,
       "response": null,
-      "completion": null,
+      "completion": {
+        "outcome": "failed",
+        "notes": null,
+        "failure_reason": "Script failed with exit code: 1\n\n## output\nskipped pull request 287 - its branch dependabot/pip/pip-89390a9de7 is not a fabro run branch\nNOTHING TO FIX: no pull request with failed checks is waiting (1 looked at).\n",
+        "timestamp": "2026-11-27T00:28:08.595340176Z"
+      },
       "provider_used": null,
       "diff": null,
       "script_invocation": {
@@ -660,11 +711,27 @@
         "language": "python",
         "timeout_ms": 300000
       },
-      "script_timing": null,
+      "script_timing": {
+        "output": "blob://sha256/077a696a264a006256ff911d1feebc75732d7a0c1c442c4014f96a48bb616171",
+        "exit_code": 1,
+        "duration_ms": 1034,
+        "termination": "exited",
+        "output_bytes": 171,
+        "live_streaming": true
+      },
       "parallel_results": null,
       "output": null,
+      "output_bytes": 171,
+      "live_streaming": true,
+      "termination": "exited",
       "started_at": "2026-11-27T00:28:07.551023627Z",
       "handler": "command",
+      "timing": {
+        "wall_time_ms": 1043,
+        "inference_time_ms": 0,
+        "tool_time_ms": 1034,
+        "active_time_ms": 1034
+      },
       "usage": {
         "input_tokens": 0,
         "output_tokens": 0,
@@ -673,7 +740,7 @@
         "cache_read_tokens": 0,
         "cache_write_tokens": 0
       },
-      "state": "running"
+      "state": "failed"
     },
     "start@1": {
       "first_event_seq": 17,
@@ -693,6 +760,40 @@
       "output": null,
       "started_at": "2026-11-27T00:28:07.550748458Z",
       "handler": "start",
+      "timing": {
+        "wall_time_ms": 0,
+        "inference_time_ms": 0,
+        "tool_time_ms": 0,
+        "active_time_ms": 0
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "reasoning_tokens": 0,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0
+      },
+      "state": "succeeded"
+    },
+    "exit@1": {
+      "first_event_seq": 31,
+      "prompt": null,
+      "response": null,
+      "completion": {
+        "outcome": "succeeded",
+        "notes": null,
+        "failure_reason": null,
+        "timestamp": "2026-11-27T00:28:12.944452057Z"
+      },
+      "provider_used": null,
+      "diff": null,
+      "script_invocation": null,
+      "script_timing": null,
+      "parallel_results": null,
+      "output": null,
+      "started_at": "2026-11-27T00:28:12.944424728Z",
+      "handler": "exit",
       "timing": {
         "wall_time_ms": 0,
         "inference_time_ms": 0,
