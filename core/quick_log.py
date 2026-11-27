@@ -191,6 +191,10 @@ class QuickLog:
 
     async def append(self, entry: dict) -> None:
         entry.setdefault("ts", datetime.now(timezone.utc).isoformat())
+        # Attribute every entry to its scan (multi-run mode only).
+        from core import run_context as _run_context
+        if _run_context.has_explicit_run_id():
+            entry.setdefault("run_id", _run_context.run_id())
         line = json.dumps(entry) + "\n"
         await asyncio.to_thread(self._write_line, line)
 

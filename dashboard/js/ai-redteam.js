@@ -108,9 +108,9 @@
       const s = Math.max(0, Math.round((Date.now() - new Date(gs.ts).getTime()) / 1000));
       ago = ` · updated ${s}s ago`;
     }
-    return `<div class="air-banner" style="border-left-color:#58a6ff;margin-bottom:8px">`
-      + `<span class="air-cal-dot" style="background:#58a6ff"></span>`
-      + `<div><b style="color:#58a6ff">⟳ garak running</b> — ${probe}`
+    return `<div class="air-banner" style="border-left-color:var(--purple);margin-bottom:8px">`
+      + `<span class="air-cal-dot" style="background:var(--purple)"></span>`
+      + `<div><b style="color:var(--purple)">⟳ garak running</b> — ${probe}`
       + `<span class="air-sub-note">${gen}${ago}</span></div></div>`;
   }
 
@@ -168,8 +168,8 @@
         + `<span class="air-sub-note"> — engines, garak, and the MCP tools that power the assessment</span>`
         + `<div class="air-ready-list">${rows}</div></div></div>`;
     } else {
-      rdWrap.innerHTML = `<div class="air-banner" style="border-left-color:#6e7681">`
-        + `<span class="air-cal-dot" style="background:#6e7681"></span>`
+      rdWrap.innerHTML = `<div class="air-banner" style="border-left-color:var(--text-dim)">`
+        + `<span class="air-cal-dot" style="background:var(--text-dim)"></span>`
         + `<span class="air-sub-note">Toolchain status unavailable.</span></div>`;
     }
 
@@ -264,7 +264,7 @@
       return `<div class="air-repro-row"><span class="air-kn" style="color:${col};border-color:${col}">${rp.k}/${rp.n}</span>`
         + `<div class="air-meter"><div class="air-meter-fill" style="width:${pct}%;background:${col}"></div></div>`
         + `<span class="air-row-label">${esc((a.goal || '').slice(0, 72))}</span></div>`;
-    }).join('') : '<div class="empty-placeholder">No reproduced attacks yet — feedback_attack with reproduce_n&gt;0.</div>';
+    }).join('') : '<div class="empty-placeholder">No repeated attacks yet. <button type="button" class="empty-action" onclick="askSmith(\'Re-run the most promising prompt attack several times and report how often it works\')">Ask Smith to measure one</button></div>';
 
     const txWrap = document.getElementById('air-transcripts');
     if (attacks.length) {
@@ -303,7 +303,7 @@
         });
       });
     } else {
-      txWrap.innerHTML = '<div class="empty-placeholder">No feedback attacks yet — redteam(action="feedback_attack").</div>';
+      txWrap.innerHTML = '<div class="empty-placeholder">No adaptive attacks yet. <button type="button" class="empty-action" onclick="askSmith(\'Run an adaptive jailbreak attack against the chat endpoint\')">Ask Smith to run one</button></div>';
     }
 
     // ── garak ─────────────────────────────────────────────────────────────
@@ -311,7 +311,7 @@
     const garakWrap = document.getElementById('air-garak');
     garakWrap.innerHTML = statusLine + (garak.length
       ? garak.slice(-40).reverse().map(_garakBarRow).join('')
-      : (statusLine ? '' : '<div class="empty-placeholder">No garak runs yet — scan(tool="garak", ...).</div>'));
+      : (statusLine ? '' : '<div class="empty-placeholder">No automated LLM scans yet. <button type="button" class="empty-action" onclick="askSmith(\'Run an automated LLM vulnerability scan against the AI endpoint\')">Ask Smith to run one</button></div>'));
 
     // ── Defenses: input-filter bypass map ─────────────────────────────────
     const filterWrap = document.getElementById('air-filter');
@@ -320,7 +320,7 @@
       const bypass = Object.keys(flt.detail).filter(t => flt.detail[t] && t !== 'direct').sort();
       const blocked = Object.keys(flt.detail).filter(t => !flt.detail[t]).sort();
       const total = bypass.length + blocked.length;
-      const chip = (t, ok) => `<span class="air-fchip" style="border-color:${ok ? '#f85149' : '#3fb950'};color:${ok ? '#f85149' : '#3fb950'}">${esc(t)}</span>`;
+      const chip = (t, ok) => `<span class="air-fchip" style="border-color:${ok ? 'var(--danger)' : 'var(--green)'};color:${ok ? 'var(--danger)' : 'var(--green)'}">${esc(t)}</span>`;
       const scol = bypass.length ? '#f85149' : '#3fb950';
       const posture = flt.plaintext_blocked ? 'blocks plaintext keywords' : 'does not even block plaintext keywords';
       const assess = bypass.length === 0
@@ -329,16 +329,16 @@
       filterWrap.innerHTML =
         `<div class="air-banner" style="border-left-color:${scol}"><span class="air-cal-dot" style="background:${scol}"></span>`
         + `<div><b style="color:${scol}">Input filter ${posture}</b> · `
-        + `<b style="color:#f85149">${bypass.length}</b> bypass · <b style="color:#3fb950">${blocked.length}</b> blocked<br>`
+        + `<b style="color:var(--danger)">${bypass.length}</b> bypass · <b style="color:var(--green)">${blocked.length}</b> blocked<br>`
         + `<span class="air-sub-note">${esc(assess)}</span></div></div>`
         + `<div class="air-def-cols">`
-        + `<div class="air-def-col"><div class="air-def-col-title" style="color:#f85149">↯ Bypasses the filter (${bypass.length})</div>`
+        + `<div class="air-def-col"><div class="air-def-col-title" style="color:var(--danger)">↯ Bypasses the filter (${bypass.length})</div>`
         + `<div class="air-fchips">${bypass.map(t => chip(t, true)).join('') || '<span class="air-sub-note">none</span>'}</div></div>`
-        + `<div class="air-def-col"><div class="air-def-col-title" style="color:#3fb950">⛔ Blocked (${blocked.length})</div>`
+        + `<div class="air-def-col"><div class="air-def-col-title" style="color:var(--green)">⛔ Blocked (${blocked.length})</div>`
         + `<div class="air-fchips">${blocked.map(t => chip(t, false)).join('') || '<span class="air-sub-note">none</span>'}</div></div>`
         + `</div>`;
     } else {
-      filterWrap.innerHTML = '<div class="empty-placeholder">No filter probe yet — redteam(action="filter_probe").</div>';
+      filterWrap.innerHTML = '<div class="empty-placeholder">The input filter has not been probed yet. <button type="button" class="empty-action" onclick="askSmith(\'Probe which encodings the input filter lets through\')">Ask Smith to probe it</button></div>';
     }
 
     // ── Overview: surface the top garak results so output is visible without
@@ -349,7 +349,7 @@
       liteWrap.innerHTML = statusLine + (top.length
         ? top.map(_garakBarRow).join('')
           + (garak.length > 8 ? `<div class="air-sub-note" style="margin-top:6px">+${garak.length - 8} more under “Automated (garak)” →</div>` : '')
-        : (statusLine ? '' : '<div class="empty-placeholder">No garak runs yet — scan(tool="garak", ...).</div>'));
+        : (statusLine ? '' : '<div class="empty-placeholder">No automated LLM scans yet. <button type="button" class="empty-action" onclick="askSmith(\'Run an automated LLM vulnerability scan against the AI endpoint\')">Ask Smith to run one</button></div>'));
     }
 
     // ── Sub-tab badges: show where the data is, so it isn't hidden ───────────

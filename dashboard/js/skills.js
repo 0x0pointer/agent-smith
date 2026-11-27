@@ -25,23 +25,23 @@
   // Empty-but-muted when no recall has fired this scan; silent of specifics otherwise.
   function _recallUsageHtml(ru) {
     if (!ru?.total) {
-      return '<div style="font-size:.78rem;color:#6e7681;margin-top:.5rem;width:100%">&#128269; Recall: none yet this scan</div>';
+      return '<div style="font-size:var(--fs-xs);color:var(--text-dim);margin-top:.5rem;width:100%">&#128269; Recall: none yet this scan</div>';
     }
     const byTier = Object.entries(ru.by_tier || {}).sort((a, b) => b[1] - a[1])
-      .map(([t, n]) => `<span style="color:#79c0ff">${esc(t)}</span>&#183;${n}`).join('  ');
+      .map(([t, n]) => `<span style="color:var(--purple)">${esc(t)}</span>&#183;${n}`).join('  ');
     const bySkill = Object.entries(ru.by_skill || {}).sort((a, b) => b[1] - a[1]).slice(0, 6)
       .map(([k, n]) => `${esc(k)}&#183;${n}`).join('  ');
     const recent = (ru.recent || []).slice(-4).reverse().map(r =>
-      `<div style="color:#8b949e;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">` +
+      `<div style="color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">` +
       `&#8220;${esc(r.query)}&#8221; &#8594; ${r.hits} hit${r.hits === 1 ? '' : 's'} ` +
-      `<span style="color:#6e7681">[${esc((r.tiers || []).join('+'))}${r.skill ? ' &#183; ' + esc(r.skill) : ''}]</span></div>`
+      `<span style="color:var(--text-dim)">[${esc((r.tiers || []).join('+'))}${r.skill ? ' &#183; ' + esc(r.skill) : ''}]</span></div>`
     ).join('');
     return (
-      '<div style="width:100%;margin-top:.5rem;padding:.5rem .6rem;background:#0d1117;border:1px solid #21262d;border-radius:6px;font-size:.8rem">' +
+      '<div style="width:100%;margin-top:.5rem;padding:.5rem .6rem;background:var(--bg-deep);border:1px solid var(--border-subtle);border-radius:var(--r-md);font-size:var(--fs-sm)">' +
         `<div style="color:#f0f6fc"><strong>&#128269; Recall</strong>: ${ru.total} call${ru.total === 1 ? '' : 's'} &#183; ${ru.total_hits} hit${ru.total_hits === 1 ? '' : 's'}</div>` +
-        (byTier ? `<div style="color:#8b949e;margin-top:.25rem">by tier: ${byTier}</div>` : '') +
-        (bySkill ? `<div style="color:#8b949e;margin-top:.15rem">by skill: ${bySkill}</div>` : '') +
-        (recent ? `<div style="margin-top:.3rem;border-top:1px solid #21262d;padding-top:.3rem">${recent}</div>` : '') +
+        (byTier ? `<div style="color:var(--text-muted);margin-top:.25rem">by tier: ${byTier}</div>` : '') +
+        (bySkill ? `<div style="color:var(--text-muted);margin-top:.15rem">by skill: ${bySkill}</div>` : '') +
+        (recent ? `<div style="margin-top:.3rem;border-top:1px solid var(--border-subtle);padding-top:.3rem">${recent}</div>` : '') +
       '</div>'
     );
   }
@@ -52,7 +52,7 @@
     const s = _skillsSession;
 
     if (!s || !s.target) {
-      wrap.innerHTML = '<div class="empty-placeholder">No active scan session — start a scan to track skill usage.</div>';
+      wrap.innerHTML = '<div class="empty-placeholder">No skills used yet. Each testing playbook Smith runs shows up here.</div>';
       sumWrap.innerHTML = '';
       return;
     }
@@ -83,7 +83,7 @@
       requiredCount
         ? `<span class="cov-stat cov-vulnerable">${requiredCount} gate-required</span>`
         : '',
-      `<span style="font-size:.8rem;color:#6e7681;align-self:center">active skill: <strong style="color:#f0f6fc">${s.skill ? '/'+s.skill : '—'}</strong></span>`,
+      `<span style="font-size:var(--fs-sm);color:var(--text-dim);align-self:center">active skill: <strong style="color:#f0f6fc">${s.skill ? '/'+s.skill : '—'}</strong></span>`,
     ].join('') + _recallUsageHtml(s.recall_usage);
 
     // Group skills
@@ -105,13 +105,13 @@
         if (req && !inv) cardClass += ' required';
 
         const statusIcon = inv
-          ? '<span class="skill-status" style="color:#3fb950">&#10003;</span>'
+          ? '<span class="skill-status" style="color:var(--green)">&#10003;</span>'
           : req
-            ? '<span class="skill-status" style="color:#d29922">&#9888;</span>'
-            : '<span class="skill-status" style="color:#30363d">&#9711;</span>';
+            ? '<span class="skill-status" style="color:var(--sev-medium)">&#9888;</span>'
+            : '<span class="skill-status" style="color:var(--border)">&#9711;</span>';
 
         const nameClass = inv ? 'skill-name invoked-name' : 'skill-name';
-        const activeDot = isActive ? ' <span style="font-size:.65rem;color:#58a6ff;background:rgba(88,166,255,.15);padding:.1rem .3rem;border-radius:3px;font-style:normal">ACTIVE</span>' : '';
+        const activeDot = isActive ? ' <span style="font-size:var(--fs-2xs);color:var(--purple);background:rgba(88,166,255,.15);padding:.1rem .3rem;border-radius:var(--r-sm);font-style:normal">ACTIVE</span>' : '';
 
         // PR-E: how many times this skill ran (count all skill_history entries, not just the first)
         const runs = history.filter(h => h.skill === sk.name).length + (sk.name === 'pentester' ? 1 : 0);
@@ -144,13 +144,13 @@
           const chips = discovered.map(k => {
             const done = covered.has(k);
             const short = k.length > 30 ? k.slice(0, 29) + '…' : k;
-            return `<span title="${esc(k)}" style="font-size:.62rem;padding:.08rem .3rem;border-radius:3px;`
+            return `<span title="${esc(k)}" style="font-size:var(--fs-2xs);padding:.08rem .3rem;border-radius:var(--r-sm);`
               + `background:${done ? 'rgba(63,185,80,.14)' : 'rgba(210,153,34,.14)'};`
-              + `color:${done ? '#3fb950' : '#d29922'}">${done ? '✓' : '✗'} ${esc(short)}</span>`;
+              + `color:${done ? 'var(--green)' : 'var(--sev-medium)'}">${done ? '✓' : '✗'} ${esc(short)}</span>`;
           }).join('');
           usageHtml = `<div style="margin-top:.4rem">`
-            + `<span style="font-size:.7rem;color:#3fb950">${nCov}/${nDisc} ${unit} covered</span>`
-            + (nPend ? `<span style="font-size:.7rem;color:#d29922;margin-left:.45rem">${nPend} uncovered</span>` : '')
+            + `<span style="font-size:var(--fs-2xs);color:var(--green)">${nCov}/${nDisc} ${unit} covered</span>`
+            + (nPend ? `<span style="font-size:var(--fs-2xs);color:var(--sev-medium);margin-left:.45rem">${nPend} uncovered</span>` : '')
             + `<div style="margin-top:.25rem;display:flex;flex-wrap:wrap;gap:.25rem">${chips}</div></div>`;
         }
 

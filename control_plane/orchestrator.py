@@ -93,20 +93,41 @@ def _workdir_path_for(run_id: str) -> Path:
     return Path(_paths.RUNTIME_ROOT) / "runs" / run_id
 
 
+def _validate_source(payload: object) -> str:
+    """Optional Source (knowledge base) to bind to the run.
+
+    Must be a name from the Source registry (``sources.yaml``). Checked here so a
+    typo fails the request instead of silently starting a scan without it.
+    """
+    name = str((payload or {}).get("source") or "").strip() if isinstance(payload, dict) else ""
+    if not name:
+        return ""
+    from core.sources import list_sources
+
+    if name not in list_sources():
+        raise ValueError(f"unknown source '{name[:64]}'")
+    return name
+
+
 def _write_run_start_options(
     workdir: Path,
     target: str,
     depth: str,
     scope: list[str],
     out_of_scope: list[str],
+    source: str = "",
 ) -> Path:
     options_path = workdir / _RUN_START_OPTIONS_FILENAME
-    options_path.write_text(json.dumps({
+    options = {
         "target": target,
         "depth": depth,
         "scope": scope,
         "out_of_scope": out_of_scope,
-    }, sort_keys=True), encoding="utf-8")
+    }
+    if source:
+        # session(action="start") binds this Source to the engagement.
+        options["source"] = source
+    options_path.write_text(json.dumps(options, sort_keys=True), encoding="utf-8")
     return options_path
 
 
@@ -131,6 +152,74 @@ def _agent_spawn_args(client: str, prompt: str) -> list[str]:
     return _build_spawn_args(client, client, None, prompt)
 
 
+_RUN_MCP_CONFIG_FILENAME = "mcp.json"
+_MCP_SERVER_NAME = "pentest-agent"
+
+
+def _write_run_mcp_config(run_id: str, workdir: Path) -> Path:
+    """Write the MCP config that gives THIS run its own tool-server process.
+
+    A run's identity is process-wide: ``core.run_context`` reads ``SMITH_RUN_ID``
+    and ``core.paths`` freezes ``RUNTIME_ROOT`` from ``SMITH_WORKDIR`` at import.
+    The installers register one long-lived, shared ``pentest-agent`` server (SSE
+    on :7778) that has neither, so a worker using it would write its session,
+    findings, coverage and every log into the shared repo-root state — two runs
+    would interleave in the same files and the dashboard's per-run view would stay
+    empty. Each worker is therefore pointed at a private stdio server (same server
+    name, so tool names are unchanged) started with the run's environment.
+
+    The file holds the database URL, so it is created owner-only.
+    """
+    env = {
+        "SMITH_RUN_ID": run_id,
+        "SMITH_WORKDIR": str(workdir),
+        "PYTHONPATH": str(_paths.REPO_ROOT),
+    }
+    database_url = os.environ.get("SMITH_DATABASE_URL", "").strip()
+    if database_url:
+        env["SMITH_DATABASE_URL"] = database_url
+    # The client may start MCP children with a trimmed environment; docker and
+    # the scanners must stay on PATH.
+    if os.environ.get("PATH"):
+        env["PATH"] = os.environ["PATH"]
+    config = {
+        "mcpServers": {
+            _MCP_SERVER_NAME: {
+                "command": sys.executable,
+                "args": ["-m", "mcp_server", "--transport", "stdio"],
+                "env": env,
+            }
+        }
+    }
+    path = workdir / _RUN_MCP_CONFIG_FILENAME
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(config, fh, indent=2, sort_keys=True)
+    try:
+        os.chmod(str(path), 0o600)
+    except OSError:
+        pass
+    return path
+
+
+def _with_run_mcp_server(args: list[str], client: str, config_path: Path) -> list[str]:
+    """Make the worker use ONLY its private tool server.
+
+    Implemented for the ``claude`` client (``--mcp-config`` +
+    ``--strict-mcp-config``, so the shared user-scope server is ignored). Other
+    clients read their MCP servers from their own config files and are returned
+    unchanged: they still share the installed server, so run them one scan at a
+    time until they get the same treatment.
+    """
+    if client != "claude":
+        return args
+    flags = ["--mcp-config", str(config_path), "--strict-mcp-config"]
+    if "-p" in args:
+        i = args.index("-p")
+        return args[:i] + flags + args[i:]
+    return args + flags
+
+
 def _spawn_worker(
     run_id: str,
     workdir: Path,
@@ -138,6 +227,8 @@ def _spawn_worker(
     depth: str,
     scope: list[str],
     out_of_scope: list[str],
+    prompt: str | None = None,
+    source: str = "",
 ) -> int:
     env = os.environ.copy()
     env["SMITH_RUN_ID"] = run_id
@@ -149,10 +240,14 @@ def _spawn_worker(
     env.setdefault("SMITH_SESSION_ORIGIN", "operator")
     logs_dir = workdir / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
-    prompt = _initial_run_prompt(
-        _write_run_start_options(workdir, target, depth, scope, out_of_scope)
+    if prompt is None:
+        prompt = _initial_run_prompt(
+            _write_run_start_options(workdir, target, depth, scope, out_of_scope, source)
+        )
+    client = _agent_client()
+    args = _with_run_mcp_server(
+        _agent_spawn_args(client, prompt), client, _write_run_mcp_config(run_id, workdir)
     )
-    args = _agent_spawn_args(_agent_client(), prompt)
     spawn_kwargs = {
         "cwd": str(_paths.REPO_ROOT),
         "env": env,
@@ -164,6 +259,111 @@ def _spawn_worker(
     with (logs_dir / "worker.log").open("a", encoding="utf-8") as log_fh:
         proc = subprocess.Popen(args, stdout=log_fh, stderr=log_fh, **spawn_kwargs)
     return int(getattr(proc, "pid", 0) or 0)
+
+
+_WORKER_SNAPSHOT = "worker"
+_ACTIVE_STATUSES = {"starting", "running", "intervention_required"}
+
+
+def _save_worker(repo, run_id: str, pid: int) -> None:
+    """Record the run's worker process.
+
+    Kept in its own snapshot kind: the run's tool server persists its session
+    document under "session" on every change, which would overwrite a worker pid
+    stored there — and then the run could be neither stopped nor seen as idle.
+    """
+    repo.save_snapshot(run_id, _WORKER_SNAPSHOT, {
+        "pid": int(pid or 0),
+        "started_at": time.time(),
+    })
+
+
+def _worker_pid(repo, run_id: str) -> int | None:
+    doc = repo.load_snapshot(run_id, _WORKER_SNAPSHOT) or {}
+    pid = doc.get("pid")
+    if not pid:  # runs created before the worker snapshot existed
+        pid = (repo.load_snapshot(run_id, "session") or {}).get("worker_pid")
+    try:
+        return int(pid) if pid else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _worker_alive(pid: int | None) -> bool:
+    """True while the worker process is really running.
+
+    The worker is our child and is never waited on, so after it exits it lingers
+    as a zombie that still answers ``kill(pid, 0)``. Reap it first, then treat a
+    zombie as dead.
+    """
+    if not pid or pid <= 0:
+        return False
+    try:
+        os.waitpid(pid, os.WNOHANG)
+    except (ChildProcessError, OSError):
+        pass                                  # not our child (after a dashboard restart) or already reaped
+    try:
+        import psutil
+
+        proc = psutil.Process(pid)
+        return proc.is_running() and proc.status() != psutil.STATUS_ZOMBIE
+    except Exception:
+        return False
+
+
+def run_agent_state(run_id: str) -> dict:
+    """Is this run's agent working, or is the run idle (open, nothing running)?"""
+    repo = _db.get_repository()
+    if repo is None:
+        raise RuntimeError("database unavailable")
+    row = repo.get_run(run_id)
+    if not row:
+        raise KeyError(run_id)
+    alive = _worker_alive(_worker_pid(repo, run_id))
+    active = str(row.get("status") or "") in _ACTIVE_STATUSES
+    return {"run_id": run_id, "alive": alive, "idle": active and not alive,
+            "status": row.get("status"), "idle_since": row.get("updated_at")}
+
+
+def _resume_prompt() -> str:
+    return (
+        "Resume the agent-smith pentest run you are attached to. Call "
+        "session(action='recovery') to recover your position, apply any pending operator "
+        "instructions it reports FIRST, then continue with the next recommended tool call "
+        "until the scan is complete or genuinely blocked."
+    )
+
+
+def resume_run(run_id: str, prompt: str | None = None) -> dict:
+    """Start the run's agent again after it went idle.
+
+    No-op when the worker is still running (a second agent on the same run would
+    double-write its state) or when the run has ended.
+    """
+    repo = _db.get_repository()
+    if repo is None:
+        raise RuntimeError("database unavailable")
+    row = repo.get_run(run_id)
+    if not row:
+        raise KeyError(run_id)
+    if _worker_alive(_worker_pid(repo, run_id)):
+        return {"run_id": run_id, "resumed": False, "reason": "already running"}
+    if str(row.get("status") or "") not in _ACTIVE_STATUSES:
+        return {"run_id": run_id, "resumed": False, "reason": f"run is {row.get('status') or 'not active'}"}
+    workdir = Path(row.get("workdir") or _workdir_path_for(run_id))
+    workdir.mkdir(parents=True, exist_ok=True)
+    try:
+        opts = json.loads((workdir / _RUN_START_OPTIONS_FILENAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        opts = {}
+    target = str(opts.get("target") or row.get("target") or "")
+    pid = _spawn_worker(
+        run_id, workdir, target, str(opts.get("depth") or row.get("depth") or "standard"),
+        list(opts.get("scope") or [target]), list(opts.get("out_of_scope") or []),
+        prompt=prompt or _resume_prompt(),
+    )
+    _save_worker(repo, run_id, pid)
+    return {"run_id": run_id, "resumed": True, "pid": pid}
 
 
 def _read_json(url: str, timeout: float = 2.0) -> tuple[int | None, object]:
@@ -313,6 +513,7 @@ def _wait_for_orchestrator(timeout_s: float = 5.0) -> bool:
 
 def create_run(payload: object) -> dict:
     target, depth, scope, out_of_scope = _validate(payload)
+    source = _validate_source(payload)
     repo = _db.get_repository()
     if repo is None:
         raise RuntimeError("database unavailable")
@@ -351,10 +552,12 @@ def create_run(payload: object) -> dict:
             depth,
             scope or [target],
             out_of_scope,
+            source=source,
         )
         session_doc["worker_pid"] = worker_pid
         repo.upsert_run(run_id, session_doc, str(workdir))
         repo.save_snapshot(run_id, "session", session_doc)
+        _save_worker(repo, run_id, worker_pid)
     except Exception:
         session_doc["status"] = "failed"
         repo.upsert_run(run_id, session_doc, str(workdir))
@@ -372,13 +575,27 @@ def create_run(payload: object) -> dict:
 
 def list_runs() -> list[dict]:
     rows = _db.list_runs()
+    repo = _db.get_repository()
+
+    def _status(row: dict) -> str:
+        # An open run whose agent has stopped is shown as "idle": it waits for the
+        # operator (an instruction or Resume). Derived on read, never written — the
+        # run's own tool server owns the stored status.
+        status = str(row.get("status") or "")
+        if repo is not None and status in _ACTIVE_STATUSES and status != "starting":
+            if not _worker_alive(_worker_pid(repo, str(row.get("run_id")))):
+                return "idle"
+        return status
+
     return [
         {
             "run_id": row.get("run_id"),
             "target": row.get("target"),
-            "status": row.get("status"),
+            "status": _status(row),
             "depth": row.get("depth"),
             "workdir": row.get("workdir"),
+            "created_at": row.get("created_at"),
+            "updated_at": row.get("updated_at"),
         }
         for row in rows
     ]
@@ -455,7 +672,7 @@ def stop_run(run_id: str) -> dict:
         raise RuntimeError("database unavailable")
     session_doc = repo.load_snapshot(run_id, "session") or {"run_id": run_id}
     cleanup_errors = []
-    cleanup_errors.extend(_stop_worker(run_id, session_doc.get("worker_pid")))
+    cleanup_errors.extend(_stop_worker(run_id, _worker_pid(repo, run_id)))
     cleanup_errors.extend(_stop_run_tooling(run_id))
     session_doc["status"] = "stopped"
     session_doc["cleanup_errors"] = cleanup_errors

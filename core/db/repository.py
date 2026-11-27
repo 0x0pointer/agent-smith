@@ -3,11 +3,11 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, select, update
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 
-from .schema import dashboard_tokens, metadata, run_snapshots, runs
+from .schema import dashboard_tokens, metadata, run_snapshots, run_work_items, runs
 
 
 class DatabaseRepository:
@@ -119,3 +119,79 @@ class DatabaseRepository:
                 select(dashboard_tokens).where(dashboard_tokens.c.token_hash == token_hash)
             ).mappings().first()
         return dict(row) if row else None
+
+    # ── Work queue ──────────────────────────────────────────────────────────
+
+    WORK_MAX_ATTEMPTS = 3
+
+    @staticmethod
+    def _work_row(row) -> dict:
+        d = dict(row)
+        try:
+            d["payload"] = json.loads(d.pop("payload_json") or "{}")
+        except ValueError:
+            d["payload"] = {}
+        return d
+
+    def enqueue_work(self, run_id: str, kind: str, dedup_key: str, title: str, payload: dict) -> int | None:
+        """Queue one work item. Returns its id, or None if this dedup_key is already known."""
+        row = {
+            "run_id": run_id, "kind": kind, "dedup_key": dedup_key, "title": title[:300],
+            "payload_json": json.dumps(payload), "status": "queued", "attempts": 0, "note": "",
+            "created_at": self._now(), "started_at": "", "finished_at": "",
+        }
+        try:
+            with self._engine.begin() as conn:
+                result = conn.execute(run_work_items.insert().values(**row))
+                return int(result.inserted_primary_key[0])
+        except IntegrityError:
+            return None
+
+    def list_work(self, run_id: str, statuses: tuple[str, ...] | None = None, limit: int = 200) -> list[dict]:
+        query = select(run_work_items).where(run_work_items.c.run_id == run_id)
+        if statuses:
+            query = query.where(run_work_items.c.status.in_(statuses))
+        query = query.order_by(run_work_items.c.id.desc()).limit(limit)
+        with self._engine.begin() as conn:
+            return [self._work_row(r) for r in conn.execute(query).mappings().all()]
+
+    def lease_next_work(self, run_id: str) -> dict | None:
+        """Claim the oldest queued item of a run (queued -> running), or None.
+
+        The claim is a conditional UPDATE on status, so two dispatchers racing for
+        the same row cannot both win.
+        """
+        with self._engine.begin() as conn:
+            row = conn.execute(
+                select(run_work_items)
+                .where(run_work_items.c.run_id == run_id, run_work_items.c.status == "queued")
+                .order_by(run_work_items.c.id.asc()).limit(1)
+            ).mappings().first()
+            if not row:
+                return None
+            claimed = conn.execute(
+                update(run_work_items)
+                .where(run_work_items.c.id == row["id"], run_work_items.c.status == "queued")
+                .values(status="running", attempts=row["attempts"] + 1, started_at=self._now(), finished_at="")
+            )
+            if claimed.rowcount != 1:
+                return None
+            fresh = conn.execute(select(run_work_items).where(run_work_items.c.id == row["id"])).mappings().first()
+        return self._work_row(fresh)
+
+    def finish_work(self, item_id: int, ok: bool, note: str = "") -> str:
+        """Close a running item. A failed item goes back to the queue until it has
+        used WORK_MAX_ATTEMPTS, then stays failed. Returns the resulting status."""
+        with self._engine.begin() as conn:
+            row = conn.execute(select(run_work_items).where(run_work_items.c.id == item_id)).mappings().first()
+            if not row or row["status"] != "running":
+                return str(row["status"]) if row else "missing"
+            if ok:
+                status = "done"
+            else:
+                status = "queued" if row["attempts"] < self.WORK_MAX_ATTEMPTS else "failed"
+            conn.execute(
+                update(run_work_items).where(run_work_items.c.id == item_id, run_work_items.c.status == "running")
+                .values(status=status, note=note[:500], finished_at=self._now() if status != "queued" else "")
+            )
+        return status

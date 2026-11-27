@@ -1,86 +1,35 @@
-<!-- ── Tab: Activity (QA alerts + Steering + Tool log + Conversation) ── -->
+<!-- ── Tab: Tool Results ─────────────────────────────────────────────────────
+     One goal: show what every tool that ran actually FOUND — ports, subdomains,
+     endpoints, technologies, template matches, secrets — without reading logs,
+     so the operator can see quickly whether Smith is on track and steer it.
+     Data: GET /api/tool-results (core/tool_results.py). Rendered by tool-results.js.
+     (The tab keeps the id "activity" so existing links and badges still work.) -->
 <div id="tab-activity" class="tab-content">
-  <div class="tab-head"><h2>Activity</h2><p>Live feed — stalls, QA checks, steering directives, and tool calls.</p></div>
-  <!-- Stuck Events log -->
-  <div class="activity-section">
-    <div class="activity-section-header">
-      <span class="activity-dot" style="background:#f97316;box-shadow:0 0 5px #f97316"></span>
-      <span class="activity-section-title">Stuck Events</span>
-      <span class="activity-section-meta" style="color:var(--text-dim);font-size:0.7rem">HIR pauses · coverage stalls · gate blocks</span>
-    </div>
-    <div id="stuck-log-wrap">
-      <div class="empty-placeholder">No stuck events yet — Smith is running smoothly.</div>
-    </div>
+  <div class="tab-head">
+    <h2>Tool Results</h2>
+    <p>What each tool found in this scan. Open a card to see its results, and steer Smith from there if it has gone off track.</p>
   </div>
 
-  <!-- Live QA Alerts -->
-  <div class="activity-section">
-    <div class="activity-section-header">
-      <span class="activity-dot" style="background:var(--green);box-shadow:0 0 5px var(--green)"></span>
-      <span class="activity-section-title">QA Alerts</span>
-      <span id="qa-last-check" class="activity-section-meta"></span>
-    </div>
-    <div id="qa-alerts-wrap">
-      <div class="empty-placeholder">Waiting for first QA cycle — runs every 2 min during an active scan.</div>
-    </div>
+  <!-- What the scan knows so far, across all tools. -->
+  <div id="tr-overview" class="tr-overview" hidden></div>
+
+  <div class="act-toolbar">
+    <input id="tr-search" type="search" placeholder="Search results (port, path, host, template…)" aria-label="Search tool results"
+           autocomplete="off" spellcheck="false">
+    <span id="tr-summary" class="air-sub-note"></span>
+    <span class="fx-grow"></span>
+    <button type="button" class="btn btn-secondary btn-sm" id="tr-expand" onclick="toggleAllToolCards()">Expand all</button>
   </div>
 
-  <!-- Steering Directives -->
-  <div class="activity-section">
-    <div class="activity-section-header">
-      <span class="activity-dot" style="background:#f97316;box-shadow:0 0 5px #f97316"></span>
-      <span class="activity-section-title">Steering Directives</span>
-      <span id="steering-last-update" class="activity-section-meta"></span>
-    </div>
-    <div style="font-size:0.74rem;color:var(--text-dim);margin-bottom:0.65rem;line-height:1.5;">
-      Directives are injected automatically into Smith's tool responses.
-      <span style="color:#f97316">●</span> pending &nbsp;
-      <span style="color:#facc15">●</span> injected &nbsp;
-      <span style="color:#4ade80">●</span> acknowledged &nbsp;
-      <span style="color:#60a5fa">●</span> auto-satisfied
-    </div>
-    <div id="steering-active-wrap">
-      <div class="empty-placeholder">No active steering directives.</div>
-    </div>
-    <div class="qa-divider">Directive history</div>
-    <div id="steering-history-wrap">
-      <div class="empty-placeholder">No steering history yet.</div>
-    </div>
-  </div>
-
-  <!-- Resource Wishlist moved to the Operator Actions tab (issue #181). -->
-
-  <!-- Tool Activity -->
-  <div class="activity-section">
-    <div class="activity-section-header">
-      <span class="activity-dot" style="background:var(--purple);box-shadow:0 0 5px var(--purple)"></span>
-      <span class="activity-section-title">Tool Activity</span>
-    </div>
-    <div id="quicklog-wrap">
-      <div class="empty-placeholder">No tool activity yet.</div>
-    </div>
-  </div>
-
-  <!-- QA Conversation History -->
-  <div class="activity-section">
-    <div class="activity-section-header">
-      <span class="activity-dot" style="background:var(--text-dim)"></span>
-      <span class="activity-section-title">QA ↔ Smith Conversation</span>
-    </div>
-    <div id="cycle-history-wrap">
-      <div class="empty-placeholder">No cycles yet — QA starts 2 min after scan begins.</div>
-    </div>
-  </div>
-
-  <!-- Adjudication log -->
-  <div class="activity-section" id="adjudication-section">
-    <div class="activity-section-header">
-      <span class="activity-dot" style="background:#e3a000;box-shadow:0 0 5px #e3a000"></span>
-      <span class="activity-section-title">Adjudication ↔ Smith</span>
-      <span class="activity-section-meta" style="color:var(--text-dim);font-size:0.7rem">Senior review pass · finding verdicts</span>
-    </div>
-    <div id="adjudication-log-wrap">
-      <div class="empty-placeholder">No adjudication pass recorded yet.</div>
-    </div>
-  </div>
+  <div id="tr-cards"><div class="empty-placeholder">No tools have run yet. Each tool Smith runs gets a card here with what it found.</div></div>
 </div>
+
+<!-- Raw output of one tool run. -->
+<dialog id="tr-raw-dialog" class="scan-dialog tr-raw-dialog" aria-labelledby="tr-raw-title">
+  <div class="scan-dialog-head">
+    <h3 id="tr-raw-title">Raw output</h3>
+    <button type="button" class="scan-dialog-close" onclick="document.getElementById('tr-raw-dialog').close()" aria-label="Close">✕</button>
+  </div>
+  <div class="tr-raw-meta" id="tr-raw-meta"></div>
+  <pre class="tr-raw-text" id="tr-raw-text"></pre>
+</dialog>

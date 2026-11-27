@@ -21,11 +21,11 @@
     <div id="air-readiness"></div>
     <div class="air-card">
       <div class="air-card-title">Latest automated (garak) results <span class="air-sub-note">top probes by attack-success — full list under “Automated (garak)”</span></div>
-      <div id="air-garak-lite"><div class="empty-placeholder">No garak runs yet — scan(tool="garak", ...).</div></div>
+      <div id="air-garak-lite"><div class="empty-placeholder">No automated LLM scans yet. <button type="button" class="empty-action" onclick="askSmith('Run an automated LLM vulnerability scan against the AI endpoint')">Ask Smith to run one</button></div></div>
     </div>
     <div class="air-card">
       <div class="air-card-title">OWASP coverage</div>
-      <div id="air-grid"><div class="empty-placeholder">No AI coverage cells yet — run /ai-redteam.</div></div>
+      <div id="air-grid"><div class="empty-placeholder">No AI tests tracked yet. <button type="button" class="empty-action" onclick="askSmith('Start the AI red-team assessment of the AI endpoint')">Ask Smith to start</button></div></div>
     </div>
   </section>
 
@@ -33,11 +33,11 @@
   <section class="air-sub" id="air-sub-attacks" hidden>
     <div class="air-card">
       <div class="air-card-title">Reproducibility <span class="air-sub-note">k/N — LLM output is non-deterministic, so a 1/1 is noise</span></div>
-      <div id="air-repro"><div class="empty-placeholder">No reproduced attacks yet.</div></div>
+      <div id="air-repro"><div class="empty-placeholder">No repeated attacks yet.</div></div>
     </div>
     <div class="air-card">
       <div class="air-card-title">Attack transcripts</div>
-      <div id="air-transcripts"><div class="empty-placeholder">No feedback attacks yet.</div></div>
+      <div id="air-transcripts"><div class="empty-placeholder">No adaptive attacks yet.</div></div>
     </div>
   </section>
 
@@ -45,7 +45,7 @@
   <section class="air-sub" id="air-sub-garak" hidden>
     <div class="air-card">
       <div class="air-card-title">garak attack-success rates <span class="air-sub-note">automated probe sweep — red ≥ 20%</span></div>
-      <div id="air-garak"><div class="empty-placeholder">No garak runs yet.</div></div>
+      <div id="air-garak"><div class="empty-placeholder">No automated LLM scans yet.</div></div>
     </div>
   </section>
 
@@ -53,7 +53,7 @@
   <section class="air-sub" id="air-sub-defenses" hidden>
     <div class="air-card">
       <div class="air-card-title">Input-filter bypass map <span class="air-sub-note">which encodings slip past the target's filter</span></div>
-      <div id="air-filter"><div class="empty-placeholder">No filter probe yet — run redteam(action="filter_probe").</div></div>
+      <div id="air-filter"><div class="empty-placeholder">The input filter has not been probed yet. <button type="button" class="empty-action" onclick="askSmith('Probe which encodings the input filter lets through')">Ask Smith to probe it</button></div></div>
     </div>
   </section>
 </div>

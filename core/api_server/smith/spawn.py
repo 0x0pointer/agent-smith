@@ -479,6 +479,9 @@ async def _spawn_smith(client: str, source: str = "api") -> tuple[bool, int | st
 
         _api._SMITH_PID_FILE.write_text(str(proc.pid))
         _api._SMITH_CLIENT_FILE.write_text(client)
+        # Smith is running again: the scan is no longer idle.
+        from . import idle as _idle
+        _idle.clear_idle()
 
         # Scan-lock the chosen client into session.json so subsequent
         # watchdog restarts can't drift to a different CLI. This is the

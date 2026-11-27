@@ -68,6 +68,7 @@ _DASHBOARD_DIR     = _paths.DASHBOARD_DIR
 _THREAT_MODEL_DIR  = _paths.THREAT_MODEL_DIR
 _SMITH_PID_FILE    = _paths.SMITH_PID_FILE
 _SMITH_CLIENT_FILE = _paths.SMITH_CLIENT_FILE
+_SMITH_IDLE_FILE   = _paths.SMITH_IDLE_FILE
 
 # ── Optional Sentry error tracking ───────────────────────────────────────────
 # Set SENTRY_DSN env var to enable. No-op when unset so other installs are
@@ -108,6 +109,26 @@ def _authenticate_api_request(request: Request) -> JSONResponse | None:
     if _db.database_enabled() or dashboard_auth.read_token():
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     return None
+
+
+async def _work_queue_loop() -> None:
+    """Poll bound Sources and dispatch queued work to idle runs, forever."""
+    try:
+        interval = max(10, int(os.environ.get("SMITH_WORK_POLL_SECONDS", "30")))
+    except ValueError:
+        interval = 30
+    while True:
+        try:
+            await asyncio.sleep(interval)
+            from core import db as _db
+            if not _db.database_enabled():
+                continue
+            from control_plane import work_queue
+            await asyncio.to_thread(work_queue.tick)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _log.exception("work queue tick failed")
 
 
 @app.middleware("http")
@@ -154,6 +175,7 @@ _qa_task:        asyncio.Task | None = None  # kept alive to prevent GC
 _watchdog_task:  asyncio.Task | None = None
 _status_task:    asyncio.Task | None = None
 _refusal_task:   asyncio.Task | None = None
+_work_task:      asyncio.Task | None = None
 # Auto-restart watchdog state
 _watchdog_last_restart_ts: float = 0.0
 _watchdog_restart_count_window: list[float] = []  # epoch seconds of restarts in trailing hour
@@ -201,6 +223,10 @@ async def _start_background_tasks() -> None:
     else:
         _refusal_task = None
     _status_task = asyncio.create_task(_status_update_loop())
+    # Run work queue: turn Source updates into queued work and hand it to idle
+    # runs (control_plane/work_queue.py). Needs the control-plane database.
+    global _work_task
+    _work_task = asyncio.create_task(_work_queue_loop())
 
 
 async def _status_update_loop() -> None:

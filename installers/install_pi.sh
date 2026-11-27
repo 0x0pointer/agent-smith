@@ -94,6 +94,9 @@ fi
 echo ""
 echo "Installing Python dependencies..."
 "$POETRY_BIN" -C "$REPO_DIR" install --no-interaction
+
+# `smith` control-plane command (Poetry does not install it: package-mode=false).
+"$REPO_DIR/installers/install-smith-cli.sh"
 ok "Poetry dependencies installed"
 
 chmod +x "$REPO_DIR/installers/run-mcp-server.sh"

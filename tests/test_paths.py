@@ -35,3 +35,20 @@ def test_gitignore_covers_generated_run_workdirs():
     entries = Path(".gitignore").read_text(encoding="utf-8").splitlines()
 
     assert "runs/" in entries
+
+
+def test_log_lines_are_tagged_with_the_run_id(monkeypatch):
+    import logging
+
+    from core import logger as smith_logger
+
+    record = logging.LogRecord("pentest", logging.INFO, __file__, 1, "TOOL_CALL x", None, None)
+    monkeypatch.setenv("SMITH_RUN_ID", "run-abc123")
+    smith_logger._RunTagFilter().filter(record)
+    assert "[run-abc123]" in smith_logger._fmt.format(record)
+
+    # Classic single-run mode keeps the original untagged format.
+    monkeypatch.delenv("SMITH_RUN_ID", raising=False)
+    record = logging.LogRecord("pentest", logging.INFO, __file__, 1, "TOOL_CALL x", None, None)
+    smith_logger._RunTagFilter().filter(record)
+    assert "[" not in smith_logger._fmt.format(record).split("TOOL_CALL")[0].split("INFO")[1]

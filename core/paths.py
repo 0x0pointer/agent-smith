@@ -53,6 +53,7 @@ POCS_DIR         = RUNTIME_ROOT / "pocs"
 # ── Files within logs/ ────────────────────────────────────────────────────────
 SMITH_PID_FILE       = LOGS_DIR / "smith.pid"
 SMITH_CLIENT_FILE    = LOGS_DIR / "smith.client"
+SMITH_IDLE_FILE      = LOGS_DIR / "smith.idle"     # scan is idle, waiting for the operator
 DASHBOARD_PID_FILE   = LOGS_DIR / "dashboard.pid"
 DASHBOARD_TOKEN_FILE = LOGS_DIR / "dashboard.token"  # per-session dashboard bearer token (0600)
 LOG_FILE             = LOGS_DIR / "pentest.log"

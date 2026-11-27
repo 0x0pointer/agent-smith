@@ -28,7 +28,8 @@ def test_create_run_inserts_row_and_starts_worker(monkeypatch, tmp_path):
     with patch("subprocess.Popen", return_value=MagicMock(pid=4321)):
         created = orchestrator.create_run({"target": "https://a.example", "depth": "recon"})
 
-    listed = orchestrator.list_runs()
+    with patch.object(orchestrator, "_worker_alive", return_value=True):
+        listed = orchestrator.list_runs()
     assert created["run_id"].startswith("run-")
     assert listed[0]["run_id"] == created["run_id"]
     assert listed[0]["status"] == "running"
@@ -265,3 +266,155 @@ def test_stop_control_plane_terminates_services(monkeypatch):
     assert terminate.call_args_list[0].args == (123,)
     assert stop_db.call_count == 1
     assert unlink.call_count == 1
+
+
+def test_list_runs_exposes_timestamps_for_dashboard_sorting(monkeypatch, tmp_path):
+    _configure_db(monkeypatch, tmp_path)
+
+    with patch("subprocess.Popen", return_value=MagicMock(pid=4321)):
+        orchestrator.create_run({"target": "https://a.example", "depth": "recon"})
+
+    row = orchestrator.list_runs()[0]
+    assert row["created_at"]
+    assert row["updated_at"] >= row["created_at"]
+
+
+def test_worker_gets_a_private_tool_server_carrying_the_run_identity(monkeypatch, tmp_path):
+    """Run identity is process-wide, so each worker must NOT share the installed
+    MCP server: it gets its own stdio server started with the run's environment."""
+    _configure_db(monkeypatch, tmp_path)
+    captured = {}
+
+    def _capture(args, **kwargs):
+        captured["args"] = list(args)
+        return MagicMock(pid=4321)
+
+    with patch("subprocess.Popen", side_effect=_capture):
+        created = orchestrator.create_run({"target": "https://a.example", "depth": "recon"})
+
+    args = captured["args"]
+    assert "--strict-mcp-config" in args
+    config_path = Path(args[args.index("--mcp-config") + 1])
+    # Flags must precede the prompt.
+    assert args.index("--mcp-config") < args.index("-p")
+
+    server = json.loads(config_path.read_text())["mcpServers"]["pentest-agent"]
+    assert server["args"] == ["-m", "mcp_server", "--transport", "stdio"]
+    assert server["env"]["SMITH_RUN_ID"] == created["run_id"]
+    assert Path(server["env"]["SMITH_WORKDIR"]) == config_path.parent
+    assert server["env"]["SMITH_DATABASE_URL"].startswith("sqlite:///")
+    # Holds the database URL: owner-only.
+    assert (config_path.stat().st_mode & 0o077) == 0
+
+
+def test_two_runs_get_different_tool_server_configs(monkeypatch, tmp_path):
+    _configure_db(monkeypatch, tmp_path)
+    seen = []
+
+    def _capture(args, **kwargs):
+        seen.append(list(args))
+        return MagicMock(pid=len(seen))
+
+    with patch("subprocess.Popen", side_effect=_capture):
+        orchestrator.create_run({"target": "https://a.example", "depth": "recon"})
+        orchestrator.create_run({"target": "https://b.example", "depth": "recon"})
+
+    configs = [json.loads(Path(a[a.index("--mcp-config") + 1]).read_text()) for a in seen]
+    ids = [c["mcpServers"]["pentest-agent"]["env"]["SMITH_RUN_ID"] for c in configs]
+    dirs = [c["mcpServers"]["pentest-agent"]["env"]["SMITH_WORKDIR"] for c in configs]
+    assert len(set(ids)) == 2 and len(set(dirs)) == 2
+
+
+def test_non_claude_workers_are_left_on_their_own_mcp_config(tmp_path):
+    args = ["opencode", "run", "--dangerously-skip-permissions", "prompt"]
+    assert orchestrator._with_run_mcp_server(args, "opencode", tmp_path / "mcp.json") == args
+
+
+def test_run_whose_agent_stopped_is_idle_and_can_be_resumed(monkeypatch, tmp_path):
+    """Nothing respawns a stopped worker: the run shows as idle until the operator
+    resumes it, and resuming never starts a second agent next to a live one."""
+    _configure_db(monkeypatch, tmp_path)
+    with patch("subprocess.Popen", return_value=MagicMock(pid=4321)):
+        created = orchestrator.create_run({"target": "https://a.example", "depth": "recon"})
+    run_id = created["run_id"]
+
+    with patch.object(orchestrator, "_worker_alive", return_value=False):
+        assert orchestrator.list_runs()[0]["status"] == "idle"
+        assert orchestrator.run_agent_state(run_id)["idle"] is True
+
+        spawned = {}
+
+        def _capture(args, **kwargs):
+            spawned["args"] = list(args)
+            return MagicMock(pid=5555)
+
+        with patch("subprocess.Popen", side_effect=_capture):
+            result = orchestrator.resume_run(run_id)
+
+    assert result == {"run_id": run_id, "resumed": True, "pid": 5555}
+    prompt = spawned["args"][spawned["args"].index("-p") + 1]
+    assert "session(action='recovery')" in prompt
+    assert "--strict-mcp-config" in spawned["args"]          # same private tool server
+    # The new worker is what stop/idle now track.
+    assert orchestrator._worker_pid(orchestrator._db.get_repository(), run_id) == 5555
+
+    with patch.object(orchestrator, "_worker_alive", return_value=True), patch("subprocess.Popen") as popen:
+        assert orchestrator.resume_run(run_id)["resumed"] is False
+    popen.assert_not_called()
+
+
+def test_worker_pid_survives_the_tool_server_rewriting_the_session(monkeypatch, tmp_path):
+    """The run's tool server persists its own session document, which has no
+    worker pid. Stop and idle detection must keep working after that."""
+    _configure_db(monkeypatch, tmp_path)
+    with patch("subprocess.Popen", return_value=MagicMock(pid=4321)):
+        created = orchestrator.create_run({"target": "https://a.example", "depth": "recon"})
+    repo = orchestrator._db.get_repository()
+    repo.save_snapshot(created["run_id"], "session", {"status": "running", "target": "https://a.example"})
+
+    assert orchestrator._worker_pid(repo, created["run_id"]) == 4321
+    with patch.object(orchestrator, "_stop_worker", return_value=[]) as stop, \
+         patch.object(orchestrator, "_stop_run_tooling", return_value=[]):
+        orchestrator.stop_run(created["run_id"])
+    stop.assert_called_once_with(created["run_id"], 4321)
+
+
+def test_ended_run_is_not_idle_and_cannot_be_resumed(monkeypatch, tmp_path):
+    _configure_db(monkeypatch, tmp_path)
+    with patch("subprocess.Popen", return_value=MagicMock(pid=4321)):
+        created = orchestrator.create_run({"target": "https://a.example", "depth": "recon"})
+    with patch.object(orchestrator, "_stop_worker", return_value=[]), \
+         patch.object(orchestrator, "_stop_run_tooling", return_value=[]):
+        orchestrator.stop_run(created["run_id"])
+
+    with patch.object(orchestrator, "_worker_alive", return_value=False), patch("subprocess.Popen") as popen:
+        assert orchestrator.list_runs()[0]["status"] == "stopped"
+        assert orchestrator.resume_run(created["run_id"])["resumed"] is False
+    popen.assert_not_called()
+
+
+def test_source_is_validated_against_the_registry_and_passed_to_the_run(monkeypatch, tmp_path):
+    _configure_db(monkeypatch, tmp_path)
+    registry = tmp_path / "sources.yaml"
+    registry.write_text("sources:\n  team-kb:\n    url: http://127.0.0.1:8900\n")
+    monkeypatch.setenv("SOURCE_REGISTRY", str(registry))
+    captured = {}
+
+    def _capture(args, **kwargs):
+        captured["workdir"] = Path(kwargs["env"]["SMITH_WORKDIR"])
+        return MagicMock(pid=4321)
+
+    with patch("subprocess.Popen", side_effect=_capture):
+        orchestrator.create_run({"target": "https://a.example", "depth": "recon", "source": "team-kb"})
+    options = json.loads((captured["workdir"] / "control_plane_start.json").read_text())
+    assert options["source"] == "team-kb"
+
+    # No source chosen: the key is simply absent.
+    with patch("subprocess.Popen", side_effect=_capture):
+        orchestrator.create_run({"target": "https://b.example", "depth": "recon"})
+    assert "source" not in json.loads((captured["workdir"] / "control_plane_start.json").read_text())
+
+    # A typo fails the request instead of silently starting without the Source.
+    with patch("subprocess.Popen") as popen, pytest.raises(ValueError, match="unknown source"):
+        orchestrator.create_run({"target": "https://c.example", "depth": "recon", "source": "nope"})
+    popen.assert_not_called()

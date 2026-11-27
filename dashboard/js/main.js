@@ -1,7 +1,7 @@
-  function renderStuckLog() {
-    const wrap = document.getElementById('stuck-log-wrap');
-    if (!wrap) return;
-
+  // Everything that blocked or paused the scan: pauses for the operator's input,
+  // stalled coverage, and blocked steps. A data source for the Activity
+  // timeline (activity.js) — it no longer renders a section of its own.
+  function _collectStuckEvents() {
     const events = [];
     const seen   = new Set();  // deduplicate by ts+code
 
@@ -61,44 +61,12 @@
         });
       });
 
-    if (!events.length) {
-      wrap.innerHTML = '<div class="empty-placeholder">No stuck events yet — Smith is running smoothly.</div>';
-      return;
-    }
+    return events;
+  }
 
-    // Sort newest first
-    events.sort((a, b) => new Date(b.ts || 0) - new Date(a.ts || 0));
-
-    const typeStyle = {
-      HIR:   { color: '#f97316', bg: 'rgba(249,115,22,0.13)', cls: 'stuck-entry-hir' },
-      STALL: { color: '#facc15', bg: 'rgba(250,204,21,0.1)',  cls: 'stuck-entry-stall' },
-      GATE:  { color: '#60a5fa', bg: 'rgba(96,165,250,0.1)',  cls: 'stuck-entry-stall' },
-    };
-
-    wrap.innerHTML = events.map(e => {
-      const s   = typeStyle[e.type] || typeStyle.STALL;
-      const ts  = e.ts ? new Date(e.ts).toLocaleTimeString() : '';
-      const statusColor = e.resolved ? 'var(--green)' : '#f97316';
-      const statusText  = e.resolved ? '✓ resolved' : '● active';
-      const triedHtml = e.tried.length
-        ? `<div style="margin:0.3rem 0 0.15rem">${e.tried.map((t, i) =>
-            `<div class="stuck-tried-item"><span class="stuck-tried-num">${i+1}.</span><span>${esc(t)}</span></div>`
-          ).join('')}</div>`
-        : '';
-      const resHtml = e.resolution
-        ? `<div class="stuck-resolution">↳ ${esc(e.resolution)}</div>`
-        : '';
-      return `<div class="stuck-entry ${s.cls}">
-        <div class="stuck-entry-header">
-          <span class="stuck-type-badge" style="color:${s.color};background:${s.bg};border-color:${s.color}">${e.type}</span>
-          <span class="stuck-code">${esc(e.code)}</span>
-          <span class="stuck-status" style="color:${statusColor}">${statusText}</span>
-          <span class="stuck-ts">${ts}</span>
-        </div>
-        <div class="stuck-reason">${esc(e.reason)}</div>
-        ${triedHtml}${resHtml}
-      </div>`;
-    }).join('');
+  // Kept under its old name: several pollers call it when new data arrives.
+  function renderStuckLog() {
+    if (typeof renderActivityFeed === 'function') renderActivityFeed();
   }
 
   // ── Polling intervals ─────────────────────────────────────────────────────
@@ -124,6 +92,7 @@
   setInterval(() => { if (!scanDone && _activeTab === 'logs') pollLogs(); }, 3000);
   setInterval(() => { if (!scanDone && _activeTab === 'session-log') pollSessionLog(); }, 3000);
   setInterval(() => { if (_activeTab === 'overview') pollOverview(); }, POLL_MS);
+  setInterval(() => { if (_activeTab === 'activity') pollToolResults(); }, POLL_MS);
   setInterval(() => { if (_activeTab === 'world-model') pollWorldModel(); }, POLL_MS);
   setInterval(() => { if (_activeTab === 'ai-redteam') pollAiRedteam(); }, POLL_MS);
 

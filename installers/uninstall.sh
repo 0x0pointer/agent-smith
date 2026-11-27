@@ -46,6 +46,16 @@ if [ -f "$SYSTEMD_UNIT_DIR/$SYSTEMD_UNIT" ]; then
     ok "systemd user unit removed ($SYSTEMD_UNIT)"
 fi
 
+# ── Stop the control plane and remove the `smith` launcher ───────────────────
+# `smith stop` terminates the dashboard and stops the compose Postgres container
+# (the smith-postgres-data volume is kept — see the note at the end).
+_REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+_SMITH_BIN="${SMITH_BIN_DIR:-$HOME/.local/bin}/smith"
+if [ -x "$_SMITH_BIN" ] && grep -qF "# agent-smith control-plane launcher" "$_SMITH_BIN" 2>/dev/null; then
+    "$_SMITH_BIN" stop >/dev/null 2>&1 && ok "Control plane stopped" || warn "smith stop failed (skipping)"
+fi
+"$_REPO_DIR/installers/install-smith-cli.sh" --uninstall || true
+
 # ── Remove /pentester slash command ───────────────────────────────────────────
 CMD_FILE="$HOME/.claude/commands/pentester.md"
 if [ -f "$CMD_FILE" ]; then
@@ -80,4 +90,6 @@ echo "  To clean those up manually:"
 echo "    docker rmi pentest-agent/kali-mcp instrumentisto/nmap projectdiscovery/naabu \\"
 echo "               projectdiscovery/httpx projectdiscovery/nuclei \\"
 echo "               projectdiscovery/subfinder semgrep/semgrep trufflesecurity/trufflehog"
+echo "  Control-plane database (run history) lives in a Docker volume; to delete it:"
+echo "    docker compose -f $_REPO_DIR/docker-compose.yml down -v"
 echo ""

@@ -1,7 +1,8 @@
 """
 Session logger
 ==============
-Appends all sessions to a single log file: logs/pentest.log
+Appends all sessions to a single log file: logs/pentest.log (under the run's own
+workdir in multi-run mode, where every line is also tagged ``[<run id>]``).
 Each server start writes a SESSION_START marker so sessions are easy to tell apart.
 
 Public API
@@ -61,13 +62,31 @@ _LOG_DIR.mkdir(exist_ok=True)
 
 log_path = _LOG_DIR / "pentest.log"
 
+class _RunTagFilter(logging.Filter):
+    """Stamp every record with the scan it belongs to.
+
+    In multi-run mode each scan has its own tool-server process (and therefore its
+    own ``logs/pentest.log`` under the run's workdir), but lines are still tagged
+    ``[run-xxxx]`` so they stay attributable when logs are concatenated, shipped
+    to one sink, or grepped across runs. Classic single-run mode keeps the
+    original untagged format.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        from core import run_context as _run_context
+
+        record.run = f"[{_run_context.run_id()}]  " if _run_context.has_explicit_run_id() else ""
+        return True
+
+
 _fmt = logging.Formatter(
-    fmt="%(asctime)s  %(levelname)-8s  %(message)s",
+    fmt="%(asctime)s  %(levelname)-8s  %(run)s%(message)s",
     datefmt="%Y-%m-%dT%H:%M:%SZ",
 )
 
 _fh = logging.FileHandler(log_path, mode="a", encoding="utf-8")
 _fh.setFormatter(_fmt)
+_fh.addFilter(_RunTagFilter())
 # Owner-only — the log carries harvested tokens/cookies/creds (redacted below, but
 # defense-in-depth) and must not be world-readable on a shared host (AS-15).
 try:

@@ -138,6 +138,10 @@ cd agent-smith
 
 > ⚠️ **After install, fully restart your client** — the MCP server connects at startup.
 
+The installer also puts a `smith` command on your PATH (`~/.local/bin/smith`) for the optional
+multi-run control plane: `smith start` brings up Postgres and the dashboard at `localhost:7777`,
+`smith status` / `smith stop` do what they say. ([details →](docs/installation.md#control-plane-smith))
+
 ### …or one-click in the cloud — GitHub Codespaces
 
 No local Docker required. **Code → Codespaces → Create**, and the devcontainer provisions everything on create: the native harness (Poetry + MCP server, registered with Claude Code *and* OpenCode), all skills, the all-modules Kali tools image, Metasploit, and the recon scanner images. The MCP server is re-ensured on every container start, so a resumed Codespace comes up connected.

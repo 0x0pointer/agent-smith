@@ -27,7 +27,7 @@
     const wrap = document.getElementById('coverage-wrap');
     const sumWrap = document.getElementById('coverage-summary');
     if (!_covData || !_covData.endpoints || !_covData.endpoints.length) {
-      wrap.innerHTML = '<div class="empty-placeholder">No coverage data yet — run a scan with web-exploit.</div>';
+      wrap.innerHTML = '<div class="empty-placeholder">Nothing mapped yet. The matrix fills in once Smith has discovered the first endpoints, usually within a few minutes.</div>';
       sumWrap.innerHTML = '';
       return;
     }
@@ -50,12 +50,12 @@
     sumWrap.innerHTML = [
       `<span class="cov-stat cov-tested">TESTED ${tested}</span>`,
       `<span class="cov-stat cov-vulnerable">VULNERABLE ${vuln}</span>`,
-      inProg ? `<span class="cov-stat" style="background:rgba(31,111,235,.15);border-color:#1f6feb;color:#58a6ff">IN PROGRESS ${inProg}</span>` : '',
+      inProg ? `<span class="cov-stat" style="background:rgba(31,111,235,.15);border-color:var(--purple);color:var(--purple)">IN PROGRESS ${inProg}</span>` : '',
       `<span class="cov-stat cov-na">N/A ${na}</span>`,
       `<span class="cov-stat cov-skipped">SKIPPED ${skipped}</span>`,
       `<span class="cov-stat cov-pending">PENDING ${pending}</span>`,
-      candidate ? `<span class="cov-stat" style="background:rgba(110,118,129,.15);border-color:#6e7681;color:#8b949e" title="Unconfirmed wordlist paths — excluded from the completion gate until a response proves they exist">CANDIDATE ${candidate}</span>` : '',
-      `<span style="font-size:.8rem;color:#6e7681;align-self:center">${_covData.endpoints.length} endpoints · ${confirmed} confirmed cells${candidate ? ` · ${candidate} candidate` : ''}</span>`,
+      candidate ? `<span class="cov-stat" style="background:rgba(110,118,129,.15);border-color:var(--text-dim);color:var(--text-muted)" title="Unconfirmed wordlist paths — excluded from the completion gate until a response proves they exist">CANDIDATE ${candidate}</span>` : '',
+      `<span style="font-size:var(--fs-sm);color:var(--text-dim);align-self:center">${_covData.endpoints.length} endpoints · ${confirmed} confirmed cells${candidate ? ` · ${candidate} candidate` : ''}</span>`,
     ].join('');
 
     // Collect all injection types that have at least one cell
@@ -121,17 +121,17 @@
       const s = epSummary(ep.id);
       const totalCells = s.pending + s.in_progress + s.tested_clean + s.vulnerable + s.not_applicable + s.skipped;
       const doneCells = s.tested_clean + s.vulnerable + s.not_applicable + s.skipped;
-      const vulnBadge = s.vulnerable ? `<span style="color:#ff4d4f;margin-left:.5rem">${s.vulnerable} vuln</span>` : '';
-      const progBadge = s.in_progress ? `<span style="color:#58a6ff;margin-left:.5rem">${s.in_progress} in progress</span>` : '';
+      const vulnBadge = s.vulnerable ? `<span style="color:var(--danger);margin-left:.5rem">${s.vulnerable} vuln</span>` : '';
+      const progBadge = s.in_progress ? `<span style="color:var(--purple);margin-left:.5rem">${s.in_progress} in progress</span>` : '';
       const isOpen = _openCovEndpoints.has(ep.id);
       const arrow = isOpen ? '&#9660;' : '&#9654;';
 
       // Endpoint header row (clickable)
       bodyRows += `<tr class="cov-ep-header" data-id="${esc(ep.id)}" onclick="toggleCovEndpoint(this.dataset.id)" style="cursor:pointer">
         <td style="font-weight:600;color:#f0f6fc">
-          <span style="margin-right:.4rem;font-size:.7rem">${arrow}</span>
-          ${esc(ep.method)} ${(multiHost && ep.host) ? `<span style="color:#58a6ff">${esc(ep.host)}</span> ` : ''}${esc(ep.path)}
-          <span style="color:#6e7681;font-weight:400;margin-left:.5rem">${doneCells}/${totalCells}</span>
+          <span style="margin-right:.4rem;font-size:var(--fs-2xs)">${arrow}</span>
+          ${esc(ep.method)} ${(multiHost && ep.host) ? `<span style="color:var(--purple)">${esc(ep.host)}</span> ` : ''}${esc(ep.path)}
+          <span style="color:var(--text-dim);font-weight:400;margin-left:.5rem">${doneCells}/${totalCells}</span>
           ${vulnBadge}${progBadge}
         </td>
         ${cols.map(() => '<td></td>').join('')}
@@ -141,8 +141,8 @@
       if (isOpen) {
         params.forEach(p => {
           const label = p === '_endpoint'
-            ? '<span style="color:#6e7681;padding-left:1.2rem">endpoint-level</span>'
-            : `<span style="padding-left:1.2rem">${esc(p)} <span style="color:#6e7681;font-size:.75rem">(${(_covData.matrix||[]).find(c=>c.endpoint_id===ep.id&&c.param===p)?.param_type||''})</span></span>`;
+            ? '<span style="color:var(--text-dim);padding-left:1.2rem">endpoint-level</span>'
+            : `<span style="padding-left:1.2rem">${esc(p)} <span style="color:var(--text-dim);font-size:var(--fs-xs)">(${(_covData.matrix||[]).find(c=>c.endpoint_id===ep.id&&c.param===p)?.param_type||''})</span></span>`;
           const cells = cols.map(inj => cellHtml(ep.id, p, inj, ep)).join('');
           bodyRows += `<tr><td>${label}</td>${cells}</tr>`;
         });

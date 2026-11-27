@@ -102,7 +102,7 @@ function renderSessionLog() {
   let events = _sessionLogEvents;
   if (q) events = events.filter(ev => (ev.event_type + ' ' + _slFlat(ev)).toLowerCase().includes(q));
   if (!events.length) {
-    out.innerHTML = '<div class="empty-placeholder">No reasoning events for this session.</div>';
+    out.innerHTML = '<div class="empty-placeholder">No reasoning recorded for this session.</div>';
     return;
   }
 

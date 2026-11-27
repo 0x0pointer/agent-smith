@@ -42,26 +42,26 @@
 
     let html = `
       <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:0.3rem;">
-        <span style="color:${catColor};font-weight:600;font-family:'IBM Plex Mono',monospace;font-size:0.8rem;">${_sgEsc(g.id)}</span>
-        <span style="color:${statusColor};font-size:0.74rem;font-weight:600;">${_sgEsc(statusLabel)}</span>
+        <span style="color:${catColor};font-weight:600;font-family:var(--font-mono);font-size:var(--fs-sm);">${_sgEsc(g.id)}</span>
+        <span style="color:${statusColor};font-size:var(--fs-xs);font-weight:600;">${_sgEsc(statusLabel)}</span>
       </div>
-      <div style="color:var(--text-dim);font-size:0.72rem;font-family:'IBM Plex Mono',monospace;margin-bottom:0.3rem;">
+      <div style="color:var(--text-dim);font-size:var(--fs-2xs);font-family:var(--font-mono);margin-bottom:0.3rem;">
         ${_sgEsc(cat)}${g.requires_host ? ' · requires host (explicit opt-in)' : ''}${g.skill ? ' · ' + _sgEsc(g.skill) : ''}
       </div>`;
     if (g.description) html += `<div style="color:var(--text);line-height:1.5;margin-bottom:0.4rem;">${_sgEsc(g.description)}</div>`;
 
     const steps = g.runbook || [];
     if (steps.length) {
-      html += `<div style="color:var(--text-dim);font-size:0.74rem;margin:0.2rem 0;">Runbook:</div><ol style="margin:0 0 0.4rem;padding-left:1.2rem;color:var(--text);font-size:0.8rem;line-height:1.6;">`;
+      html += `<div style="color:var(--text-dim);font-size:var(--fs-xs);margin:0.2rem 0;">Runbook:</div><ol style="margin:0 0 0.4rem;padding-left:1.2rem;color:var(--text);font-size:var(--fs-sm);line-height:1.6;">`;
       steps.forEach((s, i) => {
         html += `<li>${_sgEsc(s.step || '')}`;
         if (s.command) {
           html += `<div style="display:flex;gap:0.4rem;align-items:center;margin:0.2rem 0;">
-            <code data-sg-cmd="${i}" style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:0.2rem 0.4rem;font-size:0.72rem;overflow-wrap:anywhere;">${_sgEsc(s.command)}</code>
-            <button data-sg-copy="${i}" style="padding:0.2rem 0.5rem;border:1px solid var(--border);border-radius:4px;background:transparent;color:var(--text-dim);font-size:0.7rem;cursor:pointer;white-space:nowrap;">copy</button>
+            <code data-sg-cmd="${i}" style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:var(--r-sm);padding:0.2rem 0.4rem;font-size:var(--fs-2xs);overflow-wrap:anywhere;">${_sgEsc(s.command)}</code>
+            <button data-sg-copy="${i}" style="padding:0.2rem 0.5rem;border:1px solid var(--border);border-radius:var(--r-sm);background:transparent;color:var(--text-dim);font-size:var(--fs-2xs);cursor:pointer;white-space:nowrap;">copy</button>
           </div>`;
         }
-        if (s.expected) html += `<div style="color:var(--text-dim);font-size:0.72rem;">expect: ${_sgEsc(s.expected)}</div>`;
+        if (s.expected) html += `<div style="color:var(--text-dim);font-size:var(--fs-2xs);">expect: ${_sgEsc(s.expected)}</div>`;
         html += `</li>`;
       });
       html += `</ol>`;
@@ -69,12 +69,12 @@
 
     const probe = g.readiness_probe || {};
     if (probe.verb) {
-      html += `<div style="color:var(--text-dim);font-size:0.72rem;font-family:'IBM Plex Mono',monospace;margin-bottom:0.3rem;">probe: ${_sgEsc(probe.run_on || 'host')} · ${_sgEsc(probe.verb)} ${_sgEsc((probe.args || []).join(' '))}</div>`;
+      html += `<div style="color:var(--text-dim);font-size:var(--fs-2xs);font-family:var(--font-mono);margin-bottom:0.3rem;">probe: ${_sgEsc(probe.run_on || 'host')} · ${_sgEsc(probe.verb)} ${_sgEsc((probe.args || []).join(' '))}</div>`;
     }
     const pr = g.probe_result;
     if (pr) {
       const ok = pr.ok;
-      html += `<div style="margin:0.3rem 0;padding:0.3rem 0.5rem;border-radius:4px;font-size:0.74rem;background:${ok ? 'rgba(74,222,128,0.08)' : 'rgba(248,113,113,0.08)'};color:${ok ? '#86efac' : '#fca5a5'};">
+      html += `<div style="margin:0.3rem 0;padding:0.3rem 0.5rem;border-radius:var(--r-sm);font-size:var(--fs-xs);background:${ok ? 'rgba(74,222,128,0.08)' : 'rgba(248,113,113,0.08)'};color:${ok ? '#86efac' : '#fca5a5'};">
         last probe: ${ok ? 'PASS' : 'FAIL'}${pr.at ? ' · ' + _sgEsc(new Date(pr.at).toLocaleTimeString()) : ''}${pr.stdout_excerpt ? '<br><span style="color:var(--text-dim);">' + _sgEsc(pr.stdout_excerpt.slice(0, 160)) + '</span>' : ''}
       </div>`;
     }
@@ -109,7 +109,7 @@
     const wrap = document.getElementById('setup-gates-wrap');
     if (!wrap) return;
     if (!gates || !gates.length) {
-      wrap.innerHTML = '<div class="empty-placeholder">No manual-setup gates. Skills that ship a <code>capabilities.yaml</code> open them here when invoked.</div>';
+      wrap.innerHTML = '<div class="empty-placeholder">No manual setup needed. If a playbook needs something only you can set up (a device, an emulator), it is listed here.</div>';
       return;
     }
     wrap.innerHTML = '';
@@ -138,13 +138,13 @@
     el.style.cssText = `background:var(--bg-card);border:1px solid var(--border);border-left:3px solid ${color};border-radius:6px;padding:0.6rem 0.85rem;margin-bottom:0.5rem;font-size:0.82rem;`;
     let html = `
       <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:0.25rem;">
-        <span style="color:${color};font-weight:600;font-family:'IBM Plex Mono',monospace;font-size:0.74rem;">${_sgEsc(it.category || 'other')}</span>
-        <span style="color:${statusColor};font-size:0.72rem;">${_sgEsc(statusLabel)} &nbsp; ${_sgEsc(ts)}</span>
+        <span style="color:${color};font-weight:600;font-family:var(--font-mono);font-size:var(--fs-xs);">${_sgEsc(it.category || 'other')}</span>
+        <span style="color:${statusColor};font-size:var(--fs-2xs);">${_sgEsc(statusLabel)} &nbsp; ${_sgEsc(ts)}</span>
       </div>
-      <div style="color:var(--text);font-size:0.82rem;line-height:1.5;margin-bottom:0.2rem;overflow-wrap:anywhere;">${_sgEsc(it.need || '')}</div>`;
-    if (it.rationale) html += `<div style="color:var(--text-dim);font-size:0.74rem;margin-bottom:0.2rem;">${_sgEsc(it.rationale)}</div>`;
-    if (cells.length) html += `<div style="color:var(--text-dim);font-size:0.72rem;font-family:'IBM Plex Mono',monospace;">blocks ${cells.length} cell(s): ${_sgEsc(cells.slice(0, 6).join(', '))}${cells.length > 6 ? '…' : ''}</div>`;
-    if (it.resolution_note) html += `<div style="margin-top:0.3rem;padding:0.3rem 0.5rem;background:rgba(74,222,128,0.08);border-radius:4px;color:#86efac;font-size:0.75rem;">Operator: ${_sgEsc(it.resolution_note)}</div>`;
+      <div style="color:var(--text);font-size:var(--fs-sm);line-height:1.5;margin-bottom:0.2rem;overflow-wrap:anywhere;">${_sgEsc(it.need || '')}</div>`;
+    if (it.rationale) html += `<div style="color:var(--text-dim);font-size:var(--fs-xs);margin-bottom:0.2rem;">${_sgEsc(it.rationale)}</div>`;
+    if (cells.length) html += `<div style="color:var(--text-dim);font-size:var(--fs-2xs);font-family:var(--font-mono);">blocks ${cells.length} cell(s): ${_sgEsc(cells.slice(0, 6).join(', '))}${cells.length > 6 ? '…' : ''}</div>`;
+    if (it.resolution_note) html += `<div style="margin-top:0.3rem;padding:0.3rem 0.5rem;background:rgba(74,222,128,0.08);border-radius:var(--r-sm);color:#86efac;font-size:var(--fs-xs);">Operator: ${_sgEsc(it.resolution_note)}</div>`;
     el.innerHTML = html;
     if (withActions) {
       const bar = document.createElement('div');
@@ -170,13 +170,13 @@
     const open = items.filter(i => i.status === 'open');
     const resolved = items.filter(i => i.status !== 'open');
     if (!open.length) {
-      openWrap.innerHTML = '<div class="empty-placeholder">No open requests — Smith has everything it asked for.</div>';
+      openWrap.innerHTML = '<div class="empty-placeholder">Nothing needed from you. Smith has everything it asked for.</div>';
     } else {
       openWrap.innerHTML = '';
       open.forEach(it => openWrap.appendChild(_buildWishlistCard(it, true)));
     }
     if (!resolved.length) {
-      histWrap.innerHTML = '<div class="empty-placeholder">No resolved wishlist items yet.</div>';
+      histWrap.innerHTML = '<div class="empty-placeholder">No requests have been resolved yet.</div>';
     } else {
       histWrap.innerHTML = '';
       resolved.forEach(it => histWrap.appendChild(_buildWishlistCard(it, false)));

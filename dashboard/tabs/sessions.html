@@ -1,38 +1,118 @@
-<!-- ── Tab: Sessions / Runs ───────────────────────────────────────────────── -->
+<!-- ── Tab: Scans (control-plane runs) ─────────────────────────────────────── -->
+<!-- Doubles as the LANDING PAGE: in platform mode with no scan selected the body
+     carries .scan-gated, every other tab is locked, and this tab shows the start
+     form inline above the list of existing scans (see sessions.js). -->
 <div id="tab-sessions" class="tab-content">
-  <div class="tab-head">
-    <h2>Runs</h2>
-    <p>Start isolated platform runs, list all persisted runs, and select a run token to scope the dashboard data tabs.</p>
+  <!-- Landing-only: start a scan. sessions.js moves #start-run-form in here. -->
+  <section class="scan-landing" aria-labelledby="scan-landing-title">
+    <div class="tab-head">
+      <h2 id="scan-landing-title">Start a scan</h2>
+      <p id="scan-landing-hint" class="scan-landing-hint">Start a new scan or open an existing one below. The other pages unlock once a scan is selected.</p>
+    </div>
+    <div id="start-run-inline-slot" class="scan-inline air-card"></div>
+  </section>
+
+  <div id="runs-list-block">
+    <div class="tab-head">
+      <h2 class="scans-title-normal">Scans</h2>
+      <h2 class="scans-title-landing">Or open an existing scan</h2>
+      <p class="scans-title-normal">Every scan started from this dashboard. Select one to scope the other pages to it.</p>
+    </div>
+
+    <!-- Filter bar. Static markup (only the table below is re-rendered on each
+         poll) so typing in the search box never loses focus. -->
+    <div id="runs-toolbar" class="runs-toolbar" role="search" aria-label="Filter scans">
+      <input id="runs-filter-q" type="search" placeholder="Filter by target or scan ID…"
+             aria-label="Filter by target or scan ID" autocomplete="off" spellcheck="false">
+      <label class="runs-filter-field">
+        <span>Depth</span>
+        <select id="runs-filter-depth" aria-label="Filter by depth">
+          <option value="">Any</option>
+          <option value="recon">Recon</option>
+          <option value="standard">Standard</option>
+          <option value="thorough">Thorough</option>
+          <option value="danger">Danger</option>
+        </select>
+      </label>
+      <label class="runs-filter-field">
+        <span>Sort</span>
+        <select id="runs-filter-sort" aria-label="Sort scans">
+          <option value="newest">Newest first</option>
+          <option value="oldest">Oldest first</option>
+          <option value="updated">Recently updated</option>
+          <option value="target">Target A–Z</option>
+        </select>
+      </label>
+      <button type="button" id="runs-filter-clear" class="runs-clear-btn" hidden>Clear filters</button>
+    </div>
+    <div id="runs-status-chips" class="runs-chips" role="group" aria-label="Filter by status"></div>
+
+    <div id="sessions-summary" class="air-sub-note runs-summary"></div>
+    <div id="runs-output"><div class="empty-placeholder">No scans yet.</div></div>
+    <div id="sessions-output" style="display:none"></div>
   </div>
-
-  <form id="start-run-form" class="air-card" autocomplete="off">
-    <h3>Start Run</h3>
-    <label>
-      Target
-      <input id="start-run-target" name="target" type="text" placeholder="https://example.com" required>
-    </label>
-    <label>
-      Depth
-      <select id="start-run-depth" name="depth">
-        <option value="recon">Recon</option>
-        <option value="standard" selected>Standard</option>
-        <option value="thorough">Thorough</option>
-        <option value="danger">Danger</option>
-      </select>
-    </label>
-    <label>
-      Scope (one per line or comma-separated)
-      <textarea id="start-run-scope" name="scope" rows="3" placeholder="Defaults to target"></textarea>
-    </label>
-    <label>
-      Out of scope (one per line or comma-separated)
-      <textarea id="start-run-out-of-scope" name="out_of_scope" rows="3"></textarea>
-    </label>
-    <button type="submit">Start Run</button>
-    <span id="start-run-status" class="air-sub-note"></span>
-  </form>
-
-  <div id="sessions-summary" class="air-sub-note"></div>
-  <div id="runs-output"><div class="empty-placeholder">No runs yet.</div></div>
-  <div id="sessions-output" style="display:none"></div>
 </div>
+
+<!-- New Scan dialog. Lives OUTSIDE #tab-sessions: a <dialog> inside a hidden
+     (display:none) tab would not render, and the top bar's "New Scan" button must
+     work from any tab. The form's default home is the dialog; on the landing
+     page sessions.js moves it into #start-run-inline-slot. -->
+<dialog id="start-run-dialog" class="scan-dialog" aria-labelledby="start-run-title">
+  <div class="scan-dialog-head">
+    <h3 id="start-run-title">New Scan</h3>
+    <button type="button" class="scan-dialog-close" onclick="closeNewScanDialog()" aria-label="Close">✕</button>
+  </div>
+  <div id="start-run-dialog-slot">
+    <form id="start-run-form" class="scan-form" autocomplete="off">
+      <label class="scan-field">
+        <span>Target</span>
+        <input id="start-run-target" name="target" type="text" placeholder="https://example.com" required>
+      </label>
+      <label class="scan-field">
+        <span>Depth</span>
+        <select id="start-run-depth" name="depth" required>
+          <option value="recon">Recon — discovery only, no exploitation</option>
+          <option value="standard" selected>Standard — recommended</option>
+          <option value="thorough">Thorough — slower, more passes</option>
+          <option value="danger">Danger — destructive tests allowed</option>
+        </select>
+      </label>
+      <!-- Target and depth are the two required choices and stay visible.
+           Scope is optional (it defaults to the target), so it sits here. -->
+      <details class="scan-advanced">
+        <summary>Advanced options <span class="scan-advanced-hint">scope, out of scope, source</span></summary>
+        <label class="scan-field">
+          <span>Scope <em>one per line or comma-separated — defaults to the target</em></span>
+          <textarea id="start-run-scope" name="scope" rows="3"></textarea>
+        </label>
+        <label class="scan-field">
+          <span>Out of scope <em>optional</em></span>
+          <textarea id="start-run-out-of-scope" name="out_of_scope" rows="2"></textarea>
+        </label>
+        <div class="scan-field">
+          <span class="scan-field-label">
+            <label for="start-run-source">Source <em>optional</em></label>
+            <!-- Explainer: shown on hover and on keyboard focus. -->
+            <button type="button" class="help-tip" aria-label="What is a Source?" aria-describedby="start-run-source-help">?</button>
+            <span class="help-tip-text" id="start-run-source-help" role="tooltip">
+              A Source is a knowledge base running on this machine: a vector-embedding store of testing
+              methodology and of what earlier engagements found. If you bind one, Smith searches it during the
+              scan for relevant techniques and prior results, and writes what it learns back to it.
+              Without a Source the scan starts from scratch. Sources are registered in <code>sources.yaml</code>.
+            </span>
+          </span>
+          <select id="start-run-source" name="source">
+            <option value="">None</option>
+          </select>
+          <span class="scan-field-hint" id="start-run-source-hint"></span>
+        </div>
+      </details>
+      <p class="scan-dialog-note">Only scan targets you are authorized to test.</p>
+      <div class="scan-dialog-actions">
+        <span id="start-run-status" class="scan-dialog-status" role="status"></span>
+        <button type="button" class="btn btn-secondary scan-cancel-btn" onclick="closeNewScanDialog()">Cancel</button>
+        <button type="submit" class="btn btn-primary">Start Scan</button>
+      </div>
+    </form>
+  </div>
+</dialog>

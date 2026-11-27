@@ -38,6 +38,10 @@ def _now() -> str:
 
 
 def _append(entry: dict) -> None:
+    # Attribute every entry to its scan (multi-run mode only).
+    from core import run_context as _run_context
+    if _run_context.has_explicit_run_id():
+        entry.setdefault("run_id", _run_context.run_id())
     with _lock:
         with open(_LOG_FILE, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(entry) + "\n")

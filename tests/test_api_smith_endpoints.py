@@ -309,6 +309,10 @@ class TestSmithRunning:
             "heartbeat_age_s": None,
             "idle": False,
             "adjudicating": False,
+            # Idle-scan state (core/api_server/smith/idle.py): not idle here, and the
+            # suite runs with SMITH_AUTO_RESUME=1 (see tests/conftest.py).
+            "agent_idle": None,
+            "auto_resume": True,
         }
 
     def test_running_true_via_session_fallback_when_quick_log_missing(
@@ -1184,7 +1188,7 @@ class TestSpawnSmith:
              patch("os.path.exists", return_value=True), \
              patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=fake_proc)), \
              patch("shutil.which", return_value="/usr/bin/claude"):
-            ok, result = asyncio.get_event_loop().run_until_complete(
+            ok, result = asyncio.run(
                 api._spawn_smith("claude", source="test")
             )
 
@@ -1199,7 +1203,7 @@ class TestSpawnSmith:
              patch("core.session.load_from_disk"), \
              patch("core.session.get", return_value={}), \
              patch("shutil.which", return_value=None):
-            ok, result = asyncio.get_event_loop().run_until_complete(
+            ok, result = asyncio.run(
                 api._spawn_smith("claude", source="test")
             )
 
@@ -1218,7 +1222,7 @@ class TestSpawnSmith:
              patch("core.session.get", return_value={}), \
              patch("shutil.which", return_value=None), \
              patch("asyncio.create_subprocess_exec") as spawn:
-            ok, result = asyncio.get_event_loop().run_until_complete(
+            ok, result = asyncio.run(
                 api._spawn_smith("claude", source="test")
             )
 
@@ -1246,7 +1250,7 @@ class TestSpawnSmith:
              patch("core.session.get", return_value={}), \
              patch("shutil.which", return_value="/usr/bin/claude"), \
              patch("asyncio.create_subprocess_exec", side_effect=_cap):
-            ok, _ = asyncio.get_event_loop().run_until_complete(
+            ok, _ = asyncio.run(
                 api._spawn_smith("claude", source="test")
             )
 
@@ -1271,7 +1275,7 @@ class TestSpawnSmith:
              patch("core.session.get", return_value={}), \
              patch("shutil.which", return_value="/usr/bin/claude"), \
              patch("asyncio.create_subprocess_exec", side_effect=_cap):
-            asyncio.get_event_loop().run_until_complete(
+            asyncio.run(
                 api._spawn_smith("claude", source="test")
             )
 
@@ -1290,7 +1294,7 @@ class TestSpawnSmith:
              patch("core.session.get", return_value={}), \
              patch("shutil.which", return_value="/usr/bin/claude"), \
              patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=dead)):
-            ok, result = asyncio.get_event_loop().run_until_complete(
+            ok, result = asyncio.run(
                 api._spawn_smith("claude", source="test")
             )
 
@@ -1314,7 +1318,7 @@ class TestSpawnSmith:
              patch("shutil.which", return_value="/usr/local/bin/opencode"), \
              patch("sys.platform", "linux"), \
              patch("asyncio.create_subprocess_exec", side_effect=_record_spawn):
-            ok, _ = asyncio.get_event_loop().run_until_complete(
+            ok, _ = asyncio.run(
                 api._spawn_smith("opencode", source="test")
             )
 
@@ -1340,7 +1344,7 @@ class TestSpawnSmith:
              patch("shutil.which", return_value="C:\\opencode\\opencode.exe"), \
              patch("sys.platform", "win32"), \
              patch("asyncio.create_subprocess_exec", side_effect=_record_spawn):
-            ok, _ = asyncio.get_event_loop().run_until_complete(
+            ok, _ = asyncio.run(
                 api._spawn_smith("opencode", source="test")
             )
 
@@ -1374,7 +1378,7 @@ class TestSpawnSmith:
              patch("core.session.get", return_value={}), \
              patch("shutil.which", return_value="/usr/local/bin/opencode"), \
              patch("asyncio.create_subprocess_exec", side_effect=_capture):
-            ok, _ = asyncio.get_event_loop().run_until_complete(
+            ok, _ = asyncio.run(
                 api._spawn_smith("opencode", source="test")
             )
 
@@ -1399,7 +1403,7 @@ class TestSpawnSmith:
              patch("core.session.get", return_value={}), \
              patch("shutil.which", return_value="/usr/local/bin/opencode"), \
              patch("asyncio.create_subprocess_exec", side_effect=_capture):
-            ok, _ = asyncio.get_event_loop().run_until_complete(
+            ok, _ = asyncio.run(
                 api._spawn_smith("opencode", source="test")
             )
 
@@ -1426,7 +1430,7 @@ class TestSpawnSmith:
              patch("core.session.get", return_value={}), \
              patch("shutil.which", return_value="/usr/local/bin/opencode"), \
              patch("asyncio.create_subprocess_exec", side_effect=_record_spawn):
-            ok, _ = asyncio.get_event_loop().run_until_complete(
+            ok, _ = asyncio.run(
                 api._spawn_smith("opencode", source="test")
             )
 
@@ -1459,7 +1463,7 @@ class TestSpawnSmith:
              patch("core.session.get", return_value={}), \
              patch("shutil.which", return_value="/opt/homebrew/bin/claude"), \
              patch("asyncio.create_subprocess_exec", side_effect=_record_spawn):
-            ok, _ = asyncio.get_event_loop().run_until_complete(
+            ok, _ = asyncio.run(
                 api._spawn_smith("claude", source="test")
             )
 
@@ -1488,7 +1492,7 @@ class TestSpawnSmith:
              patch("core.session.set_smith_proc", side_effect=_record_set), \
              patch("shutil.which", return_value="/usr/local/bin/opencode"), \
              patch("asyncio.create_subprocess_exec", side_effect=_record_spawn):
-            ok, pid = asyncio.get_event_loop().run_until_complete(
+            ok, pid = asyncio.run(
                 api._spawn_smith("opencode", source="watchdog")
             )
 
@@ -1515,7 +1519,7 @@ class TestSpawnSmith:
                     side_effect=RuntimeError("disk full")), \
              patch("shutil.which", return_value="/usr/local/bin/opencode"), \
              patch("asyncio.create_subprocess_exec", side_effect=_spawn):
-            ok, pid = asyncio.get_event_loop().run_until_complete(
+            ok, pid = asyncio.run(
                 api._spawn_smith("opencode", source="api")
             )
 
@@ -1543,7 +1547,7 @@ class TestSpawnSmith:
              patch.object(api, "_latest_opencode_session", resolver), \
              patch("shutil.which", return_value="/usr/local/bin/opencode"), \
              patch("asyncio.create_subprocess_exec", side_effect=_record_spawn):
-            ok, _ = asyncio.get_event_loop().run_until_complete(
+            ok, _ = asyncio.run(
                 api._spawn_smith("opencode", source="watchdog")
             )
         assert ok is True
@@ -1665,7 +1669,7 @@ class TestSpawnSmith:
              patch.object(api, "_recorded_claude_session", resolver), \
              patch("shutil.which", return_value="/opt/homebrew/bin/claude"), \
              patch("asyncio.create_subprocess_exec", side_effect=_record_spawn):
-            ok, _ = asyncio.get_event_loop().run_until_complete(
+            ok, _ = asyncio.run(
                 api._spawn_smith("claude", source="watchdog")
             )
         assert ok is True
@@ -1737,7 +1741,7 @@ class TestSpawnSmith:
              patch("core.session.set_smith_session_id", side_effect=lambda sid: recorded.append(sid)), \
              patch("shutil.which", return_value="/opt/homebrew/bin/claude"), \
              patch("asyncio.create_subprocess_exec", side_effect=_record_spawn):
-            ok, _ = asyncio.get_event_loop().run_until_complete(
+            ok, _ = asyncio.run(
                 api._spawn_smith("claude", source="watchdog")
             )
         assert ok is True
@@ -2602,3 +2606,107 @@ def test_classify_spawn_failure_detects_usage_credit_auth():
     assert _classify_spawn_failure("Please run /login")[0] == "auth"
     assert _classify_spawn_failure("normal agent exit") is None
     assert _classify_spawn_failure("") is None
+
+
+# ── Idle policy (the default): never respawn, wait for the operator ───────────
+
+def _running_session(tmp_path):
+    (tmp_path / "session.json").write_text(json.dumps({"status": "running", "id": "s1", "target": "t"}))
+
+
+@pytest.mark.asyncio
+async def test_default_policy_marks_scan_idle_and_does_not_respawn(sandbox_smith_files, tmp_path, monkeypatch):
+    monkeypatch.delenv("SMITH_AUTO_RESUME", raising=False)
+    monkeypatch.setattr(api, "_SMITH_IDLE_FILE", tmp_path / "smith.idle")
+    _running_session(tmp_path)
+    spawn = AsyncMock(return_value=(True, 1))
+    with patch.object(api, "_smith_hung_pid", return_value=None), \
+         patch.object(api, "_smith_stalled_pid", return_value=None), \
+         patch.object(api, "_signal_pid_file_alive", return_value=False), \
+         patch.object(api, "_signal_process_scan_finds_client", return_value=False), \
+         patch.object(api, "_spawn_smith", new=spawn), \
+         patch("core.api_server.smith._watchdog_notify") as notify:
+        await api._watchdog_tick(1000.0)
+        await api._watchdog_tick(1060.0)          # second tick: still idle, no second alert
+
+    spawn.assert_not_called()
+    marker = json.loads((tmp_path / "smith.idle").read_text())
+    assert marker["reason"] == "exited" and marker["since"]
+    assert notify.call_count == 1
+    assert notify.call_args.args[2] == "SCAN_IDLE"
+
+
+@pytest.mark.asyncio
+async def test_idle_policy_shuts_down_a_hung_agent_without_respawning(sandbox_smith_files, tmp_path, monkeypatch):
+    monkeypatch.delenv("SMITH_AUTO_RESUME", raising=False)
+    monkeypatch.setattr(api, "_SMITH_IDLE_FILE", tmp_path / "smith.idle")
+    _running_session(tmp_path)
+    spawn = AsyncMock(return_value=(True, 1))
+    with patch.object(api, "_smith_hung_pid", return_value=4242), \
+         patch.object(api, "_kill_hung_smith", return_value=True) as kill, \
+         patch.object(api, "_spawn_smith", new=spawn), \
+         patch("core.api_server.smith._watchdog_notify"):
+        await api._watchdog_tick(1000.0)
+
+    kill.assert_called_once_with(4242)
+    spawn.assert_not_called()
+    assert json.loads((tmp_path / "smith.idle").read_text())["reason"] == "hung"
+
+
+@pytest.mark.asyncio
+async def test_idle_marker_clears_when_the_agent_runs_again_or_the_scan_ends(sandbox_smith_files, tmp_path, monkeypatch):
+    monkeypatch.delenv("SMITH_AUTO_RESUME", raising=False)
+    idle_file = tmp_path / "smith.idle"
+    monkeypatch.setattr(api, "_SMITH_IDLE_FILE", idle_file)
+    _running_session(tmp_path)
+    idle_file.write_text(json.dumps({"since": "x", "reason": "exited", "detail": "d"}))
+
+    with patch.object(api, "_smith_hung_pid", return_value=None), \
+         patch.object(api, "_smith_stalled_pid", return_value=None), \
+         patch.object(api, "_signal_pid_file_alive", return_value=True):
+        await api._watchdog_tick(1000.0)
+    assert not idle_file.exists()                 # operator resumed it
+
+    idle_file.write_text(json.dumps({"since": "x", "reason": "exited", "detail": "d"}))
+    (tmp_path / "session.json").write_text(json.dumps({"status": "complete"}))
+    await api._watchdog_tick(1100.0)
+    assert not idle_file.exists()                 # an ended scan is not idle
+
+
+def test_smith_status_reports_the_idle_state(sandbox_smith_files, tmp_path, monkeypatch):
+    monkeypatch.delenv("SMITH_AUTO_RESUME", raising=False)
+    monkeypatch.setattr(api, "_SMITH_IDLE_FILE", tmp_path / "smith.idle")
+    (tmp_path / "smith.idle").write_text(json.dumps({"since": "2026-01-01T00:00:00+00:00", "reason": "exited", "detail": "d"}))
+    with patch.object(api, "_smith_running", return_value=False):
+        body = client.get("/api/smith-status").json()
+
+    assert body["agent_idle"]["reason"] == "exited"
+    assert body["auto_resume"] is False
+
+
+def test_steering_an_idle_scan_resumes_it(sandbox_smith_files, tmp_path, monkeypatch):
+    """An instruction only reaches Smith on its next tool call — so on an idle
+    scan the instruction itself must start Smith again."""
+    monkeypatch.delenv("SMITH_AUTO_RESUME", raising=False)
+    monkeypatch.setattr(api, "_STEERING_FILE", tmp_path / "steering_queue.json", raising=False)
+    spawn = AsyncMock(return_value=(True, 99))
+    with patch.object(api, "_signal_pid_file_alive", return_value=False), \
+         patch.object(api, "_signal_process_scan_finds_client", return_value=False), \
+         patch.object(api, "_client_installed", return_value=True), \
+         patch.object(api, "_detect_active_client", return_value="claude"), \
+         patch.object(api, "_spawn_smith", new=spawn), \
+         patch("core.steering.steering_queue.add_directive") as add:
+        r = client.post("/api/steer", json={"message": "focus on /api/users"})
+
+    assert r.json() == {"ok": True, "resumed": True}
+    add.assert_called_once()
+    spawn.assert_awaited_once()
+
+    # A live agent is left alone: it picks the instruction up on its next call.
+    spawn.reset_mock()
+    with patch.object(api, "_signal_pid_file_alive", return_value=True), \
+         patch.object(api, "_spawn_smith", new=spawn), \
+         patch("core.steering.steering_queue.add_directive"):
+        r = client.post("/api/steer", json={"message": "skip rate limits"})
+    assert r.json() == {"ok": True, "resumed": False}
+    spawn.assert_not_called()

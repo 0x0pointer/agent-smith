@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
@@ -514,3 +515,83 @@ def test_run_token_session_triage_self_heal_uses_run_snapshots_only(monkeypatch,
     assert run_b_session["triage_requested"] is True
     assert run_a_steering["directives"][0]["status"] == "acknowledged"
     assert not steering_store._STEERING_FILE.exists()
+
+
+def test_control_plane_reports_mode_and_caller_role(monkeypatch, tmp_path):
+    db_path = tmp_path / "runs.db"
+    monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")
+    monkeypatch.setenv("SMITH_DASHBOARD_AUTH", "1")
+    monkeypatch.delenv("SMITH_SINGLE_RUN", raising=False)
+
+    client = TestClient(app)
+    operator_token = dashboard_auth.mint_operator_token()
+    created = _create_run(client, operator_token, "https://a.example")
+
+    as_operator = client.get("/api/control-plane", headers=_headers(operator_token))
+    as_run = client.get("/api/control-plane", headers=_headers(created["token"]))
+    anonymous = client.get("/api/control-plane")
+
+    assert as_operator.json() == {"enabled": True, "role": "operator", "run_id": ""}
+    assert as_run.json() == {"enabled": True, "role": "run", "run_id": created["run_id"]}
+    assert anonymous.status_code == 401
+
+
+def test_control_plane_is_off_in_classic_single_run_mode(monkeypatch):
+    # No database: the dashboard must not gate its tabs behind scan selection.
+    monkeypatch.delenv("SMITH_DATABASE_URL", raising=False)
+    monkeypatch.setenv("SMITH_DASHBOARD_AUTH", "0")
+
+    response = TestClient(app).get("/api/control-plane")
+
+    assert response.status_code == 200
+    assert response.json()["enabled"] is False
+
+
+def test_log_routes_follow_the_selected_run(monkeypatch, tmp_path):
+    """A run-scoped token must read that run's own log files, never the shared ones
+    and never another run's."""
+    db_path = tmp_path / "runs.db"
+    monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")
+    monkeypatch.setenv("SMITH_DASHBOARD_AUTH", "1")
+    monkeypatch.delenv("SMITH_SINGLE_RUN", raising=False)
+
+    client = TestClient(app)
+    operator_token = dashboard_auth.mint_operator_token()
+    run_a = _create_run(client, operator_token, "https://a.example")
+    run_b = _create_run(client, operator_token, "https://b.example")
+
+    repo = db_store.get_repository()
+    for run, marker in ((run_a, "alpha"), (run_b, "bravo")):
+        root = Path(repo.get_run(run["run_id"])["workdir"])
+        (root / "logs").mkdir(parents=True, exist_ok=True)
+        (root / "logs" / "pentest.log").write_text(f"2026-01-01T00:00:00Z  INFO      [{run['run_id']}]  TOOL_CALL {marker}\n")
+        (root / "quick_log.json").write_text(json.dumps({"type": "TOOL", "name": marker, "run_id": run["run_id"]}) + "\n")
+        (root / "adjudication_log.jsonl").write_text(json.dumps({"type": "complete", "n_adjudicated": 1, "marker": marker}) + "\n")
+
+    def read(token):
+        h = _headers(token)
+        return (
+            client.get("/api/logs", headers=h).json()["lines"],
+            client.get("/api/quicklog", headers=h).json(),
+            client.get("/api/adjudication-log", headers=h).json(),
+        )
+
+    logs_a, quick_a, adj_a = read(run_a["token"])
+    logs_b, quick_b, adj_b = read(run_b["token"])
+
+    assert len(logs_a) == 1 and "alpha" in logs_a[0] and run_a["run_id"] in logs_a[0]
+    assert len(logs_b) == 1 and "bravo" in logs_b[0]
+    assert [e["name"] for e in quick_a] == ["alpha"] and [e["name"] for e in quick_b] == ["bravo"]
+    assert adj_a[0]["marker"] == "alpha" and adj_b[0]["marker"] == "bravo"
+
+
+def test_sources_endpoint_lists_the_registry(monkeypatch, tmp_path):
+    registry = tmp_path / "sources.yaml"
+    registry.write_text("sources:\n  team-kb:\n    url: http://127.0.0.1:8900\n  remote:\n    url: http://evil.example:80\n")
+    monkeypatch.setenv("SOURCE_REGISTRY", str(registry))
+    monkeypatch.setenv("SMITH_DASHBOARD_AUTH", "0")
+
+    body = TestClient(app).get("/api/sources").json()
+
+    # Only localhost Sources are valid registry entries.
+    assert body == {"sources": [{"name": "team-kb", "url": "http://127.0.0.1:8900"}]}

@@ -140,6 +140,80 @@ Things that bite on a slow local model:
 
 ---
 
+> 🍎 **macOS: keep the checkout out of `~/Desktop`, `~/Documents` and `~/Downloads`.** macOS privacy
+> protection stops background (launchd) jobs from reading those folders, so the MCP auto-start job
+> cannot run from there. The installer detects this, skips auto-start, and leaves a self-managed
+> server running that you restart by hand (`installers/start-mcp-server.sh restart`) after a reboot.
+> Clone to e.g. `~/agent-smith` to get auto-start and crash recovery.
+
+---
+
+## Control plane (`smith`)
+
+The control plane is optional. Driving a single scan from your client needs nothing beyond the
+installer. Start the control plane when you want the dashboard to launch and track several runs,
+each with its own working directory, containers and Docker network.
+
+Every bash installer (`install.sh`, `install_codex.sh`, `install_opencode.sh`, `install_pi.sh`)
+installs a `smith` launcher at `~/.local/bin/smith` (override the directory with `SMITH_BIN_DIR`).
+`install.sh` also offers to start the control plane at the end.
+
+```bash
+smith start     # Postgres (docker compose) + dashboard/orchestrator on 127.0.0.1:7777
+smith status    # database / dashboard / orchestrator / api health, as JSON
+smith stop      # stop the dashboard and the Postgres container (data volume is kept)
+```
+
+`smith start` prints a `dashboard_url` and an `operator_token`; open `<dashboard_url>/#k=<operator_token>`.
+
+| What | Where | Notes |
+|---|---|---|
+| Postgres | `127.0.0.1:55432` | `postgres:16-alpine` from `docker-compose.yml`; data in the `smith-postgres-data` volume. The port is fixed, so free it first if something else holds it. |
+| Dashboard + orchestrator | `127.0.0.1:7777` | Same dashboard the MCP server opens; `/api/runs` is the control-plane API. |
+| Per-run state | `runs/<run-id>/` in the checkout | Session files, logs and artifacts for each run. |
+
+Troubleshooting:
+
+- **`smith: command not found`** — `~/.local/bin` is not on your PATH. Add it, or run
+  `poetry run python smith_cli.py start` from the checkout. (`poetry install` does not create the
+  command: the project is `package-mode = false`, so the launcher comes from
+  `installers/install-smith-cli.sh`.)
+- **`"status": "unhealthy"` with the dashboard `failed`** — another process holds port 7777,
+  usually a dashboard left running by an older install or a checkout in another directory.
+  Re-run the installer (it stops a stale agent-smith dashboard), or find it with
+  `lsof -nP -iTCP:7777 -sTCP:LISTEN` and stop it yourself.
+- **`smith start` fails with a port error** — port 55432 is already allocated. Stop whatever
+  holds it (`docker ps --filter publish=55432`) or point `SMITH_DATABASE_URL` at your own database.
+- **Windows** — the `.ps1` installers do not install the launcher yet; use
+  `poetry run python smith_cli.py start` from the checkout.
+
+---
+
+## Source updates and the work queue
+
+A scan started from the dashboard can be bound to a **Source** (Advanced options → Source): a
+knowledge base running on this machine, registered in `sources.yaml`. While that scan is open,
+agent-smith watches the Source. When notes are added or edited — for example what a PR scanner
+learned about a pull request — the change becomes an item in the scan's **work queue**, and an
+**idle** Smith is started on it: read the notes, register the new endpoints, domains and features,
+and run the pentester workflow against them.
+
+- **One item at a time.** Each item gets its own agent turn, so a burst of updates cannot crowd
+  each other out of context or be forgotten. A busy scan is not interrupted; its items wait.
+- **Nothing is queued when you bind.** The Source's existing content is the baseline; only changes
+  after that are queued.
+- **Scope still applies.** Smith is told to treat note contents as data, and to record an
+  out-of-scope host as a scope request instead of testing it.
+- **Push instead of poll.** `POST /api/runs/<run-id>/work` with `{"title": "...", "text": "..."}`
+  (operator token) queues an item directly — the hook for a PR scanner or CI job.
+- **See it.** The command panel shows what Smith is working on and how many items wait; the
+  Timeline page lists every item and its outcome (`GET /api/runs/<run-id>/work`).
+
+Edited notes are detected through the `sha256` each note reports in the Source's `/list`. A Source
+that does not report it only gets new notes (and edits that change a note's section count) noticed.
+
+---
+
 ## Environment variables
 
 A handful of env vars (read from your shell or the repo `.env`) tune how Smith runs. None are
@@ -151,6 +225,12 @@ required — every one has a working default.
 | `SMITH_USE_API_KEY` | `no` | Set to `yes` to bill the **Smith agent** against an Anthropic API key instead of your Claude subscription. The installer sets this (and writes `ANTHROPIC_API_KEY`) only if you opt in when prompted; the default keeps you on the subscription with no key written. |
 | `SMITH_SPAWN_USE_API_KEY` | unset | When set (`1`), a **spawned/respawned** Smith (Restart button, watchdog) keeps `ANTHROPIC_API_KEY` and bills API credit — for a subscription-less box (e.g. CI). Unset, a spawned Smith strips the key so it never silently bills API credit. |
 | `SMITH_WATCHDOG_DISABLED` | unset (watchdog **on**) | Set (`1`) to disable the dashboard auto-respawn watchdog. The watchdog is meant for headless runs; **disable it for interactive-terminal runs** so it doesn't ghost-spawn a second Smith when you're driving `claude` yourself. |
+| `SMITH_DATABASE_URL` | `postgresql+psycopg://smith:smith@127.0.0.1:55432/agent_smith` when started via `smith start`; otherwise unset (database **off**) | SQLAlchemy URL for the control-plane database. A `sqlite:///…` URL skips the Docker Postgres entirely. |
+| `SMITH_SINGLE_RUN` | unset | Set (`1`) to force classic single-run mode: the database and per-run isolation are ignored even if the variables above are set. |
+| `SMITH_WORKER_CLIENT` | `claude` | Which client the control plane spawns for a dashboard-launched run (`claude` \| `opencode` \| `codex`). |
+| `SMITH_AUTO_RESUME` | unset (**idle** on stop) | By default, when Smith stops on its own (its turn ended, it exited, or it hung and was shut down) the scan goes **idle** and waits for you: nothing is respawned. Send an instruction or press **Resume** in the dashboard to continue. Set (`1`) to restore automatic respawn for unattended runs. |
+| `SMITH_WORK_QUEUE_DISABLED` | unset (queue **on**) | Set (`1`) to stop turning Source updates into queued work for dashboard-started scans (see [Source updates](#source-updates-and-the-work-queue)). |
+| `SMITH_WORK_POLL_SECONDS` | `30` | How often bound Sources are checked for new or changed notes, and queued work is handed to idle scans (minimum 10). |
 | `SMITH_KEEP_CONTAINERS` | unset (teardown **on**) | Set (`1`) to opt out of the automatic Kali / Metasploit / MobSF container teardown at scan end — e.g. to inspect a container after the scan finishes. |
 
 ---

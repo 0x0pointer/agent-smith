@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 
 import core.api_server as _api
 
-from ._common import router
+from ._common import router, _wake_smith_if_idle
 
 _log = logging.getLogger(__name__)
 
@@ -234,7 +234,18 @@ async def api_steer(request: Request) -> JSONResponse:
             force=True,  # human instructions always go through — never deduped
             run_id=run_id,
         )
-        return JSONResponse({"ok": True})
+        # A queued instruction only reaches Smith on its next tool call. If Smith
+        # is not running (the scan is idle), the instruction is what resumes it.
+        resumed = False
+        if run_id:
+            try:
+                from control_plane import orchestrator
+                resumed = bool(orchestrator.resume_run(run_id).get("resumed"))
+            except Exception:
+                _log.exception("api_steer: could not resume run %s", run_id)
+        else:
+            resumed = await _wake_smith_if_idle()
+        return JSONResponse({"ok": True, "resumed": resumed})
     except Exception:
         _log.exception("api_steer failed")
         return JSONResponse({"ok": False, "error": _api._ERR_REQUEST_FAILED}, status_code=500)

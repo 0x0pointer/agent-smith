@@ -128,7 +128,8 @@ def isolate_api_runtime_files(tmp_path, monkeypatch):
                         ("_COST_FILE", "session_cost.json"),
                         ("_STEERING_FILE", "steering_queue.json"),
                         ("_SMITH_PID_FILE", "smith.pid"),
-                        ("_SMITH_CLIENT_FILE", "smith.client")):
+                        ("_SMITH_CLIENT_FILE", "smith.client"),
+                        ("_SMITH_IDLE_FILE", "smith.idle")):
         if hasattr(_api, _name):
             monkeypatch.setattr(_api, _name, guard / _rel, raising=False)
     monkeypatch.setattr(_logger, "_LOG_DIR", guard, raising=False)
@@ -138,6 +139,15 @@ def isolate_api_runtime_files(tmp_path, monkeypatch):
     # Tests call complete()/_stop() constantly — without this a suite run would `docker stop`
     # the operator's REAL running containers. The teardown tests opt back in by unsetting this.
     monkeypatch.setenv("SMITH_KEEP_CONTAINERS", "1")
+
+
+@pytest.fixture(autouse=True)
+def watchdog_auto_resume(monkeypatch):
+    """The watchdog's DEFAULT policy is now "go idle, never respawn" (see
+    core/api_server/smith/idle.py). The long-standing watchdog suite exercises the
+    respawn flow (guards, caps, escalation), which is the opt-in SMITH_AUTO_RESUME=1
+    policy — so it is enabled here. Tests of the idle default delete the variable."""
+    monkeypatch.setenv("SMITH_AUTO_RESUME", "1")
 
 
 @pytest.fixture(autouse=True)

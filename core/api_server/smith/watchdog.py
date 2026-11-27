@@ -15,6 +15,7 @@ import core.api_server as _api
 import core.api_server.smith as _smith
 
 from ._common import _log, _SMITH_IDLE_SECONDS, _SMITH_STALL_SECONDS
+from . import idle as _idle
 
 
 def _watchdog_notify(title: str, body: str, code: str) -> None:
@@ -236,6 +237,37 @@ def _kill_stalled_or_hung(hung_pid, stalled_pid) -> None:
     _api._kill_hung_smith(kill_pid)
 
 
+def _idle_tick() -> None:
+    """Idle policy for one tick: stop a hung/stalled process, never start one.
+
+    * Smith hung or stalled  -> shut it down, mark the scan idle.
+    * Smith process is gone  -> mark the scan idle.
+    * Smith is running       -> clear any idle marker (the operator resumed it).
+
+    The operator is notified once, on the transition into idle.
+    """
+    hung_pid = _api._smith_hung_pid()
+    stalled_pid = _api._smith_stalled_pid() if hung_pid is None else None
+    reason = ""
+    if hung_pid is not None or stalled_pid is not None:
+        kill_pid = hung_pid or stalled_pid
+        reason = "hung" if hung_pid is not None else "stalled"
+        _log.warning("watchdog: Smith pid=%d %s — shutting it down; the scan goes idle (no respawn)", kill_pid, reason)
+        _api._kill_hung_smith(kill_pid)
+    elif _idle.process_alive():
+        _idle.clear_idle()
+        return
+    else:
+        reason = "exited"
+    if _idle.mark_idle(reason):
+        _smith._watchdog_notify(
+            "Scan is idle — waiting for you",
+            _idle.REASONS[reason] + " Nothing was restarted. Send an instruction or press Resume "
+            "in the dashboard to continue the scan.",
+            "SCAN_IDLE",
+        )
+
+
 async def _watchdog_tick(now: float) -> None:
     """Single watchdog tick: restart Smith if all guard conditions pass.
 
@@ -247,6 +279,7 @@ async def _watchdog_tick(now: float) -> None:
     """
     session_data = _api._read_json(_api._SESSION_FILE)
     if session_data.get("status") != "running":
+        _idle.clear_idle()          # an ended scan is not "idle"
         return
     if (session_data.get("intervention") or {}).get("code"):
         return
@@ -273,6 +306,13 @@ async def _watchdog_tick(now: float) -> None:
     # `if _smith_running(): return` masked the hang indefinitely. By
     # checking hang FIRST, we kill the zombie + let the rest of the tick
     # respawn via the normal _spawn_smith() path.
+    # Default policy: when Smith stops, the scan goes IDLE and waits for the
+    # operator — nothing is respawned (see smith/idle.py). SMITH_AUTO_RESUME=1
+    # restores the automatic respawn below for unattended runs.
+    if not _idle.auto_resume_enabled():
+        _idle_tick()
+        return
+
     hung_pid = _api._smith_hung_pid()
     # When not hung (within the 30-min window), also catch a loop that has
     # EXITED mid-scan: alive but idle > _SMITH_STALL_SECONDS, NOT generating, and
