@@ -1,0 +1,189 @@
+diff --git a/control_plane/orchestrator.py b/control_plane/orchestrator.py
+index e2cae0b..5e8f756 100644
+--- a/control_plane/orchestrator.py
++++ b/control_plane/orchestrator.py
+@@ -370,6 +370,20 @@ def list_runs() -> list[dict]:
+     ]
+ 
+ 
++def mint_existing_run_token(run_id: str) -> dict:
++    repo = _db.get_repository()
++    if repo is None:
++        raise RuntimeError("database unavailable")
++    if not repo.get_run(run_id):
++        raise KeyError(run_id)
++    token = dashboard_auth.mint_run_token(run_id)
++    return {
++        "run_id": run_id,
++        "dashboard_url": f"{_dashboard_base_url()}/#k={token}",
++        "token": token,
++    }
++
++
+ def _stop_worker(run_id: str, worker_pid: int | None) -> list[str]:
+     errors: list[str] = []
+     if not worker_pid:
+diff --git a/core/api_server/routes/runs_routes.py b/core/api_server/routes/runs_routes.py
+index ef0b533..81241ef 100644
+--- a/core/api_server/routes/runs_routes.py
++++ b/core/api_server/routes/runs_routes.py
+@@ -38,6 +38,18 @@ async def api_create_run(request: Request) -> JSONResponse:
+         return JSONResponse({"error": str(exc)}, status_code=503)
+ 
+ 
++@router.post("/api/runs/{run_id}/token")
++async def api_mint_run_token(run_id: str, request: Request) -> JSONResponse:
++    if not _is_operator(request):
++        return JSONResponse({"error": "forbidden"}, status_code=403)
++    try:
++        return JSONResponse(orchestrator.mint_existing_run_token(run_id))
++    except KeyError:
++        return JSONResponse({"error": "run not found"}, status_code=404)
++    except RuntimeError as exc:
++        return JSONResponse({"error": str(exc)}, status_code=503)
++
++
+ @router.post("/api/runs/{run_id}/stop")
+ async def api_stop_run(run_id: str, request: Request) -> JSONResponse:
+     role = getattr(request.state, "role", "")
+diff --git a/dashboard/js/sessions.js b/dashboard/js/sessions.js
+index face367..5ef20a2 100644
+--- a/dashboard/js/sessions.js
++++ b/dashboard/js/sessions.js
+@@ -57,8 +57,29 @@ function _selectedRunId() {
+   catch (e) { return ''; }
+ }
+ 
+-function selectRun(runId) {
+-  const token = _runTokenMap()[runId] || '';
++async function _tokenForRun(runId) {
++  const cached = _runTokenMap()[runId] || '';
++  if (cached) return cached;
++  const operatorToken = _operatorToken();
++  if (!operatorToken) return '';
++  const r = await fetch('/api/runs/' + encodeURIComponent(runId) + '/token', {
++    method: 'POST',
++    headers: _headersFor(operatorToken),
++  });
++  const data = await r.json().catch(() => ({}));
++  if (!r.ok) throw new Error(data.error || 'Run token unavailable');
++  if (data.token) _rememberRunToken(runId, data.token);
++  return data.token || '';
++}
++
++async function selectRun(runId) {
++  let token = '';
++  try {
++    token = await _tokenForRun(runId);
++  } catch (e) {
++    if (typeof _notify === 'function') _notify('Run token unavailable', e.message || 'Could not select this run.');
++    return;
++  }
+   if (!token) {
+     if (typeof _notify === 'function') _notify('Run token unavailable', 'Start or open this run from its dashboard URL to select it.');
+     return;
+@@ -96,7 +117,7 @@ async function startRunFromForm(ev) {
+       return;
+     }
+     _rememberRunToken(data.run_id, data.token);
+-    selectRun(data.run_id);
++    await selectRun(data.run_id);
+     if (status) status.textContent = 'Run started: ' + data.run_id;
+   } catch (e) {
+     if (status) status.textContent = 'Run creation failed';
+@@ -111,17 +132,15 @@ function _renderRuns(rows) {
+     out.innerHTML = '<div class="empty-placeholder">No runs yet.</div>';
+     return;
+   }
+-  const tokens = _runTokenMap();
+   const body = rows.map(r => {
+     const active = r.run_id === selected ? ' <span class="badge-cur">SELECTED</span>' : '';
+-    const selectable = tokens[r.run_id] ? '' : ' disabled';
+     return `<tr class="sess-row${r.run_id === selected ? ' sess-new' : ''}">
+       <td><span class="badge-op">RUN</span>${active}</td>
+       <td>${_sessEsc(r.target || '—')}</td>
+       <td><span class="sess-status sess-${_sessEsc(r.status)}">${_sessEsc(r.status || 'unknown')}</span></td>
+       <td>${_sessEsc(r.depth || '—')}</td>
+       <td class="sess-id">${_sessEsc((r.run_id || '').slice(0, 12))}</td>
+-      <td><button type="button" onclick="selectRun('${_sessEsc(r.run_id)}')"${selectable}>Select</button></td>
++      <td><button type="button" onclick="selectRun('${_sessEsc(r.run_id)}')">Select</button></td>
+     </tr>`;
+   }).join('');
+   out.innerHTML = `<table class="sessions-table">
+diff --git a/tests/test_dashboard_runs_ui.py b/tests/test_dashboard_runs_ui.py
+index 8e4a974..43f7cad 100644
+--- a/tests/test_dashboard_runs_ui.py
++++ b/tests/test_dashboard_runs_ui.py
+@@ -13,3 +13,10 @@ def test_sessions_tab_uses_runs_api_for_platform_run_management():
+     assert "runs-output" in markup
+     assert "selected-run-token" in script
+     assert "/api/sessions" not in script
++
++
++def test_sessions_tab_can_select_persisted_runs_without_cached_localstorage_tokens():
++    script = (REPO_ROOT / "dashboard" / "js" / "sessions.js").read_text(encoding="utf-8")
++
++    assert "api/runs/' + encodeURIComponent(runId) + '/token" in script
++    assert "disabled" not in script
+diff --git a/tests/test_runs_routes.py b/tests/test_runs_routes.py
+index f4b3ddf..f3dbe22 100644
+--- a/tests/test_runs_routes.py
++++ b/tests/test_runs_routes.py
+@@ -149,6 +149,57 @@ def test_run_token_scopes_existing_tabs(monkeypatch, tmp_path):
+     assert session_b.json()["target"] == "https://b.example"
+ 
+ 
++def test_operator_can_mint_persisted_run_token_that_scopes_existing_tabs(monkeypatch, tmp_path):
++    db_path = tmp_path / "runs.db"
++    global_findings = tmp_path / "findings.json"
++    global_session = tmp_path / "session.json"
++    global_cost = tmp_path / "session_cost.json"
++    global_coverage = tmp_path / "coverage.json"
++    global_findings.write_text(json.dumps({"findings": [{"title": "GLOBAL"}]}))
++    global_session.write_text(json.dumps({"target": "https://global.example"}))
++    global_cost.write_text(json.dumps({"total_usd": 99}))
++    global_coverage.write_text(json.dumps({"endpoints": [{"path": "/global"}], "cells": []}))
++    monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")
++    monkeypatch.setenv("SMITH_DASHBOARD_AUTH", "1")
++    monkeypatch.delenv("SMITH_SINGLE_RUN", raising=False)
++    monkeypatch.setattr(api_server, "_FINDINGS_FILE", global_findings)
++    monkeypatch.setattr(api_server, "_SESSION_FILE", global_session)
++    monkeypatch.setattr(api_server, "_COST_FILE", global_cost)
++    monkeypatch.setattr(api_server, "_COVERAGE_FILE", global_coverage)
++
++    client = TestClient(app)
++    operator_token = dashboard_auth.mint_operator_token()
++    repo = db_store.get_repository()
++    repo.upsert_run("run-a", {"run_id": "run-a", "target": "https://a.example", "status": "running"}, str(tmp_path / "run-a"))
++    repo.upsert_run("run-b", {"run_id": "run-b", "target": "https://b.example", "status": "running"}, str(tmp_path / "run-b"))
++    repo.save_snapshot("run-a", "findings", {"findings": [{"title": "SQLi A"}]})
++    repo.save_snapshot("run-a", "session", {"target": "https://a.example", "status": "running"})
++    repo.save_snapshot("run-a", "coverage", {"endpoints": [{"path": "/a"}], "cells": []})
++    repo.save_snapshot("run-a", "cost", {"total_usd": 1})
++    repo.save_snapshot("run-b", "findings", {"findings": [{"title": "XSS B"}]})
++    repo.save_snapshot("run-b", "session", {"target": "https://b.example", "status": "running"})
++    repo.save_snapshot("run-b", "coverage", {"endpoints": [{"path": "/b"}], "cells": []})
++    repo.save_snapshot("run-b", "cost", {"total_usd": 2})
++
++    minted = client.post("/api/runs/run-a/token", headers=_headers(operator_token))
++    assert minted.status_code == 200
++    selected_token = minted.json()["token"]
++    cross_mint = client.post("/api/runs/run-b/token", headers=_headers(selected_token))
++    missing = client.post("/api/runs/missing/token", headers=_headers(operator_token))
++
++    findings = client.get("/api/findings", headers=_headers(selected_token))
++    session = client.get("/api/session", headers=_headers(selected_token))
++    coverage = client.get("/api/coverage", headers=_headers(selected_token))
++    cost = client.get("/api/cost", headers=_headers(selected_token))
++
++    assert cross_mint.status_code == 403
++    assert missing.status_code == 404
++    assert findings.json()["findings"][0]["title"] == "SQLi A"
++    assert session.json()["target"] == "https://a.example"
++    assert coverage.json()["endpoints"] == [{"path": "/a"}]
++    assert cost.json()["total_usd"] == 1
++
++
+ def test_cross_run_token_rejected(monkeypatch, tmp_path):
+     db_path = tmp_path / "runs.db"
+     monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")
