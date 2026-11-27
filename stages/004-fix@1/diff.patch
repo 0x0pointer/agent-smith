@@ -1,0 +1,628 @@
+diff --git a/control_plane/orchestrator.py b/control_plane/orchestrator.py
+index 5e8f756..6c4b803 100644
+--- a/control_plane/orchestrator.py
++++ b/control_plane/orchestrator.py
+@@ -26,9 +26,9 @@ _DEFAULT_DATABASE_URL = "postgresql+psycopg://smith:smith@127.0.0.1:55432/agent_
+ _CONTROL_PLANE_PORT = 7777
+ _COMPOSE_FILE = _paths.REPO_ROOT / "docker-compose.yml"
+ _RUN_ID_ATTEMPTS = 5
++_RUN_START_OPTIONS_FILENAME = "control_plane_start.json"
+ _KNOWN_AGENT_CLIENTS = {"claude", "opencode", "codex"}
+ 
+-
+ class RunIdCollisionError(RuntimeError):
+     pass
+ 
+@@ -93,16 +93,28 @@ def _workdir_path_for(run_id: str) -> Path:
+     return Path(_paths.RUNTIME_ROOT) / "runs" / run_id
+ 
+ 
+-def _initial_run_prompt(target: str, depth: str, scope: list[str], out_of_scope: list[str]) -> str:
+-    options = {
++def _write_run_start_options(
++    workdir: Path,
++    target: str,
++    depth: str,
++    scope: list[str],
++    out_of_scope: list[str],
++) -> Path:
++    options_path = workdir / _RUN_START_OPTIONS_FILENAME
++    options_path.write_text(json.dumps({
+         "target": target,
+         "depth": depth,
+         "scope": scope,
+         "out_of_scope": out_of_scope,
+-    }
++    }, sort_keys=True), encoding="utf-8")
++    return options_path
++
++
++def _initial_run_prompt(options_path: Path) -> str:
+     return (
+         "Start a new agent-smith pentest run from the dashboard control plane. "
+-        f"First call session(action='start', options={json.dumps(options, sort_keys=True)}). "
++        f"Read the JSON start options from {options_path} and call "
++        "session(action='start', options=<that JSON object>). "
+         "Then call session(action='status') and continue autonomously with the next recommended "
+         "tool call until the scan is complete or genuinely blocked."
+     )
+@@ -137,7 +149,9 @@ def _spawn_worker(
+     env.setdefault("SMITH_SESSION_ORIGIN", "operator")
+     logs_dir = workdir / "logs"
+     logs_dir.mkdir(parents=True, exist_ok=True)
+-    prompt = _initial_run_prompt(target, depth, scope, out_of_scope)
++    prompt = _initial_run_prompt(
++        _write_run_start_options(workdir, target, depth, scope, out_of_scope)
++    )
+     args = _agent_spawn_args(_agent_client(), prompt)
+     spawn_kwargs = {
+         "cwd": str(_paths.REPO_ROOT),
+diff --git a/core/api_server/routes/runs_routes.py b/core/api_server/routes/runs_routes.py
+index 81241ef..ae217a0 100644
+--- a/core/api_server/routes/runs_routes.py
++++ b/core/api_server/routes/runs_routes.py
+@@ -1,6 +1,7 @@
+ from __future__ import annotations
+ 
+ import json
++import logging
+ 
+ from fastapi import Request
+ from fastapi.responses import JSONResponse
+@@ -9,11 +10,18 @@ from control_plane import orchestrator
+ 
+ from ._common import router
+ 
++_LOG = logging.getLogger(__name__)
++
+ 
+ def _is_operator(request: Request) -> bool:
+     return getattr(request.state, "role", "") == "operator"
+ 
+ 
++def _service_unavailable(action: str, exc: RuntimeError) -> JSONResponse:
++    _LOG.warning("runs route %s failed: %s", action, exc)
++    return JSONResponse({"error": "service unavailable"}, status_code=503)
++
++
+ @router.get("/api/runs")
+ async def api_runs(request: Request) -> JSONResponse:
+     if not _is_operator(request):
+@@ -35,7 +43,7 @@ async def api_create_run(request: Request) -> JSONResponse:
+     except orchestrator.RunIdCollisionError as exc:
+         return JSONResponse({"error": str(exc)}, status_code=409)
+     except RuntimeError as exc:
+-        return JSONResponse({"error": str(exc)}, status_code=503)
++        return _service_unavailable("create", exc)
+ 
+ 
+ @router.post("/api/runs/{run_id}/token")
+@@ -47,7 +55,7 @@ async def api_mint_run_token(run_id: str, request: Request) -> JSONResponse:
+     except KeyError:
+         return JSONResponse({"error": "run not found"}, status_code=404)
+     except RuntimeError as exc:
+-        return JSONResponse({"error": str(exc)}, status_code=503)
++        return _service_unavailable("mint_token", exc)
+ 
+ 
+ @router.post("/api/runs/{run_id}/stop")
+@@ -59,4 +67,4 @@ async def api_stop_run(run_id: str, request: Request) -> JSONResponse:
+     try:
+         return JSONResponse(orchestrator.stop_run(run_id))
+     except RuntimeError as exc:
+-        return JSONResponse({"error": str(exc)}, status_code=503)
++        return _service_unavailable("stop", exc)
+diff --git a/runs/run-03c2d9cf/control_plane_start.json b/runs/run-03c2d9cf/control_plane_start.json
+new file mode 100644
+index 0000000..5c724aa
+--- /dev/null
++++ b/runs/run-03c2d9cf/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://b.example"], "target": "https://b.example"}
+\ No newline at end of file
+diff --git a/runs/run-0721cead/control_plane_start.json b/runs/run-0721cead/control_plane_start.json
+new file mode 100644
+index 0000000..c7fbab3
+--- /dev/null
++++ b/runs/run-0721cead/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-07d4a9c2/control_plane_start.json b/runs/run-07d4a9c2/control_plane_start.json
+new file mode 100644
+index 0000000..5c724aa
+--- /dev/null
++++ b/runs/run-07d4a9c2/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://b.example"], "target": "https://b.example"}
+\ No newline at end of file
+diff --git a/runs/run-0ec2e112/control_plane_start.json b/runs/run-0ec2e112/control_plane_start.json
+new file mode 100644
+index 0000000..c7fbab3
+--- /dev/null
++++ b/runs/run-0ec2e112/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-12703b76/control_plane_start.json b/runs/run-12703b76/control_plane_start.json
+new file mode 100644
+index 0000000..5c724aa
+--- /dev/null
++++ b/runs/run-12703b76/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://b.example"], "target": "https://b.example"}
+\ No newline at end of file
+diff --git a/runs/run-179853dc/control_plane_start.json b/runs/run-179853dc/control_plane_start.json
+new file mode 100644
+index 0000000..5c724aa
+--- /dev/null
++++ b/runs/run-179853dc/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://b.example"], "target": "https://b.example"}
+\ No newline at end of file
+diff --git a/runs/run-193af49e/control_plane_start.json b/runs/run-193af49e/control_plane_start.json
+new file mode 100644
+index 0000000..c7fbab3
+--- /dev/null
++++ b/runs/run-193af49e/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-1c2c2097/control_plane_start.json b/runs/run-1c2c2097/control_plane_start.json
+new file mode 100644
+index 0000000..4e3c7ba
+--- /dev/null
++++ b/runs/run-1c2c2097/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://persist.example"], "target": "https://persist.example"}
+\ No newline at end of file
+diff --git a/runs/run-208e351e/control_plane_start.json b/runs/run-208e351e/control_plane_start.json
+new file mode 100644
+index 0000000..5c724aa
+--- /dev/null
++++ b/runs/run-208e351e/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://b.example"], "target": "https://b.example"}
+\ No newline at end of file
+diff --git a/runs/run-2820cf53/control_plane_start.json b/runs/run-2820cf53/control_plane_start.json
+new file mode 100644
+index 0000000..c7fbab3
+--- /dev/null
++++ b/runs/run-2820cf53/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-3bc26b5f/control_plane_start.json b/runs/run-3bc26b5f/control_plane_start.json
+new file mode 100644
+index 0000000..5c724aa
+--- /dev/null
++++ b/runs/run-3bc26b5f/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://b.example"], "target": "https://b.example"}
+\ No newline at end of file
+diff --git a/runs/run-3c123c45/control_plane_start.json b/runs/run-3c123c45/control_plane_start.json
+new file mode 100644
+index 0000000..4e3c7ba
+--- /dev/null
++++ b/runs/run-3c123c45/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://persist.example"], "target": "https://persist.example"}
+\ No newline at end of file
+diff --git a/runs/run-486b3bee/control_plane_start.json b/runs/run-486b3bee/control_plane_start.json
+new file mode 100644
+index 0000000..c7fbab3
+--- /dev/null
++++ b/runs/run-486b3bee/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-59b21168/control_plane_start.json b/runs/run-59b21168/control_plane_start.json
+new file mode 100644
+index 0000000..5c724aa
+--- /dev/null
++++ b/runs/run-59b21168/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://b.example"], "target": "https://b.example"}
+\ No newline at end of file
+diff --git a/runs/run-62b1806f/control_plane_start.json b/runs/run-62b1806f/control_plane_start.json
+new file mode 100644
+index 0000000..c7fbab3
+--- /dev/null
++++ b/runs/run-62b1806f/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-64a23cd0/control_plane_start.json b/runs/run-64a23cd0/control_plane_start.json
+new file mode 100644
+index 0000000..c7fbab3
+--- /dev/null
++++ b/runs/run-64a23cd0/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-69ccd403/control_plane_start.json b/runs/run-69ccd403/control_plane_start.json
+new file mode 100644
+index 0000000..c7fbab3
+--- /dev/null
++++ b/runs/run-69ccd403/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-765f194c/control_plane_start.json b/runs/run-765f194c/control_plane_start.json
+new file mode 100644
+index 0000000..c7fbab3
+--- /dev/null
++++ b/runs/run-765f194c/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-7d942508/control_plane_start.json b/runs/run-7d942508/control_plane_start.json
+new file mode 100644
+index 0000000..c7fbab3
+--- /dev/null
++++ b/runs/run-7d942508/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-83ec518a/control_plane_start.json b/runs/run-83ec518a/control_plane_start.json
+new file mode 100644
+index 0000000..c7fbab3
+--- /dev/null
++++ b/runs/run-83ec518a/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-88bd42d6/control_plane_start.json b/runs/run-88bd42d6/control_plane_start.json
+new file mode 100644
+index 0000000..c7fbab3
+--- /dev/null
++++ b/runs/run-88bd42d6/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-91018340/control_plane_start.json b/runs/run-91018340/control_plane_start.json
+new file mode 100644
+index 0000000..5c724aa
+--- /dev/null
++++ b/runs/run-91018340/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://b.example"], "target": "https://b.example"}
+\ No newline at end of file
+diff --git a/runs/run-95ccb414/control_plane_start.json b/runs/run-95ccb414/control_plane_start.json
+new file mode 100644
+index 0000000..c7fbab3
+--- /dev/null
++++ b/runs/run-95ccb414/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-9b4eed03/control_plane_start.json b/runs/run-9b4eed03/control_plane_start.json
+new file mode 100644
+index 0000000..5c724aa
+--- /dev/null
++++ b/runs/run-9b4eed03/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://b.example"], "target": "https://b.example"}
+\ No newline at end of file
+diff --git a/runs/run-9de139bc/control_plane_start.json b/runs/run-9de139bc/control_plane_start.json
+new file mode 100644
+index 0000000..c7fbab3
+--- /dev/null
++++ b/runs/run-9de139bc/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-9f230453/control_plane_start.json b/runs/run-9f230453/control_plane_start.json
+new file mode 100644
+index 0000000..c7fbab3
+--- /dev/null
++++ b/runs/run-9f230453/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-9f313f2d/control_plane_start.json b/runs/run-9f313f2d/control_plane_start.json
+new file mode 100644
+index 0000000..5c724aa
+--- /dev/null
++++ b/runs/run-9f313f2d/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://b.example"], "target": "https://b.example"}
+\ No newline at end of file
+diff --git a/runs/run-a8dd7efc/control_plane_start.json b/runs/run-a8dd7efc/control_plane_start.json
+new file mode 100644
+index 0000000..c7fbab3
+--- /dev/null
++++ b/runs/run-a8dd7efc/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-aa68bce5/control_plane_start.json b/runs/run-aa68bce5/control_plane_start.json
+new file mode 100644
+index 0000000..c7fbab3
+--- /dev/null
++++ b/runs/run-aa68bce5/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-acf506ab/control_plane_start.json b/runs/run-acf506ab/control_plane_start.json
+new file mode 100644
+index 0000000..c7fbab3
+--- /dev/null
++++ b/runs/run-acf506ab/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-b0713045/control_plane_start.json b/runs/run-b0713045/control_plane_start.json
+new file mode 100644
+index 0000000..5c724aa
+--- /dev/null
++++ b/runs/run-b0713045/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://b.example"], "target": "https://b.example"}
+\ No newline at end of file
+diff --git a/runs/run-b4c3f7de/control_plane_start.json b/runs/run-b4c3f7de/control_plane_start.json
+new file mode 100644
+index 0000000..c7fbab3
+--- /dev/null
++++ b/runs/run-b4c3f7de/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-b5bc5cbc/control_plane_start.json b/runs/run-b5bc5cbc/control_plane_start.json
+new file mode 100644
+index 0000000..c7fbab3
+--- /dev/null
++++ b/runs/run-b5bc5cbc/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-bea24fc6/control_plane_start.json b/runs/run-bea24fc6/control_plane_start.json
+new file mode 100644
+index 0000000..5c724aa
+--- /dev/null
++++ b/runs/run-bea24fc6/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://b.example"], "target": "https://b.example"}
+\ No newline at end of file
+diff --git a/runs/run-c2c81a3c/control_plane_start.json b/runs/run-c2c81a3c/control_plane_start.json
+new file mode 100644
+index 0000000..5c724aa
+--- /dev/null
++++ b/runs/run-c2c81a3c/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://b.example"], "target": "https://b.example"}
+\ No newline at end of file
+diff --git a/runs/run-c32b4b41/control_plane_start.json b/runs/run-c32b4b41/control_plane_start.json
+new file mode 100644
+index 0000000..c7fbab3
+--- /dev/null
++++ b/runs/run-c32b4b41/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-c3c61a9c/control_plane_start.json b/runs/run-c3c61a9c/control_plane_start.json
+new file mode 100644
+index 0000000..c7fbab3
+--- /dev/null
++++ b/runs/run-c3c61a9c/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-c70e9b27/control_plane_start.json b/runs/run-c70e9b27/control_plane_start.json
+new file mode 100644
+index 0000000..5c724aa
+--- /dev/null
++++ b/runs/run-c70e9b27/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://b.example"], "target": "https://b.example"}
+\ No newline at end of file
+diff --git a/runs/run-c72d2e3c/control_plane_start.json b/runs/run-c72d2e3c/control_plane_start.json
+new file mode 100644
+index 0000000..c7fbab3
+--- /dev/null
++++ b/runs/run-c72d2e3c/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-cc44f64f/control_plane_start.json b/runs/run-cc44f64f/control_plane_start.json
+new file mode 100644
+index 0000000..4e3c7ba
+--- /dev/null
++++ b/runs/run-cc44f64f/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://persist.example"], "target": "https://persist.example"}
+\ No newline at end of file
+diff --git a/runs/run-ccdfb637/control_plane_start.json b/runs/run-ccdfb637/control_plane_start.json
+new file mode 100644
+index 0000000..c7fbab3
+--- /dev/null
++++ b/runs/run-ccdfb637/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-cf64cce4/control_plane_start.json b/runs/run-cf64cce4/control_plane_start.json
+new file mode 100644
+index 0000000..5c724aa
+--- /dev/null
++++ b/runs/run-cf64cce4/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://b.example"], "target": "https://b.example"}
+\ No newline at end of file
+diff --git a/runs/run-context/control_plane_start.json b/runs/run-context/control_plane_start.json
+new file mode 100644
+index 0000000..f995cef
+--- /dev/null
++++ b/runs/run-context/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "thorough", "out_of_scope": ["https://target.example/admin"], "scope": ["https://target.example/app"], "target": "https://target.example"}
+\ No newline at end of file
+diff --git a/runs/run-da593c9c/control_plane_start.json b/runs/run-da593c9c/control_plane_start.json
+new file mode 100644
+index 0000000..4e3c7ba
+--- /dev/null
++++ b/runs/run-da593c9c/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://persist.example"], "target": "https://persist.example"}
+\ No newline at end of file
+diff --git a/runs/run-dcb506c3/control_plane_start.json b/runs/run-dcb506c3/control_plane_start.json
+new file mode 100644
+index 0000000..c7fbab3
+--- /dev/null
++++ b/runs/run-dcb506c3/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-de6d4b74/control_plane_start.json b/runs/run-de6d4b74/control_plane_start.json
+new file mode 100644
+index 0000000..c7fbab3
+--- /dev/null
++++ b/runs/run-de6d4b74/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-ec1df38c/control_plane_start.json b/runs/run-ec1df38c/control_plane_start.json
+new file mode 100644
+index 0000000..c7fbab3
+--- /dev/null
++++ b/runs/run-ec1df38c/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-ecb894f9/control_plane_start.json b/runs/run-ecb894f9/control_plane_start.json
+new file mode 100644
+index 0000000..5c724aa
+--- /dev/null
++++ b/runs/run-ecb894f9/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://b.example"], "target": "https://b.example"}
+\ No newline at end of file
+diff --git a/runs/run-f70c6082/control_plane_start.json b/runs/run-f70c6082/control_plane_start.json
+new file mode 100644
+index 0000000..c7fbab3
+--- /dev/null
++++ b/runs/run-f70c6082/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://a.example"], "target": "https://a.example"}
+\ No newline at end of file
+diff --git a/runs/run-same/control_plane_start.json b/runs/run-same/control_plane_start.json
+new file mode 100644
+index 0000000..bfb98ae
+--- /dev/null
++++ b/runs/run-same/control_plane_start.json
+@@ -0,0 +1 @@
++{"depth": "recon", "out_of_scope": [], "scope": ["https://original.example"], "target": "https://original.example"}
+\ No newline at end of file
+diff --git a/tests/test_container_isolation.py b/tests/test_container_isolation.py
+index ed343d9..102c440 100644
+--- a/tests/test_container_isolation.py
++++ b/tests/test_container_isolation.py
+@@ -217,6 +217,7 @@ async def test_already_running_multi_run_container_rediscovers_api_port_after_re
+ ):
+     monkeypatch.setenv("SMITH_RUN_ID", "run-restart")
+     monkeypatch.delenv("SMITH_SINGLE_RUN", raising=False)
++    monkeypatch.setattr(runner, "docker_executable", lambda: "/usr/bin/docker")
+     runner._RUN_API_PORTS.clear()
+     calls = []
+     _patch_already_running_subprocess(
+@@ -235,5 +236,5 @@ async def test_already_running_multi_run_container_rediscovers_api_port_after_re
+     assert msg == "already running"
+     assert runner.api_url() == expected_url
+     assert [call for call in calls if call[1] == "port"] == [
+-        ["docker", "port", container, container_port]
++        [runner.docker_executable(), "port", container, container_port]
+     ]
+diff --git a/tests/test_control_plane.py b/tests/test_control_plane.py
+index 2406d65..f7b80eb 100644
+--- a/tests/test_control_plane.py
++++ b/tests/test_control_plane.py
+@@ -1,3 +1,5 @@
++import json
++from pathlib import Path
+ from unittest.mock import MagicMock, patch
+ 
+ import pytest
+@@ -149,6 +151,7 @@ def test_create_run_spawns_agent_driver_with_run_start_context(monkeypatch, tmp_
+ 
+     env = captured["kwargs"]["env"]
+     argv_text = "\n".join(str(part) for part in captured["args"])
++    options_path = Path(env["SMITH_WORKDIR"]) / orchestrator._RUN_START_OPTIONS_FILENAME
+     assert captured["args"][:3] != [orchestrator.sys.executable, "-m", "mcp_server"]
+     assert env["SMITH_RUN_ID"] == "run-context"
+     assert env["SMITH_WORKDIR"].endswith("/runs/run-context")
+@@ -157,8 +160,14 @@ def test_create_run_spawns_agent_driver_with_run_start_context(monkeypatch, tmp_
+     assert "https://target.example/app" in env["SMITH_RUN_SCOPE"]
+     assert "https://target.example/admin" in env["SMITH_RUN_OUT_OF_SCOPE"]
+     assert "session(action='start'" in argv_text
+-    assert "https://target.example" in argv_text
+-    assert "thorough" in argv_text
++    assert str(options_path) in argv_text
++    assert "https://target.example" not in argv_text
++    assert json.loads(options_path.read_text(encoding="utf-8")) == {
++        "target": "https://target.example",
++        "depth": "thorough",
++        "scope": ["https://target.example/app"],
++        "out_of_scope": ["https://target.example/admin"],
++    }
+ 
+ 
+ def test_stop_run_cleans_only_targeted_resources(monkeypatch, tmp_path):
+diff --git a/tests/test_runs_routes.py b/tests/test_runs_routes.py
+index f3dbe22..450aa27 100644
+--- a/tests/test_runs_routes.py
++++ b/tests/test_runs_routes.py
+@@ -216,6 +216,55 @@ def test_cross_run_token_rejected(monkeypatch, tmp_path):
+     assert response.status_code == 403
+ 
+ 
++def test_create_run_masks_runtime_errors(monkeypatch, tmp_path):
++    db_path = tmp_path / "runs.db"
++    monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")
++    monkeypatch.setenv("SMITH_DASHBOARD_AUTH", "1")
++    monkeypatch.delenv("SMITH_SINGLE_RUN", raising=False)
++
++    client = TestClient(app)
++    operator_token = dashboard_auth.mint_operator_token()
++    with patch("control_plane.orchestrator.create_run", side_effect=RuntimeError("traceback details")):
++        response = client.post(
++            "/api/runs",
++            json={"target": "https://a.example", "depth": "recon"},
++            headers=_headers(operator_token),
++        )
++
++    assert response.status_code == 503
++    assert response.json() == {"error": "service unavailable"}
++
++
++def test_mint_run_token_masks_runtime_errors(monkeypatch, tmp_path):
++    db_path = tmp_path / "runs.db"
++    monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")
++    monkeypatch.setenv("SMITH_DASHBOARD_AUTH", "1")
++    monkeypatch.delenv("SMITH_SINGLE_RUN", raising=False)
++
++    client = TestClient(app)
++    operator_token = dashboard_auth.mint_operator_token()
++    with patch("control_plane.orchestrator.mint_existing_run_token", side_effect=RuntimeError("traceback details")):
++        response = client.post("/api/runs/run-a/token", headers=_headers(operator_token))
++
++    assert response.status_code == 503
++    assert response.json() == {"error": "service unavailable"}
++
++
++def test_stop_run_masks_runtime_errors(monkeypatch, tmp_path):
++    db_path = tmp_path / "runs.db"
++    monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")
++    monkeypatch.setenv("SMITH_DASHBOARD_AUTH", "1")
++    monkeypatch.delenv("SMITH_SINGLE_RUN", raising=False)
++
++    client = TestClient(app)
++    operator_token = dashboard_auth.mint_operator_token()
++    with patch("control_plane.orchestrator.stop_run", side_effect=RuntimeError("traceback details")):
++        response = client.post("/api/runs/run-a/stop", headers=_headers(operator_token))
++
++    assert response.status_code == 503
++    assert response.json() == {"error": "service unavailable"}
++
++
+ def test_run_token_scopes_finding_detail_patch_and_delete(monkeypatch, tmp_path):
+     db_path = tmp_path / "runs.db"
+     monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")
