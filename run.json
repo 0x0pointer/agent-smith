@@ -527,7 +527,7 @@
     "kind": "running"
   },
   "status_updated_at": "2026-11-27T11:44:37.222097388Z",
-  "last_event_at": "2026-11-27T11:54:49.992600437Z",
+  "last_event_at": "2026-11-27T11:54:58.966416451Z",
   "pending_control": null,
   "checkpoints": [
     {
@@ -986,9 +986,9 @@
       }
     },
     {
-      "seq": 0,
+      "seq": 254,
       "checkpoint": {
-        "timestamp": "2026-11-27T11:54:54.186057503Z",
+        "timestamp": "2026-11-27T11:54:58.966112907Z",
         "current_node": "publish",
         "completed_nodes": [
           "start",
@@ -1001,77 +1001,35 @@
         "node_retries": {},
         "context_values": {
           "internal.retry_count.publish": 0,
-          "internal.retry_count.start": 0,
-          "thread.install.current_node": "fix",
-          "thread.pick_pr.current_node": "install",
-          "internal.node_visit_count": 1,
-          "failure_class": "",
-          "command.output": "blob://sha256/f21c3a57be6a8112f46a883947173de32b848fda7b4251287fd566623c94574c",
-          "thread.verify.current_node": "publish",
-          "thread.fix.current_node": "verify",
-          "failure_signature": "",
-          "internal.work_dir": "/workspace/agent-smith",
-          "internal.retry_count.pick_pr": 0,
-          "graph.rankdir": "LR",
-          "internal.retry_count.install": 0,
-          "internal.run_id": "01M8ED4GGTVE9X3C0GGGK81KRZ",
-          "response.fix": "Fixed the reported CI failures on this branch.\n\n- **CodeQL**\n  - **Cause:** `control_plane.orchestrator` embedded user-supplied run options directly into the spawned worker’s command-line prompt, and `/api/runs` routes returned raw `RuntimeError` text to clients.\n  - **Change:** wrote run start options to a per-run JSON file (`control_plane_start.json`) inside the run workdir and changed the worker prompt to reference that file instead of inlining target/scope data in argv. Also changed `core/api_server/routes/runs_routes.py` to mask runtime failures behind a generic `503 {\"error\": \"service unavailable\"}` response.\n  - **Regression coverage:** added tests for the bootstrap-file flow and for masked runtime errors on create/mint-token/stop routes.\n\n- **test**\n  - **Cause:** the new container isolation test assumed the Docker executable string would always be exactly `\"docker\"`, but production intentionally resolves an absolute path such as `/usr/bin/docker` on some hosts/CI runners.\n  - **Change:** made the test assert against `runner.docker_executable()` and explicitly simulate the absolute-path case.\n\nVerification run after the final edit:\n- `poetry run pytest tests/test_control_plane.py tests/test_runs_routes.py tests/test_container_isolation.py -q` → **37 passed**\n- `poetry run pytest -q` → **2813 passed, 22 skipped**",
-          "internal.retry_count.fix": 0,
-          "internal.fidelity": "compact",
           "internal.thread_id": "verify",
-          "current_node": "publish",
-          "outcome": "succeeded",
-          "graph.goal": "Fix the failed CI checks on a Fabro pull request of 0x0pointer/agent-smith and push the fix to the same branch",
-          "graph.max_node_visits": "12",
-          "internal.retry_count.verify": 0,
-          "graph.model_stylesheet": "\n            *       { model: gpt-5.4; reasoning_effort: medium; }\n            .strong { model: gpt-5.5; reasoning_effort: high; }\n        ",
-          "last_response": "Fixed the reported CI failures on this branch.\n\n- **CodeQL**\n  - **Cause:** `control_plane.orchestrator` embedded user-supplied run options directly into the spawned worker’s command-line prompt, an",
           "last_stage": "fix",
-          "thread.start.current_node": "pick_pr"
+          "internal.node_visit_count": 1,
+          "internal.fidelity": "compact",
+          "last_response": "Fixed the reported CI failures on this branch.\n\n- **CodeQL**\n  - **Cause:** `control_plane.orchestrator` embedded user-supplied run options directly into the spawned worker’s command-line prompt, an",
+          "internal.run_id": "01M8ED4GGTVE9X3C0GGGK81KRZ",
+          "outcome": "succeeded",
+          "response.fix": "Fixed the reported CI failures on this branch.\n\n- **CodeQL**\n  - **Cause:** `control_plane.orchestrator` embedded user-supplied run options directly into the spawned worker’s command-line prompt, and `/api/runs` routes returned raw `RuntimeError` text to clients.\n  - **Change:** wrote run start options to a per-run JSON file (`control_plane_start.json`) inside the run workdir and changed the worker prompt to reference that file instead of inlining target/scope data in argv. Also changed `core/api_server/routes/runs_routes.py` to mask runtime failures behind a generic `503 {\"error\": \"service unavailable\"}` response.\n  - **Regression coverage:** added tests for the bootstrap-file flow and for masked runtime errors on create/mint-token/stop routes.\n\n- **test**\n  - **Cause:** the new container isolation test assumed the Docker executable string would always be exactly `\"docker\"`, but production intentionally resolves an absolute path such as `/usr/bin/docker` on some hosts/CI runners.\n  - **Change:** made the test assert against `runner.docker_executable()` and explicitly simulate the absolute-path case.\n\nVerification run after the final edit:\n- `poetry run pytest tests/test_control_plane.py tests/test_runs_routes.py tests/test_container_isolation.py -q` → **37 passed**\n- `poetry run pytest -q` → **2813 passed, 22 skipped**",
+          "internal.retry_count.install": 0,
+          "thread.install.current_node": "fix",
+          "graph.rankdir": "LR",
+          "internal.retry_count.start": 0,
+          "thread.verify.current_node": "publish",
+          "current_node": "publish",
+          "thread.start.current_node": "pick_pr",
+          "failure_class": "",
+          "internal.retry_count.fix": 0,
+          "internal.retry_count.verify": 0,
+          "internal.work_dir": "/workspace/agent-smith",
+          "thread.pick_pr.current_node": "install",
+          "graph.model_stylesheet": "\n            *       { model: gpt-5.4; reasoning_effort: medium; }\n            .strong { model: gpt-5.5; reasoning_effort: high; }\n        ",
+          "failure_signature": "",
+          "thread.fix.current_node": "verify",
+          "graph.max_node_visits": "12",
+          "internal.retry_count.pick_pr": 0,
+          "command.output": "blob://sha256/f21c3a57be6a8112f46a883947173de32b848fda7b4251287fd566623c94574c",
+          "graph.goal": "Fix the failed CI checks on a Fabro pull request of 0x0pointer/agent-smith and push the fix to the same branch"
         },
         "node_outcomes": {
-          "verify": {
-            "status": "succeeded",
-            "context_updates": {
-              "command.output": "blob://sha256/d10a639c39299c488d265c24c24b71f50570d02175da95a6d72426448f45087f"
-            },
-            "notes": "Script completed: \nimport json, os, shlex, subprocess, sys\nD = '/tmp/fabro'\nNL = chr(10)\nMAX_FIXES = int('2')\nINSTALL = '''git submodule update -q --init --recursive && poetry install --with dev --no-interaction -q'''.strip()\nLINT = '''none'''.strip()\nTESTS = '''poetry run pytest -q'''.strip()\nPREFIXES = tuple(p.strip() for p in '.github/,.fabro/,skills/,.env'.split(',') if p.strip())\nFILES = set(p.strip() for p in 'LICENSE,sonar-project.properties,.gitmodules,skills'.split(',') if p.strip())\ndef run(cmd):\n    p = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='replace')\n    return p.returncode, p.stdout\ndef read(path):\n    try:\n        with open(path) as f:\n            return f.read()\n    except OSError:\n        return ''\ndef write(path, text):\n    with open(path, 'w') as f:\n        f.write(text)\ntry:\n    BASE = json.loads(read(D + '/pr.json'))['sha']\nexcept Exception:\n    print('ROUTE_stop')\n    print('No pull request was picked in this run.')\n    sys.exit(1)\ndef changed_files():\n    rc1, tracked = run('git diff --name-only ' + shlex.quote(BASE))\n    rc2, others = run('git ls-files --others --exclude-standard')\n    if rc1 != 0 or rc2 != 0:\n        return None, tracked + others\n    return sorted(set(l.strip() for l in (tracked + NL + others).splitlines() if l.strip())), ''\nchanged, git_error = changed_files()\ndef guard():\n    if changed is None:\n        return False, 'Could not list changed files:' + NL + git_error\n    bad = [f for f in changed if f.startswith(PREFIXES) or f in FILES]\n    if bad:\n        return False, 'PROTECTED FILES CHANGED - revert these:' + NL + NL.join(bad)\n    if not changed:\n        return False, 'No files were changed, so the failed checks cannot have been fixed.'\n    return True, 'files changed by this run:' + NL + NL.join(changed)\ndef syntax():\n    py = [f for f in changed if f.endswith('.py') and os.path.exists(f)]\n    if not py:\n        return True, 'no python files changed'\n    rc, out = run(shlex.quote(sys.executable) + ' -m py_compile ' + ' '.join(shlex.quote(f) for f in py))\n    return rc == 0, out\ndef command(cmd):\n    def go():\n        rc, out = run(cmd)\n        return rc == 0, out\n    return go\nSTEPS = [\n    ('protected paths', guard),\n    ('syntax', syntax),\n    ('install', command(INSTALL)),\n] + ([] if LINT.lower() == 'none' else [('lint', command(LINT))]) + [\n    ('tests', command(TESTS)),\n]\nlog = []\nfailure = None\nfor name, step in STEPS:\n    ok, out = step()\n    log.append('===== ' + name + ': ' + ('ok' if ok else 'FAILED') + NL + out)\n    if not ok:\n        failure = (name, out)\n        break\nwrite(D + '/verify.log', (NL + NL).join(log) + NL)\nif failure is None:\n    if os.path.exists(D + '/verify-summary.md'):\n        os.remove(D + '/verify-summary.md')\n    print('VERIFIED: ' + ', '.join(name for name, _ in STEPS) + ' all passed')\n    sys.exit(0)\nname, out = failure\nlines = out.splitlines()\nfailing = [l for l in lines if l.startswith(('FAILED ', 'ERROR '))][:25]\nsummary = 'Local verification failed at step: ' + name + NL\nif failing:\n    summary += NL + 'Failing tests:' + NL + NL.join(failing) + NL\nsummary += NL + 'Last lines of output:' + NL + NL.join(lines[-30:]) + NL\nsummary += NL + 'Full log: /tmp/fabro/verify.log' + NL\nsummary = summary[-6000:]\nwrite(D + '/verify-summary.md', summary)\ntry:\n    fails = int(read(D + '/verify_fails').strip() or 0) + 1\nexcept ValueError:\n    fails = MAX_FIXES + 1\nwrite(D + '/verify_fails', str(fails))\nroute = 'ROUTE_deep' if fails <= MAX_FIXES else 'ROUTE_stop'\nprint(route + ' (failed local verifications: ' + str(fails) + ')')\nprint(summary.replace('ROUTE_', 'ROUTE-')[-3000:])\nsys.exit(1)",
-            "usage": null,
-            "timing": {
-              "wall_time_ms": 0,
-              "inference_time_ms": 0,
-              "tool_time_ms": 88251,
-              "active_time_ms": 88251
-            }
-          },
-          "publish": {
-            "status": "succeeded",
-            "context_updates": {
-              "command.output": "blob://sha256/f21c3a57be6a8112f46a883947173de32b848fda7b4251287fd566623c94574c"
-            },
-            "notes": "Script completed: \nimport json, os, subprocess, sys, urllib.request\nOWNER, NAME = '0x0pointer', 'agent-smith'\nD = '/tmp/fabro'\nNL = chr(10)\ndef refuse(msg):\n    print('NOT PUSHED: ' + msg)\n    sys.exit(1)\ndef git(*args, check=True):\n    p = subprocess.run(('git',) + args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='replace')\n    if check and p.returncode != 0:\n        refuse('git ' + args[0] + ' failed: ' + p.stdout[-300:])\n    return p.returncode, p.stdout.strip()\ntry:\n    with open(D + '/pr.json') as f:\n        pr = json.load(f)\nexcept Exception:\n    refuse('no pull request was picked in this run')\nnumber, ref, sha = pr['number'], pr['ref'], pr['sha']\ngit('fetch', '-q', 'origin', ref)\nif git('rev-parse', 'FETCH_HEAD')[1] != sha:\n    refuse('the branch ' + ref + ' changed while this run was working; the fix was made for an older commit')\nif git('status', '--porcelain')[1]:\n    git('add', '-A')\n    git('-c', 'user.name=Fabro', '-c', 'user.email=noreply@fabro.sh', 'commit', '-q', '-m',\n        'Fix failed CI checks (' + str(pr.get('checks')) + ')')\nif git('merge-base', '--is-ancestor', sha, 'HEAD', check=False)[0] != 0:\n    refuse('the work is not based on the pull request branch')\nfiles = [l for l in git('diff', '--name-only', sha, 'HEAD')[1].splitlines() if l.strip()]\nif not files:\n    refuse('nothing changed, so there is nothing to push')\ngit('push', '-q', 'origin', 'HEAD:refs/heads/' + ref)\nhead = git('rev-parse', 'HEAD')[1]\nprint('PUSHED:', len(files), 'file(s) to', ref, '- pull request', number, 'is now at', head[:8])\nprint(NL.join(files))\ntoken = os.environ.get('GITHUB_TOKEN')\nbody = ('Fabro fix run ' + str(pr.get('round')) + ' pushed ' + head[:8] + ' for the failed checks (' + str(pr.get('checks')) + ').' + NL + NL\n    + 'Files changed:' + NL + NL.join('- ' + f for f in files[:50]) + NL + NL\n    + 'The local checks passed in the sandbox before pushing; CI on this pull request now runs everything.')\ntry:\n    req = urllib.request.Request('https://api.github.com/repos/' + OWNER + '/' + NAME + '/issues/' + str(number) + '/comments',\n        data=json.dumps(dict(body=body)).encode(),\n        headers=dict(Authorization='Bearer ' + str(token), Accept='application/vnd.github+json'))\n    urllib.request.urlopen(req, timeout=30).read()\nexcept Exception as exc:\n    print('warning: pushed, but could not comment on the pull request (' + type(exc).__name__ + ')')",
-            "usage": null,
-            "timing": {
-              "wall_time_ms": 0,
-              "inference_time_ms": 0,
-              "tool_time_ms": 4181,
-              "active_time_ms": 4181
-            }
-          },
-          "install": {
-            "status": "succeeded",
-            "context_updates": {
-              "command.output": "blob://sha256/12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126"
-            },
-            "notes": "Script completed: git submodule update -q --init --recursive && poetry install --with dev --no-interaction -q",
-            "usage": null,
-            "timing": {
-              "wall_time_ms": 0,
-              "inference_time_ms": 0,
-              "tool_time_ms": 7264,
-              "active_time_ms": 7264
-            }
-          },
           "pick_pr": {
             "status": "succeeded",
             "context_updates": {
@@ -1085,10 +1043,6 @@
               "tool_time_ms": 7328,
               "active_time_ms": 7328
             }
-          },
-          "start": {
-            "status": "succeeded",
-            "usage": null
           },
           "fix": {
             "status": "succeeded",
@@ -1125,22 +1079,165 @@
               "tool_time_ms": 298228,
               "active_time_ms": 485580
             }
+          },
+          "start": {
+            "status": "succeeded",
+            "usage": null
+          },
+          "install": {
+            "status": "succeeded",
+            "context_updates": {
+              "command.output": "blob://sha256/12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126"
+            },
+            "notes": "Script completed: git submodule update -q --init --recursive && poetry install --with dev --no-interaction -q",
+            "usage": null,
+            "timing": {
+              "wall_time_ms": 0,
+              "inference_time_ms": 0,
+              "tool_time_ms": 7264,
+              "active_time_ms": 7264
+            }
+          },
+          "publish": {
+            "status": "succeeded",
+            "context_updates": {
+              "command.output": "blob://sha256/f21c3a57be6a8112f46a883947173de32b848fda7b4251287fd566623c94574c"
+            },
+            "notes": "Script completed: \nimport json, os, subprocess, sys, urllib.request\nOWNER, NAME = '0x0pointer', 'agent-smith'\nD = '/tmp/fabro'\nNL = chr(10)\ndef refuse(msg):\n    print('NOT PUSHED: ' + msg)\n    sys.exit(1)\ndef git(*args, check=True):\n    p = subprocess.run(('git',) + args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='replace')\n    if check and p.returncode != 0:\n        refuse('git ' + args[0] + ' failed: ' + p.stdout[-300:])\n    return p.returncode, p.stdout.strip()\ntry:\n    with open(D + '/pr.json') as f:\n        pr = json.load(f)\nexcept Exception:\n    refuse('no pull request was picked in this run')\nnumber, ref, sha = pr['number'], pr['ref'], pr['sha']\ngit('fetch', '-q', 'origin', ref)\nif git('rev-parse', 'FETCH_HEAD')[1] != sha:\n    refuse('the branch ' + ref + ' changed while this run was working; the fix was made for an older commit')\nif git('status', '--porcelain')[1]:\n    git('add', '-A')\n    git('-c', 'user.name=Fabro', '-c', 'user.email=noreply@fabro.sh', 'commit', '-q', '-m',\n        'Fix failed CI checks (' + str(pr.get('checks')) + ')')\nif git('merge-base', '--is-ancestor', sha, 'HEAD', check=False)[0] != 0:\n    refuse('the work is not based on the pull request branch')\nfiles = [l for l in git('diff', '--name-only', sha, 'HEAD')[1].splitlines() if l.strip()]\nif not files:\n    refuse('nothing changed, so there is nothing to push')\ngit('push', '-q', 'origin', 'HEAD:refs/heads/' + ref)\nhead = git('rev-parse', 'HEAD')[1]\nprint('PUSHED:', len(files), 'file(s) to', ref, '- pull request', number, 'is now at', head[:8])\nprint(NL.join(files))\ntoken = os.environ.get('GITHUB_TOKEN')\nbody = ('Fabro fix run ' + str(pr.get('round')) + ' pushed ' + head[:8] + ' for the failed checks (' + str(pr.get('checks')) + ').' + NL + NL\n    + 'Files changed:' + NL + NL.join('- ' + f for f in files[:50]) + NL + NL\n    + 'The local checks passed in the sandbox before pushing; CI on this pull request now runs everything.')\ntry:\n    req = urllib.request.Request('https://api.github.com/repos/' + OWNER + '/' + NAME + '/issues/' + str(number) + '/comments',\n        data=json.dumps(dict(body=body)).encode(),\n        headers=dict(Authorization='Bearer ' + str(token), Accept='application/vnd.github+json'))\n    urllib.request.urlopen(req, timeout=30).read()\nexcept Exception as exc:\n    print('warning: pushed, but could not comment on the pull request (' + type(exc).__name__ + ')')",
+            "usage": null,
+            "timing": {
+              "wall_time_ms": 0,
+              "inference_time_ms": 0,
+              "tool_time_ms": 4181,
+              "active_time_ms": 4181
+            }
+          },
+          "verify": {
+            "status": "succeeded",
+            "context_updates": {
+              "command.output": "blob://sha256/d10a639c39299c488d265c24c24b71f50570d02175da95a6d72426448f45087f"
+            },
+            "notes": "Script completed: \nimport json, os, shlex, subprocess, sys\nD = '/tmp/fabro'\nNL = chr(10)\nMAX_FIXES = int('2')\nINSTALL = '''git submodule update -q --init --recursive && poetry install --with dev --no-interaction -q'''.strip()\nLINT = '''none'''.strip()\nTESTS = '''poetry run pytest -q'''.strip()\nPREFIXES = tuple(p.strip() for p in '.github/,.fabro/,skills/,.env'.split(',') if p.strip())\nFILES = set(p.strip() for p in 'LICENSE,sonar-project.properties,.gitmodules,skills'.split(',') if p.strip())\ndef run(cmd):\n    p = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='replace')\n    return p.returncode, p.stdout\ndef read(path):\n    try:\n        with open(path) as f:\n            return f.read()\n    except OSError:\n        return ''\ndef write(path, text):\n    with open(path, 'w') as f:\n        f.write(text)\ntry:\n    BASE = json.loads(read(D + '/pr.json'))['sha']\nexcept Exception:\n    print('ROUTE_stop')\n    print('No pull request was picked in this run.')\n    sys.exit(1)\ndef changed_files():\n    rc1, tracked = run('git diff --name-only ' + shlex.quote(BASE))\n    rc2, others = run('git ls-files --others --exclude-standard')\n    if rc1 != 0 or rc2 != 0:\n        return None, tracked + others\n    return sorted(set(l.strip() for l in (tracked + NL + others).splitlines() if l.strip())), ''\nchanged, git_error = changed_files()\ndef guard():\n    if changed is None:\n        return False, 'Could not list changed files:' + NL + git_error\n    bad = [f for f in changed if f.startswith(PREFIXES) or f in FILES]\n    if bad:\n        return False, 'PROTECTED FILES CHANGED - revert these:' + NL + NL.join(bad)\n    if not changed:\n        return False, 'No files were changed, so the failed checks cannot have been fixed.'\n    return True, 'files changed by this run:' + NL + NL.join(changed)\ndef syntax():\n    py = [f for f in changed if f.endswith('.py') and os.path.exists(f)]\n    if not py:\n        return True, 'no python files changed'\n    rc, out = run(shlex.quote(sys.executable) + ' -m py_compile ' + ' '.join(shlex.quote(f) for f in py))\n    return rc == 0, out\ndef command(cmd):\n    def go():\n        rc, out = run(cmd)\n        return rc == 0, out\n    return go\nSTEPS = [\n    ('protected paths', guard),\n    ('syntax', syntax),\n    ('install', command(INSTALL)),\n] + ([] if LINT.lower() == 'none' else [('lint', command(LINT))]) + [\n    ('tests', command(TESTS)),\n]\nlog = []\nfailure = None\nfor name, step in STEPS:\n    ok, out = step()\n    log.append('===== ' + name + ': ' + ('ok' if ok else 'FAILED') + NL + out)\n    if not ok:\n        failure = (name, out)\n        break\nwrite(D + '/verify.log', (NL + NL).join(log) + NL)\nif failure is None:\n    if os.path.exists(D + '/verify-summary.md'):\n        os.remove(D + '/verify-summary.md')\n    print('VERIFIED: ' + ', '.join(name for name, _ in STEPS) + ' all passed')\n    sys.exit(0)\nname, out = failure\nlines = out.splitlines()\nfailing = [l for l in lines if l.startswith(('FAILED ', 'ERROR '))][:25]\nsummary = 'Local verification failed at step: ' + name + NL\nif failing:\n    summary += NL + 'Failing tests:' + NL + NL.join(failing) + NL\nsummary += NL + 'Last lines of output:' + NL + NL.join(lines[-30:]) + NL\nsummary += NL + 'Full log: /tmp/fabro/verify.log' + NL\nsummary = summary[-6000:]\nwrite(D + '/verify-summary.md', summary)\ntry:\n    fails = int(read(D + '/verify_fails').strip() or 0) + 1\nexcept ValueError:\n    fails = MAX_FIXES + 1\nwrite(D + '/verify_fails', str(fails))\nroute = 'ROUTE_deep' if fails <= MAX_FIXES else 'ROUTE_stop'\nprint(route + ' (failed local verifications: ' + str(fails) + ')')\nprint(summary.replace('ROUTE_', 'ROUTE-')[-3000:])\nsys.exit(1)",
+            "usage": null,
+            "timing": {
+              "wall_time_ms": 0,
+              "inference_time_ms": 0,
+              "tool_time_ms": 88251,
+              "active_time_ms": 88251
+            }
           }
         },
         "next_node_id": "exit",
+        "git_commit_sha": "c7ee39bb6aa39057353a57998cc98008b86c9ded",
         "node_visits": {
-          "pick_pr": 1,
-          "install": 1,
-          "verify": 1,
-          "fix": 1,
           "start": 1,
-          "publish": 1
+          "fix": 1,
+          "pick_pr": 1,
+          "publish": 1,
+          "verify": 1,
+          "install": 1
         }
       },
-      "diff": {}
+      "diff": {
+        "summary": {
+          "files_changed": 112,
+          "additions": 3528,
+          "deletions": 353
+        }
+      }
     }
   ],
-  "conclusion": null,
+  "conclusion": {
+    "timestamp": "2026-11-27T11:54:59.006813955Z",
+    "status": "succeeded",
+    "timing": {
+      "wall_time_ms": 621749,
+      "inference_time_ms": 187352,
+      "tool_time_ms": 405252,
+      "active_time_ms": 592604
+    },
+    "final_git_commit_sha": "c7ee39bb6aa39057353a57998cc98008b86c9ded",
+    "stages": [
+      {
+        "stage_id": "start",
+        "stage_label": "start",
+        "timing": {
+          "wall_time_ms": 0,
+          "inference_time_ms": 0,
+          "tool_time_ms": 0,
+          "active_time_ms": 0
+        },
+        "retries": 0
+      },
+      {
+        "stage_id": "pick_pr",
+        "stage_label": "pick_pr",
+        "timing": {
+          "wall_time_ms": 7354,
+          "inference_time_ms": 0,
+          "tool_time_ms": 7328,
+          "active_time_ms": 7328
+        },
+        "retries": 0
+      },
+      {
+        "stage_id": "install",
+        "stage_label": "install",
+        "timing": {
+          "wall_time_ms": 7274,
+          "inference_time_ms": 0,
+          "tool_time_ms": 7264,
+          "active_time_ms": 7264
+        },
+        "retries": 0
+      },
+      {
+        "stage_id": "fix",
+        "stage_label": "fix",
+        "timing": {
+          "wall_time_ms": 487692,
+          "inference_time_ms": 187352,
+          "tool_time_ms": 298228,
+          "active_time_ms": 485580
+        },
+        "billing_usd_micros": 977209,
+        "retries": 0
+      },
+      {
+        "stage_id": "verify",
+        "stage_label": "verify",
+        "timing": {
+          "wall_time_ms": 88270,
+          "inference_time_ms": 0,
+          "tool_time_ms": 88251,
+          "active_time_ms": 88251
+        },
+        "retries": 0
+      },
+      {
+        "stage_id": "publish",
+        "stage_label": "publish",
+        "timing": {
+          "wall_time_ms": 4194,
+          "inference_time_ms": 0,
+          "tool_time_ms": 4181,
+          "active_time_ms": 4181
+        },
+        "retries": 0
+      }
+    ],
+    "billing": {
+      "input_tokens": 116211,
+      "output_tokens": 6325,
+      "total_tokens": 2054521,
+      "reasoning_tokens": 7377,
+      "cache_read_tokens": 1924608,
+      "cache_write_tokens": 0,
+      "total_usd_micros": 977209
+    },
+    "total_retries": 0,
+    "diff": {}
+  },
   "sandbox": {
     "kind": "ready",
     "plan": {
@@ -1415,6 +1512,40 @@
       },
       "state": "succeeded"
     },
+    "exit@1": {
+      "first_event_seq": 257,
+      "prompt": null,
+      "response": null,
+      "completion": {
+        "outcome": "succeeded",
+        "notes": null,
+        "failure_reason": null,
+        "timestamp": "2026-11-27T11:54:58.966416451Z"
+      },
+      "provider_used": null,
+      "diff": null,
+      "script_invocation": null,
+      "script_timing": null,
+      "parallel_results": null,
+      "output": null,
+      "started_at": "2026-11-27T11:54:58.966393595Z",
+      "handler": "exit",
+      "timing": {
+        "wall_time_ms": 0,
+        "inference_time_ms": 0,
+        "tool_time_ms": 0,
+        "active_time_ms": 0
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "reasoning_tokens": 0,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0
+      },
+      "state": "succeeded"
+    },
     "install@1": {
       "first_event_seq": 31,
       "prompt": null,
@@ -1502,7 +1633,12 @@
       "first_event_seq": 247,
       "prompt": null,
       "response": null,
-      "completion": null,
+      "completion": {
+        "outcome": "succeeded",
+        "notes": "Script completed: \nimport json, os, subprocess, sys, urllib.request\nOWNER, NAME = '0x0pointer', 'agent-smith'\nD = '/tmp/fabro'\nNL = chr(10)\ndef refuse(msg):\n    print('NOT PUSHED: ' + msg)\n    sys.exit(1)\ndef git(*args, check=True):\n    p = subprocess.run(('git',) + args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='replace')\n    if check and p.returncode != 0:\n        refuse('git ' + args[0] + ' failed: ' + p.stdout[-300:])\n    return p.returncode, p.stdout.strip()\ntry:\n    with open(D + '/pr.json') as f:\n        pr = json.load(f)\nexcept Exception:\n    refuse('no pull request was picked in this run')\nnumber, ref, sha = pr['number'], pr['ref'], pr['sha']\ngit('fetch', '-q', 'origin', ref)\nif git('rev-parse', 'FETCH_HEAD')[1] != sha:\n    refuse('the branch ' + ref + ' changed while this run was working; the fix was made for an older commit')\nif git('status', '--porcelain')[1]:\n    git('add', '-A')\n    git('-c', 'user.name=Fabro', '-c', 'user.email=noreply@fabro.sh', 'commit', '-q', '-m',\n        'Fix failed CI checks (' + str(pr.get('checks')) + ')')\nif git('merge-base', '--is-ancestor', sha, 'HEAD', check=False)[0] != 0:\n    refuse('the work is not based on the pull request branch')\nfiles = [l for l in git('diff', '--name-only', sha, 'HEAD')[1].splitlines() if l.strip()]\nif not files:\n    refuse('nothing changed, so there is nothing to push')\ngit('push', '-q', 'origin', 'HEAD:refs/heads/' + ref)\nhead = git('rev-parse', 'HEAD')[1]\nprint('PUSHED:', len(files), 'file(s) to', ref, '- pull request', number, 'is now at', head[:8])\nprint(NL.join(files))\ntoken = os.environ.get('GITHUB_TOKEN')\nbody = ('Fabro fix run ' + str(pr.get('round')) + ' pushed ' + head[:8] + ' for the failed checks (' + str(pr.get('checks')) + ').' + NL + NL\n    + 'Files changed:' + NL + NL.join('- ' + f for f in files[:50]) + NL + NL\n    + 'The local checks passed in the sandbox before pushing; CI on this pull request now runs everything.')\ntry:\n    req = urllib.request.Request('https://api.github.com/repos/' + OWNER + '/' + NAME + '/issues/' + str(number) + '/comments',\n        data=json.dumps(dict(body=body)).encode(),\n        headers=dict(Authorization='Bearer ' + str(token), Accept='application/vnd.github+json'))\n    urllib.request.urlopen(req, timeout=30).read()\nexcept Exception as exc:\n    print('warning: pushed, but could not comment on the pull request (' + type(exc).__name__ + ')')",
+        "failure_reason": null,
+        "timestamp": "2026-11-27T11:54:54.183462101Z"
+      },
       "provider_used": null,
       "diff": null,
       "script_invocation": {
@@ -1511,11 +1647,27 @@
         "language": "python",
         "timeout_ms": 300000
       },
-      "script_timing": null,
+      "script_timing": {
+        "output": "blob://sha256/f21c3a57be6a8112f46a883947173de32b848fda7b4251287fd566623c94574c",
+        "exit_code": 0,
+        "duration_ms": 4181,
+        "termination": "exited",
+        "output_bytes": 2914,
+        "live_streaming": true
+      },
       "parallel_results": null,
       "output": null,
+      "output_bytes": 2914,
+      "live_streaming": true,
+      "termination": "exited",
       "started_at": "2026-11-27T11:54:49.988756534Z",
       "handler": "command",
+      "timing": {
+        "wall_time_ms": 4194,
+        "inference_time_ms": 0,
+        "tool_time_ms": 4181,
+        "active_time_ms": 4181
+      },
       "usage": {
         "input_tokens": 0,
         "output_tokens": 0,
@@ -1524,7 +1676,7 @@
         "cache_read_tokens": 0,
         "cache_write_tokens": 0
       },
-      "state": "running"
+      "state": "succeeded"
     },
     "pick_pr@1": {
       "first_event_seq": 21,
