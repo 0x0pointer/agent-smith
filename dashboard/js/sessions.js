@@ -275,7 +275,8 @@ function _startRunError(httpStatus, data) {
     'code folder cannot be a whole drive': 'Pick the project folder for the source code, not a whole drive.',
   };
   if (data && friendly[data.error]) return friendly[data.error];
-  return (data && data.error) || 'Could not start the scan.';
+  return (data && data.error) ||
+    'Could not start the scan: the platform hit an unexpected error. Check it is still running with `smith status`.';
 }
 
 async function startRunFromForm(ev) {
@@ -313,7 +314,7 @@ async function startRunFromForm(ev) {
   };
   if (!body.target) { setStatus('Enter a target.', true); return; }
   _startRunBusy = true;
-  setStatus('Starting…', false);
+  setStatus('Starting the agent…', false);
   try {
     const r = await fetch('/api/runs', {
       method: 'POST',

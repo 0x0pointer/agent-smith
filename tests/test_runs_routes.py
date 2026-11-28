@@ -624,3 +624,21 @@ def test_error_responses_never_carry_exception_or_process_text(monkeypatch, tmp_
     with patch("control_plane.orchestrator.resume_run", side_effect=Exception("/Users/x/.ssh/id_rsa boom")):
         r = client.post("/api/restart-smith", headers=_headers(created2["token"]))
     assert r.status_code == 500 and r.json() == {"ok": False, "error": "could not resume the scan"}
+
+
+def test_create_run_tells_the_operator_why_the_agent_did_not_start(monkeypatch, tmp_path):
+    monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{tmp_path / 'runs.db'}")
+    monkeypatch.setenv("SMITH_DASHBOARD_AUTH", "1")
+    monkeypatch.delenv("SMITH_SINGLE_RUN", raising=False)
+    client = TestClient(app)
+    operator_token = dashboard_auth.mint_operator_token()
+
+    with patch("subprocess.Popen", side_effect=FileNotFoundError(2, "No such file or directory: 'claude'")):
+        response = client.post("/api/runs", json={"target": "https://a.example", "depth": "recon"},
+                               headers=_headers(operator_token))
+
+    assert response.status_code == 502
+    error = response.json()["error"]
+    assert "could not be started" in error and "No such file" not in error
+    listed = client.get("/api/runs", headers=_headers(operator_token)).json()
+    assert [r["status"] for r in listed] == ["failed"]

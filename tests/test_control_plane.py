@@ -102,9 +102,11 @@ def test_api_create_run_malformed_body_400_without_side_effects(monkeypatch, tmp
 def test_docker_failure_marks_failed_and_cleans(monkeypatch, tmp_path):
     _configure_db(monkeypatch, tmp_path)
 
+    # A launch failure is reported as a WorkerStartError with a fixed public reason.
     with patch("subprocess.Popen", side_effect=OSError("docker failed")):
-        with pytest.raises(OSError):
+        with pytest.raises(orchestrator.WorkerStartError) as err:
             orchestrator.create_run({"target": "https://broken.example", "depth": "recon"})
+    assert "docker failed" not in err.value.public
 
     rows = orchestrator.list_runs()
     assert rows[0]["status"] == "failed"
@@ -475,6 +477,97 @@ def test_code_folder_must_be_an_existing_project_folder(monkeypatch, tmp_path):
         assert popen.call_count == 0
     assert orchestrator.list_runs() == []
     assert orchestrator.validate_codebase("") == "" and orchestrator.validate_codebase(None) == ""
+
+
+class _FakeWorker:
+    """A worker process handle: exits with ``code`` at once, or keeps running (None)."""
+
+    def __init__(self, code=None, pid=4321):
+        self.pid, self._code = pid, code
+
+    def wait(self, timeout=None):
+        if self._code is None:
+            raise orchestrator.subprocess.TimeoutExpired("claude", timeout)
+        return self._code
+
+    def poll(self):
+        return self._code
+
+
+def test_worker_is_launched_by_its_full_path(monkeypatch, tmp_path):
+    """On Windows the client is claude.CMD; a bare 'claude' is not found by subprocess."""
+    _configure_db(monkeypatch, tmp_path)
+    monkeypatch.setattr(orchestrator.shutil, "which", lambda name: f"C:/npm/{name}.CMD")
+    captured = {}
+
+    def _capture(args, **kwargs):
+        captured["args"] = [str(a) for a in args]
+        return _FakeWorker()
+
+    with patch("subprocess.Popen", side_effect=_capture):
+        created = orchestrator.create_run({"target": "https://a.example", "depth": "recon"})
+
+    assert captured["args"][0] == "C:/npm/claude.CMD"
+    assert created["status"] == "running"
+
+
+def test_a_client_that_cannot_be_launched_is_reported_plainly(monkeypatch, tmp_path):
+    _configure_db(monkeypatch, tmp_path)
+
+    with patch("subprocess.Popen", side_effect=FileNotFoundError(2, "No such file")), \
+            pytest.raises(orchestrator.WorkerStartError) as err:
+        orchestrator.create_run({"target": "https://a.example", "depth": "recon"})
+
+    assert "could not be started" in err.value.public and "No such file" not in err.value.public
+    assert [r["status"] for r in orchestrator.list_runs()] == ["failed"]
+
+
+@pytest.mark.parametrize("log_line, expected", [
+    ('Failed to authenticate. API Error: 401 {"message":"OAuth access token is invalid."}', "not signed in"),
+    ("Credit balance is too low", "no credit left"),
+    ("something else broke", "stopped right after starting"),
+])
+def test_a_worker_that_dies_at_once_fails_the_scan_with_the_reason(monkeypatch, tmp_path, log_line, expected):
+    """A scan must not be reported as running when its agent never began."""
+    _configure_db(monkeypatch, tmp_path)
+    monkeypatch.setattr(orchestrator, "_stop_run_tooling", lambda run_id: [])    # no Docker in this test
+    seen = {}
+
+    def _spawn(args, **kwargs):
+        seen["workdir"] = Path(kwargs["env"]["SMITH_WORKDIR"])
+        kwargs["stdout"].write(log_line + "\n")
+        kwargs["stdout"].flush()
+        return _FakeWorker(code=1)
+
+    with patch("subprocess.Popen", side_effect=_spawn), \
+            pytest.raises(orchestrator.WorkerStartError) as err:
+        orchestrator.create_run({"target": "https://a.example", "depth": "recon"})
+
+    assert expected in err.value.public
+    assert "401" not in err.value.public and "OAuth" not in err.value.public      # fixed text, not the log
+    assert [r["status"] for r in orchestrator.list_runs()] == ["failed"]
+    assert (seen["workdir"] / "logs" / "worker.log").exists()                     # kept as evidence
+
+
+def test_stop_worker_also_stops_what_the_worker_started(monkeypatch):
+    """On Windows the worker pid is the client's .cmd shim; the agent is its child."""
+    import psutil
+
+    procs = {}
+
+    def _process(pid):
+        proc = procs.setdefault(pid, MagicMock(pid=pid))
+        proc.status.return_value = psutil.STATUS_RUNNING if not proc.terminate.called else psutil.STATUS_ZOMBIE
+        if pid == 100:
+            proc.children.return_value = [MagicMock(pid=101), MagicMock(pid=102)]
+        return proc
+
+    monkeypatch.setattr(orchestrator.time, "sleep", lambda s: None)
+    with patch("psutil.Process", side_effect=_process):
+        errors = orchestrator._stop_worker("run-abc", 100)
+
+    assert errors == []
+    assert all(procs[pid].terminate.called for pid in (100, 101, 102))
 
 
 def test_stop_control_plane_terminates_services(monkeypatch):

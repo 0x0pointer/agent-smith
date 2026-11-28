@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 
@@ -71,11 +72,18 @@ async def api_create_run(request: Request) -> JSONResponse:
         return JSONResponse({"error": "forbidden"}, status_code=403)
     try:
         body = await request.json()
-        return JSONResponse(orchestrator.create_run(body))
+        # Off the event loop: starting a scan waits a few seconds to see that the
+        # agent stays up, and the dashboard must keep answering meanwhile.
+        return JSONResponse(await asyncio.to_thread(orchestrator.create_run, body))
     except json.JSONDecodeError:
         return JSONResponse({"error": "malformed json"}, status_code=400)
     except orchestrator.RunIdCollisionError:
         return JSONResponse({"error": "could not allocate a unique run id, try again"}, status_code=409)
+    except orchestrator.WorkerStartError as exc:
+        # The agent could not be started or died at once; `public` is one of the
+        # orchestrator's fixed plain-language reasons (never process output).
+        _LOG.warning("runs route create: worker did not start: %s", exc.public)
+        return JSONResponse({"error": exc.public}, status_code=502)
     except ValueError as exc:
         # A fixed message per validation rule — never the exception text itself.
         return JSONResponse({"error": orchestrator.public_validation_error(exc)}, status_code=400)

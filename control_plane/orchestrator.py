@@ -44,6 +44,18 @@ class RunIdCollisionError(RuntimeError):
     pass
 
 
+class WorkerStartError(RuntimeError):
+    """The scan's agent could not be started or died at once.
+
+    ``public`` is a fixed, plain-language reason that is safe to show the
+    operator (never process output or exception text).
+    """
+
+    def __init__(self, public: str):
+        super().__init__(public)
+        self.public = public
+
+
 def _dashboard_base_url() -> str:
     return f"http://127.0.0.1:{_CONTROL_PLANE_PORT}"
 
@@ -326,7 +338,11 @@ def _agent_client() -> str:
 def _agent_spawn_args(client: str, prompt: str) -> list[str]:
     from core.api_server.smith.spawn import _build_spawn_args
 
-    return _build_spawn_args(client, client, None, prompt)
+    # Resolve the client to its full path. On Windows the npm-installed clients
+    # are ``.cmd`` shims (claude.CMD), and a bare name is not found by
+    # subprocess: every scan started from the dashboard failed at launch.
+    binary = shutil.which(client) or client
+    return _build_spawn_args(binary, client, None, prompt)
 
 
 _RUN_MCP_CONFIG_FILENAME = "mcp.json"
@@ -436,9 +452,62 @@ def _spawn_worker(
     if sys.platform == "win32":
         spawn_kwargs.pop("start_new_session", None)
         spawn_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
-    with (logs_dir / "worker.log").open("a", encoding="utf-8") as log_fh:
-        proc = subprocess.Popen(args, stdout=log_fh, stderr=log_fh, **spawn_kwargs)
-    return int(getattr(proc, "pid", 0) or 0)
+    with (logs_dir / _WORKER_LOG).open("a", encoding="utf-8") as log_fh:
+        try:
+            proc = subprocess.Popen(args, stdout=log_fh, stderr=log_fh, stdin=subprocess.DEVNULL, **spawn_kwargs)
+        except OSError as exc:
+            _LOG.warning("run %s: could not start %s: %s", run_id, client, exc)
+            raise WorkerStartError(
+                f"The {client} command could not be started. Check that it is installed on this computer."
+            ) from None
+    pid = int(getattr(proc, "pid", 0) or 0)
+    if pid:
+        _WORKER_PROCS[pid] = proc
+        for old in [p for p, handle in _WORKER_PROCS.items() if p != pid and _exit_code(handle, 0) is not None]:
+            _WORKER_PROCS.pop(old, None)
+    return pid
+
+
+_WORKER_LOG = "worker.log"
+_WORKER_STARTUP_GRACE_S = 6.0
+# Workers this process started, by pid: lets create_run notice one that dies at once.
+_WORKER_PROCS: dict[int, subprocess.Popen] = {}
+
+
+def _exit_code(proc: object, wait_s: float) -> int | None:
+    """The process's exit code if it ends within ``wait_s`` seconds, else None."""
+    try:
+        code = proc.wait(timeout=wait_s) if wait_s > 0 else proc.poll()
+    except subprocess.TimeoutExpired:
+        return None
+    except Exception:                           # not a real process handle
+        return None
+    return code if isinstance(code, int) and not isinstance(code, bool) else None
+
+
+def _worker_startup_problem(run_id: str, pid: int, workdir: Path) -> str | None:
+    """Why the worker died right after starting, in plain words; None if it is running.
+
+    A healthy agent runs for minutes. One that exits within the grace period
+    never began the scan — most often because the client is not signed in — and
+    reporting the scan as "running" would leave the operator watching nothing.
+    The reason is chosen from fixed messages; the log itself stays on disk.
+    """
+    proc = _WORKER_PROCS.get(pid)
+    if proc is None or _exit_code(proc, _WORKER_STARTUP_GRACE_S) is None:
+        return None
+    _WORKER_PROCS.pop(pid, None)
+    try:
+        tail = (workdir / "logs" / _WORKER_LOG).read_text(encoding="utf-8", errors="replace")[-4000:].lower()
+    except OSError:
+        tail = ""
+    client = _agent_client()
+    if "authenticat" in tail or "oauth" in tail or "/login" in tail or "api key" in tail:
+        return (f"The {client} command is not signed in. Run it in a terminal, sign in, "
+                "then start the scan again.")
+    if "credit balance" in tail:
+        return "The AI account has no credit left, so the agent stopped at once."
+    return f"The agent stopped right after starting. Its log is in runs/{run_id}/logs/{_WORKER_LOG}."
 
 
 _WORKER_SNAPSHOT = "worker"
@@ -777,6 +846,14 @@ def create_run(payload: object) -> dict:
         _stop_run_tooling(run_id)
         shutil.rmtree(workdir, ignore_errors=True)
         raise
+    problem = _worker_startup_problem(run_id, worker_pid, workdir)
+    if problem:
+        # Keep the workdir: its worker.log is the evidence of what went wrong.
+        session_doc["status"] = "failed"
+        repo.upsert_run(run_id, session_doc, str(workdir))
+        repo.save_snapshot(run_id, "session", session_doc)
+        _stop_run_tooling(run_id)
+        raise WorkerStartError(problem)
     return {
         "run_id": run_id,
         "status": "running",
@@ -831,17 +908,37 @@ def _stop_worker(run_id: str, worker_pid: int | None) -> list[str]:
     errors: list[str] = []
     if not worker_pid:
         return errors
+    # The agent's own children go too. On Windows the worker pid is the client's
+    # .cmd shim (cmd.exe) and the agent is its child: stopping only the shim
+    # would leave the agent testing a target the operator just told it to stop.
+    children = _worker_children(worker_pid)
     if not _terminate_pid(worker_pid):
         return errors
+    for child in children:
+        _terminate_pid(child)
     deadline = time.time() + 5
     while _pid_alive(worker_pid) and time.time() < deadline:
         time.sleep(0.1)
-    if _pid_alive(worker_pid):
+    for pid in [worker_pid, *children]:
+        if not _pid_alive(pid):
+            continue
         try:
-            _kill_pid(worker_pid)
+            _kill_pid(pid)
         except (psutil.Error, OSError) as exc:
             errors.append(f"worker {run_id}: {exc}")
+    _WORKER_PROCS.pop(worker_pid, None)
     return errors
+
+
+def _worker_children(pid: int) -> list[int]:
+    """Pids of every process the worker started (empty if it is gone)."""
+    try:
+        children = psutil.Process(pid).children(recursive=True)
+    except (psutil.Error, OSError):
+        return []
+    if not isinstance(children, (list, tuple)):
+        return []
+    return [int(c.pid) for c in children if isinstance(getattr(c, "pid", None), int)]
 
 
 def _stop_run_tooling(run_id: str) -> list[str]:
