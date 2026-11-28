@@ -12,6 +12,7 @@
   <title>Agent-Smith Pentester Platform</title>
   <link rel="icon" type="image/vnd.microsoft.icon" href="/favicon.ico">
   <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
+  <link rel="icon" type="image/svg+xml" href="/static/img/logo.svg">
   <link rel="shortcut icon" type="image/vnd.microsoft.icon" href="/favicon.ico">
   <!-- Vendored locally (dashboard/js/vendor/) — the dashboard is fully self-contained
        and works air-gapped; no runtime CDN dependency. See vendor/README.md for versions. -->
@@ -26,11 +27,9 @@
 <!-- ── Left rail: brand + navigation ─────────────────────────────────────── -->
 <aside class="rail" id="rail">
   <div class="rail-brand">
-    <img class="rail-logo" src="/logo.png" alt="Agent-Smith Pentester Platform" onerror="this.style.display='none'">
-    <div class="rail-brand-text">
-      <span class="rail-brand-line">Agent-Smith</span>
-      <span class="rail-brand-line h1-accent rail-brand-sub">Pentester Platform</span>
-    </div>
+    <!-- The full logo (mark + name); the mark alone when the rail collapses. -->
+    <img class="rail-logo rail-logo-full" src="/static/img/logo-full.svg" alt="Agent-Smith Pentester Platform" onerror="this.style.display='none'">
+    <img class="rail-logo rail-logo-mark" src="/static/img/logo.svg" alt="" aria-hidden="true" onerror="this.style.display='none'">
   </div>
 
   <nav class="rail-nav" aria-label="Sections">

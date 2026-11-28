@@ -2648,7 +2648,15 @@ div.act-row:hover, .act-row > summary:hover { background: rgba(123,120,255,0.05)
 .rail-platform { display: none; }
 body.cp-operator .rail-platform { display: block; }
 /* Brand: the product name on two lines; the second is longer, so it is a step smaller. */
-.rail-brand-sub { font-size: var(--fs-sm); letter-spacing: 0.02em; white-space: nowrap; }
+/* Brand: the full logo (agent figure + name) fills the open rail; the figure alone
+   when it collapses. */
+.rail-logo-full { width: 100%; height: auto; }
+.rail-logo-mark { display: none; }
+.dossier-logo { height: 46px; }
+@media (max-width: 1100px) {
+  .rail-logo-full { display: none; }
+  .rail-logo-mark { display: block; }
+}
 .rail-sub-head { padding-top: var(--sp-2); font-weight: 700; letter-spacing: 0.14em; }
 .rail-scan { display: none; margin-top: var(--sp-3); padding-top: var(--sp-2); border-top: 1px solid var(--border-subtle); }
 body.cp-platform .rail-scan { display: block; }
