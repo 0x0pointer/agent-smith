@@ -640,8 +640,15 @@ def _write_pid_file(path: Path, pid: int) -> None:
 
 
 def _read_pid_file(path: Path) -> int | None:
+    """The pid recorded in ``path``.
+
+    Reads both forms of the dashboard pid file: the plain pid written here, and
+    ``pid:code-fingerprint`` written when a tool server starts the dashboard
+    (core.api_server.serve). Reading only the first left `smith stop` unable to
+    stop a dashboard recorded in the second.
+    """
     try:
-        return int(path.read_text(encoding="utf-8").strip())
+        return int(path.read_text(encoding="utf-8").strip().split(":", 1)[0])
     except Exception:
         return None
 

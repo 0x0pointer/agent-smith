@@ -352,6 +352,8 @@ from .mermaid import _DARK_REMAP, _remap_mermaid_dark, _render_mermaid_svgs  # n
 from .serve import (  # noqa: E402
     _PID_FILE,
     _pid_alive,
+    _platform_on_port,
+    _platform_owns_dashboard,
     _port_healthy,
     _read_pid,
     _write_pid,
