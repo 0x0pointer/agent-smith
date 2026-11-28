@@ -178,7 +178,7 @@
     const sev = (f.severity || 'info').toLowerCase();
     const vs  = f.verification_status || 'unverified';
 
-    document.title = `${f.title ? f.title.slice(0, 60) : 'Finding'} · Pentest Dashboard`;
+    document.title = `${f.title ? f.title.slice(0, 60) : 'Finding'} · Agent-Smith Pentester Platform`;
     if (statusEl) {
       statusEl.innerHTML = `<span class="dot"></span>Live · refreshes every 5 s`
         + (data.archived ? ' · <strong style="color:#faad14">archived</strong>' : '');
@@ -264,11 +264,11 @@
   }
 
   function renderMissing() {
-    if (statusEl) statusEl.innerHTML = '<span class="dot" style="background:#f85149;box-shadow:0 0 6px #f85149"></span>Not found';
+    if (statusEl) statusEl.innerHTML = '<span class="dot" style="background:var(--danger);box-shadow:0 0 6px var(--danger)"></span>Not found';
     root.innerHTML = `<div class="empty-placeholder">This finding was not found — it may have been cleared or archived.
       <div style="margin-top:1rem"><a class="detail-link" href="/"
         onclick="if (window.history.length > 1) { window.history.back(); return false; }">&#8592; Back to all findings</a></div></div>`;
-    document.title = 'Finding not found · Pentest Dashboard';
+    document.title = 'Finding not found · Agent-Smith Pentester Platform';
   }
 
   async function poll() {

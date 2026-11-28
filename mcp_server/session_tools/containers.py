@@ -9,7 +9,7 @@ async def _do_start_kali():
     log.tool_call("start_kali", {})
     ok, msg = await kali_runner.ensure_running()
     result = (
-        f"Kali container ready at {kali_runner.KALI_API} ({msg})"
+        f"Kali container ready at {kali_runner.api_url()} ({msg})"
         if ok else f"Failed to start Kali container: {msg}"
     )
     log.tool_result("start_kali", result)
@@ -29,7 +29,7 @@ async def _do_start_metasploit():
     log.tool_call("start_metasploit", {})
     ok, msg = await metasploit_runner.ensure_running()
     result = (
-        f"Metasploit container ready at {metasploit_runner.MSF_API} ({msg})"
+        f"Metasploit container ready at {metasploit_runner.api_url()} ({msg})"
         if ok else f"Failed to start Metasploit container: {msg}"
     )
     log.tool_result("start_metasploit", result)
@@ -49,7 +49,7 @@ async def _do_start_mobsf():
     log.tool_call("start_mobsf", {})
     ok, msg = await mobsf_runner.ensure_running()
     result = (
-        f"MobSF container ready at {mobsf_runner.MOBSF_API} ({msg}) — "
+        f"MobSF container ready at {mobsf_runner.api_url()} ({msg}) — "
         f"run scan(tool='mobsf', target='/path/app.apk')."
         if ok else f"Failed to start MobSF container: {msg}"
     )

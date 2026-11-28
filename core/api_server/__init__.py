@@ -68,6 +68,7 @@ _DASHBOARD_DIR     = _paths.DASHBOARD_DIR
 _THREAT_MODEL_DIR  = _paths.THREAT_MODEL_DIR
 _SMITH_PID_FILE    = _paths.SMITH_PID_FILE
 _SMITH_CLIENT_FILE = _paths.SMITH_CLIENT_FILE
+_SMITH_IDLE_FILE   = _paths.SMITH_IDLE_FILE
 
 # ── Optional Sentry error tracking ───────────────────────────────────────────
 # Set SENTRY_DSN env var to enable. No-op when unset so other installs are
@@ -85,6 +86,51 @@ if _sentry_dsn:
 app = FastAPI(title="pentest-agent")
 
 
+def _dashboard_auth_enabled() -> bool:
+    return os.environ.get("SMITH_DASHBOARD_AUTH", "1").lower() not in ("0", "false", "no")
+
+
+def _authenticate_api_request(request: Request) -> JSONResponse | None:
+    from core import dashboard_auth
+
+    hdr = request.headers.get("authorization", "")
+    supplied = hdr[7:].strip() if hdr[:7].lower() == "bearer " else ""
+    meta = dashboard_auth.verify_bearer(supplied)
+    if meta:
+        request.state.run_id = meta.get("run_id") or None
+        request.state.role = meta.get("role") or None
+        return None
+    if dashboard_auth.verify(supplied):
+        request.state.role = "operator"
+        return None
+
+    from core import db as _db
+
+    if _db.database_enabled() or dashboard_auth.read_token():
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return None
+
+
+async def _work_queue_loop() -> None:
+    """Poll bound Sources and dispatch queued work to idle runs, forever."""
+    try:
+        interval = max(10, int(os.environ.get("SMITH_WORK_POLL_SECONDS", "30")))
+    except ValueError:
+        interval = 30
+    while True:
+        try:
+            await asyncio.sleep(interval)
+            from core import db as _db
+            if not _db.database_enabled():
+                continue
+            from control_plane import work_queue
+            await asyncio.to_thread(work_queue.tick)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _log.exception("work queue tick failed")
+
+
 @app.middleware("http")
 async def _require_dashboard_token(request: Request, call_next):
     """Gate the ``/api/*`` control plane behind the per-session bearer token.
@@ -99,15 +145,12 @@ async def _require_dashboard_token(request: Request, call_next):
     Disable for the test suite via ``SMITH_DASHBOARD_AUTH=0`` (see tests/conftest).
     """
     path = request.url.path
-    auth_on = os.environ.get("SMITH_DASHBOARD_AUTH", "1").lower() not in ("0", "false", "no")
-    if auth_on and path.startswith("/api/"):
-        from core import dashboard_auth
-        token = dashboard_auth.read_token()
-        if token:  # a session is active → require the bearer token
-            hdr = request.headers.get("authorization", "")
-            supplied = hdr[7:].strip() if hdr[:7].lower() == "bearer " else ""
-            if not dashboard_auth.verify(supplied):
-                return JSONResponse({"error": "unauthorized"}, status_code=401)
+    request.state.run_id = None
+    request.state.role = None
+    if _dashboard_auth_enabled() and path.startswith("/api/"):
+        unauthorized = _authenticate_api_request(request)
+        if unauthorized is not None:
+            return unauthorized
     resp = await call_next(request)
     # Force the browser to REVALIDATE dashboard assets on every load instead of
     # serving a heuristically-cached stale copy. Without this, the un-versioned
@@ -132,6 +175,7 @@ _qa_task:        asyncio.Task | None = None  # kept alive to prevent GC
 _watchdog_task:  asyncio.Task | None = None
 _status_task:    asyncio.Task | None = None
 _refusal_task:   asyncio.Task | None = None
+_work_task:      asyncio.Task | None = None
 # Auto-restart watchdog state
 _watchdog_last_restart_ts: float = 0.0
 _watchdog_restart_count_window: list[float] = []  # epoch seconds of restarts in trailing hour
@@ -179,6 +223,10 @@ async def _start_background_tasks() -> None:
     else:
         _refusal_task = None
     _status_task = asyncio.create_task(_status_update_loop())
+    # Run work queue: turn Source updates into queued work and hand it to idle
+    # runs (control_plane/work_queue.py). Needs the control-plane database.
+    global _work_task
+    _work_task = asyncio.create_task(_work_queue_loop())
 
 
 async def _status_update_loop() -> None:
@@ -304,6 +352,8 @@ from .mermaid import _DARK_REMAP, _remap_mermaid_dark, _render_mermaid_svgs  # n
 from .serve import (  # noqa: E402
     _PID_FILE,
     _pid_alive,
+    _platform_on_port,
+    _platform_owns_dashboard,
     _port_healthy,
     _read_pid,
     _write_pid,

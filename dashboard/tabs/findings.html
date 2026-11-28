@@ -1,7 +1,42 @@
 <!-- ── Tab: Findings ─────────────────────────────────────────────────────── -->
 <div id="tab-findings" class="tab-content active">
+  <!-- Summary: number of findings in total and per severity. -->
+  <div id="findings-summary" class="fx-summary" hidden></div>
   <div id="findings-overview"></div>
-  <div id="stats"></div>
+  <div class="fx-toolbar" id="findings-toolbar" hidden>
+    <div id="stats"></div>
+    <span class="fx-grow"></span>
+    <label class="runs-filter-field">
+      <span>Group</span>
+      <select id="findings-group" aria-label="Group findings">
+        <option value="severity">By severity</option>
+        <option value="endpoint">By endpoint</option>
+      </select>
+    </label>
+    <label class="runs-filter-field">
+      <span>Sort</span>
+      <select id="findings-sort" aria-label="Sort findings">
+        <option value="confirmed">Confirmed first</option>
+        <option value="severity">Most severe first</option>
+        <option value="newest">Newest first</option>
+      </select>
+    </label>
+    <div class="fx-export">
+      <button type="button" class="btn btn-secondary btn-sm" id="findings-export-btn" onclick="toggleExportMenu()"
+        aria-expanded="false" aria-controls="findings-export-menu">Export</button>
+      <div class="fx-export-menu" id="findings-export-menu" hidden>
+        <button type="button" onclick="exportFindings('markdown')">Report (Markdown)</button>
+        <button type="button" onclick="exportFindings('csv')">Spreadsheet (CSV)</button>
+        <button type="button" onclick="exportFindings('json')">Raw data (JSON)</button>
+        <button type="button" onclick="exportFindings('copy')">Copy summary to clipboard</button>
+        <button type="button" class="scan-bar-cp-block" onclick="copyScanLink()">Copy share link to this scan</button>
+      </div>
+    </div>
+  </div>
   <div id="vstats"></div>
-  <div id="findings-wrap"><div class="empty-placeholder">No findings yet — run a scan.</div></div>
+  <details class="fx-legend" id="findings-legend" hidden>
+    <summary>What do the verification labels mean?</summary>
+    <dl id="findings-legend-list"></dl>
+  </details>
+  <div id="findings-wrap"><div class="empty-placeholder">No findings yet. They appear here as soon as Smith confirms one.</div></div>
 </div>

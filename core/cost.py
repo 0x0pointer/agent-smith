@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import datetime, timezone
+from core import db as _db
 from core import paths as _paths
 from core import store as _store
 
@@ -126,7 +127,12 @@ def flush() -> None:
 
 
 def _flush() -> None:
-    _store.save(_COST_FILE, get_summary())
+    summary = get_summary()
+    _store.save(_COST_FILE, summary)
+    try:
+        _db.persist_snapshot("cost", summary)
+    except Exception:
+        pass
 
 
 def _load_from_file() -> None:
@@ -141,8 +147,11 @@ def _load_from_file() -> None:
     global _session_start, _calls
     try:
         if not _COST_FILE.exists():
-            return
-        data = json.loads(_COST_FILE.read_text())
+            data = _db.load_snapshot("cost")
+            if not isinstance(data, dict):
+                return
+        else:
+            data = json.loads(_COST_FILE.read_text())
         breakdown = data.get("breakdown", [])
         if breakdown:
             _session_start = data.get("session_started", _session_start)

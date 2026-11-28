@@ -40,7 +40,7 @@
 
   function _notify(title, body, urgency = 'normal') {
     // Always update the page title
-    document.title = `⚠ ${title} — Pentest Dashboard`;
+    document.title = `⚠ ${title} — Agent-Smith Pentester Platform`;
     // Browser notification only when tab is not focused
     if (document.hidden && 'Notification' in window && Notification.permission === 'granted') {
       try {
@@ -56,29 +56,30 @@
   }
 
   function _clearNotif() {
-    document.title = 'Pentest Dashboard';
+    document.title = 'Agent-Smith Pentester Platform';
   }
 
   function _updateTitleBadge(alertCount, stallActive, hirActive) {
     if (hirActive) {
-      document.title = '⚠ PAUSED — Pentest Dashboard';
+      document.title = '⚠ PAUSED — Agent-Smith Pentester Platform';
     } else if (stallActive) {
-      document.title = '⟳ Smith needs guidance — Pentest Dashboard';
+      document.title = '⟳ Smith needs guidance — Agent-Smith Pentester Platform';
     } else if (alertCount > 0) {
-      document.title = `(${alertCount}) Pentest Dashboard`;
+      document.title = `(${alertCount}) Agent-Smith Pentester Platform`;
     } else {
-      document.title = 'Pentest Dashboard';
+      document.title = 'Agent-Smith Pentester Platform';
     }
   }
 
   // ── Tab switching ─────────────────────────────────────────────────────────
   // Order MUST match the .tab-btn DOM order in index.html's sidebar (switchTab maps by index).
-  const TAB_NAMES = ['findings', 'topology', 'components', 'ai-redteam', 'coverage', 'skills', 'activity', 'world-model', 'threat-model', 'metrics', 'setup-gates', 'logs', 'session-log', 'sessions'];
+  const TAB_NAMES = ['home', 'all-findings', 'apps', 'knowledge', 'findings', 'topology', 'components', 'ai-redteam', 'coverage', 'skills', 'activity', 'world-model', 'threat-model', 'metrics', 'setup-gates', 'logs', 'session-log', 'sessions'];
 
   function switchTab(name) {
     _activeTab = name;
-    document.querySelectorAll('.tab-btn').forEach((b, i) => {
-      b.classList.toggle('active', TAB_NAMES[i] === name);
+    // Match by id, not by position: the rail's visual order is free to change.
+    document.querySelectorAll('.tab-btn').forEach(b => {
+      b.classList.toggle('active', b.id === 'tab-btn-' + name);
     });
     // Reveal the active tab's group if it was collapsed (e.g. programmatic nav
     // from a link), so the highlighted item is never hidden.
@@ -89,20 +90,20 @@
     }
     document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
     document.getElementById(`tab-${name}`).classList.add('active');
+    // Platform pages (about all scans) hide the open scan's command panel.
+    const tabEl = document.getElementById(`tab-${name}`);
+    document.body.classList.toggle('on-platform-tab', !!tabEl && tabEl.classList.contains('tab-platform'));
+    if (typeof platformOnTab === 'function') platformOnTab(name);
     if (name === 'topology')      renderTopology(allData.diagrams || []);
     if (name === 'components')    renderComponentMap(allData.findings || []);
     if (name === 'ai-redteam')    pollAiRedteam();
     if (name === 'coverage')      pollCoverage();
     if (name === 'skills')        pollSkills();
-    if (name === 'activity') {
-      // Immediately paint whatever data we already have so the tab is not
-      // empty while pollQA's fetch is in flight, then refresh from the wire.
-      _safeRender('stuckLog',        renderStuckLog);
-      _safeRender('QA',              renderQA);
-      _safeRender('steering',        renderSteering);
-      _safeRender('quickLog',        renderQuickLog);
-      _safeRender('cycleHistory',    renderCycleHistory);
-      renderAdjudicationLog();
+    if (name === 'activity')      pollToolResults();
+    if (name === 'timeline') {
+      // Paint from cached data at once, then refresh from the wire.
+      _safeRender('activity', renderActivityFeed);
+      refreshActivity();
       pollQA();
     }
     if (name === 'world-model')   pollWorldModel();
@@ -145,12 +146,12 @@
     let stored = null;
     try { stored = localStorage.getItem('smith_rail_collapsed'); } catch (_) { /* blocked */ }
     if (stored === null) {
-      // First visit (no saved state): collapse every group except Results, and
+      // First visit (no saved state): collapse the secondary "More" group, and
       // persist it so the operator's later toggles start from this baseline.
       set = new Set();
       document.querySelectorAll('.rail-section').forEach(sec => {
         const g = sec.getAttribute('data-group');
-        if (g && g !== 'results') set.add(g);
+        if (g && g === 'more') set.add(g);
       });
       _railSaveCollapsed(set);
     } else {
@@ -221,10 +222,11 @@
         const hint = document.getElementById('cmd-smith-hint');
         if (inp) inp.classList.add('hir-active');
         if (btn) btn.classList.add('hir-mode');
+        toggleCmdComposer(true);   // the reply box must be on screen while paused
         if (hint) hint.textContent = '— scan is paused, your response resumes it';
         const dotEl = document.getElementById('cmd-smith-dot');
         if (dotEl) { dotEl.style.background = '#f97316'; dotEl.style.boxShadow = '0 0 6px #f97316'; }
-        document.getElementById('status').innerHTML = '<span class="dot" style="background:#f97316;box-shadow:0 0 6px #f97316;animation:blink 1s infinite"></span>⚠ Scan paused — human intervention required';
+        document.getElementById('status').innerHTML = '<span class="dot" style="background:var(--warn);box-shadow:0 0 6px var(--warn);animation:blink 1s infinite"></span>⚠ Scan paused — human intervention required';
         // Update cmd-scan-status
         const statusEl = document.getElementById('cmd-scan-status');
         if (statusEl) { statusEl.textContent = 'intervention'; statusEl.className = 'cmd-scan-status intervention'; }
@@ -276,6 +278,30 @@
     btn.disabled = false; btn.textContent = 'Send Response';
   }
 
+  // ── Command center — steering composer (collapsible) ──────────────────────
+  // The composer is collapsed by default so the command panel stays one row
+  // tall on every page. The choice persists; an intervention forces it open
+  // because the operator's reply is what resumes the scan.
+  const _CMD_COMPOSER_KEY = 'smith_cmd_composer_open';
+  function toggleCmdComposer(force) {
+    const box = document.getElementById('cmd-composer');
+    const btn = document.getElementById('cmd-composer-toggle');
+    if (!box) return;
+    const open = (typeof force === 'boolean') ? force : box.hidden;
+    box.hidden = !open;
+    if (btn) {
+      btn.setAttribute('aria-expanded', String(open));
+      btn.classList.toggle('is-active', open);
+    }
+    if (typeof force !== 'boolean') {
+      try { localStorage.setItem(_CMD_COMPOSER_KEY, open ? '1' : '0'); } catch (e) { /* ignore */ }
+      if (open) { const inp = document.getElementById('cmd-smith-input'); if (inp) inp.focus(); }
+    }
+  }
+  try {
+    if (localStorage.getItem(_CMD_COMPOSER_KEY) === '1') toggleCmdComposer(true);
+  } catch (e) { /* ignore */ }
+
   // ── Command center — Smith input ──────────────────────────────────────────
   function setSmithChip(text) {
     const inp = document.getElementById('cmd-smith-input');
@@ -300,7 +326,8 @@
       });
       const res = await r.json();
       if (res.ok || res.ok === undefined) {
-        if (fb)  fb.textContent = '✓ Sent to Smith';
+        if (fb)  fb.textContent = res.resumed ? '✓ Sent — the scan was idle, Smith is starting again' : '✓ Sent to Smith';
+        if (res.resumed) { setTimeout(_pollSmithStatus, 1500); }
         if (inp) inp.value = '';
         if (_hirActive) {
           document.getElementById('hir-panel').classList.remove('visible');
@@ -329,13 +356,15 @@
     const fb    = document.getElementById('cmd-smith-feedback');
     const hint  = document.getElementById('cmd-smith-status-hint');
     if (btn) btn.disabled = true;
-    if (fb)  fb.textContent = 'Starting ' + _activeClient + '…';
+    if (fb)  fb.textContent = 'Resuming the scan…';
     try {
       // No body — server auto-detects which client to spawn
       const r = await fetch('/api/restart-smith', { method: 'POST' });
       const res = await r.json();
       if (res.ok) {
-        if (fb)   fb.textContent = '✓ ' + (res.client || _activeClient) + ' restarted (PID ' + res.pid + ')';
+        if (fb)   fb.textContent = res.resumed === false
+          ? 'Smith is already running.'
+          : '✓ Smith resumed' + (res.pid ? ' (PID ' + res.pid + ')' : '');
         if (btn) { btn.style.display = 'none'; btn.disabled = false; }
         if (hint) hint.textContent = 'Smith is running — only you can end the scan.';
         pollSession();
@@ -357,7 +386,7 @@
       const av = await r.json();
       _activeClient = av.active || 'claude';
       const label = document.getElementById('cmd-restart-label');
-      if (label) label.textContent = 'Restart Smith (' + _activeClient + ')';
+      if (label) label.textContent = 'Resume scan';
     } catch(e) {}
   }
   _refreshActiveClient();
@@ -381,17 +410,25 @@
       const processEl = document.getElementById('cmd-smith-process-status');
       const scanActive = ['running', 'intervention_required'].includes(sessionRes?.status);
       if (processEl) {
-        const confirmedStopped = smithRes.running === false && scanActive;
-        if (smithRes.running === true || !scanActive) {
-          // Running, OR no active scan (idle is fine — not an error state).
+        // An OPEN scan whose agent is not running is IDLE: Smith stopped on its own
+        // and nothing was respawned. It waits for an instruction or Resume.
+        const scanIdle = scanActive && (smithRes.running === false || !!smithRes.agent_idle);
+        window._scanIdle = scanIdle ? (smithRes.agent_idle || { reason: 'stopped', detail: 'Smith is not running.' }) : null;
+        const scanEl = document.getElementById('cmd-scan-status');
+        if (scanEl && sessionRes?.status === 'running') {
+          scanEl.textContent = scanIdle ? 'idle' : 'running';
+          scanEl.className = 'cmd-scan-status ' + (scanIdle ? 'idle' : 'running');
+        }
+        if (scanIdle) {
+          processEl.textContent = 'stopped';
+          processEl.className = 'cmd-smith-process-status cmd-smith-process-idle';
+        } else if (smithRes.running === true || !scanActive) {
+          // Running, OR no active scan (nothing to run — not an error state).
           // A post-complete triage relaunch reports adjudicating=true — label it
           // as such so it reads as intended work, not a hung/stuck scan.
           processEl.textContent = (smithRes.running === true && smithRes.adjudicating) ? 'adjudicating'
-                                : smithRes.running === true ? 'running' : 'idle';
+                                : smithRes.running === true ? 'running' : 'not running';
           processEl.className = 'cmd-smith-process-status cmd-smith-process-running';
-        } else if (confirmedStopped) {
-          processEl.textContent = 'stopped';
-          processEl.className = 'cmd-smith-process-status cmd-smith-process-stopped';
         } else {
           // null = endpoint unavailable — default to running to avoid false alarms
           processEl.textContent = 'running';
@@ -399,15 +436,15 @@
         }
       }
 
-      // Show/hide restart button — only when scan is active AND Smith is confirmed stopped
+      // Resume button — only when the scan is open AND idle.
       const restartBtn = document.getElementById('cmd-restart-btn');
       const hint       = document.getElementById('cmd-smith-status-hint');
       if (!restartBtn) return;
 
-      if (scanActive && smithRes.running === false) {
+      if (window._scanIdle) {
         restartBtn.style.display = 'inline-block';
         restartBtn.disabled = false;   // reset in case a prior click left it disabled
-        if (hint) hint.textContent = 'Smith has stopped — restart it to continue the scan.';
+        if (hint) hint.textContent = 'The scan is idle. Send Smith an instruction or press Resume to continue.';
       } else {
         restartBtn.style.display = 'none';
         // Only assert the "keep testing" hint while the scan is actually running.
@@ -439,6 +476,8 @@
       const btnLbl = document.getElementById('cmd-phase-advance-label');
       const hintEl = document.getElementById('cmd-phase-hint');
       const meta   = _PHASE_META[p.phase] || { short: p.phase, nextLabel: 'Advance phase' };
+      window._phaseData = p;
+      if (typeof renderScanProgress === 'function') renderScanProgress();
       if (curEl) curEl.textContent = meta.short;
       if (btn) {
         if (p.running && p.next) {
@@ -482,29 +521,19 @@
     if (btn) btn.disabled = false;
   }
 
-  let _completeConfirmExpires = 0;
 
   async function completeScan() {
     const btn = document.getElementById('cmd-complete-btn');
     const fb  = document.getElementById('cmd-smith-feedback');
-    const now = Date.now();
-    // Two-step inline confirm. First click arms; second click within 5s fires.
-    // Replaces the browser-native confirm() dialog which was being silently
-    // suppressed by Firefox/Chrome's "prevent additional dialogs" toggle —
-    // once the user ticked that, the button stopped doing anything visible.
-    if (now > _completeConfirmExpires) {
-      _completeConfirmExpires = now + 5000;
-      if (btn) btn.textContent = '⚠ Click again to confirm';
-      if (fb)  fb.textContent = 'Click again within 5 s to complete the scan.';
-      setTimeout(() => {
-        if (Date.now() >= _completeConfirmExpires) {
-          if (btn && !btn.disabled) btn.textContent = '✓ Complete Scan';
-          if (fb) fb.textContent = '';
-        }
-      }, 5000);
-      return;
-    }
-    _completeConfirmExpires = 0;
+    // One explicit confirmation in the in-page dialog (confirmAction, ux.js). It
+    // names the scan and cannot be suppressed the way native confirm() can —
+    // the reason this used to be a click-twice button.
+    const ok = await confirmAction({
+      title: 'Complete this scan?',
+      body: 'This ends ' + scanDisplayName() + '. Smith stops testing; findings are kept and you can run triage afterwards.',
+      confirmLabel: 'Complete scan', danger: false,
+    });
+    if (!ok) return;
     if (btn) btn.disabled = true;
     if (fb)  fb.textContent = 'Completing scan…';
     try {
@@ -535,7 +564,6 @@
   // Hard stop — flips the session terminal, cancels triage, AND kills the live
   // Smith process (POST /api/force-stop). Unlike Complete Scan it doesn't leave
   // a mid-adjudication Smith running. Two-step inline confirm (destructive).
-  let _forceStopConfirmExpires = 0;
   function _fsSet(btn, fb, btnText, fbText) {
     if (btn && btnText != null) btn.textContent = btnText;
     if (fb  && fbText  != null) fb.textContent  = fbText;
@@ -543,17 +571,13 @@
   async function forceStop() {
     const btn = document.getElementById('cmd-force-stop-btn');
     const fb  = document.getElementById('cmd-smith-feedback');
-    const now = Date.now();
-    if (now > _forceStopConfirmExpires) {           // first click arms the confirm
-      _forceStopConfirmExpires = now + 5000;
-      _fsSet(btn, fb, '⚠ Click again to force stop',
-             'Click again within 5 s — kills Smith and ends the scan (findings are kept).');
-      setTimeout(() => {
-        if (Date.now() >= _forceStopConfirmExpires && btn && !btn.disabled) btn.textContent = '✕ Force stop';
-      }, 5000);
-      return;
-    }
-    _forceStopConfirmExpires = 0;
+    const ok = await confirmAction({
+      title: 'Force stop this scan?',
+      body: 'This kills Smith immediately and ends ' + scanDisplayName() +
+            ' without the final review pass. Findings recorded so far are kept.',
+      confirmLabel: 'Force stop',
+    });
+    if (!ok) return;
     if (btn) btn.disabled = true;
     _fsSet(btn, fb, null, 'Stopping Smith…');
     try {
@@ -723,8 +747,9 @@
     // Status
     const statusEl = document.getElementById('cmd-scan-status');
     if (statusEl && session.status !== 'intervention_required') {
-      statusEl.textContent = session.status || '—';
-      statusEl.className   = 'cmd-scan-status ' + (session.status || 'running').replace(/_/g, '-');
+      const idleNow = session.status === 'running' && !!window._scanIdle;
+      statusEl.textContent = idleNow ? 'idle' : (session.status || '—');
+      statusEl.className   = 'cmd-scan-status ' + (idleNow ? 'idle' : (session.status || 'running').replace(/_/g, '-'));
     }
 
     // Complete vs Triage button visibility.
@@ -767,7 +792,7 @@
 
       _sessionData = s;
       renderCmdCenter(s, cov);
-      if (_activeTab === 'activity') renderStuckLog();
+      if (_activeTab === 'timeline') renderStuckLog();
 
       // Stateful triage banner (progress / stalled) with operator actions.
       _renderTriageBanner(s);
@@ -804,7 +829,7 @@
         scanDone = true;
         _showAdjudicationBanner(false);
         document.getElementById('status').innerHTML =
-          '<span class="dot" style="background:#6e7681;animation:none"></span>Scan complete';
+          '<span class="dot" style="background:var(--text-dim);animation:none"></span>Scan complete';
         const statusEl = document.getElementById('cmd-scan-status');
         if (statusEl) { statusEl.textContent = 'complete'; statusEl.className = 'cmd-scan-status complete'; }
         // Refresh findings to pick up adjudication verdicts written before close.

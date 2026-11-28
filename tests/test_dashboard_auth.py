@@ -6,6 +6,7 @@ other API tests can hit /api/* without a header; here we re-enable it via
 SMITH_DASHBOARD_AUTH=1 and exercise the real behaviour.
 """
 import pytest
+import sqlite3
 from fastapi.testclient import TestClient
 
 from core.api_server import app
@@ -67,3 +68,44 @@ def test_token_file_is_0600(token_file):
     # On POSIX the file must not be group/world readable.
     if os.name == "posix":
         assert mode & 0o077 == 0, oct(mode)
+
+
+def test_db_tokens_store_hashes_and_scope_run_ids(monkeypatch, tmp_path):
+    db_path = tmp_path / "auth.db"
+    monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")
+    monkeypatch.delenv("SMITH_SINGLE_RUN", raising=False)
+
+    token = dashboard_auth.mint_run_token("run-a")
+    meta = dashboard_auth.verify_bearer(token)
+
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            "select run_id, role, token_hash from dashboard_tokens"
+        ).fetchone()
+
+    assert meta == {"run_id": "run-a", "role": "run"}
+    assert row[0] == "run-a"
+    assert row[1] == "run"
+    assert row[2] != token
+
+
+def test_db_token_minting_fails_closed_when_token_cannot_be_persisted(monkeypatch):
+    monkeypatch.setenv("SMITH_DATABASE_URL", "sqlite:////unavailable/auth.db")
+    monkeypatch.delenv("SMITH_SINGLE_RUN", raising=False)
+    monkeypatch.setattr("core.db.get_repository", lambda: None)
+
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        dashboard_auth.mint_operator_token()
+
+
+def test_db_mode_api_401_without_any_bearer(monkeypatch, tmp_path):
+    db_path = tmp_path / "auth.db"
+    monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{db_path}")
+    monkeypatch.delenv("SMITH_SINGLE_RUN", raising=False)
+    monkeypatch.setenv("SMITH_DASHBOARD_AUTH", "1")
+
+    dashboard_auth.mint_operator_token()
+
+    response = TestClient(app).get("/api/findings")
+
+    assert response.status_code == 401

@@ -117,6 +117,7 @@ from .mcp_sse import (  # noqa: E402,F401
     _ensure_mcp_sse_alive,
 )
 from .watchdog import (  # noqa: E402,F401
+    _idle_tick,
     _watchdog_notify,
     _synthesis_backoff_active,
     _respawn_hourly_cap_blocks,
@@ -124,6 +125,7 @@ from .watchdog import (  # noqa: E402,F401
     _watchdog_tick,
     _smith_watchdog_loop,
 )
+from . import idle  # noqa: E402,F401
 from .refusal import (  # noqa: E402,F401
     _looks_like_refusal,
     _find_wedged_transcript,

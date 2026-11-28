@@ -27,6 +27,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
+from core import db as _db
 from core import paths as _paths
 from core import store as _store
 
@@ -52,27 +53,45 @@ class WishlistItem:
 class WishlistQueue:
     """Persistent agent→operator backlog backed by wishlist_queue.json."""
 
-    def _load(self) -> list[dict]:
+    def _load(self, run_id: str | None = None) -> list[dict]:
+        if run_id:
+            repo = _db.get_repository()
+            if repo is None:
+                return []
+            try:
+                cached = repo.load_snapshot(run_id, "wishlist")
+            except Exception:
+                cached = None
+            return cached.get("items", []) if isinstance(cached, dict) else []
         try:
             if _WISHLIST_FILE.exists():
                 return json.loads(_WISHLIST_FILE.read_text(encoding="utf-8")).get("items", [])
         except Exception:
             pass
+        cached = _db.load_snapshot("wishlist")
+        if isinstance(cached, dict):
+            return cached.get("items", [])
         return []
 
-    def _save(self, items: list[dict]) -> None:
+    def _save(self, items: list[dict], run_id: str | None = None) -> None:
         try:
+            if run_id:
+                repo = _db.get_repository()
+                if repo is not None:
+                    repo.save_snapshot(run_id, "wishlist", {"items": items})
+                return
             _store.save(_WISHLIST_FILE, {"items": items})
+            _db.persist_snapshot("wishlist", {"items": items})
         except Exception:
             pass
 
-    def clear(self) -> int:
+    def clear(self, run_id: str | None = None) -> int:
         """Wipe the whole backlog — per-engagement state that must not bleed across scans
         (a new scan / Clear All starts with no stale resource requests). Returns the count
         removed. Fail-soft."""
         try:
-            n = len(self._load())
-            self._save([])
+            n = len(self._load(run_id=run_id))
+            self._save([], run_id=run_id)
             return n
         except Exception:
             return 0
@@ -92,6 +111,7 @@ class WishlistQueue:
         category: str = "other",
         rationale: str = "",
         blocking_cell_ids: list[str] | None = None,
+        run_id: str | None = None,
     ) -> str | None:
         """Add a need. Returns id, or None if an OPEN item with the same need exists.
 
@@ -101,7 +121,7 @@ class WishlistQueue:
         need = str(need or "").strip()
         if not need:
             return None
-        items = self._load()
+        items = self._load(run_id=run_id)
         norm = self._norm(need)
         for it in items:
             if it.get("status") == "open" and self._norm(it.get("need")) == norm:
@@ -122,36 +142,56 @@ class WishlistQueue:
             "resolved_at": None,
             "resolution_note": None,
         })
-        self._save(items)
+        self._save(items, run_id=run_id)
         return item_id
 
-    def _resolve(self, item_id: str, status: str, note: str | None) -> dict | None:
-        items = self._load()
+    def _resolve(
+        self,
+        item_id: str,
+        status: str,
+        note: str | None,
+        run_id: str | None = None,
+    ) -> dict | None:
+        items = self._load(run_id=run_id)
         for it in items:
             if it.get("id") == item_id and it.get("status") == "open":
                 it["status"] = status
                 it["resolved_at"] = self._now()
                 it["resolution_note"] = note
-                self._save(items)
+                self._save(items, run_id=run_id)
                 return it
         return None
 
-    def fulfill(self, item_id: str, note: str | None = None) -> dict | None:
+    def fulfill(
+        self,
+        item_id: str,
+        note: str | None = None,
+        run_id: str | None = None,
+    ) -> dict | None:
         """Operator supplied the resource. Returns the item (with its blocking
         cells, so the caller can tell Smith which cells to reopen)."""
-        return self._resolve(item_id, "fulfilled", note)
+        return self._resolve(item_id, "fulfilled", note, run_id=run_id)
 
-    def dismiss(self, item_id: str, note: str | None = None) -> dict | None:
-        return self._resolve(item_id, "dismissed", note)
+    def dismiss(
+        self,
+        item_id: str,
+        note: str | None = None,
+        run_id: str | None = None,
+    ) -> dict | None:
+        return self._resolve(item_id, "dismissed", note, run_id=run_id)
 
     # ── Query ──────────────────────────────────────────────────────────────────
 
-    def list_open(self) -> list[WishlistItem]:
-        return [WishlistItem(**it) for it in self._load() if it.get("status") == "open"]
+    def list_open(self, run_id: str | None = None) -> list[WishlistItem]:
+        return [
+            WishlistItem(**it)
+            for it in self._load(run_id=run_id)
+            if it.get("status") == "open"
+        ]
 
-    def get_all(self) -> list[dict]:
+    def get_all(self, run_id: str | None = None) -> list[dict]:
         """All items, newest first — for the dashboard."""
-        return list(reversed(self._load()))
+        return list(reversed(self._load(run_id=run_id)))
 
 
 wishlist_queue = WishlistQueue()

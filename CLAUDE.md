@@ -243,6 +243,8 @@ cd ~/Desktop/agent-smith
 ./installers/install.sh
 ```
 
+The installer also installs the `smith` launcher (`~/.local/bin/smith`). The control plane is optional — `smith start` brings up Postgres (`docker-compose.yml`, `127.0.0.1:55432`) plus the dashboard/orchestrator on `:7777` for multi-run use; `smith status` / `smith stop` manage it. See `docs/installation.md#control-plane-smith`.
+
 ### Docker images
 - **Lightweight tools** (nmap, naabu, httpx, nuclei, ffuf, subfinder, semgrep, trufflehog): public Docker Hub images. Auto-pull on first use. Call `session(action="pull_images")` to pre-fetch.
 - **kali-mcp**: custom image — must be built locally with `docker build -t pentest-agent/kali-mcp ./tools/kali/`. Container auto-starts on first `kali()` call and persists until `session(action="stop_kali")`. Uses the kali-server-mcp HTTP API on port 5001.

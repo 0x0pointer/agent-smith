@@ -64,6 +64,7 @@ pentest_metrics.jsonl
 SECURITY-REVIEW.md
 analysis/
 run_2/
+runs/
 
 # legacy local knowledge-base data from older installs; ignored if present, but
 # runtime no longer depends on it.

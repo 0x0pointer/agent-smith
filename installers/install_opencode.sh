@@ -71,6 +71,9 @@ fi
 echo ""
 echo "Installing Python dependencies..."
 poetry -C "$REPO_DIR" install --no-interaction
+
+# `smith` control-plane command (Poetry does not install it: package-mode=false).
+"$REPO_DIR/installers/install-smith-cli.sh"
 ok "Poetry dependencies installed"
 
 # ── Disarm any existing launchd plist before restarting the MCP ──────────────

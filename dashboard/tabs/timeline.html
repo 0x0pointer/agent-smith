@@ -1,0 +1,29 @@
+<!-- ── Tab: Timeline ─────────────────────────────────────────────────────────
+     One goal: show what has happened in this scan, in time order, and what is
+     still open right now. Everything that used to be its own section (blocked
+     steps, quality checks, instructions, tool calls, review verdicts) is one
+     kind of entry in the same timeline. Rendered by activity.js. -->
+<div id="tab-timeline" class="tab-content">
+  <div class="tab-head">
+    <h2>Timeline</h2>
+    <p>Everything that has happened in this scan, newest first. Filter by kind to follow one thread.</p>
+  </div>
+
+  <!-- Open now: the entries that are not finished yet. Hidden when there are none. -->
+  <section class="act-open" id="act-open" aria-labelledby="act-open-title" hidden>
+    <h3 id="act-open-title">Open right now</h3>
+    <div id="act-open-list"></div>
+  </section>
+
+  <section aria-labelledby="act-timeline-title">
+    <div class="act-toolbar">
+      <h3 id="act-timeline-title">Timeline</h3>
+      <div id="act-chips" class="runs-chips" role="group" aria-label="Filter the timeline by kind"></div>
+      <span class="fx-grow"></span>
+      <input id="act-search" type="search" placeholder="Search the timeline…" aria-label="Search the timeline"
+             autocomplete="off" spellcheck="false">
+    </div>
+    <div id="act-summary" class="air-sub-note runs-summary"></div>
+    <div id="act-feed"><div class="empty-placeholder">Nothing has happened yet. Every tool call, instruction, quality check and review appears here as it happens.</div></div>
+  </section>
+</div>

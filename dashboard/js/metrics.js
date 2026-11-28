@@ -15,7 +15,7 @@
     const wrap = document.getElementById('metrics-wrap');
     if (!wrap) return;
     if (!_metricsData || !_metricsData.length) {
-      wrap.innerHTML = '<div class="empty-placeholder">No completed scans yet — metrics appear after session(action=\'complete\').</div>';
+      wrap.innerHTML = '<div class="empty-placeholder">No metrics yet. They are calculated when a scan is completed.</div>';
       return;
     }
 
@@ -29,7 +29,7 @@
     const usd = v => v == null ? '—' : `$${v.toFixed(4)}`;
 
     const cols = [
-      { label: 'Run ID',        fn: r => `<span title="${r.run_id || ''}" style="font-family:monospace;font-size:0.7rem">${(r.run_id || '—').slice(0, 8)}</span>` },
+      { label: 'Run ID',        fn: r => `<span title="${r.run_id || ''}" style="font-family:monospace;font-size:var(--fs-2xs)">${(r.run_id || '—').slice(0, 8)}</span>` },
       { label: 'Target',        fn: r => `<span style="max-width:140px;display:inline-block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${r.target || ''}">${r.target || '—'}</span>` },
       { label: 'Depth',         fn: r => fmt(r.depth) },
       { label: 'Status',        fn: r => {
@@ -86,7 +86,7 @@
       return `<span style="color:${color}">${arrow} ${Math.abs(d).toFixed(2)}</span>`;
     };
     return `
-      <div style="margin-top:1rem;padding:0.75rem 1rem;background:var(--bg-card);border-radius:6px;border:1px solid var(--border);font-size:0.78rem">
+      <div style="margin-top:1rem;padding:0.75rem 1rem;background:var(--bg-card);border-radius:var(--r-md);border:1px solid var(--border);font-size:var(--fs-xs)">
         <strong>vs previous run:</strong>
         cost ${delta(latest.total_cost_usd, prev.total_cost_usd, false)} &nbsp;
         coverage ${delta(latest.coverage_rate_pct, prev.coverage_rate_pct, true)} &nbsp;

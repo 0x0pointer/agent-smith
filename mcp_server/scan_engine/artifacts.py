@@ -7,12 +7,12 @@ full audit trail. Retrieval is bounded: callers specify a mode and max_chars.
 from __future__ import annotations
 
 import json
-import os
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 
-_ARTIFACTS_DIR = Path(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))) / "artifacts"
+from core import paths as _paths
+
+_ARTIFACTS_DIR = _paths.ARTIFACTS_DIR
 
 
 def _ensure_dir() -> Path:

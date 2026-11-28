@@ -1,7 +1,7 @@
   function renderComponentMap(findings) {
     const wrap = document.getElementById('components-wrap');
     if (!findings.length) {
-      wrap.innerHTML = '<div class="empty-placeholder">No findings yet — run a scan.</div>';
+      wrap.innerHTML = '<div class="empty-placeholder">No findings yet. They appear here as soon as Smith confirms one.</div>';
       return;
     }
     const groups = {};
@@ -19,7 +19,7 @@
       (_SEV_SORT[a.severity] ?? 5) - (_SEV_SORT[b.severity] ?? 5)
     ));
     const total = findings.length;
-    const header = `<div style="font-size:.82rem;color:#6e7681;margin-bottom:1rem">
+    const header = `<div style="font-size:var(--fs-sm);color:var(--text-dim);margin-bottom:1rem">
       ${sorted.length} component${sorted.length!==1?'s':''} · ${total} finding${total!==1?'s':''}
     </div>`;
     const cards = sorted.map(g => {

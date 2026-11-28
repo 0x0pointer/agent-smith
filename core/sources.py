@@ -106,6 +106,31 @@ def _entry_url(entries: list[tuple[int, str]], index: int, indent: int, rest: st
     return _child_url(entries, index + 1, indent)
 
 
+# Optional keys that say where a vault lives on this machine, so the platform can
+# start its Source again (see core.source_vaults). Not part of what a scan binds.
+_LAUNCH_KEYS = ("vault", "db")
+
+
+def _key_value(text: str) -> tuple[str, str] | None:
+    if ":" not in text:
+        return None
+    key, value = text.split(":", 1)
+    return key.strip(), value.strip().strip("'\"")
+
+
+def _entry_launch(entries: list[tuple[int, str]], index: int, indent: int, rest: str) -> dict[str, str]:
+    """The ``vault`` / ``db`` paths of a registry entry, inline or as child lines."""
+    pairs: list[tuple[str, str] | None] = []
+    if rest.startswith("{") and rest.endswith("}"):
+        pairs = [_key_value(part) for part in rest[1:-1].split(",")]
+    elif not rest:
+        for _, child in entries[index + 1:]:
+            if len(child) - len(child.lstrip(" ")) <= indent:
+                break
+            pairs.append(_key_value(child.strip()))
+    return {key: value for key, value in (p for p in pairs if p) if key in _LAUNCH_KEYS and value}
+
+
 def _load_registry(registry_path: str | os.PathLike[str] | None = None) -> dict:
     path = _registry_path(registry_path)
     try:
@@ -117,9 +142,10 @@ def _load_registry(registry_path: str | os.PathLike[str] | None = None) -> dict:
 
     entries = _iter_entries(text)
     if not entries:
-        return {"sources": {}, "errors": []}
+        return {"sources": {}, "errors": [], "launch": {}}
 
     sources: dict[str, dict[str, str]] = {}
+    launch: dict[str, dict[str, str]] = {}
     errors: list[str] = []
 
     in_sources = _sources_block_indent(entries) is not None
@@ -137,15 +163,27 @@ def _load_registry(registry_path: str | os.PathLike[str] | None = None) -> dict:
         valid_url = _validate_source_url(url or "")
         if valid_url:
             sources[name] = {"name": name, "url": valid_url}
+            paths = _entry_launch(entries, i, indent, rest)
+            if paths.get("vault"):
+                launch[name] = {"name": name, "url": valid_url, **paths}
         elif url is not None:
             errors.append(f"{name}: invalid url")
 
-    return {"sources": sources, "errors": errors}
+    return {"sources": sources, "errors": errors, "launch": launch}
 
 
 def list_sources(registry_path: str | os.PathLike[str] | None = None) -> dict[str, dict[str, str]]:
     """Return the valid Source instances from the configured registry."""
     return _load_registry(registry_path)["sources"]
+
+
+def list_launchable(registry_path: str | os.PathLike[str] | None = None) -> dict[str, dict[str, str]]:
+    """Sources whose entry also records where the vault is: ``{name, url, vault, db?}``.
+
+    Kept apart from ``list_sources`` so a local folder path never travels with
+    what a scan binds or what the dashboard lists.
+    """
+    return _load_registry(registry_path).get("launch", {})
 
 
 def resolve_source(name: str, registry_path: str | os.PathLike[str] | None = None) -> dict:

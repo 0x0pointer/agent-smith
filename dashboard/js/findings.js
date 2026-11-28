@@ -26,7 +26,7 @@
       renderFindings();
     } catch {
       document.getElementById('status').innerHTML =
-        '<span class="dot" style="background:#f85149"></span>Waiting for data…';
+        '<span class="dot" style="background:var(--danger)"></span>Waiting for data…';
     }
   }
 
@@ -45,7 +45,7 @@
     const ago = lastOk ? Math.round((Date.now() - lastOk) / 1000) + 's ago' : '';
     el.innerHTML =
       `<span class="dot"></span>Live · refreshes every 5 s · last updated ${ago}` +
-      (target ? ` · <strong style="color:#c9d1d9">${target}</strong>` : '');
+      (target ? ` · <strong style="color:var(--text)">${target}</strong>` : '');
   }
 
   function renderFindings() {
@@ -71,8 +71,20 @@
     code_confirmed:          '◉ CODE CONFIRMED',
     not_accessible_external: '⊘ INTERNAL ONLY',
     not_confirmed:           '? NOT CONFIRMED',
-    unverified:              '· UNVERIFIED',
+    unverified:              '· NOT YET RE-TESTED',
   };
+  // Plain-language meaning of each label — shown in the legend and on hover.
+  const VS_HELP = {
+    confirmed_dynamic:       'Smith exploited it against the running target and kept the evidence.',
+    new_dynamic_finding:     'Found while testing live; it was not predicted by any earlier analysis.',
+    code_confirmed:          'Proven by reading the source code, not by a live request.',
+    not_accessible_external: 'Real, but only reachable from inside the network.',
+    not_confirmed:           'A re-test could not reproduce it. Treat as a lead, not a fact.',
+    unverified:              'Reported with evidence, but not yet independently re-tested. Run triage after the scan to review these.',
+  };
+  // Counts as "confirmed" in the summary line.
+  const VS_CONFIRMED = new Set(['confirmed_dynamic', 'new_dynamic_finding', 'code_confirmed']);
+  window.VS_LABELS = VS_LABELS; window.VS_HELP = VS_HELP; window.VS_CONFIRMED = VS_CONFIRMED;
 
   function renderStats(findings) {
     const c = { all: findings.length, critical:0, high:0, medium:0, low:0, info:0 };
@@ -88,7 +100,6 @@
         .join('');
       ov.innerHTML = total
         ? `<div class="fx-overview">
-             <div class="fx-ov-count"><span class="fx-ov-num">${total}</span> finding${total===1?'':'s'}</div>
              <div class="sevbar">${segs}</div>
            </div>`
         : '';
@@ -96,9 +107,9 @@
 
     document.getElementById('stats').innerHTML =
       ['all','critical','high','medium','low','info'].map(s =>
-        `<span class="stat stat-${s}${filter===s?' active':''}" onclick="setFilter('${s}')">
+        `<button type="button" class="stat stat-${s}${filter===s?' active':''}" aria-pressed="${filter===s}" onclick="setFilter('${s}')">
           ${s==='all'?'ALL':s.toUpperCase()} ${c[s]}
-        </span>`
+        </button>`
       ).join('');
 
     // Verification filter bar
@@ -107,13 +118,88 @@
     vsKeys.forEach(k => { vc[k] = 0; });
     findings.forEach(f => { if (vc[f.verification_status] !== undefined) vc[f.verification_status]++; });
     document.getElementById('vstats').innerHTML =
-      `<span class="vstat-label">verify:</span>` +
+      `<span class="vstat-label" title="How sure are we? See the legend below.">Verification</span>` +
       [['all', 'ALL ' + findings.length]].concat(vsKeys.filter(k => vc[k] > 0).map(k => [k, VS_LABELS[k] + ' ' + vc[k]])).map(([k, label]) =>
-        `<span class="stat vstat-${k}${vfilter===k?' active':''}" onclick="setVFilter('${k}')">${label}</span>`
+        `<button type="button" class="stat vstat-${k}${vfilter===k?' active':''}" aria-pressed="${vfilter===k}" title="${esc(VS_HELP[k] || '')}" onclick="setVFilter('${k}')">${label}</button>`
       ).join('');
+
+    const has = findings.length > 0;
+    for (const id of ['findings-toolbar', 'findings-legend']) {
+      const el = document.getElementById(id); if (el) el.hidden = !has;
+    }
+    const vstatsEl = document.getElementById('vstats'); if (vstatsEl) vstatsEl.hidden = !has;
+    const legend = document.getElementById('findings-legend-list');
+    if (legend && !legend.childElementCount) {
+      legend.innerHTML = vsKeys.map(k => `<div><dt><span class="vbadge vbadge-${k}">${VS_LABELS[k]}</span></dt><dd>${esc(VS_HELP[k])}</dd></div>`).join('');
+    }
+    renderFindingsSummary(findings);
   }
 
   const SEV_GROUPS = ['critical', 'high', 'medium', 'low', 'info'];
+  const _SEV_IDX = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
+
+  // The part of the target that identifies WHERE the problem is: the path, with
+  // IDs and query strings folded so /users/12 and /users/97 group together.
+  function findingEndpoint(f) {
+    const raw = String(f.target || '').trim();
+    if (!raw) return '(no endpoint recorded)';
+    let path = raw;
+    try { const u = new URL(raw); path = u.pathname || '/'; } catch (_) { path = raw.split('?')[0]; }
+    try { path = decodeURIComponent(path); } catch (_) { /* keep the raw path */ }
+    path = path.replace(/\{[^}]*\}/g, '{id}').replace(/\/\d+(?=\/|$)/g, '/{id}')
+               .replace(/\/[0-9a-f]{8}-[0-9a-f-]{27,}(?=\/|$)/gi, '/{id}');
+    return path.length > 1 ? path.replace(/\/$/, '') : path;
+  }
+  window.findingEndpoint = findingEndpoint;
+
+  // Summary: how many findings there are, in total and per severity.
+  function renderFindingsSummary(findings) {
+    const box = document.getElementById('findings-summary');
+    if (!box) return;
+    if (!findings.length) { box.hidden = true; box.innerHTML = ''; return; }
+    const c = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
+    findings.forEach(f => { if (c[f.severity] !== undefined) c[f.severity]++; });
+    // Each tile is also the severity filter (the old chip row repeated these numbers).
+    const tile = (key, cls, n, label) => `<button type="button" class="fx-sum-item ${cls}${filter === key ? ' active' : ''}"
+        aria-pressed="${filter === key}" onclick="setFilter('${key}')" title="Show ${key === 'all' ? 'all findings' : 'only ' + key + ' findings'}">
+        <span class="fx-sum-num">${n}</span>
+        <span class="fx-sum-label">${label}</span>
+      </button>`;
+    box.innerHTML = tile('all', 'fx-sum-total', findings.length, findings.length === 1 ? 'Finding' : 'Findings') +
+      SEV_GROUPS.map(s => tile(s, 'fx-sum-' + s + (c[s] ? '' : ' is-zero'), c[s], s)).join('');
+    box.hidden = false;
+  }
+
+  // Grouping + ordering are the operator's choice and persist across reloads.
+  const _FX_VIEW_KEY = 'smith_findings_view';
+  let _fxView = { group: 'severity', sort: 'confirmed' };
+  try {
+    const saved = JSON.parse(localStorage.getItem(_FX_VIEW_KEY) || '{}') || {};
+    if (saved.group === 'endpoint' || saved.group === 'severity') _fxView.group = saved.group;
+    if (['confirmed', 'severity', 'newest'].includes(saved.sort)) _fxView.sort = saved.sort;
+  } catch (_) { /* defaults */ }
+  function setFindingsView(key, value) {
+    _fxView[key] = value;
+    const ctl = document.getElementById(key === 'group' ? 'findings-group' : 'findings-sort');
+    if (ctl && ctl.value !== value) ctl.value = value;
+    try { localStorage.setItem(_FX_VIEW_KEY, JSON.stringify(_fxView)); } catch (_) { /* ignore */ }
+    renderFindingsTable(allData.findings || []);
+  }
+  window.setFindingsView = setFindingsView;
+  (function _wireFindingsView() {
+    const g = document.getElementById('findings-group'), o = document.getElementById('findings-sort');
+    if (g) { g.value = _fxView.group; g.addEventListener('change', () => setFindingsView('group', g.value)); }
+    if (o) { o.value = _fxView.sort;  o.addEventListener('change', () => setFindingsView('sort', o.value)); }
+  })();
+
+  function _fxCompare(a, b) {
+    const sev = (_SEV_IDX[a.severity] ?? 9) - (_SEV_IDX[b.severity] ?? 9);
+    const ver = (VS_ORDER[a.verification_status] ?? 9) - (VS_ORDER[b.verification_status] ?? 9);
+    const age = new Date(b.timestamp) - new Date(a.timestamp);
+    if (_fxView.sort === 'newest')   return age || sev;
+    if (_fxView.sort === 'severity') return sev || ver || age;
+    return ver || sev || age;                      // confirmed first
+  }
 
   function renderFindingsTable(findings) {
     let filtered = filter === 'all' ? findings : findings.filter(f => f.severity === filter);
@@ -121,20 +207,43 @@
 
     const wrap = document.getElementById('findings-wrap');
     if (!filtered.length) {
-      wrap.innerHTML = '<div class="empty-placeholder">No findings' +
-        (filter !== 'all' || vfilter !== 'all' ? ' matching current filters' : ' yet — run a scan.') + '</div>';
+      const filtering = filter !== 'all' || vfilter !== 'all';
+      wrap.innerHTML = filtering
+        ? '<div class="empty-placeholder">No findings match these filters. <button type="button" class="runs-clear-btn" onclick="setFilter(\'all\');setVFilter(\'all\')">Show all</button></div>'
+        : '<div class="empty-placeholder">No findings yet. They appear here as soon as Smith confirms one.</div>';
       return;
     }
 
-    // Group by severity, most severe first; within a group order by verification
-    // confidence, then newest. Reads like a triage board.
+    if (_fxView.group === 'endpoint') {
+      // One section per endpoint: ten criticals on one route read as one problem.
+      const groups = {};
+      filtered.forEach(f => { const e = findingEndpoint(f); (groups[e] = groups[e] || []).push(f); });
+      const worstOf = items => Math.min(...items.map(f => _SEV_IDX[f.severity] ?? 9));
+      const names = Object.keys(groups).sort((a, b) =>
+        worstOf(groups[a]) - worstOf(groups[b]) || groups[b].length - groups[a].length || a.localeCompare(b));
+      wrap.innerHTML = names.map(name => {
+        const items = groups[name].sort(_fxCompare);
+        const sev = SEV_GROUPS[worstOf(items)] || 'info';
+        const mix = SEV_GROUPS.filter(s => items.some(f => f.severity === s))
+          .map(s => `${items.filter(f => f.severity === s).length} ${s}`).join(' · ');
+        return `<section class="fx-section">
+          <div class="fx-section-head fx-head-${sev} fx-head-endpoint">
+            <span class="fx-head-dot"></span>
+            <span class="fx-head-name">${esc(name)}</span>
+            <span class="fx-head-count">${items.length}</span>
+            <span class="fx-head-mix">${esc(mix)}</span>
+          </div>
+          <div class="fx-grid">${items.map(tileHTML).join('')}</div>
+        </section>`;
+      }).join('');
+      return;
+    }
+
+    // Default: group by severity, most severe first.
     const groups = {};
     filtered.forEach(f => { (groups[f.severity] = groups[f.severity] || []).push(f); });
     const html = SEV_GROUPS.filter(s => groups[s] && groups[s].length).map(s => {
-      const items = groups[s].sort((a, b) => {
-        const vd = (VS_ORDER[a.verification_status]??9) - (VS_ORDER[b.verification_status]??9);
-        return vd !== 0 ? vd : new Date(b.timestamp) - new Date(a.timestamp);
-      });
+      const items = groups[s].sort(_fxCompare);
       return `<section class="fx-section">
         <div class="fx-section-head fx-head-${s}">
           <span class="fx-head-dot"></span>
@@ -166,7 +275,7 @@
       <div class="fx-tile-top">
         <span class="badge badge-${f.severity}"><span class="sev-dot"></span>${f.severity}</span>${fpBadge}
         <span class="fx-grow"></span>
-        <span class="vbadge vbadge-${vs}" title="Verification: ${vs.replace(/_/g,' ')}">${VS_LABELS[vs] || vs}</span>
+        <span class="vbadge vbadge-${vs}" title="${esc(VS_HELP[vs] || vs.replace(/_/g,' '))}">${VS_LABELS[vs] || vs}</span>
       </div>
       <div class="fx-tile-title">${esc(f.title)}${newBadge}</div>
       ${line ? `<div class="fx-tile-line">${esc(line)}</div>` : ''}
@@ -181,7 +290,7 @@
     const repro     = adj.reproducible === true || adj.reproducible === 'true';
     const reproHTML = repro
       ? '<span style="color:var(--green)">✓ Reproducible</span>'
-      : '<span style="color:#f87171">✗ Not reproducible</span>';
+      : '<span style="color:var(--danger)">✗ Not reproducible</span>';
     const orig = (adj.original_severity || '').toLowerCase();
     const rev  = (adj.revised_severity  || '').toLowerCase();
     let sevHTML = '';
@@ -224,7 +333,7 @@
       ? `<span class="triaged-badge" title="Senior-reviewed: ${esc(f.adjudication.rationale)}">⚖ Triaged</span>`
       : '';
     const vs = f.verification_status || 'unverified';
-    const vsBadge = `<span class="vbadge vbadge-${vs}" title="Verification status: ${vs.replace(/_/g,' ')}">${VS_LABELS[vs] || vs}</span>`;
+    const vsBadge = `<span class="vbadge vbadge-${vs}" title="${esc(VS_HELP[vs] || vs.replace(/_/g,' '))}">${VS_LABELS[vs] || vs}</span>`;
     const ghBtn = f.gh_issue
       ? `<button class="copy-gh-btn" data-id="${esc(f.id)}" onclick="copyGhIssue(this,this.dataset.id)" title="Copy GitHub issue">
            <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
@@ -313,14 +422,14 @@
     const r = f.remediation;
     if (!r) return '';
     const effortClass = r.effort === 'low' ? 'effort-low' : r.effort === 'high' ? 'effort-high' : 'effort-medium';
-    const breaking = r.breaking_change ? '<span style="color:#da3633;margin-left:.5rem">&#9888; Breaking change</span>' : '';
+    const breaking = r.breaking_change ? '<span style="color:var(--danger);margin-left:.5rem">&#9888; Breaking change</span>' : '';
     const diffBlock = r.diff ? `<div style="margin-top:.5rem"><strong>Diff:</strong><pre>${esc(r.diff)}</pre></div>` : '';
     const beforeAfter = (r.before && r.after) ? `
-      <div style="margin-top:.5rem"><strong>Before:</strong><pre style="color:#da3633">${esc(r.before)}</pre></div>
-      <div><strong>After:</strong><pre style="color:#3fb950">${esc(r.after)}</pre></div>` : '';
-    const refs = r.references?.length ? `<div style="margin-top:.5rem"><strong>References:</strong><ul>${r.references.map(u => '<li><a href="'+esc(u)+'" target="_blank" style="color:#58a6ff">'+esc(u)+'</a></li>').join('')}</ul></div>` : '';
+      <div style="margin-top:.5rem"><strong>Before:</strong><pre style="color:var(--danger)">${esc(r.before)}</pre></div>
+      <div><strong>After:</strong><pre style="color:var(--green)">${esc(r.after)}</pre></div>` : '';
+    const refs = r.references?.length ? `<div style="margin-top:.5rem"><strong>References:</strong><ul>${r.references.map(u => '<li><a href="'+esc(u)+'" target="_blank" style="color:var(--purple)">'+esc(u)+'</a></li>').join('')}</ul></div>` : '';
     const verify = r.verification ? `<div style="margin-top:.5rem"><strong>Verification:</strong> ${esc(r.verification)}</div>` : '';
-    const file = r.file ? `<div style="margin-top:.3rem;color:#8b949e">${esc(r.file)}${r.line ? ':'+r.line : ''} (${esc(r.language||'')})</div>` : '';
+    const file = r.file ? `<div style="margin-top:.3rem;color:var(--text-muted)">${esc(r.file)}${r.line ? ':'+r.line : ''} (${esc(r.language||'')})</div>` : '';
     return `<div id="fix-${f.id}" class="remediation-detail" style="display:none">
       <div><strong>${esc(r.summary)}</strong></div>
       <div style="margin-top:.3rem"><span class="effort-badge ${effortClass}">${esc(r.effort||'unknown')} effort</span>${breaking}</div>
@@ -356,8 +465,14 @@
   }
 
   // ── Clear all findings ──────────────────────────────────────────────────
-  function clearFindings() {
-    if (!confirm('Clear ALL scan data? This wipes findings, session, coverage, skills, logs, QA state, and kills any active tunnels. This cannot be undone.')) return;
+  async function clearFindings() {
+    const ok = await confirmAction({
+      title: 'Clear all data for this scan?',
+      body: 'This wipes the findings, coverage, skills, logs and QA state of ' + scanDisplayName() +
+            ', and kills any active tunnels. It cannot be undone.',
+      confirmLabel: 'Clear all data',
+    });
+    if (!ok) return;
     fetch('/api/clear', { method: 'DELETE' })
       .then(r => r.json())
       .then(d => {
@@ -391,11 +506,11 @@
         // ── Findings tab ──────────────────────────────────────────────────
         renderStats([]);
         document.getElementById('findings-wrap').innerHTML =
-          '<div class="empty-placeholder">No findings yet — run a scan.</div>';
+          '<div class="empty-placeholder">No findings yet. They appear here as soon as Smith confirms one.</div>';
 
         // ── Topology tab ──────────────────────────────────────────────────
         document.getElementById('diagrams-wrap').innerHTML =
-          '<div class="empty-placeholder">No diagrams yet — Claude calls report_diagram during a scan.</div>';
+          '<div class="empty-placeholder">No diagrams yet. Smith draws the attack surface as it learns it. <button type="button" class="empty-action" onclick="askSmith(\'Draw a diagram of what you have mapped so far\')">Ask for one now</button></div>';
 
         // ── Components tab ────────────────────────────────────────────────
         document.getElementById('components-wrap').innerHTML = '';
@@ -403,36 +518,19 @@
         // ── Coverage tab ──────────────────────────────────────────────────
         document.getElementById('coverage-summary').innerHTML = '';
         document.getElementById('coverage-wrap').innerHTML =
-          '<div class="empty-placeholder">No coverage data yet — run a scan with web-exploit.</div>';
+          '<div class="empty-placeholder">Nothing mapped yet. The matrix fills in once Smith has discovered the first endpoints, usually within a few minutes.</div>';
 
         // ── Skills tab ────────────────────────────────────────────────────
         document.getElementById('skills-summary').innerHTML = '';
         document.getElementById('skills-wrap').innerHTML =
-          '<div class="empty-placeholder">No active scan session — start a scan to track skill usage.</div>';
+          '<div class="empty-placeholder">No skills used yet. Each testing playbook Smith runs shows up here.</div>';
 
         // ── Activity tab ──────────────────────────────────────────────────
-        document.getElementById('qa-last-check').textContent = '';
-        document.getElementById('qa-alerts-wrap').innerHTML =
-          '<div class="empty-placeholder">Waiting for first QA cycle (runs every 2 min during an active scan).</div>';
-        document.getElementById('quicklog-wrap').innerHTML =
-          '<div class="empty-placeholder">No tool activity yet — start a scan.</div>';
-        document.getElementById('steering-active-wrap').innerHTML =
-          '<div class="empty-placeholder">No active steering directives.</div>';
-        document.getElementById('steering-history-wrap').innerHTML =
-          '<div class="empty-placeholder">No steering history yet.</div>';
         _qaData = null;
         _steeringData = null;
         _sessionData = null;
-        _cycleRenderedCount = 0;
-        _adjudicationRenderedCount = 0;
-        const stuckWrap = document.getElementById('stuck-log-wrap');
-        if (stuckWrap) stuckWrap.innerHTML = '<div class="empty-placeholder">No stuck events yet — Smith is running smoothly.</div>';
-        document.getElementById('cycle-history-wrap').innerHTML =
-          '<div class="empty-placeholder">No cycles yet — QA starts 2 min after scan begins.</div>';
-        const adjWrap = document.getElementById('adjudication-log-wrap');
-        if (adjWrap) adjWrap.innerHTML = '<div class="empty-placeholder">No adjudication pass recorded yet.</div>';
-        const adjSection = document.getElementById('adjudication-section');
-        if (adjSection) adjSection.style.display = 'none';
+        if (typeof resetActivityFeed === 'function') resetActivityFeed();
+        if (typeof resetToolResults === 'function') resetToolResults();
 
         // ── Logs tab ──────────────────────────────────────────────────────
         document.getElementById('log-output').innerHTML = '';

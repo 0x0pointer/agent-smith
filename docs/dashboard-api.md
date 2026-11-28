@@ -490,6 +490,99 @@ The watchdog polls every `poll_seconds`. It auto-restarts when: session is `runn
 
 ---
 
+## Platform (all scans)
+
+Operator token only (the link printed by `smith start`). These aggregate the control-plane database
+across every run; the scan driven from the client without the control plane is included as run
+`local`.
+
+### `GET /api/platform/overview`
+
+```json
+{
+  "runs": [{
+    "run_id": "run-1a2b3c4d", "target": "https://shop.example.com", "app": "shop.example.com",
+    "status": "running", "active": true, "depth": "standard",
+    "created_at": "…", "updated_at": "…", "skill": "web-exploit", "source": "",
+    "findings": {"critical": 0, "high": 1, "medium": 1, "low": 0, "info": 0, "total": 2},
+    "coverage": {"total": 136, "done": 57, "pct": 42},
+    "cost_usd": 0.42, "needs_you": [], "local": false
+  }],
+  "apps": [{
+    "app": "shop.example.com", "targets": ["https://shop.example.com"], "scans": 2, "active": 1,
+    "findings": {"critical": 0, "high": 1, "medium": 1, "low": 0, "info": 0, "total": 2},
+    "last_run_id": "run-1a2b3c4d", "last_target": "…", "last_depth": "standard",
+    "last_status": "running", "last_scan_at": "…"
+  }],
+  "totals": {"scans": 6, "active": 1, "needs_you": 1, "apps": 5, "findings": {"…": 0}}
+}
+```
+
+- `status` is `idle` for an open scan whose agent has stopped; `needs_you` lists plain-language
+  reasons the scan is waiting for the operator (paused, idle, resource requests).
+- `app` groups targets by host (plus a non-default port). An app's `findings` are those of its most
+  recent scan that produced any, so a re-scan does not double-count. False positives are excluded.
+
+### `GET /api/platform/findings`
+
+`{"findings": [{id, title, severity, status, target, timestamp, cve, tool_used, summary, run_id,
+run_target, run_status, app}]}` — every finding of every scan, worst first. The full finding
+(evidence, reproduction) is read from `/api/findings/{id}` with that scan's token.
+
+### `POST /api/runs` — extra start options
+
+Besides `target`, `depth`, `scope`, `out_of_scope` and `source`:
+
+| Field | Meaning |
+|---|---|
+| `notes` | Up to 4000 characters of context for the agent (a test account, what to focus on). Saved to `operator_notes.md` in the run's workdir; the start prompt points the agent at it. Never widens the scope. |
+| `max_time_minutes` | 5 – 10080. Passed to `session(action="start")`. |
+| `max_cost_usd` | 0.1 – 10000. Passed to `session(action="start")`. |
+| `codebase` | Full path of a source-code folder on the platform's machine: a white-box scan. Must be an existing folder and not a whole drive; when `SMITH_CODE_ROOTS` is set it must also sit inside one of those folders. Saved to `whitebox.json` in the run's workdir; the start prompt tells the agent to call `session(action="set_codebase")` with it and to review the code with `/codebase`. The path is never placed on the agent's command line. `GET /api/platform/overview` reports such a run with `"whitebox": true`. |
+
+### `GET /api/fs/folders` — folder picker for the wizard
+
+Operator token only. A browser's own folder dialog cannot give a web page the folder's path, so the
+wizard's **Browse** walks folders on the platform's machine through this endpoint.
+
+- Without `path`: `{"roots": [{name, path}], "path": "", "folders": []}` — the home folder, then
+  drives (Windows) or `/`.
+- With `path`: `{"roots", "path", "parent", "is_root", "folders": [{name, path}], "files": <count>,
+  "markers": ["Git repository", "Python", …]}`. `404` when it is not a readable folder.
+
+It returns **folder names only**: never file names or contents. Hidden, system and dependency
+folders (`.git`, `node_modules`, …) are left out of the list, and `markers` come from a fixed list of
+well-known project files checked by name.
+
+## Knowledge (Source vaults)
+
+Operator token only. Only Sources in the registry (`sources.yaml` / `SOURCE_REGISTRY`) are
+reachable, and the registry only admits `http://localhost` URLs.
+
+| Route | Returns |
+|---|---|
+| `GET /api/knowledge` | `{"sources": [{name, url, reachable, ready, instance, notes, startable}], "can_create"}` — `notes` is the note count, `null` when the Source is down or still indexing. `can_create` is true when Source is installed on this machine (a sibling `Source` folder, or `SMITH_SOURCE_DIR`); `startable` is true for a vault whose `sources.yaml` entry also records its folder (`vault:`). |
+| `POST /api/knowledge/vaults` | Create a notes vault (the page's **New vault**). Body `{"name"}`: 1 – 32 lowercase letters, digits or hyphens. Creates `<SMITH_VAULTS_DIR>/<name>` (default `~/smith-vaults`) with a first note, builds its index, starts a Source for it on the first free port from 7801, and adds it to `sources.yaml` with its `vault` and `db` paths. Answers `{"ok", "name", "status": "running" \| "starting"}`; can take a minute. Source itself is run as installed and never changed. |
+| `POST /api/knowledge/{name}/start` | Start the Source of a registered vault that is not running (the page's **Start this vault**). Works for vaults whose registry entry has `vault:`; a vault already answering is left alone. |
+| `GET /api/knowledge/{name}/notes` | `{"notes": [{path, chunks}]}` from the Source's `/list`. |
+| `GET /api/knowledge/{name}/search?q=&mode=&k=` | `{"results": [{rank, path, heading, score, text, tags}]}`. `mode` is `hybrid` (default), `vector` or `keyword`; `k` is clamped to 1 – 20. |
+| `GET /api/knowledge/{name}/note?path=` | `{"path", "content", "truncated"}` — the note's Markdown. Source has no HTTP "read note" call, so the file is read from the vault folder the Source reports, only if the Source lists that exact path and it resolves inside the vault. |
+
+| `GET /api/knowledge/{name}/graph` | `{"nodes": [{id, kind, label, folder, tags}], "edges": [{source, target, kind}], "truncated"}` for the Map. Note nodes are linked by `[[wikilinks]]` and relative Markdown links (`kind: "link"`); each frontmatter tag is a `tag:<name>` node joined to its notes (`kind: "tag"`). At most 400 notes. |
+| `POST /api/knowledge/{name}/ask` | The Brain. Body `{"question", "history": [{"role", "text"}], "note": "<open note path>"}`. Returns `{"answer", "sources": [{n, path, heading, text}], "client"}`; `answer` cites sources as `[1]`, `[2]`. When nothing matches or the AI client cannot answer, `answer` is `null` with a plain `message` and `reason` (`no_matches`, `no_client`, `unsupported_client`, `signed_out`, `timeout`, `client_error`) and the passages are still returned. One answer at a time (`429` while busy). |
+| `POST /api/knowledge/{name}/notes` | Save a note (the page's **Save to vault**). Body `{"title", "text", "tags"}`; written through the Source's `/ingest` to `brain/<date>-<slug>.md`. |
+
+A Source that is not running answers `502`; one still building its index answers `503`.
+
+**How the Brain answers.** Source only retrieves; it has no generative model. `ask` takes the top
+passages from the Source's hybrid search (plus the open note, in full, when `note` is given) and
+hands them with the question to the AI client that runs scans (`SMITH_WORKER_CLIENT`; the Claude
+Code CLI is the one supported today). That process runs with **every tool off, no MCP servers and
+an empty working directory**, and the prompt goes in on stdin: vault notes contain scan-derived
+text, so a poisoned note can at worst produce a wrong answer on screen. Set `SMITH_BRAIN_MODEL`
+(for example `haiku`) to answer with a smaller, faster model than the client's default. The
+passages are sent to that AI provider, like everything else Smith reads during a scan.
+
 ## Polling
 
 The dashboard polls in the background:

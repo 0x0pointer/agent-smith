@@ -94,6 +94,29 @@ def _port_healthy(port: int) -> bool:
         return False
 
 
+def _platform_on_port(port: int) -> bool:
+    """True when the dashboard answering on this port is the platform (`smith start`)."""
+    import json
+    import urllib.request
+    try:
+        with urllib.request.urlopen(f"http://localhost:{port}/healthz", timeout=2) as r:
+            return r.status == 200 and bool(json.loads(r.read() or b"{}").get("platform"))
+    except Exception:
+        return False
+
+
+def _platform_owns_dashboard(port: int) -> bool:
+    """Is the dashboard on this port the platform's to manage, not ours?
+
+    True for the tool server of a scan the platform started (it carries the
+    scan's run id), and for anyone else when the platform is what answers on the
+    port. Either way `smith start` / `smith stop` own that process.
+    """
+    from core import run_context
+
+    return run_context.multi_run_mode() or _api._platform_on_port(port)
+
+
 async def serve(port: int = 7777) -> str:
     """
     Start the dashboard server as an independent background process.
@@ -101,7 +124,18 @@ async def serve(port: int = 7777) -> str:
     a previously spawned dashboard instead of killing it.
     Restarts automatically if any backend Python module has changed since launch
     (see _code_fingerprint — not just serve.py's own mtime).
+
+    Never starts or replaces the platform's dashboard. A scan's tool server that
+    did so swapped the platform for a copy running in that scan's environment
+    (its workdir and run id): the scan was listed twice, once as the repo-root
+    scan, and stopping it took the platform down with it.
     """
+    if _api._platform_owns_dashboard(port):
+        if _api._port_healthy(port):
+            return f"http://localhost:{port}"
+        return (f"The dashboard on port {port} is run by the platform and is not answering. "
+                "Start it with `smith start`.")
+
     current_mtime = _code_fingerprint()
 
     # Check PID file first — survives MCP server restarts

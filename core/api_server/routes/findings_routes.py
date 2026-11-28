@@ -15,9 +15,108 @@ _log = logging.getLogger(__name__)
 
 # ── Read APIs ───────────────────────────────────────────────────────────────
 
+def _empty_scoped_data(kind: str) -> dict:
+    if kind == "findings":
+        return {"meta": {}, "findings": [], "diagrams": [], "chains": [], "archived": []}
+    if kind == "coverage":
+        return {"endpoints": [], "cells": []}
+    if kind == "cost":
+        return {}
+    if kind == "session":
+        return {}
+    return {}
+
+
+def _scoped_data(request: Request, kind: str, path):
+    run_id = getattr(request.state, "run_id", None)
+    if run_id:
+        from core import db as _db
+        data = _db.load_snapshot(kind, run_id=run_id)
+        if isinstance(data, dict):
+            return data
+        return _empty_scoped_data(kind)
+    return _api._read_json(path)
+
+
+def _clear_triage_fields(data: dict) -> None:
+    for key in (
+        "triage_requested",
+        "triage_requested_at",
+        "triage_progress_at",
+        "triage_pending_last",
+    ):
+        data.pop(key, None)
+
+
+def _cancel_triage_directive(run_id: str | None = None) -> None:
+    try:
+        from core.steering import steering_queue
+
+        steering_queue.cancel_by_trigger(
+            "TRIAGE_ADJUDICATION", "all findings adjudicated", run_id=run_id
+        )
+    except Exception:
+        pass
+
+
+def _refresh_run_triage_session(data: dict, run_id: str) -> dict:
+    import time
+    from core import db as _db
+    from core.adjunction import pending_findings
+
+    repo = _db.get_repository()
+    if repo is None:
+        return data
+
+    findings_data = repo.load_snapshot(run_id, "findings") or {"findings": []}
+    pending = pending_findings(findings_data)
+    data["pending_adjudication"] = len(pending)
+    if not pending:
+        _clear_triage_fields(data)
+        repo.upsert_run(run_id, data, data.get("workdir", ""))
+        repo.save_snapshot(run_id, "session", data)
+        _cancel_triage_directive(run_id)
+        return data
+
+    last = data.get("triage_pending_last")
+    if last is None or len(pending) < last:
+        data["triage_pending_last"] = len(pending)
+        data["triage_progress_at"] = time.time()
+        repo.upsert_run(run_id, data, data.get("workdir", ""))
+        repo.save_snapshot(run_id, "session", data)
+    progressed_at = data.get("triage_progress_at") or data.get("triage_requested_at")
+    if progressed_at:
+        data["triage_idle_s"] = int(time.time() - progressed_at)
+    return data
+
+
+def _refresh_single_run_triage_session(data: dict) -> dict:
+    import time
+    from core import session as scan_session
+    from core.adjunction import pending_findings
+    from core.findings import _load as _load_findings
+
+    pending = pending_findings(_load_findings())
+    data["pending_adjudication"] = len(pending)
+    if not pending:
+        scan_session.load_from_disk(force=True)
+        scan_session.set_triage_requested(False)
+        _cancel_triage_directive()
+        return _api._read_json(_api._SESSION_FILE)
+
+    scan_session.load_from_disk(force=True)
+    scan_session.note_triage_progress(len(pending))
+    data = _api._read_json(_api._SESSION_FILE)
+    data["pending_adjudication"] = len(pending)
+    progressed_at = data.get("triage_progress_at") or data.get("triage_requested_at")
+    if progressed_at:
+        data["triage_idle_s"] = int(time.time() - progressed_at)
+    return data
+
+
 @router.get("/api/findings")
-async def api_findings() -> JSONResponse:
-    data = _api._read_json(_api._FINDINGS_FILE)
+async def api_findings(request: Request) -> JSONResponse:
+    data = _scoped_data(request, "findings", _api._FINDINGS_FILE)
     # Render diagram + exploit-chain SVGs server-side so the topology tab matches
     # the threat-model theme.
     from ..mermaid import sanitize_mermaid
@@ -35,12 +134,12 @@ async def api_findings() -> JSONResponse:
 
 
 @router.get("/api/findings/{finding_id}")
-async def api_finding(finding_id: str) -> JSONResponse:
+async def api_finding(finding_id: str, request: Request) -> JSONResponse:
     """One finding + any exploit chains that reference it — feeds the standalone
     /finding/<id> detail page. Chain mermaid is pre-rendered server-side (same as
     api_findings) so the dossier's kill-chain matches the topology theme. Falls
     back to the archived list so a deleted finding's URL still resolves."""
-    data = _api._read_json(_api._FINDINGS_FILE)
+    data = _scoped_data(request, "findings", _api._FINDINGS_FILE)
     finding = next((f for f in data.get("findings", []) if f.get("id") == finding_id), None)
     archived = False
     if finding is None:
@@ -73,66 +172,32 @@ async def api_finding(finding_id: str) -> JSONResponse:
 
 
 @router.get("/api/session")
-async def api_session() -> JSONResponse:
-    data = _api._read_json(_api._SESSION_FILE)
+async def api_session(request: Request) -> JSONResponse:
+    data = _scoped_data(request, "session", _api._SESSION_FILE)
     # Self-heal the triage banner + expose the live pending count so the dashboard
     # can show progress (and a "stalled" warning if Smith goes idle mid-pass).
-    if isinstance(data, dict) and data.get("triage_requested"):
-        try:
-            import time
-            from core.findings import _load as _load_findings
-            from core.adjunction import pending_findings
-            from core import session as scan_session
-            pending = pending_findings(_load_findings())
-            data["pending_adjudication"] = len(pending)
-            if not pending:
-                # Every in-scope finding has a verdict — clear the flag so the
-                # banner doesn't linger after Smith finishes the pass.
-                scan_session.load_from_disk(force=True)
-                scan_session.set_triage_requested(False)
-                # Also acknowledge the steering directive itself. Clearing only
-                # the session flag (above) hid the banner but left the directive
-                # live in get_active(), so it kept replaying into Smith's spawn
-                # prompt / status / recovery responses — driving an unwanted
-                # adjudication pass on the next run. Ack it here, on completion,
-                # so a finished triage leaves nothing behind.
-                try:
-                    from core.steering import steering_queue
-                    steering_queue.cancel_by_trigger(
-                        "TRIAGE_ADJUDICATION", "all findings adjudicated"
-                    )
-                except Exception:
-                    pass
-                data = _api._read_json(_api._SESSION_FILE)
-            else:
-                # Advance the stall clock on real progress, then expose how long
-                # the pass has gone without recording a verdict. The dashboard
-                # uses this (not just the MCP heartbeat) to flip the banner to a
-                # "stalled" warning when Smith abandons the pass with findings
-                # still awaiting a verdict — even if it stays busy elsewhere.
-                scan_session.load_from_disk(force=True)
-                scan_session.note_triage_progress(len(pending))
-                data = _api._read_json(_api._SESSION_FILE)
-                data["pending_adjudication"] = len(pending)
-                progressed_at = (
-                    data.get("triage_progress_at")
-                    or data.get("triage_requested_at")
-                )
-                if progressed_at:
-                    data["triage_idle_s"] = int(time.time() - progressed_at)
-        except Exception:
-            pass
+    run_id = getattr(request.state, "run_id", None)
+    if not (isinstance(data, dict) and data.get("triage_requested")):
+        return JSONResponse(data)
+
+    try:
+        if run_id:
+            data = _refresh_run_triage_session(data, run_id)
+        else:
+            data = _refresh_single_run_triage_session(data)
+    except Exception:
+        pass
     return JSONResponse(data)
 
 
 @router.get("/api/cost")
-async def api_cost() -> JSONResponse:
-    return JSONResponse(_api._read_json(_api._COST_FILE))
+async def api_cost(request: Request) -> JSONResponse:
+    return JSONResponse(_scoped_data(request, "cost", _api._COST_FILE))
 
 
 @router.get("/api/coverage")
-async def api_coverage() -> JSONResponse:
-    return JSONResponse(_api._read_json(_api._COVERAGE_FILE))
+async def api_coverage(request: Request) -> JSONResponse:
+    return JSONResponse(_scoped_data(request, "coverage", _api._COVERAGE_FILE))
 
 
 @router.get("/api/graph")
@@ -296,6 +361,7 @@ async def api_patch_finding(finding_id: str, request: Request) -> JSONResponse:
         body = await request.json()
         updated = await update_finding(
             finding_id,
+            run_id=getattr(request.state, "run_id", None) or None,
             severity=body.get("severity"),
             title=body.get("title"),
             description=body.get("description"),
@@ -313,10 +379,10 @@ async def api_patch_finding(finding_id: str, request: Request) -> JSONResponse:
 
 
 @router.delete("/api/findings/{finding_id}")
-async def api_delete_finding(finding_id: str) -> JSONResponse:
+async def api_delete_finding(finding_id: str, request: Request) -> JSONResponse:
     from core.findings import delete_finding
     try:
-        archived = await delete_finding(finding_id)
+        archived = await delete_finding(finding_id, run_id=getattr(request.state, "run_id", None) or None)
         return JSONResponse({"ok": archived})
     except Exception:
         _log.exception("api_delete_finding failed")

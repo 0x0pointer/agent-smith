@@ -1,0 +1,43 @@
+<!-- ── Tab: All findings (platform) ─────────────────────────────────────────── -->
+<!-- Every finding of every scan in one list. Filtering is client-side over the
+     last GET /api/platform/findings response (platform.js). The toolbar is
+     static markup so typing in the search box never loses focus on a re-poll. -->
+<div id="tab-all-findings" class="tab-content tab-platform">
+  <div class="tab-head pf-head-row">
+    <div>
+      <h2>All findings</h2>
+      <p>Everything Smith has found, across every scan and app. Open one for the evidence and how to reproduce it.</p>
+    </div>
+    <button type="button" class="btn btn-secondary btn-sm" id="pf-findings-export">Export CSV</button>
+  </div>
+
+  <div class="runs-toolbar pf-toolbar" role="search" aria-label="Filter findings">
+    <input id="pf-findings-q" type="search" placeholder="Search title, target or CVE…"
+           aria-label="Search findings" autocomplete="off" spellcheck="false">
+    <label class="runs-filter-field">
+      <span>App</span>
+      <select id="pf-findings-app" aria-label="Filter by app"><option value="">All apps</option></select>
+    </label>
+    <label class="runs-filter-field">
+      <span>Scan</span>
+      <select id="pf-findings-run" aria-label="Filter by scan"><option value="">All scans</option></select>
+    </label>
+    <label class="runs-filter-field">
+      <span>Group by</span>
+      <select id="pf-findings-group" aria-label="Group findings">
+        <option value="app">App</option>
+        <option value="severity">Severity</option>
+        <option value="run">Scan</option>
+        <option value="none">Nothing</option>
+      </select>
+    </label>
+    <label class="pf-check">
+      <input type="checkbox" id="pf-findings-fp"> <span>Show false positives</span>
+    </label>
+    <button type="button" id="pf-findings-clear" class="runs-clear-btn" hidden>Clear filters</button>
+  </div>
+  <div id="pf-findings-sev" class="runs-chips" role="group" aria-label="Filter by severity"></div>
+
+  <div id="pf-findings-summary" class="air-sub-note runs-summary"></div>
+  <div id="pf-findings-output"><div class="empty-placeholder">Loading…</div></div>
+</div>

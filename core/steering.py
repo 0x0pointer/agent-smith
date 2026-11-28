@@ -21,6 +21,7 @@ import json
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
+from core import db as _db
 from core import paths as _paths
 from core import store as _store
 
@@ -55,21 +56,39 @@ class SteeringDirective:
 class SteeringQueue:
     """Persistent steering directive queue backed by steering_queue.json."""
 
-    def _load(self) -> list[dict]:
+    def _load(self, run_id: str | None = None) -> list[dict]:
+        if run_id:
+            repo = _db.get_repository()
+            if repo is None:
+                return []
+            try:
+                cached = repo.load_snapshot(run_id, "steering")
+            except Exception:
+                cached = None
+            return cached.get("directives", []) if isinstance(cached, dict) else []
         try:
             if _STEERING_FILE.exists():
                 return json.loads(_STEERING_FILE.read_text(encoding="utf-8")).get("directives", [])
         except Exception:
             pass
+        cached = _db.load_snapshot("steering")
+        if isinstance(cached, dict):
+            return cached.get("directives", [])
         return []
 
-    def _save(self, directives: list[dict]) -> None:
+    def _save(self, directives: list[dict], run_id: str | None = None) -> None:
         try:
+            if run_id:
+                repo = _db.get_repository()
+                if repo is not None:
+                    repo.save_snapshot(run_id, "steering", {"directives": directives})
+                return
             _store.save(_STEERING_FILE, {"directives": directives})
+            _db.persist_snapshot("steering", {"directives": directives})
         except Exception:
             pass
 
-    def clear(self, keep_pending_human: bool = False) -> int:
+    def clear(self, keep_pending_human: bool = False, run_id: str | None = None) -> int:
         """Drop directives (a clean slate). Returns how many were removed. Called at
         scan start so a prior scan's steers / KB-docs notes / HIR resolutions / QA
         directives don't leak into the new scan — steering is not session-scoped, so
@@ -81,12 +100,12 @@ class SteeringQueue:
         engagement that has not been delivered yet. Dropping those on a mid-engagement
         restart (crash, compaction, benchmark re-launch) silently loses operator input;
         already-injected ones are fair to drop (the agent saw them)."""
-        directives = self._load()
+        directives = self._load(run_id=run_id)
         keep = [d for d in directives
                 if keep_pending_human
                 and d.get("trigger") == "HUMAN_STEER"
                 and d.get("status") == "pending"]
-        self._save(keep)
+        self._save(keep, run_id=run_id)
         return len(directives) - len(keep)
 
     def _now(self) -> str:
@@ -128,6 +147,7 @@ class SteeringQueue:
         skill: str | None = None,
         trigger: str = "",
         force: bool = False,
+        run_id: str | None = None,
     ) -> str | None:
         """Add a directive. Returns id if created, None if deduped.
 
@@ -137,7 +157,7 @@ class SteeringQueue:
         re-emphasising the same instruction leaves ONE active directive (the newest), not a
         growing pile that re-injects into every response.
         """
-        directives = self._load()
+        directives = self._load(run_id=run_id)
         if not force:
             for d in directives:
                 if (
@@ -166,27 +186,32 @@ class SteeringQueue:
             "ack_message": None,
         }
         directives.append(directive)
-        self._save(directives)
+        self._save(directives, run_id=run_id)
         return directive_id
 
     # ── Transitions ────────────────────────────────────────────────────────────
 
-    def mark_injected(self, directive_id: str) -> None:
-        directives = self._load()
+    def mark_injected(self, directive_id: str, run_id: str | None = None) -> None:
+        directives = self._load(run_id=run_id)
         for d in directives:
             if d["id"] == directive_id and d["status"] == "pending":
                 d["status"] = "injected"
                 d["injected_at"] = self._now()
                 break
-        self._save(directives)
+        self._save(directives, run_id=run_id)
 
-    def acknowledge(self, directive_id: str, message: str | None = None) -> bool:
+    def acknowledge(
+        self,
+        directive_id: str,
+        message: str | None = None,
+        run_id: str | None = None,
+    ) -> bool:
         """Mark a directive acknowledged. Returns True if found.
 
         Also collapses any still-active identical copies (same code+skill+trigger+message):
         once the agent acknowledges one instance of a repeated human steer, the redundant
         duplicates resolve too instead of lingering as 'active' forever."""
-        directives = self._load()
+        directives = self._load(run_id=run_id)
         for d in directives:
             if d["id"] == directive_id and d["status"] in ("pending", "injected"):
                 d["status"] = "acknowledged"
@@ -197,13 +222,13 @@ class SteeringQueue:
                     trigger=d.get("trigger"), message=d.get("message"),
                     exclude_id=d["id"],
                     reason="collapsed — duplicate of an acknowledged directive")
-                self._save(directives)
+                self._save(directives, run_id=run_id)
                 return True
         return False
 
-    def auto_satisfy(self, skill: str) -> list[str]:
+    def auto_satisfy(self, skill: str, run_id: str | None = None) -> list[str]:
         """Auto-satisfy all CHAIN_REQUIRED directives for a skill. Returns satisfied IDs."""
-        directives = self._load()
+        directives = self._load(run_id=run_id)
         satisfied: list[str] = []
         for d in directives:
             if (
@@ -215,17 +240,22 @@ class SteeringQueue:
                 d["acknowledged_at"] = self._now()
                 satisfied.append(d["id"])
         if satisfied:
-            self._save(directives)
+            self._save(directives, run_id=run_id)
         return satisfied
 
-    def cancel_by_trigger(self, trigger: str, message: str | None = None) -> int:
+    def cancel_by_trigger(
+        self,
+        trigger: str,
+        message: str | None = None,
+        run_id: str | None = None,
+    ) -> int:
         """Acknowledge all active directives with the given trigger. Returns count.
 
         Used by the dashboard to cancel an in-flight pass (e.g. triage) — marks
         the matching pending/injected directives acknowledged so they drop out of
         get_active()/get_pending() without losing the audit trail.
         """
-        directives = self._load()
+        directives = self._load(run_id=run_id)
         n = 0
         for d in directives:
             if d.get("trigger") == trigger and d.get("status") in ("pending", "injected"):
@@ -234,46 +264,50 @@ class SteeringQueue:
                 d["ack_message"] = message or "cancelled by operator"
                 n += 1
         if n:
-            self._save(directives)
+            self._save(directives, run_id=run_id)
         return n
 
-    def acknowledge_latest_injected(self, message: str | None = None) -> str | None:
+    def acknowledge_latest_injected(
+        self,
+        message: str | None = None,
+        run_id: str | None = None,
+    ) -> str | None:
         """Acknowledge the most recently injected directive. Returns its id or None."""
-        directives = self._load()
+        directives = self._load(run_id=run_id)
         injected = [d for d in directives if d.get("status") == "injected"]
         if not injected:
             return None
         latest = max(injected, key=lambda d: d.get("injected_at") or d["ts"])
-        self.acknowledge(latest["id"], message)
+        self.acknowledge(latest["id"], message, run_id=run_id)
         return latest["id"]
 
     # ── Query ──────────────────────────────────────────────────────────────────
 
-    def get_pending(self) -> list[SteeringDirective]:
+    def get_pending(self, run_id: str | None = None) -> list[SteeringDirective]:
         return [
             SteeringDirective(**d)
-            for d in self._load()
+            for d in self._load(run_id=run_id)
             if d.get("status") == "pending"
         ]
 
-    def get_injected(self) -> list[SteeringDirective]:
+    def get_injected(self, run_id: str | None = None) -> list[SteeringDirective]:
         return [
             SteeringDirective(**d)
-            for d in self._load()
+            for d in self._load(run_id=run_id)
             if d.get("status") == "injected"
         ]
 
-    def get_active(self) -> list[SteeringDirective]:
+    def get_active(self, run_id: str | None = None) -> list[SteeringDirective]:
         """Pending + injected — the directives Smith should still act on."""
         return [
             SteeringDirective(**d)
-            for d in self._load()
+            for d in self._load(run_id=run_id)
             if d.get("status") in ("pending", "injected")
         ]
 
-    def get_history(self) -> list[dict]:
+    def get_history(self, run_id: str | None = None) -> list[dict]:
         """All directives, newest first — for the dashboard audit trail."""
-        directives = self._load()
+        directives = self._load(run_id=run_id)
         return list(reversed(directives))
 
 

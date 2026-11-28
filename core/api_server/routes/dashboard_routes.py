@@ -32,8 +32,18 @@ async def finding_detail(request: Request, finding_id: str):
 async def healthz() -> JSONResponse:
     """Unauthenticated liveness probe used by serve() to detect a healthy
     dashboard. Returns no scan data, so it stays reachable when the /api/*
-    control plane requires the per-session bearer token."""
-    return JSONResponse({"ok": True})
+    control plane requires the per-session bearer token.
+
+    ``platform`` says this dashboard is the multi-scan platform (`smith start`),
+    which a scan's own tool server must never restart or replace."""
+    return JSONResponse({"ok": True, "platform": _is_platform()})
+
+
+def _is_platform() -> bool:
+    """True when this dashboard was started with the control-plane database."""
+    import os
+
+    return bool(os.environ.get("SMITH_DATABASE_URL", "").strip())
 
 
 @router.get("/logo.png")

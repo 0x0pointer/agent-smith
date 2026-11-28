@@ -72,7 +72,7 @@
     // post-processing below still works.
     const html = (typeof marked !== 'undefined')
       ? sanitizeHtml(marked.parse(content))
-      : `<pre style="white-space:pre-wrap;word-break:break-all;font-size:.82rem;color:#c9d1d9">${esc(content)}</pre>`;
+      : `<pre style="white-space:pre-wrap;word-break:break-all;font-size:var(--fs-sm);color:var(--text)">${esc(content)}</pre>`;
     wrap.innerHTML = `<div id="tm-content">${html}</div>`;
 
     // Replace mermaid code blocks with server-rendered SVGs when available,
@@ -104,11 +104,11 @@
           const { svg } = await mermaid.render(renderId, _remapMermaidColors(block.textContent));
           mermaidEl.innerHTML = svg;
         } catch (err) {
-          mermaidEl.innerHTML = `<div style="color:#ff4d4f;font-size:.8rem;margin-bottom:.5rem">
+          mermaidEl.innerHTML = `<div style="color:var(--danger);font-size:var(--fs-sm);margin-bottom:.5rem">
             ⚠ Mermaid render error: ${esc(String(err?.message||err))}</div>
-            <pre style="background:#010409;color:#7ee787;padding:.6rem;border-radius:4px;
-                        font-size:.75rem;white-space:pre-wrap;word-break:break-all;
-                        border:1px solid #21262d;max-height:400px;overflow-y:auto">${esc(block.textContent)}</pre>`;
+            <pre style="background:#010409;color:#7ee787;padding:.6rem;border-radius:var(--r-sm);
+                        font-size:var(--fs-xs);white-space:pre-wrap;word-break:break-all;
+                        border:1px solid var(--border-subtle);max-height:400px;overflow-y:auto">${esc(block.textContent)}</pre>`;
         }
         zoomInner.appendChild(mermaidEl);
       }

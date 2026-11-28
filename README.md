@@ -26,7 +26,7 @@ You bring the expertise. agent-smith brings 50+ tools, the methodology, and the 
 - 🐳 **Sandboxed by default.** Every scanner runs inside an ephemeral Docker container. Hard cost / time / call-count limits enforced server-side.
 - 🔍 **Depth enforcement.** A background QA daemon watches Smith and pushes it to go deeper — catching stalls, premature completion, and shortcut behaviour, escalating to you when it's genuinely stuck. ([details →](docs/operating.md#qa-depth-enforcement))
 - 🧪 **Evidence, not guesses.** Every finding is artifact-backed and passes a senior-review **adjudication gate**. Blind vulns are confirmed **out-of-band** via a callback server; multi-step attacks are recorded as **proven exploit chains**; white-box findings carry a **source trace** whose `file:line` is resolved against the repo — a hallucinated location is rejected at the door.
-- 📊 **A dashboard built for collaboration.** Watch findings, topology, coverage, and the threat model populate in real time at `localhost:7777` — and steer Smith mid-scan, respond to intervention pauses, and fulfill its resource wishlist. ([API →](docs/dashboard-api.md))
+- 📊 **A dashboard built for collaboration.** Start scans, switch between them, and see **what every tool found** (ports, subdomains, endpoints, template hits, secrets by location) at `localhost:7777` without reading logs — then steer Smith from what you just read, answer its pauses, and export the results. ([tour →](#the-dashboard) · [API →](docs/dashboard-api.md))
 
 ---
 
@@ -138,6 +138,22 @@ cd agent-smith
 
 > ⚠️ **After install, fully restart your client** — the MCP server connects at startup.
 
+**Start a scan from the dashboard.** The installer puts a `smith` command on your PATH
+(`~/.local/bin/smith`):
+
+```bash
+smith start        # Postgres + dashboard at http://127.0.0.1:7777 — prints the link and an operator token
+smith status       # health of database / dashboard / orchestrator
+smith stop
+```
+
+Open `<dashboard_url>/#k=<operator_token>`, enter a **target** and a **depth**, and press **Start Scan**.
+Scope, out-of-scope and a [Source](#sources-and-the-work-queue) are under *Advanced options*.
+([details →](docs/installation.md#control-plane-smith))
+
+Prefer the terminal? `claude` and `/pentester scan https://target` still works exactly as before; the
+dashboard then follows that single scan.
+
 ### …or one-click in the cloud — GitHub Codespaces
 
 No local Docker required. **Code → Codespaces → Create**, and the devcontainer provisions everything on create: the native harness (Poetry + MCP server, registered with Claude Code *and* OpenCode), all skills, the all-modules Kali tools image, Metasploit, and the recon scanner images. The MCP server is re-ensured on every container start, so a resumed Codespace comes up connected.
@@ -155,6 +171,83 @@ The harness runs natively; only the hacking tools are containerized. A Codespace
 
 ---
 
+## The dashboard
+
+The dashboard is the **Agent-Smith Pentester Platform**, with two levels. The **platform pages** are about every scan and
+are always available; the **scan pages** appear in the rail once you open one scan.
+
+| Platform page | What it answers |
+|---|---|
+| **Home** | Type a target and start. Below: how many scans are active, which ones need you, open findings by severity, and the most serious findings across all scans. |
+| **Scans** | Every instance of Smith. Active scans are live cards (status, progress, findings so far, Open / Resume / Stop); the history table filters by target, status and depth. |
+| **All findings** | Every finding of every scan in one list. Filter by severity, app or scan, group by app / severity / scan, export CSV. Opening one shows its evidence and reproduction. |
+| **Apps** | Scans grouped by target host: when each app was last tested, what is open on it, and **Scan again** with the same settings. |
+| **Knowledge** | A workspace over the [Source](https://github.com/0x0pointer/Source) notes vaults registered in `sources.yaml`. Notes on the left; the reader in the middle, with related notes and a **Map** of how notes link; and the **Brain** on the right: ask a question in plain words and get an answer written from your notes, with numbered citations that open the note. An answer can be saved back to the vault. With Source installed next to agent-smith, **New vault** creates a vault for you, and a vault that is not running can be started from the page. |
+
+**New scan** (top bar, Home, or *Scan again* on an app) is a four-step wizard: target → depth
+(Recon / Standard / Thorough / Danger, each explained in plain words) → optional details (the app's
+**source code folder** for a white-box test, notes for Smith such as a test account, extra scope,
+what never to touch, a time or cost limit, a knowledge vault) → review, with a box confirming you
+are authorized to test the target.
+
+**White-box scans.** In Details, paste the path of the folder that holds the app's code, or click
+**Browse** to pick it. The folder is on the machine the platform runs on; the platform checks it
+exists and tells you what it found (*"16 folders, 24 files · Git repository · Python"*). Smith then
+reviews the code with the `/codebase` skill and uses what it learns to guide and confirm the testing
+of the live target. Scans started this way carry a **white-box** tag on their card.
+
+| Scan page | What it answers |
+|---|---|
+| **Findings** | How many issues, by severity (the tiles are the filter). Group by severity or by endpoint, sort by confirmed / severity / newest, and export as Markdown, CSV or JSON. A legend explains each verification label. |
+| **Coverage** | Which endpoint × parameter × attack-type cells are tested, vulnerable, skipped or still pending. |
+| **Tool Results** | What each tool actually found: one card per tool with a headline (*"8 open ports on 2 hosts"*), the de-duplicated results, every run, and its raw output (secrets masked). **Steer Smith on this** opens the instruction box pre-filled with that tool's context. |
+| **More** | Operator Actions, Topology, Components, AI Red Team, Skills, World Model, Threat Model, Metrics, Timeline (one chronological feed of tool calls, instructions, quality checks, reviews and queued work) and the raw Logs. |
+
+The command panel above every page shows the scan's progress (Exploitation → Coverage sweep →
+Synthesis → Done) and one line saying what Smith is doing right now. **Needs you** in the top bar
+collects everything waiting on the operator: a paused scan, an idle scan, requests from Smith,
+manual setup steps and high-priority quality alerts.
+
+### Scans run side by side
+
+Each scan started from the dashboard gets **its own tool-server process, workdir, containers and
+Docker network**. Session state, findings, coverage and logs never mix, every log line is tagged
+with its scan ID (`[run-1a2b3c4d]`), and the log views follow the scan you have selected.
+
+> Per-scan tool servers are implemented for the **Claude Code** worker. OpenCode and Codex workers
+> still share the installed server, so run those one scan at a time.
+
+### Idle scans
+
+When Smith stops — its turn ended, the process exited, or it hung and was shut down — the scan goes
+**idle**. Nothing is respawned behind your back: the scan stays open and waits. Send an instruction
+or press **Resume scan** and Smith picks up where it left off. For unattended runs that should keep
+going on their own, set `SMITH_AUTO_RESUME=1`.
+
+### Sources and the work queue
+
+A **Source** is a knowledge base running on your machine (a vector-embedding store of methodology
+and of what earlier engagements found), registered in `sources.yaml`. Bind one to a scan under
+*Advanced options* and Smith consults it while testing.
+
+A bound Source also feeds the scan's **work queue**. When notes are added or edited — for example
+what a PR scanner learned about a pull request — each change becomes a queued item, and an idle
+Smith is started on it: read the notes, register the new endpoints, domains and features, and run
+the pentester workflow against them. Items are handed over **one at a time**, each in its own agent
+turn, so a burst of updates cannot push each other out of context or be forgotten. Integrations can
+queue an item directly:
+
+```bash
+curl -X POST http://127.0.0.1:7777/api/runs/<run-id>/work \
+  -H "Authorization: Bearer <operator_token>" -H "Content-Type: application/json" \
+  -d '{"title": "PR 412", "text": "PR 412 adds POST /api/export. Test it."}'
+```
+
+→ **[docs/installation.md](docs/installation.md#source-updates-and-the-work-queue)** for the details
+and the settings (`SMITH_AUTO_RESUME`, `SMITH_WORK_QUEUE_DISABLED`, `SMITH_WORK_POLL_SECONDS`).
+
+---
+
 ## How it works
 
 ```
@@ -165,6 +258,12 @@ You (/pentester scan target.com)
               ├── Kali container       — persistent kali-mcp (nikto, sqlmap, ffuf, …)
               ├── Metasploit container — exploit validation
               └── FastAPI dashboard    — live findings at localhost:7777
+
+smith start  (optional control plane)
+  ├── Postgres            — runs, per-scan snapshots, dashboard tokens, work queue
+  └── Dashboard + orchestrator
+        ├── one worker + one tool server per scan  (isolated workdir, containers, network)
+        └── work queue    — Source updates → one queued item at a time for an idle scan
 ```
 
 The LLM decides what to run; each tool's output is aggregated and returned to the model, which chooses the next action. Hard cost / time / call-count limits are enforced server-side. Full component diagram, repository layout, and scan deliverables → **[docs/architecture.md](docs/architecture.md)**.

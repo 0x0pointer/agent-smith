@@ -31,6 +31,10 @@ from . import ai_redteam_routes  # noqa: E402,F401
 from . import session_log_routes  # noqa: E402,F401
 from . import sessions_routes  # noqa: E402,F401
 from . import skill_usage_routes  # noqa: E402,F401
+from . import runs_routes  # noqa: E402,F401
+from . import platform_routes  # noqa: E402,F401
+from . import knowledge_routes  # noqa: E402,F401
+from . import fs_routes  # noqa: E402,F401
 
 # Re-export handler functions for consumers/tests that import them by name.
 from .dashboard_routes import (  # noqa: E402,F401
@@ -80,6 +84,7 @@ from .smith_routes import (  # noqa: E402,F401
 from .ai_redteam_routes import api_ai_redteam  # noqa: E402,F401
 from .session_log_routes import api_session_log  # noqa: E402,F401
 from .sessions_routes import api_sessions  # noqa: E402,F401
+from .runs_routes import api_runs, api_create_run, api_stop_run  # noqa: E402,F401
 from .skill_usage_routes import api_skill_usage  # noqa: E402,F401
 from .misc_routes import (  # noqa: E402,F401
     api_qa,

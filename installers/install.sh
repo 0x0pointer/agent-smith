@@ -58,6 +58,11 @@ echo "Installing Python dependencies..."
 poetry -C "$REPO_DIR" install --no-interaction
 ok "Poetry dependencies installed"
 
+# ── `smith` control-plane command ─────────────────────────────────────────────
+# package-mode=false means Poetry does not install the [tool.poetry.scripts]
+# entry, so put a launcher on PATH ourselves.
+"$REPO_DIR/installers/install-smith-cli.sh"
+
 # ── Disarm any existing launchd plist before restarting the MCP ──────────────
 # launchd's plist runs start-mcp-server.sh every 5 s under KeepAlive=true. If a
 # previous install left one loaded — especially one pointing at a different
@@ -80,6 +85,41 @@ echo "Starting MCP SSE server..."
 chmod +x "$REPO_DIR/installers/start-mcp-server.sh"
 "$REPO_DIR/installers/start-mcp-server.sh" restart
 ok "MCP SSE server running on localhost:7778"
+
+# ── Clear a stale dashboard off :7777 ─────────────────────────────────────────
+# The dashboard is a detached uvicorn process tracked only by
+# $REPO_DIR/logs/dashboard.pid. One left running by an OLDER install (or a
+# checkout in another directory) is invisible to that PID file, keeps the port,
+# and keeps serving the old code: /healthz answers 200 while new routes 404, and
+# `smith start` then reports "unhealthy" because its own dashboard cannot bind.
+# Only our own uvicorn is touched; any other process on the port is reported.
+_DASHBOARD_PORT=7777
+_dashboard_pids() {
+    if command -v lsof >/dev/null 2>&1; then
+        lsof -tiTCP:"$_DASHBOARD_PORT" -sTCP:LISTEN 2>/dev/null || true
+    elif command -v ss >/dev/null 2>&1; then
+        ss -ltnpH "sport = :$_DASHBOARD_PORT" 2>/dev/null \
+            | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u || true
+    fi
+}
+_reaped_dashboard=0
+for _pid in $(_dashboard_pids); do
+    _cmd="$(ps -o command= -p "$_pid" 2>/dev/null || true)"
+    case "$_cmd" in
+        *"core.api_server:app"*)
+            kill "$_pid" 2>/dev/null || true
+            _reaped_dashboard=1
+            ;;
+        *)
+            warn "Port $_DASHBOARD_PORT is held by a non-agent-smith process (PID $_pid) — the dashboard will not start until it is freed."
+            ;;
+    esac
+done
+rm -f "$REPO_DIR/logs/dashboard.pid"
+if [[ "$_reaped_dashboard" == 1 ]]; then
+    sleep 1
+    ok "Stopped the previous dashboard on :$_DASHBOARD_PORT (it restarts from this checkout on next use)"
+fi
 
 # ── Register MCP server with Claude Code (SSE transport) ──────────────────────
 echo ""
@@ -112,8 +152,54 @@ if [[ "$OS_KIND" == "macos" ]]; then
     mkdir -p "$(dirname "$PLIST_DST")"
     sed "s|REPO_DIR|$REPO_DIR|g" "$PLIST_SRC" > "$PLIST_DST"
     launchctl unload "$PLIST_DST" 2>/dev/null || true
+
+    # start-mcp-server.sh started a self-managed nohup instance a moment ago (the
+    # plist was unloaded then). It still holds port 7778, so launchd's instance
+    # would lose the bind and be respawned every 10 s. Hand the port over first —
+    # same handover the systemd branch below does.
+    _PID_FILE="$REPO_DIR/logs/mcp_sse.pid"
+    if [[ -f "$_PID_FILE" ]] && kill -0 "$(cat "$_PID_FILE")" 2>/dev/null; then
+        kill "$(cat "$_PID_FILE")" 2>/dev/null || true
+        sleep 1
+    fi
+    rm -f "$_PID_FILE"
+
     launchctl load "$PLIST_DST"
-    ok "launchd plist installed — MCP server auto-starts on login and restarts on crash"
+
+    # Do not trust `launchctl load`: it succeeds even when the job can never run.
+    # The usual cause is a checkout under ~/Desktop, ~/Documents or ~/Downloads —
+    # macOS privacy protection (TCC) stops launchd's /bin/bash from reading the
+    # script and log there, and the job exits 78 (EX_CONFIG) on every spawn with
+    # nothing in the log. Wait for launchd to report a live PID; if it never does,
+    # drop the plist and fall back to a self-managed server so the install still
+    # ends with a working MCP server.
+    _launchd_up=0
+    for _i in $(seq 1 30); do
+        if launchctl list com.agent-smith.mcp-sse 2>/dev/null | grep -q '"PID"'; then
+            _launchd_up=1
+            break
+        fi
+        sleep 0.5
+    done
+    if [[ "$_launchd_up" == 1 ]]; then
+        ok "launchd plist installed — MCP server auto-starts on login and restarts on crash"
+    else
+        launchctl unload "$PLIST_DST" 2>/dev/null || true
+        rm -f "$PLIST_DST"
+        warn "launchd could not run the MCP server from $REPO_DIR — auto-start NOT installed."
+        case "$REPO_DIR/" in
+            "$HOME/Desktop/"*|"$HOME/Documents/"*|"$HOME/Downloads/"*)
+                warn "macOS blocks background jobs from reading ~/Desktop, ~/Documents and ~/Downloads."
+                warn "Move the checkout elsewhere (e.g. ~/agent-smith) and re-run this installer to get auto-start."
+                ;;
+            *)
+                warn "Inspect it with: launchctl print gui/$(id -u)/com.agent-smith.mcp-sse"
+                ;;
+        esac
+        "$REPO_DIR/installers/start-mcp-server.sh" start
+        warn "Running a self-managed MCP server instead. After a reboot or crash, restart it with:"
+        warn "  $REPO_DIR/installers/start-mcp-server.sh restart"
+    fi
 elif [[ "$OS_KIND" == "linux" ]]; then
     echo "Installing systemd user unit..."
     # `systemctl --user` needs a live user D-Bus session. It is absent in some
@@ -445,6 +531,35 @@ ok "pentest-agent tools will run without approval prompts"
 chmod +x "$REPO_DIR/.claude/hooks/post-compact.sh" 2>/dev/null || true
 ok "Hook scripts are executable"
 
+# ── Control plane (optional) ──────────────────────────────────────────────────
+# `smith start` brings up Postgres (docker compose, 127.0.0.1:55432) and the
+# dashboard/orchestrator on :7777, which is what lets the dashboard launch and
+# track several runs. Plain single-run use through your client does not need it.
+echo ""
+echo "  Control plane (multi-run dashboard)"
+echo "  ───────────────────────────────────"
+echo ""
+printf "  Start the control plane now? (Postgres on :55432 + dashboard on :7777) [Y/n]: "
+read -r _cp_answer || true
+if [[ "${_cp_answer:-Y}" =~ ^[Yy]$ ]]; then
+    _SMITH_PY="$("$REPO_DIR/installers/run-mcp-server.sh" --print-python 2>/dev/null || true)"
+    if [[ -z "$_SMITH_PY" ]]; then
+        warn "Could not resolve the project virtualenv — start it later with: smith start"
+    elif _cp_out="$(cd "$REPO_DIR" && PYTHONPATH="$REPO_DIR" "$_SMITH_PY" "$REPO_DIR/smith_cli.py" start 2>&1)"; then
+        echo "  $_cp_out"
+        if [[ "$_cp_out" == *'"status": "started"'* ]]; then
+            ok "Control plane running — open the dashboard_url above with #k=<operator_token>"
+        else
+            warn "Control plane did not come up healthy. Check that port 55432 and 7777 are free, then: smith start"
+        fi
+    else
+        echo "$_cp_out" | tail -5 | sed 's/^/  /'
+        warn "smith start failed (is port 55432 already in use by another container?). Retry later with: smith start"
+    fi
+else
+    warn "Control plane not started — run later: smith start   (smith status / smith stop)"
+fi
+
 # ── Next steps ────────────────────────────────────────────────────────────────
 echo ""
 echo "  Docker images"
@@ -651,6 +766,9 @@ echo "    /metasploit 10.0.0.5 cve=CVE-2017-0144   — Metasploit exploit valida
 echo "    /gh-export                               — export findings as GitHub issue blocks"
 echo "    /compliance /path/to/app                 — full ASVS 5.0 compliance assessment"
 echo "    /report target-name                      — generate PDF pentest report from findings"
+echo ""
+echo "  Control plane (multi-run dashboard, Postgres-backed):"
+echo "    smith start | smith status | smith stop"
 echo ""
 echo "  To rebuild images after adding new skills:"
 echo "    docker build -t pentest-agent/kali-mcp $REPO_DIR/tools/kali/"

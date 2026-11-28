@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 
 import core.api_server as _api
 
-from ._common import router
+from ._common import router, _wake_smith_if_idle
 
 _log = logging.getLogger(__name__)
 
@@ -213,6 +213,7 @@ async def api_steer(request: Request) -> JSONResponse:
         message = str(body.get("message", "")).strip()
         if not message:
             return JSONResponse({"ok": False, "error": "message required"}, status_code=400)
+        run_id = getattr(request.state, "run_id", None) or None
         # Operator phase-advance via typed steer ("advance to phase B", "next phase") — handle it
         # deterministically server-side (don't route it through the model) so the phase moves NOW.
         is_phase, target = _parse_phase_steer(message)
@@ -231,8 +232,20 @@ async def api_steer(request: Request) -> JSONResponse:
             skill=None,
             trigger="HUMAN_STEER",
             force=True,  # human instructions always go through — never deduped
+            run_id=run_id,
         )
-        return JSONResponse({"ok": True})
+        # A queued instruction only reaches Smith on its next tool call. If Smith
+        # is not running (the scan is idle), the instruction is what resumes it.
+        resumed = False
+        if run_id:
+            try:
+                from control_plane import orchestrator
+                resumed = bool(orchestrator.resume_run(run_id).get("resumed"))
+            except Exception:
+                _log.exception("api_steer: could not resume run %s", run_id)
+        else:
+            resumed = await _wake_smith_if_idle()
+        return JSONResponse({"ok": True, "resumed": resumed})
     except Exception:
         _log.exception("api_steer failed")
         return JSONResponse({"ok": False, "error": _api._ERR_REQUEST_FAILED}, status_code=500)

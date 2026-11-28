@@ -36,7 +36,9 @@ import asyncio
 import json
 import uuid
 from datetime import datetime, timezone
+from core import db as _db
 from core import paths as _paths
+from core import run_context as _run_context
 from core import store as _store
 
 FINDINGS_FILE = _paths.FINDINGS_FILE
@@ -49,11 +51,10 @@ _lock = asyncio.Lock()
 # ---------------------------------------------------------------------------
 
 def _load() -> dict:
-    if FINDINGS_FILE.exists():
-        try:
-            return json.loads(FINDINGS_FILE.read_text())
-        except Exception:
-            pass
+    return _load_for_run(None)
+
+
+def _empty_store() -> dict:
     return {
         "meta":     {"created": datetime.now(timezone.utc).isoformat(), "target": ""},
         "findings": [],
@@ -62,15 +63,64 @@ def _load() -> dict:
     }
 
 
-def _save(data: dict) -> None:
-    _store.save(FINDINGS_FILE, data)
-    # AS-REPUD: write a detached HMAC signature so post-hoc edits to the signed
-    # deliverable are detectable (verify via core.integrity.verify_file). Best-effort.
+def _load_findings_file() -> dict | None:
+    if not FINDINGS_FILE.exists():
+        return None
     try:
-        from core import integrity
-        integrity.sign_file(FINDINGS_FILE)
+        return json.loads(FINDINGS_FILE.read_text())
+    except Exception:
+        return None
+
+
+def _load_cached_findings(run_id: str | None, repo) -> dict | None:
+    try:
+        if run_id:
+            return repo.load_snapshot(run_id, "findings") if repo is not None else None
+        return _db.load_snapshot("findings")
+    except Exception:
+        return None
+
+
+def _load_for_run(run_id: str | None) -> dict:
+    file_data = _load_findings_file() if run_id is None else None
+    if isinstance(file_data, dict):
+        if (file_data.get("meta") or {}).get("run_id") in (None, _run_context.run_id()):
+            return file_data
+    repo = _db.get_repository()
+    cached = _load_cached_findings(run_id, repo)
+    if isinstance(cached, dict):
+        return cached
+    if run_id is None and isinstance(file_data, dict) and repo is None:
+        return file_data
+    return _empty_store()
+
+
+def _save(data: dict) -> None:
+    _save_for_run(data, None)
+
+
+def _save_for_run(data: dict, run_id: str | None) -> None:
+    data.setdefault("meta", {})
+    data["meta"]["run_id"] = run_id or _run_context.run_id()
+    if run_id is None:
+        _store.save(FINDINGS_FILE, data)
+    try:
+        if run_id:
+            repo = _db.get_repository()
+            if repo is not None:
+                repo.save_snapshot(run_id, "findings", data)
+        else:
+            _db.persist_snapshot("findings", data)
     except Exception:
         pass
+    # AS-REPUD: write a detached HMAC signature so post-hoc edits to the signed
+    # deliverable are detectable (verify via core.integrity.verify_file). Best-effort.
+    if run_id is None:
+        try:
+            from core import integrity
+            integrity.sign_file(FINDINGS_FILE)
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -157,7 +207,7 @@ _UPDATABLE_FIELDS = {
 }
 
 
-async def update_finding(finding_id: str, **fields) -> bool:
+async def update_finding(finding_id: str, run_id: str | None = None, **fields) -> bool:
     """Update fields on an existing finding by id.
 
     Accepted fields: severity, title, description, evidence, status,
@@ -168,11 +218,11 @@ async def update_finding(finding_id: str, **fields) -> bool:
     if not updates:
         return False
     async with _lock:
-        data = _load()
+        data = _load_for_run(run_id)
         for entry in data["findings"]:
             if entry.get("id") == finding_id:
                 entry.update(updates)
-                _save(data)
+                _save_for_run(data, run_id)
                 return True
     return False
 
@@ -195,13 +245,13 @@ async def link_poc(finding_id: str, filepath: str) -> bool:
     return False
 
 
-async def delete_finding(finding_id: str) -> bool:
+async def delete_finding(finding_id: str, run_id: str | None = None) -> bool:
     """Move a finding from findings[] to archived[].
 
     Returns True if the finding was found and archived, False otherwise.
     """
     async with _lock:
-        data = _load()
+        data = _load_for_run(run_id)
         if "archived" not in data:
             data["archived"] = []
         for i, entry in enumerate(data["findings"]):
@@ -209,7 +259,7 @@ async def delete_finding(finding_id: str) -> bool:
                 entry["archived_at"] = datetime.now(timezone.utc).isoformat()
                 data["archived"].append(entry)
                 data["findings"].pop(i)
-                _save(data)
+                _save_for_run(data, run_id)
                 return True
     return False
 

@@ -1,18 +1,50 @@
 """Smith lifecycle + watchdog diagnostic routes."""
 from __future__ import annotations
 
+import logging
+
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
 import core.api_server as _api
+from core.api_server.smith import idle as _idle
 
 from ._common import router
+
+_log = logging.getLogger(__name__)
 
 
 # ── Smith lifecycle ─────────────────────────────────────────────────────────
 
+def _run_agent_status(run_id: str) -> dict:
+    """Agent status for a dashboard-started run (its own worker process)."""
+    from control_plane import orchestrator
+
+    state = orchestrator.run_agent_state(run_id)
+    return {
+        "running": state["alive"],
+        "adjudicating": False,
+        "heartbeat_age_s": None,
+        "idle": state["idle"],
+        "agent_idle": ({"since": state.get("idle_since") or "", "reason": "exited",
+                        "detail": "Smith ended its turn and exited."} if state["idle"] else None),
+        "auto_resume": False,
+        "work": _run_work(run_id),
+    }
+
+
+def _run_work(run_id: str) -> dict:
+    try:
+        from control_plane import work_queue
+
+        w = work_queue.summary(run_id)
+        return {"queued": w["queued"], "running": w["running"]}
+    except Exception:
+        return {"queued": 0, "running": None}
+
+
 @router.get("/api/smith-status")
-async def api_smith_status() -> JSONResponse:
+async def api_smith_status(request: Request) -> JSONResponse:
     """Smith liveness + activity heartbeat.
 
     `running` is true if any Smith process exists (incl. an idle interactive one
@@ -21,6 +53,12 @@ async def api_smith_status() -> JSONResponse:
     when that exceeds the heartbeat window. A live-but-idle Smith (running=true,
     idle=true) is one that has stopped working and is likely awaiting input.
     """
+    run_id = getattr(request.state, "run_id", None)
+    if run_id:
+        try:
+            return JSONResponse(_run_agent_status(run_id))
+        except Exception:
+            return JSONResponse({"running": None, "idle": False, "agent_idle": None})
     import time
     heartbeat_age = None
     try:
@@ -49,6 +87,10 @@ async def api_smith_status() -> JSONResponse:
         "adjudicating": adjudicating,
         "heartbeat_age_s": heartbeat_age,
         "idle": idle,
+        # The scan is idle: Smith stopped on its own and nothing was respawned.
+        # {since, reason, detail} or null. See core/api_server/smith/idle.py.
+        "agent_idle": _idle.read_idle(),
+        "auto_resume": _idle.auto_resume_enabled(),
     })
 
 
@@ -94,6 +136,18 @@ async def api_restart_smith(request: Request) -> JSONResponse:
     except Exception:
         body = {}
     force = bool(body.get("force", False))
+    run_id = getattr(request.state, "run_id", None)
+    if run_id:
+        # A dashboard-started run has its own worker process: resume THAT.
+        try:
+            from control_plane import orchestrator
+            from .runs_routes import _public_resume_result
+            return JSONResponse({"ok": True, **_public_resume_result(orchestrator.resume_run(run_id))})
+        except (KeyError, ValueError):
+            return JSONResponse({"ok": False, "error": "run not found"}, status_code=404)
+        except Exception:
+            _log.exception("api_restart_smith: could not resume run")
+            return JSONResponse({"ok": False, "error": "could not resume the scan"}, status_code=500)
     if not force and _api._smith_running():
         return JSONResponse({"ok": False, "error": "Smith is already running. Pass force=true to override."}, status_code=409)
     client = (body.get("client") or _api._detect_active_client()).lower()

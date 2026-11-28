@@ -1,7 +1,7 @@
   async function renderTopology(diagrams) {
     const wrap = document.getElementById('diagrams-wrap');
     if (!diagrams.length) {
-      wrap.innerHTML = '<div class="empty-placeholder">No diagrams yet — Claude calls report_diagram during a scan.</div>';
+      wrap.innerHTML = '<div class="empty-placeholder">No diagrams yet. Smith draws the attack surface as it learns it. <button type="button" class="empty-action" onclick="askSmith(\'Draw a diagram of what you have mapped so far\')">Ask for one now</button></div>';
       return;
     }
     // Clear placeholder if it's still there
@@ -40,11 +40,11 @@
           const { svg } = await mermaid.render(renderId, d.mermaid);
           mermaidEl.innerHTML = svg;
         } catch (err) {
-          mermaidEl.innerHTML = `<div style="color:#ff4d4f;font-size:.8rem;margin-bottom:.5rem">
+          mermaidEl.innerHTML = `<div style="color:var(--danger);font-size:var(--fs-sm);margin-bottom:.5rem">
             ⚠ Mermaid render error: ${esc(String(err?.message||err))}</div>
-            <pre style="background:#010409;color:#7ee787;padding:.6rem;border-radius:4px;
-                        font-size:.75rem;white-space:pre-wrap;word-break:break-all;
-                        border:1px solid #21262d;max-height:400px;overflow-y:auto">${esc(d.mermaid)}</pre>`;
+            <pre style="background:#010409;color:#7ee787;padding:.6rem;border-radius:var(--r-sm);
+                        font-size:var(--fs-xs);white-space:pre-wrap;word-break:break-all;
+                        border:1px solid var(--border-subtle);max-height:400px;overflow-y:auto">${esc(d.mermaid)}</pre>`;
         }
         zoomInner.appendChild(mermaidEl);
       }

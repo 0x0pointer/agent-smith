@@ -13,12 +13,16 @@ from ._common import router
 _log = logging.getLogger(__name__)
 
 
+def _request_run_id(request: Request | None) -> str | None:
+    return getattr(getattr(request, "state", None), "run_id", None) or None
+
+
 @router.get("/api/wishlist")
-async def api_wishlist() -> JSONResponse:
+async def api_wishlist(request: Request = None) -> JSONResponse:
     """The agent→operator resource backlog (open + resolved), newest first."""
     try:
         from core.wishlist import wishlist_queue
-        return JSONResponse({"items": wishlist_queue.get_all()})
+        return JSONResponse({"items": wishlist_queue.get_all(run_id=_request_run_id(request))})
     except Exception:
         _log.exception("api_wishlist failed")
         return JSONResponse({"items": []})
@@ -35,9 +39,10 @@ async def api_wishlist_fulfill(item_id: str, request: Request) -> JSONResponse:
     try:
         body = await request.json()
         note = str(body.get("note", "")).strip()
+        run_id = _request_run_id(request)
         from core.wishlist import wishlist_queue
         from core.steering import steering_queue, RESUME_REQUIRED
-        item = wishlist_queue.fulfill(item_id, note=note)
+        item = wishlist_queue.fulfill(item_id, note=note, run_id=run_id)
         if not item:
             return JSONResponse({"ok": False, "error": "not found or already resolved"}, status_code=404)
         cells = item.get("blocking_cell_ids") or []
@@ -54,6 +59,7 @@ async def api_wishlist_fulfill(item_id: str, request: Request) -> JSONResponse:
             skill=None,
             trigger="WISHLIST_FULFILLED",
             force=True,
+            run_id=run_id,
         )
         return JSONResponse({"ok": True, "item": item})
     except Exception:
@@ -67,8 +73,9 @@ async def api_wishlist_dismiss(item_id: str, request: Request) -> JSONResponse:
     try:
         body = await request.json()
         note = str(body.get("note", "")).strip()
+        run_id = _request_run_id(request)
         from core.wishlist import wishlist_queue
-        item = wishlist_queue.dismiss(item_id, note=note)
+        item = wishlist_queue.dismiss(item_id, note=note, run_id=run_id)
         if not item:
             return JSONResponse({"ok": False, "error": "not found or already resolved"}, status_code=404)
         return JSONResponse({"ok": True, "item": item})
