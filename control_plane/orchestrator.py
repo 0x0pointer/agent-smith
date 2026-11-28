@@ -202,6 +202,9 @@ def validate_codebase(value: object) -> str:
     if not os.path.isabs(expanded):
         raise ValueError("code folder must be a full path")
     real = os.path.realpath(expanded)
+    allowed_root = os.path.realpath(str(_paths.workspace()))
+    if real != allowed_root and not real.startswith(allowed_root + os.sep):
+        raise ValueError("code folder not found")
     if not os.path.isdir(real):
         raise ValueError("code folder not found")
     if os.path.dirname(real) == real:
