@@ -8,6 +8,7 @@ import subprocess
 import sys
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib import error as urllib_error
 from urllib import request as urllib_request
@@ -1006,6 +1007,21 @@ def _stop_run_tooling(run_id: str) -> list[str]:
 
 
 def stop_run(run_id: str) -> dict:
+    """End the run now: stop its agent and tooling and mark it stopped."""
+    return _end_run(run_id, "stopped", "operator_stop")
+
+
+def complete_run(run_id: str, notes: str = "") -> dict:
+    """The operator completes the run: its agent stops and it is marked complete.
+
+    The dashboard's Complete button used to finalise the platform process's own
+    (repo-root) session instead, so a platform scan stayed open and came back as
+    idle on the next refresh.
+    """
+    return _end_run(run_id, "complete", "operator_complete", notes)
+
+
+def _end_run(run_id: str, status: str, stop_reason: str, notes: str = "") -> dict:
     repo = _db.get_repository()
     if repo is None:
         raise RuntimeError("database unavailable")
@@ -1014,19 +1030,43 @@ def stop_run(run_id: str) -> dict:
     cleanup_errors = []
     cleanup_errors.extend(_stop_worker(run_id, _worker_pid(repo, run_id)))
     cleanup_errors.extend(_stop_run_tooling(run_id))
-    session_doc["status"] = "stopped"
+    ended = {"status": status, "stop_reason": stop_reason,
+             "finished": datetime.now(timezone.utc).isoformat()}
+    if notes:
+        ended["notes"] = notes[:_NOTES_MAX_LENGTH]
+    session_doc.update(ended)
     session_doc["cleanup_errors"] = cleanup_errors
     # The run's tool server rewrites the session snapshot without a workdir, so
     # take it from the run row — writing "" here would orphan the run's files.
-    repo.upsert_run(run_id, session_doc, str(row.get("workdir") or session_doc.get("workdir") or ""))
+    workdir = str(row.get("workdir") or session_doc.get("workdir") or "")
+    repo.upsert_run(run_id, session_doc, workdir)
     repo.save_snapshot(run_id, "session", session_doc)
-    result = {"run_id": run_id, "status": "stopped"}
+    _write_run_session_file(run_id, workdir, ended)
+    result = {"run_id": run_id, "status": status}
     if cleanup_errors:
         # Details (process and docker error text) stay in the stored session and
         # the server log; callers only learn that cleanup was incomplete.
-        _LOG.warning("stop_run %s: cleanup incomplete: %s", run_id, cleanup_errors)
+        _LOG.warning("end run %s (%s): cleanup incomplete: %s", run_id, status, cleanup_errors)
         result["cleanup_errors"] = cleanup_errors
     return result
+
+
+def _write_run_session_file(run_id: str, recorded_workdir: str, fields: dict) -> None:
+    """Bring the run's own session.json in line with how the run ended.
+
+    The run's tool server wrote that file and is gone by now. Exports and a later
+    "resume a prior engagement" read it, and would otherwise see a scan still
+    marked as running. Best effort: a run without the file is left alone.
+    """
+    try:
+        path = _contained_workdir(run_id, recorded_workdir or None) / _paths.SESSION_FILE.name
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(doc, dict):
+            return
+        doc.update(fields)
+        path.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+    except (OSError, ValueError):
+        pass
 
 
 def start_control_plane() -> dict:

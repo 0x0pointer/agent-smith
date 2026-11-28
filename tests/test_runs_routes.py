@@ -642,3 +642,84 @@ def test_create_run_tells_the_operator_why_the_agent_did_not_start(monkeypatch, 
     assert "could not be started" in error and "No such file" not in error
     listed = client.get("/api/runs", headers=_headers(operator_token)).json()
     assert [r["status"] for r in listed] == ["failed"]
+
+
+def _platform_with_one_scan(monkeypatch, tmp_path):
+    """A platform with one running scan; its agent and tooling are never really touched."""
+    from control_plane import orchestrator
+
+    monkeypatch.setenv("SMITH_DATABASE_URL", f"sqlite:///{tmp_path / 'runs.db'}")
+    monkeypatch.setenv("SMITH_DASHBOARD_AUTH", "1")
+    monkeypatch.delenv("SMITH_SINGLE_RUN", raising=False)
+    monkeypatch.setattr(core_paths, "RUNTIME_ROOT", tmp_path)
+    stop_worker = MagicMock(return_value=[])
+    monkeypatch.setattr(orchestrator, "_stop_worker", stop_worker)
+    monkeypatch.setattr(orchestrator, "_stop_run_tooling", lambda run_id: [])
+    client = TestClient(app)
+    operator_token = dashboard_auth.mint_operator_token()
+    created = _create_run(client, operator_token, "https://a.example")
+    workdir = Path(client.get("/api/runs", headers=_headers(operator_token)).json()[0]["workdir"])
+    # What the run's own tool server keeps on disk while the scan is open.
+    (workdir / "session.json").write_text(json.dumps({"id": "sess-a", "status": "running"}), encoding="utf-8")
+    return client, operator_token, created, workdir, stop_worker
+
+
+def _run_statuses(client, operator_token):
+    return [(r["run_id"], r["status"]) for r in client.get("/api/runs", headers=_headers(operator_token)).json()]
+
+
+def test_complete_on_a_platform_scan_ends_that_scan(monkeypatch, tmp_path):
+    """The Complete button on a platform scan used to finalise the platform's own
+    (repo-root) session: the scan stayed open and came back as idle on refresh."""
+    client, operator_token, created, workdir, stop_worker = _platform_with_one_scan(monkeypatch, tmp_path)
+    run_id = created["run_id"]
+
+    with patch("core.session.complete") as root_complete:
+        response = client.post("/api/complete", json={"notes": "done for today"}, headers=_headers(created["token"]))
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "status": "complete", "run_id": run_id}
+    root_complete.assert_not_called()                      # the repo-root scan is left alone
+    assert stop_worker.call_count == 1                     # this scan's agent is stopped
+    assert _run_statuses(client, operator_token) == [(run_id, "complete")]
+    on_disk = json.loads((workdir / "session.json").read_text(encoding="utf-8"))
+    assert (on_disk["status"], on_disk["stop_reason"], on_disk["notes"]) == (
+        "complete", "operator_complete", "done for today")
+    assert on_disk["id"] == "sess-a" and on_disk["finished"]
+    # It stays ended: a completed scan is not resumed.
+    resumed = client.post(f"/api/runs/{run_id}/resume", headers=_headers(created["token"])).json()
+    assert resumed["resumed"] is False
+    assert _run_statuses(client, operator_token) == [(run_id, "complete")]
+
+
+def test_force_stop_on_a_platform_scan_stops_that_scans_agent(monkeypatch, tmp_path):
+    client, operator_token, created, workdir, stop_worker = _platform_with_one_scan(monkeypatch, tmp_path)
+    run_id = created["run_id"]
+
+    # The single-scan force stop looks for ANY agent process on the machine.
+    with patch("core.session.complete") as root_complete, \
+            patch.object(api_server, "_live_pid_from_process_scan") as process_scan, \
+            patch.object(api_server, "_kill_hung_smith") as kill:
+        response = client.post("/api/force-stop", headers=_headers(created["token"]))
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "status": "stopped", "run_id": run_id}
+    root_complete.assert_not_called()
+    process_scan.assert_not_called()
+    kill.assert_not_called()
+    assert stop_worker.call_count == 1
+    assert _run_statuses(client, operator_token) == [(run_id, "stopped")]
+    assert json.loads((workdir / "session.json").read_text(encoding="utf-8"))["status"] == "stopped"
+
+
+def test_complete_without_a_run_still_completes_the_single_scan(monkeypatch, tmp_path):
+    """No run token (classic single-scan dashboard): the old behaviour is unchanged."""
+    monkeypatch.setenv("SMITH_DASHBOARD_AUTH", "0")
+    client = TestClient(app)
+
+    with patch("core.session.load_from_disk"), \
+            patch("core.session.complete", return_value={"status": "complete"}) as root_complete:
+        response = client.post("/api/complete", json={"notes": "done"})
+
+    assert response.json() == {"ok": True, "status": "complete"}
+    root_complete.assert_called_once_with("done")

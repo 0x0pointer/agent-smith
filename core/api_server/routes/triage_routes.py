@@ -163,6 +163,32 @@ def _single_run_triage_cancel() -> JSONResponse:
     return JSONResponse({"ok": True, "removed_directives": removed})
 
 
+async def _end_platform_run(run_id: str, *, complete: bool, notes: str = "") -> JSONResponse:
+    """Complete or force-stop a scan the platform started.
+
+    Such a scan has its own agent, tool server and files; the platform process's
+    own session is a different (repo-root) scan. Ending the run goes through the
+    orchestrator, which stops that agent and records how the run ended. Runs off
+    the event loop: it waits for the agent to exit and stops the run's containers.
+    """
+    import asyncio
+
+    from control_plane import orchestrator
+
+    try:
+        if complete:
+            result = await asyncio.to_thread(orchestrator.complete_run, run_id, notes)
+        else:
+            result = await asyncio.to_thread(orchestrator.stop_run, run_id)
+    except RuntimeError:
+        _log.exception("ending run failed")
+        return JSONResponse({"ok": False, "error": _ERR_DB_UNAVAILABLE}, status_code=503)
+    body = {"ok": True, "status": str(result.get("status") or ""), "run_id": run_id}
+    if result.get("cleanup_errors"):
+        body["cleanup_incomplete"] = True
+    return JSONResponse(body)
+
+
 @router.post("/api/complete")
 async def api_complete(request: Request) -> JSONResponse:
     """Human-triggered scan completion.
@@ -184,11 +210,14 @@ async def api_complete(request: Request) -> JSONResponse:
     intentionally preserved — they're the report you'll export from."""
     try:
         from core import session as scan_session
+        body  = await request.json()
+        notes = str(body.get("notes", "")).strip()
+        run_id = getattr(request.state, "run_id", None) or None
+        if run_id:
+            return await _end_platform_run(run_id, complete=True, notes=notes)
         # Force-reload so we mutate against the freshest disk state, not a
         # cached _current snapshot.
         scan_session.load_from_disk(force=True)
-        body  = await request.json()
-        notes = str(body.get("notes", "")).strip()
 
         cfg    = scan_session.complete(notes)
         status = cfg.get("status", "complete")
@@ -245,7 +274,7 @@ async def api_triage_cancel(request: Request) -> JSONResponse:
 
 
 @router.post("/api/force-stop")
-async def api_force_stop() -> JSONResponse:
+async def api_force_stop(request: Request) -> JSONResponse:
     """Hard stop — the "just stop it now" control.
 
     Unlike /api/complete (which finalizes the session but leaves a
@@ -256,6 +285,11 @@ async def api_force_stop() -> JSONResponse:
     preserved — only the live process + operational pointers are torn down."""
     _reason = "force-stopped by operator"
     try:
+        run_id = getattr(request.state, "run_id", None) or None
+        if run_id:
+            # A platform scan: stop ITS agent. The process scan below would look
+            # for any agent process on the machine, not this run's.
+            return await _end_platform_run(run_id, complete=False)
         from core import session as scan_session
         scan_session.load_from_disk(force=True)
         # Capture a live Smith PID BEFORE the kill + pointer-wipe below.
