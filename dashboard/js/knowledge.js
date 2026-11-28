@@ -25,6 +25,7 @@ let _kb = {
   notes: [], filter: '', open: '', openTitle: '',
   view: 'read', graph: null, graphFor: '', cy: null,
   chat: [], asking: false,
+  canCreate: false, creating: false, starting: false,
 };
 
 function _kbApi(suffix) {
@@ -65,6 +66,11 @@ async function kbRefresh() {
   const res = await _pfGet('/api/knowledge');
   if (loading) loading.hidden = true;
   _kb.sources = (res.ok && Array.isArray(res.data.sources)) ? res.data.sources : [];
+  _kb.canCreate = !!(res.ok && res.data.can_create);
+  const newBtn = document.getElementById('kb-new-btn');
+  if (newBtn) newBtn.hidden = !_kb.canCreate || _kb.sources.length === 0;
+  const firstVault = document.getElementById('kb-setup-create');
+  if (firstVault) firstVault.hidden = !_kb.canCreate;
   setup.hidden = _kb.sources.length > 0;
   main.hidden = _kb.sources.length === 0;
   if (!_kb.sources.length) { _kbRenderSources(); return; }
@@ -105,6 +111,69 @@ function _kbSelectSource(name) {
   _kbLoadNotes();
 }
 
+// ── Creating and starting a vault ────────────────────────────────────────────
+function _kbVaultStatus(id, text, isError) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.hidden = !text;
+  el.textContent = text || '';
+  el.classList.toggle('is-error', !!isError);
+}
+
+function _kbShowNewForm(show) {
+  const form = document.getElementById('kb-new-form');
+  if (!form) return;
+  form.hidden = !show;
+  _kbVaultStatus('kb-new-status', '');
+  const input = document.getElementById('kb-new-name');
+  if (show && input) { input.value = ''; input.focus(); }
+}
+
+// What the operator typed, as the short name a vault can have.
+function _kbVaultName(raw) {
+  return String(raw || '').trim().toLowerCase().replace(/[\s_]+/g, '-').replace(/[^a-z0-9-]/g, '')
+    .replace(/^-+|-+$/g, '').slice(0, 32);
+}
+
+async function _kbCreateVault() {
+  if (_kb.creating) return;
+  const input = document.getElementById('kb-new-name');
+  const name = _kbVaultName(input ? input.value : '');
+  if (!name) { _kbVaultStatus('kb-new-status', 'Give the vault a name: letters, digits and hyphens.', true); return; }
+  if (input) input.value = name;
+  _kb.creating = true;
+  _kbVaultStatus('kb-new-status', 'Creating the vault and building its search index. This can take a minute…');
+  const res = await _kbPost('/api/knowledge/vaults', { name: name });
+  _kb.creating = false;
+  if (!res.ok) {
+    _kbVaultStatus('kb-new-status', res.data.error || 'The vault could not be created. Is the platform still running?', true);
+    return;
+  }
+  _kbShowNewForm(false);
+  _kb.current = name;
+  _kb.loadedFor = '';
+  try { localStorage.setItem(_KB_SOURCE_KEY, name); } catch (e) { /* ignore */ }
+  await kbRefresh();
+}
+
+async function _kbStartVault() {
+  if (_kb.starting) return;
+  _kb.starting = true;
+  _kbVaultStatus('kb-start-status', 'Starting the vault. This can take a minute…');
+  const res = await _kbPost(_kbApi('/start'), {});
+  _kb.starting = false;
+  if (!res.ok) {
+    _kbVaultStatus('kb-start-status', res.data.error || 'The vault could not be started.', true);
+    return;
+  }
+  if (res.data.status !== 'running') {
+    _kbVaultStatus('kb-start-status', 'The vault is still starting. Choose it again in a moment.');
+    return;
+  }
+  _kb.loadedFor = '';
+  await kbRefresh();
+}
+
 // ── Notes tree ───────────────────────────────────────────────────────────────
 async function _kbLoadNotes() {
   const tree = document.getElementById('kb-tree');
@@ -122,7 +191,13 @@ async function _kbLoadNotes() {
   if (!res.ok) {
     tree.innerHTML = `<div class="pf-empty"><p>${esc(res.data.error || 'This vault could not be reached.')}</p></div>`;
     const view = document.getElementById('kb-view');
-    if (view) view.innerHTML = '<div class="pf-empty"><p>Start the Source service for this vault, then choose it again.</p></div>';
+    const source = (_kb.sources || []).find(s => s.name === forSource);
+    // A vault the platform knows the folder of can be started from here.
+    if (view) view.innerHTML = (source && source.startable && !source.reachable)
+      ? `<div class="pf-empty kb-offline"><p>This vault is not running.</p>
+           <button type="button" class="btn btn-primary btn-sm" data-kb-action="start-vault">Start this vault</button>
+           <p class="kb-new-status" id="kb-start-status" role="status" hidden></p></div>`
+      : '<div class="pf-empty"><p>Start the Source service for this vault, then choose it again.</p></div>';
     const count = document.getElementById('kb-tree-count');
     if (count) count.textContent = 'Notes';
     return;
@@ -630,6 +705,8 @@ function _kbOnClick(ev) {
       navigator.clipboard.writeText(_kb.chat[index].text || '').then(() => { action.textContent = 'Copied'; }, () => {});
     } else if (kind === 'save') {
       _kbSaveAnswer(index);
+    } else if (kind === 'start-vault') {
+      _kbStartVault();
     }
     return;
   }
@@ -648,6 +725,15 @@ function _initKnowledge() {
   if (filter) filter.addEventListener('input', () => { _kb.filter = filter.value; _kbRenderTree(); });
   const retry = document.getElementById('kb-setup-retry');
   if (retry) retry.addEventListener('click', kbRefresh);
+
+  const newForm = document.getElementById('kb-new-form');
+  if (newForm) newForm.addEventListener('submit', ev => { ev.preventDefault(); _kbCreateVault(); });
+  for (const id of ['kb-new-btn', 'kb-setup-create-btn']) {
+    const open = document.getElementById(id);
+    if (open) open.addEventListener('click', () => _kbShowNewForm(true));
+  }
+  const cancel = document.getElementById('kb-new-cancel');
+  if (cancel) cancel.addEventListener('click', () => { if (!_kb.creating) _kbShowNewForm(false); });
 
   const askForm = document.getElementById('kb-ask-form');
   const askBox = document.getElementById('kb-ask-q');

@@ -182,7 +182,7 @@ are always available; the **scan pages** appear in the rail once you open one sc
 | **Scans** | Every instance of Smith. Active scans are live cards (status, progress, findings so far, Open / Resume / Stop); the history table filters by target, status and depth. |
 | **All findings** | Every finding of every scan in one list. Filter by severity, app or scan, group by app / severity / scan, export CSV. Opening one shows its evidence and reproduction. |
 | **Apps** | Scans grouped by target host: when each app was last tested, what is open on it, and **Scan again** with the same settings. |
-| **Knowledge** | A workspace over the [Source](https://github.com/0x0pointer/Source) notes vaults registered in `sources.yaml`. Notes on the left; the reader in the middle, with related notes and a **Map** of how notes link; and the **Brain** on the right: ask a question in plain words and get an answer written from your notes, with numbered citations that open the note. An answer can be saved back to the vault. |
+| **Knowledge** | A workspace over the [Source](https://github.com/0x0pointer/Source) notes vaults registered in `sources.yaml`. Notes on the left; the reader in the middle, with related notes and a **Map** of how notes link; and the **Brain** on the right: ask a question in plain words and get an answer written from your notes, with numbered citations that open the note. An answer can be saved back to the vault. With Source installed next to agent-smith, **New vault** creates a vault for you, and a vault that is not running can be started from the page. |
 
 **New scan** (top bar, Home, or *Scan again* on an app) is a four-step wizard: target → depth
 (Recon / Standard / Thorough / Danger, each explained in plain words) → optional details (the app's

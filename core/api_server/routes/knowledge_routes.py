@@ -117,7 +117,67 @@ async def api_knowledge(request: Request) -> JSONResponse:
         _describe(name, str((meta or {}).get("url") or "").rstrip("/"))
         for name, meta in sorted(sources.items())
     ])
-    return JSONResponse({"sources": list(described)})
+    can_create, startable = _vault_abilities()
+    for info in described:
+        # A vault the platform can start itself when it is not running.
+        info["startable"] = info["name"] in startable
+    return JSONResponse({"sources": list(described), "can_create": can_create})
+
+
+def _vault_abilities() -> tuple[bool, set[str]]:
+    """(can a new vault be created here, which registered vaults can be started)."""
+    try:
+        from core import source_vaults
+
+        return source_vaults.can_create(), source_vaults.startable()
+    except Exception:
+        _LOG.exception("vault abilities unavailable")
+        return False, set()
+
+
+async def _vault_action(action, *args) -> JSONResponse:
+    """Run a vault action off the event loop: it builds an index and waits for
+    the service to come up, which can take a minute."""
+    from core import source_vaults
+
+    try:
+        result = await asyncio.to_thread(action, *args)
+    except source_vaults.VaultError as exc:
+        # ``public`` is one of the module's fixed plain-language reasons.
+        return JSONResponse({"error": exc.public}, status_code=exc.status)
+    except Exception:
+        _LOG.exception("vault action failed")
+        return JSONResponse({"error": "The vault could not be set up. The reason is in the platform log."},
+                            status_code=500)
+    return JSONResponse({"ok": True, "name": result["name"], "status": result["status"]})
+
+
+@router.post("/api/knowledge/vaults")
+async def api_knowledge_create_vault(request: Request) -> JSONResponse:
+    """Create a new notes vault and start its Source. Body: {"name": "acme"}."""
+    if not _is_operator(request):
+        return _forbidden()
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "malformed json"}, status_code=400)
+    from core import source_vaults
+
+    return await _vault_action(source_vaults.create_vault, body.get("name"))
+
+
+@router.post("/api/knowledge/{name}/start")
+async def api_knowledge_start_vault(name: str, request: Request) -> JSONResponse:
+    """Start the Source of a registered vault that is not running."""
+    if not _is_operator(request):
+        return _forbidden()
+    if name not in _sources():
+        return JSONResponse({"error": "unknown source"}, status_code=404)
+    from core import source_vaults
+
+    return await _vault_action(source_vaults.start_vault, name)
 
 
 def _unavailable(status: int) -> JSONResponse:

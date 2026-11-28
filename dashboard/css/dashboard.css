@@ -2863,6 +2863,21 @@ body.scan-gated .rail-footer .tunnel-btn, body.scan-gated .rail-footer .clear-bt
 .kb-steps code, .kb-setup code { font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--green); }
 
 .kb-sources { display: flex; gap: var(--sp-2); flex-wrap: wrap; }
+/* Vault tabs with the New vault button beside them; the create form below the head. */
+.kb-top-right { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; }
+.kb-new { margin-bottom: var(--sp-4); }
+.kb-new p { color: var(--text-muted); font-size: var(--fs-md); max-width: 70ch; margin: var(--sp-2) 0 var(--sp-3); }
+.kb-new-row { display: flex; gap: var(--sp-2); flex-wrap: wrap; align-items: center; }
+.kb-new-row input {
+  flex: 1 1 16rem; max-width: 24rem; min-height: 34px; padding: 0 var(--sp-3);
+  background: var(--bg-deep); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-md);
+  font-family: var(--font-mono); font-size: var(--fs-sm);
+}
+.kb-new-row input:focus-visible { outline: 2px solid var(--purple); outline-offset: 1px; }
+.kb-new .kb-new-status, .kb-offline .kb-new-status { margin: var(--sp-3) 0 0; color: var(--text-muted); font-size: var(--fs-sm); }
+.kb-new-status.is-error { color: var(--sev-high, #fa8c16); }
+.kb-setup-create { padding-bottom: var(--sp-4); margin-bottom: var(--sp-4); border-bottom: 1px solid var(--border-subtle); }
+.kb-offline { display: flex; flex-direction: column; align-items: center; gap: var(--sp-3); }
 .kb-source {
   display: inline-flex; align-items: center; gap: var(--sp-2); cursor: pointer; color: var(--text-muted);
   padding: 0.35rem 0.75rem; background: var(--surface); border: 1px solid var(--border-subtle); border-radius: var(--r-pill);

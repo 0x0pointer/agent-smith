@@ -12,13 +12,35 @@
       <h2>Knowledge</h2>
       <p>The notes vault Smith learns from. Read it, search it, or ask the brain.</p>
     </div>
-    <div id="kb-sources" class="kb-sources" role="tablist" aria-label="Vaults"></div>
+    <div class="kb-top-right">
+      <div id="kb-sources" class="kb-sources" role="tablist" aria-label="Vaults"></div>
+      <!-- Shown when Source is installed on this computer (POST /api/knowledge/vaults). -->
+      <button type="button" class="btn btn-secondary btn-sm" id="kb-new-btn" hidden>+ New vault</button>
+    </div>
   </div>
+
+  <form id="kb-new-form" class="pf-panel kb-new" autocomplete="off" hidden>
+    <h3>New vault</h3>
+    <p>A vault is a folder of notes on this computer. Give it a short name, for example the client or
+       the app it is about. The platform creates the folder, starts it and adds it here.</p>
+    <div class="kb-new-row">
+      <input id="kb-new-name" type="text" maxlength="32" placeholder="acme-webshop" aria-label="Vault name"
+             spellcheck="false" autocapitalize="off">
+      <button type="submit" class="btn btn-primary btn-sm" id="kb-new-create">Create vault</button>
+      <button type="button" class="btn btn-secondary btn-sm" id="kb-new-cancel">Cancel</button>
+    </div>
+    <p id="kb-new-status" class="kb-new-status" role="status" hidden></p>
+  </form>
 
   <div id="kb-loading" class="empty-placeholder">Looking for your notes vaults…</div>
 
   <!-- Shown when no Source is registered (knowledge.js toggles [hidden]). -->
   <section id="kb-setup" class="pf-panel kb-setup" hidden>
+    <div id="kb-setup-create" class="kb-setup-create" hidden>
+      <h3>Create your first vault</h3>
+      <p>Source is installed on this computer, so the platform can set a vault up for you.</p>
+      <button type="button" class="btn btn-primary btn-sm" id="kb-setup-create-btn">+ New vault</button>
+    </div>
     <h3>Connect a notes vault</h3>
     <p>A <strong>Source</strong> is a small search service that runs on this computer over a folder of
        Markdown notes. Nothing leaves the machine. Once one is connected, Smith can look things up in it

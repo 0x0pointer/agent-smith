@@ -169,6 +169,8 @@ def vault(platform, monkeypatch):
     monkeypatch.setattr(knowledge_routes, "_sources", lambda: {"notes": {"url": "http://127.0.0.1:7801"}})
     monkeypatch.setattr(knowledge_routes, "_get", fake_get)
     monkeypatch.setattr(knowledge_routes, "_post", fake_post)
+    # Whether Source is installed on the machine running the tests must not matter here.
+    monkeypatch.setattr(knowledge_routes, "_vault_abilities", lambda: (False, set()))
     return {**platform, "root": root, "calls": calls, "posts": posts}
 
 
@@ -176,7 +178,8 @@ def test_knowledge_lists_sources_with_health_and_note_count(vault):
     body = vault["client"].get("/api/knowledge", headers=_headers(vault["token"])).json()
 
     assert body == {"sources": [{"name": "notes", "url": "http://127.0.0.1:7801", "reachable": True,
-                                 "ready": True, "instance": "notes", "notes": 3}]}
+                                 "ready": True, "instance": "notes", "notes": 3, "startable": False}],
+                    "can_create": False}
 
 
 def test_knowledge_search_is_clamped_and_normalised(vault):

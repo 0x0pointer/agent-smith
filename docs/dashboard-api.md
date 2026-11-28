@@ -561,7 +561,9 @@ reachable, and the registry only admits `http://localhost` URLs.
 
 | Route | Returns |
 |---|---|
-| `GET /api/knowledge` | `{"sources": [{name, url, reachable, ready, instance, notes}]}` — `notes` is the note count, `null` when the Source is down or still indexing. |
+| `GET /api/knowledge` | `{"sources": [{name, url, reachable, ready, instance, notes, startable}], "can_create"}` — `notes` is the note count, `null` when the Source is down or still indexing. `can_create` is true when Source is installed on this machine (a sibling `Source` folder, or `SMITH_SOURCE_DIR`); `startable` is true for a vault whose `sources.yaml` entry also records its folder (`vault:`). |
+| `POST /api/knowledge/vaults` | Create a notes vault (the page's **New vault**). Body `{"name"}`: 1 – 32 lowercase letters, digits or hyphens. Creates `<SMITH_VAULTS_DIR>/<name>` (default `~/smith-vaults`) with a first note, builds its index, starts a Source for it on the first free port from 7801, and adds it to `sources.yaml` with its `vault` and `db` paths. Answers `{"ok", "name", "status": "running" \| "starting"}`; can take a minute. Source itself is run as installed and never changed. |
+| `POST /api/knowledge/{name}/start` | Start the Source of a registered vault that is not running (the page's **Start this vault**). Works for vaults whose registry entry has `vault:`; a vault already answering is left alone. |
 | `GET /api/knowledge/{name}/notes` | `{"notes": [{path, chunks}]}` from the Source's `/list`. |
 | `GET /api/knowledge/{name}/search?q=&mode=&k=` | `{"results": [{rank, path, heading, score, text, tags}]}`. `mode` is `hybrid` (default), `vector` or `keyword`; `k` is clamped to 1 – 20. |
 | `GET /api/knowledge/{name}/note?path=` | `{"path", "content", "truncated"}` — the note's Markdown. Source has no HTTP "read note" call, so the file is read from the vault folder the Source reports, only if the Source lists that exact path and it resolves inside the vault. |
