@@ -228,6 +228,31 @@ def test_a_source_that_is_down_is_reported_not_raised(vault, monkeypatch):
     assert client.get("/api/knowledge/notes/notes", headers=headers).status_code == 502
 
 
+def test_a_source_on_windows_lists_backslash_paths_and_they_still_work_as_folders(vault, monkeypatch):
+    root = vault["root"]
+
+    async def windows_get(url, path, params=None):
+        health = {"ready": True, "instance": "notes", "vault": str(root)}
+        if path == "/list":
+            return 200, {**health, "notes": [{"path": "refs\\jwt.md", "chunks": 2}]}
+        if path == "/search":
+            return 200, {"results": [{"path": "refs\\jwt.md", "heading": "JWT", "text": "none alg", "tags": []}]}
+        return 200, health
+
+    monkeypatch.setattr(knowledge_routes, "_get", windows_get)
+    client, headers = vault["client"], _headers(vault["token"])
+
+    assert client.get("/api/knowledge/notes/notes", headers=headers).json()["notes"] == \
+        [{"path": "refs/jwt.md", "chunks": 2}]
+    for asked in ("refs/jwt.md", "refs\\jwt.md"):
+        note = client.get("/api/knowledge/notes/note", params={"path": asked}, headers=headers)
+        assert note.status_code == 200 and note.json()["path"] == "refs/jwt.md"
+    hits = client.get("/api/knowledge/notes/search?q=jwt", headers=headers).json()["results"]
+    assert hits[0]["path"] == "refs/jwt.md"
+    graph = client.get("/api/knowledge/notes/graph", headers=headers).json()
+    assert [(n["id"], n["folder"]) for n in graph["nodes"] if n["kind"] == "note"] == [("refs/jwt.md", "refs")]
+
+
 # ── Brain: map, ask, save ────────────────────────────────────────────────────
 
 def test_graph_links_notes_by_wikilink_and_markdown_link_and_adds_tag_nodes(vault):

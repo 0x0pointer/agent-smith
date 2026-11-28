@@ -127,10 +127,21 @@ def _unavailable(status: int) -> JSONResponse:
     return JSONResponse({"error": "The Source is not running or did not answer."}, status_code=502)
 
 
+def _norm(path: object) -> str:
+    """A note path with forward slashes: a Source on Windows lists ``refs\\x.md``,
+    and the page (folders, links between notes, the map) works on ``refs/x.md``."""
+    return str(path or "").replace("\\", "/")
+
+
+def _listed_paths(listing: dict) -> set[str]:
+    """The note paths a Source's ``/list`` answer contains, normalised."""
+    return {_norm(n.get("path")) for n in listing.get("notes") or [] if isinstance(n, dict) and n.get("path")}
+
+
 def _clean_note(item: object) -> dict | None:
     if not isinstance(item, dict) or not item.get("path"):
         return None
-    return {"path": str(item["path"]), "chunks": int(item.get("chunks") or 0)}
+    return {"path": _norm(item["path"]), "chunks": int(item.get("chunks") or 0)}
 
 
 @router.get("/api/knowledge/{name}/notes")
@@ -156,7 +167,7 @@ def _clean_hit(item: object) -> dict | None:
         tags = tags.split()
     return {
         "rank": item.get("rank"),
-        "path": str(item.get("path") or ""),
+        "path": _norm(item.get("path")),
         "heading": str(item.get("heading") or ""),
         "score": item.get("score"),
         "text": str(item.get("text") or item.get("snippet") or "")[:6000],
@@ -241,8 +252,8 @@ async def api_knowledge_note(name: str, request: Request, path: str = "") -> JSO
     status, listing = await _get(url, "/list")
     if status != 200 or not isinstance(listing, dict):
         return _unavailable(status)
-    listed = {str(n.get("path")) for n in listing.get("notes") or [] if isinstance(n, dict)}
-    if path not in listed:
+    path = _norm(path)
+    if path not in _listed_paths(listing):
         return JSONResponse({"error": "note not found"}, status_code=404)
     vault = str(listing.get("vault") or "")
     if not vault:
@@ -277,7 +288,7 @@ async def api_knowledge_graph(name: str, request: Request) -> JSONResponse:
     status, listing = await _get(url, "/list")
     if status != 200 or not isinstance(listing, dict):
         return _unavailable(status)
-    paths = [str(n["path"]) for n in listing.get("notes") or [] if isinstance(n, dict) and n.get("path")]
+    paths = sorted(_listed_paths(listing))
     vault = str(listing.get("vault") or "")
     from core import knowledge_brain
 
@@ -296,10 +307,11 @@ async def _ask_sources(url: str, question: str, focus: str) -> tuple[list[dict],
     from core import knowledge_brain as brain
 
     sources: list[dict] = []
+    focus = _norm(focus)
     if focus:
         status, listing = await _get(url, "/list")
         if status == 200 and isinstance(listing, dict):
-            listed = {str(n.get("path")) for n in listing.get("notes") or [] if isinstance(n, dict)}
+            listed = _listed_paths(listing)
             vault = str(listing.get("vault") or "")
             text = await asyncio.to_thread(_safe_read, vault, focus) if focus in listed and vault else None
             if text:
