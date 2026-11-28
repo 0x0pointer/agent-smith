@@ -538,7 +538,7 @@ Besides `target`, `depth`, `scope`, `out_of_scope` and `source`:
 | `notes` | Up to 4000 characters of context for the agent (a test account, what to focus on). Saved to `operator_notes.md` in the run's workdir; the start prompt points the agent at it. Never widens the scope. |
 | `max_time_minutes` | 5 – 10080. Passed to `session(action="start")`. |
 | `max_cost_usd` | 0.1 – 10000. Passed to `session(action="start")`. |
-| `codebase` | Full path of a source-code folder on the platform's machine: a white-box scan. Must be an existing folder and not a whole drive. Saved to `whitebox.json` in the run's workdir; the start prompt tells the agent to call `session(action="set_codebase")` with it and to review the code with `/codebase`. The path is never placed on the agent's command line. `GET /api/platform/overview` reports such a run with `"whitebox": true`. |
+| `codebase` | Full path of a source-code folder on the platform's machine: a white-box scan. Must be an existing folder and not a whole drive; when `SMITH_CODE_ROOTS` is set it must also sit inside one of those folders. Saved to `whitebox.json` in the run's workdir; the start prompt tells the agent to call `session(action="set_codebase")` with it and to review the code with `/codebase`. The path is never placed on the agent's command line. `GET /api/platform/overview` reports such a run with `"whitebox": true`. |
 
 ### `GET /api/fs/folders` — folder picker for the wizard
 

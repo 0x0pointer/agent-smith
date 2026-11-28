@@ -479,6 +479,31 @@ def test_code_folder_must_be_an_existing_project_folder(monkeypatch, tmp_path):
     assert orchestrator.validate_codebase("") == "" and orchestrator.validate_codebase(None) == ""
 
 
+def test_any_folder_is_allowed_unless_code_roots_are_set(monkeypatch, tmp_path):
+    """SMITH_CODE_ROOTS is opt-in: unset, the operator may pick any project folder."""
+    inside, outside = tmp_path / "projects" / "shop", tmp_path / "elsewhere"
+    inside.mkdir(parents=True)
+    outside.mkdir()
+    real = orchestrator.os.path.realpath
+
+    monkeypatch.delenv("SMITH_CODE_ROOTS", raising=False)
+    assert orchestrator.validate_codebase(str(inside)) == real(str(inside))
+    assert orchestrator.validate_codebase(str(outside)) == real(str(outside))
+
+    roots = orchestrator.os.pathsep.join([str(tmp_path / "projects"), str(tmp_path / "not-there")])
+    monkeypatch.setenv("SMITH_CODE_ROOTS", roots)
+    assert orchestrator.validate_codebase(str(inside)) == real(str(inside))
+    assert orchestrator.validate_codebase(str(tmp_path / "projects")) == real(str(tmp_path / "projects"))
+    with pytest.raises(ValueError) as err:
+        orchestrator.validate_codebase(str(outside))
+    assert orchestrator.public_validation_error(err.value) == "code folder is outside the allowed folders"
+    # A sibling whose name merely starts with an allowed root is not inside it.
+    sibling = tmp_path / "projects-private"
+    sibling.mkdir()
+    with pytest.raises(ValueError):
+        orchestrator.validate_codebase(str(sibling))
+
+
 class _FakeWorker:
     """A worker process handle: exits with ``code`` at once, or keeps running (None)."""
 

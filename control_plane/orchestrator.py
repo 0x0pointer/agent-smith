@@ -156,6 +156,7 @@ PUBLIC_VALIDATION_ERRORS = (
     "code folder not found",
     "code folder must be a full path",
     "code folder cannot be a whole drive",
+    "code folder is outside the allowed folders",
 )
 
 
@@ -186,12 +187,31 @@ def _validate_source(payload: object) -> str:
     return name
 
 
+def _code_roots() -> list[str]:
+    """Folders a white-box code folder must sit inside: ``SMITH_CODE_ROOTS``.
+
+    A list separated like PATH (``;`` on Windows, ``:`` elsewhere). Unset, the
+    default, allows any folder on this machine: the operator picks it and only an
+    operator can start a scan. Set it on a shared install to keep scans to the
+    folders that hold project code.
+    """
+    raw = os.environ.get("SMITH_CODE_ROOTS", "")
+    return [os.path.realpath(os.path.expanduser(part.strip())) for part in raw.split(os.pathsep) if part.strip()]
+
+
+def _is_inside(path: str, root: str) -> bool:
+    """True when the real path ``path`` is ``root`` or lies under it."""
+    path, root = os.path.normcase(path), os.path.normcase(root).rstrip(os.sep)
+    return path == root or path.startswith(root + os.sep)
+
+
 def validate_codebase(value: object) -> str:
     """The source-code folder for a white-box scan, as a real absolute path.
 
     '' when none was given. Raises ``ValueError`` for anything that is not an
-    existing folder on this machine, and for a whole drive or filesystem root:
-    the code scanners walk the entire tree they are pointed at.
+    existing folder on this machine, for a folder outside ``SMITH_CODE_ROOTS``
+    when that is set, and for a whole drive or filesystem root: the code scanners
+    walk the entire tree they are pointed at.
     """
     raw = str(value or "").strip().strip('"')
     if not raw:
@@ -202,9 +222,9 @@ def validate_codebase(value: object) -> str:
     if not os.path.isabs(expanded):
         raise ValueError("code folder must be a full path")
     real = os.path.realpath(expanded)
-    allowed_root = os.path.realpath(str(_paths.workspace()))
-    if real != allowed_root and not real.startswith(allowed_root + os.sep):
-        raise ValueError("code folder not found")
+    roots = _code_roots()
+    if roots and not any(_is_inside(real, root) for root in roots):
+        raise ValueError("code folder is outside the allowed folders")
     if not os.path.isdir(real):
         raise ValueError("code folder not found")
     if os.path.dirname(real) == real:
