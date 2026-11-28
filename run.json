@@ -937,7 +937,7 @@
     "kind": "running"
   },
   "status_updated_at": "2026-11-28T02:48:11.654454388Z",
-  "last_event_at": "2026-11-28T02:48:21.759413498Z",
+  "last_event_at": "2026-11-28T02:48:38.125336158Z",
   "pending_control": null,
   "checkpoints": [
     {
@@ -980,9 +980,9 @@
       "diff": {}
     },
     {
-      "seq": 0,
+      "seq": 29,
       "checkpoint": {
-        "timestamp": "2026-11-28T02:48:21.763366298Z",
+        "timestamp": "2026-11-28T02:48:38.123225720Z",
         "current_node": "check_issue",
         "completed_nodes": [
           "start",
@@ -991,23 +991,23 @@
         "node_retries": {},
         "context_values": {
           "current_node": "check_issue",
-          "internal.work_dir": "/workspace/agent-smith",
+          "internal.fidelity": "compact",
+          "graph.rankdir": "LR",
+          "graph.model_stylesheet": "\n            *       { model: gpt-5.4; reasoning_effort: medium; }\n            .strong { model: gpt-5.5; reasoning_effort: high; }\n        ",
+          "graph.goal": "Resolve the next maintainer-approved GitHub issue of 0x0pointer/agent-smith with a reviewed spec, code, and passing tests",
+          "internal.thread_id": "start",
           "outcome": "failed",
+          "internal.node_visit_count": 1,
+          "internal.run_id": "01M8G0TVAGDJSED0P8X6X5RC50",
+          "graph.max_node_visits": "30",
           "failure_class": "deterministic",
           "thread.start.current_node": "check_issue",
-          "graph.model_stylesheet": "\n            *       { model: gpt-5.4; reasoning_effort: medium; }\n            .strong { model: gpt-5.5; reasoning_effort: high; }\n        ",
-          "internal.retry_count.start": 0,
-          "graph.goal": "Resolve the next maintainer-approved GitHub issue of 0x0pointer/agent-smith with a reviewed spec, code, and passing tests",
-          "internal.fidelity": "compact",
           "command.output": "blob://sha256/d6b28e7cfc4fcf0759909562e1bda46a531c95bec67e891f31e892469b60df79",
-          "internal.run_id": "01M8G0TVAGDJSED0P8X6X5RC50",
-          "graph.rankdir": "LR",
-          "graph.loop_restart_signature_limit": "10",
+          "internal.retry_count.start": 0,
+          "internal.work_dir": "/workspace/agent-smith",
           "failure_signature": "check_issue|deterministic|script failed with exit code: <n> ## output skipped issue <n> - already handled (label fabro-built) nothing to build: no open issue labelled fabro-approved is waiting (<n> checked). to build an issue again,remove its fabro-built or fabro-fa",
-          "internal.retry_count.check_issue": 0,
-          "internal.node_visit_count": 1,
-          "internal.thread_id": "start",
-          "graph.max_node_visits": "30"
+          "graph.loop_restart_signature_limit": "10",
+          "internal.retry_count.check_issue": 0
         },
         "node_outcomes": {
           "check_issue": {
@@ -1033,15 +1033,61 @@
           }
         },
         "next_node_id": "exit",
+        "git_commit_sha": "59ec8e1a592f238f07f08f979eb35ddddc7d6c12",
+        "loop_failure_signatures": {
+          "check_issue|deterministic|script failed with exit code: <n> ## output skipped issue <n> - already handled (label fabro-built) nothing to build: no open issue labelled fabro-approved is waiting (<n> checked). to build an issue again,remove its fabro-built or fabro-fa": 1
+        },
         "node_visits": {
-          "check_issue": 1,
-          "start": 1
+          "start": 1,
+          "check_issue": 1
         }
       },
-      "diff": {}
+      "diff": {
+        "summary": {
+          "files_changed": 0,
+          "additions": 0,
+          "deletions": 0
+        }
+      }
     }
   ],
-  "conclusion": null,
+  "conclusion": {
+    "timestamp": "2026-11-28T02:48:38.148599103Z",
+    "status": "succeeded",
+    "timing": {
+      "wall_time_ms": 26499,
+      "inference_time_ms": 0,
+      "tool_time_ms": 2281,
+      "active_time_ms": 2281
+    },
+    "final_git_commit_sha": "59ec8e1a592f238f07f08f979eb35ddddc7d6c12",
+    "stages": [
+      {
+        "stage_id": "start",
+        "stage_label": "start",
+        "timing": {
+          "wall_time_ms": 0,
+          "inference_time_ms": 0,
+          "tool_time_ms": 0,
+          "active_time_ms": 0
+        },
+        "retries": 0
+      },
+      {
+        "stage_id": "check_issue",
+        "stage_label": "check_issue",
+        "timing": {
+          "wall_time_ms": 2290,
+          "inference_time_ms": 0,
+          "tool_time_ms": 2281,
+          "active_time_ms": 2281
+        },
+        "retries": 0
+      }
+    ],
+    "total_retries": 0,
+    "diff": {}
+  },
   "sandbox": {
     "kind": "ready",
     "plan": {
@@ -1135,6 +1181,40 @@
       "output": null,
       "started_at": "2026-11-28T02:48:19.462050640Z",
       "handler": "start",
+      "timing": {
+        "wall_time_ms": 0,
+        "inference_time_ms": 0,
+        "tool_time_ms": 0,
+        "active_time_ms": 0
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "reasoning_tokens": 0,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0
+      },
+      "state": "succeeded"
+    },
+    "exit@1": {
+      "first_event_seq": 32,
+      "prompt": null,
+      "response": null,
+      "completion": {
+        "outcome": "succeeded",
+        "notes": null,
+        "failure_reason": null,
+        "timestamp": "2026-11-28T02:48:38.125336158Z"
+      },
+      "provider_used": null,
+      "diff": null,
+      "script_invocation": null,
+      "script_timing": null,
+      "parallel_results": null,
+      "output": null,
+      "started_at": "2026-11-28T02:48:38.125302976Z",
+      "handler": "exit",
       "timing": {
         "wall_time_ms": 0,
         "inference_time_ms": 0,
